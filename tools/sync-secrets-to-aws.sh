@@ -173,6 +173,7 @@ SECRETS=(
   trustedrouter-nscale-api-key
   trustedrouter-regolo-api-key
   trustedrouter-lyceum-api-key
+  trustedrouter-bedrock-api-key
   trustedrouter-elevenlabs-api-key
   trustedrouter-greenference-api-key
   trustedrouter-hixtube-api-key

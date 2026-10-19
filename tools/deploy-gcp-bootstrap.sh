@@ -118,6 +118,7 @@ WANDB_SECRET="${WANDB_SECRET:-trustedrouter-wandb-api-key}"
 NSCALE_SECRET="${NSCALE_SECRET:-trustedrouter-nscale-api-key}"
 REGOLO_SECRET="${REGOLO_SECRET:-trustedrouter-regolo-api-key}"
 LYCEUM_SECRET="${LYCEUM_SECRET:-trustedrouter-lyceum-api-key}"
+BEDROCK_SECRET="${BEDROCK_SECRET:-trustedrouter-bedrock-api-key}"
 ELEVENLABS_SECRET="${ELEVENLABS_SECRET:-trustedrouter-elevenlabs-api-key}"
 GREENFERENCE_SECRET="${GREENFERENCE_SECRET:-trustedrouter-greenference-api-key}"
 HIXTUBE_SECRET="${HIXTUBE_SECRET:-trustedrouter-hixtube-api-key}"
@@ -297,6 +298,7 @@ for secret in \
   "$NSCALE_SECRET" \
   "$REGOLO_SECRET" \
   "$LYCEUM_SECRET" \
+  "$BEDROCK_SECRET" \
   "$ELEVENLABS_SECRET" \
   "$GREENFERENCE_SECRET" \
   "$HIXTUBE_SECRET" \

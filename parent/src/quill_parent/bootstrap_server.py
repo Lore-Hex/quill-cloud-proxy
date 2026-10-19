@@ -173,6 +173,7 @@ _PROVIDER_KEYS: Final[tuple[tuple[str, str], ...]] = (
 _DIRECT_PROVIDER_KEYS: Final[tuple[tuple[str, str], ...]] = (
     ("regolo", "trustedrouter-regolo-api-key"),
     ("lyceum", "trustedrouter-lyceum-api-key"),
+    ("amazon-bedrock", "trustedrouter-bedrock-api-key"),
     ("elevenlabs", "trustedrouter-elevenlabs-api-key"),
     ("greenference", "trustedrouter-greenference-api-key"),
     ("hixtube", "trustedrouter-hixtube-api-key"),
