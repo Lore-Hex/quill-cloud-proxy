@@ -183,6 +183,9 @@ if argv[:3] == ["role", "assignment", "list"]:
 
 if argv[:2] == ["acr", "build"]:
     log("mutations.log", "MUTATE-ACR-BUILD")
+    # What the image was told about its own source, so a test can hold the
+    # build-commit.txt the script writes next to it to the same value.
+    write("acr-build-arg", arg("--build-arg") or "")
     sys.exit(0)
 
 if argv[:2] == ["acr", "login"]:
@@ -1163,6 +1166,73 @@ class TestBuildSurfacesDigestChurn(DeployHarness):
 
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(self.mutations(), [], "REUSE_IMAGE must not rebuild")
+
+    def test_build_commit_is_the_image_source_revision_and_survives_reuse(self) -> None:
+        # The publish hint names the build from build-commit.txt. It must be the
+        # very value the image was given as SOURCE_REVISION — resolved once, not
+        # HEAD re-read after a long build — and REUSE_IMAGE must keep it with
+        # the digest it belongs to.
+        result = self.run_script("--apply", "build")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        recorded = (self.work / "build-commit.txt").read_text()
+        self.assertRegex(recorded, r"^[0-9a-f]{40}$")
+        self.assertEqual(self.read_state("acr-build-arg"), f"SOURCE_REVISION={recorded}")
+
+        (self.work / "build-commit.txt").write_text("0" * 40)
+        reused = self.run_script("--apply", "build", REUSE_IMAGE="1")
+        self.assertEqual(reused.returncode, 0, reused.stderr)
+        self.assertEqual((self.work / "build-commit.txt").read_text(), "0" * 40)
+
+
+class TestPublishHintNamesTheVerifiedBuild(DeployHarness):
+    """The MEASUREMENT NOT PUBLISHED hint must describe the template verify checked.
+
+    image-digest.txt and build-commit.txt describe the LATEST build. A `build`
+    run after the deploy, never templated or deployed, replaces them; a verify
+    then still checks the deployed template, and a hint that read the latest
+    files would tell the operator to publish a digest nothing is running.
+    """
+
+    def _enclave(self, template: dict) -> dict:
+        for container in template["resources"][0]["properties"]["containers"]:
+            if container["name"] == "quill-enclave":
+                return container["properties"]
+        raise AssertionError("no quill-enclave container in the template")
+
+    def test_hint_names_the_templates_digest_bundle_and_pinned_commit(self) -> None:
+        self.healthy_deploy()
+        template = json.loads((self.work / "template.json").read_text())
+        enclave = self._enclave(template)
+        deployed_digest = enclave["image"].split("@", 1)[1]
+        deployed_bundle = next(
+            item["value"] for item in enclave["environmentVariables"] if item["name"] == "QUILL_AZURE_BUNDLE_VERSION"
+        )
+        pinned_commit = (self.work / "template-build-commit.txt").read_text()
+        self.assertRegex(pinned_commit, r"^[0-9a-f]{40}$")
+
+        # A later build that was never templated or deployed.
+        self.state_file("image-digest").write_text("sha256:" + "f" * 64)
+        rebuilt = self.run_script("--apply", "build")
+        self.assertEqual(rebuilt.returncode, 0, rebuilt.stderr)
+        self.assertEqual((self.work / "image-digest.txt").read_text(), "sha256:" + "f" * 64)
+
+        self.allow_gcloud()
+        self.allow_curl()
+        verifier = self.bin / "stub-verify-ok"
+        verifier.write_text("#!/usr/bin/env bash\nexit 0\n")
+        verifier.chmod(0o755)
+        result = self.run_script("--apply", "verify", VERIFY_ATTESTATION_CMD=str(verifier))
+
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("MEASUREMENT NOT PUBLISHED", result.stderr)
+        hints = [line for line in result.stderr.splitlines() if "--azure-region " in line]
+        self.assertEqual(len(hints), 1, result.stderr)
+        spec = hints[0].split("--azure-region ", 1)[1].strip()
+        group, _, values = spec.partition("=")
+        self.assertEqual(group, "quill-enclave-" + self.script_env().get("LOCATION", "uaenorth"))
+        self.assertEqual(values, f"{deployed_bundle},{pinned_commit},{deployed_digest}")
+        self.assertNotIn("f" * 64, hints[0])
+        self.assertIn("--plane azure", result.stderr)
 
 
 class TestCredentialStoreIsNotWritable(DeployHarness):

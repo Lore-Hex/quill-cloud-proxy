@@ -547,6 +547,41 @@ print(hashlib.sha256(base64.b64decode(policy)).hexdigest())
 PY
 }
 
+# What the verified template deploys, for the publish hint at the end of
+# verify: the enclave image's digest and the bundle version read from
+# template.json ITSELF, and the build commit phase_template pinned to it.
+# Placeholders where a value is missing — never HEAD, never whatever build ran
+# last, because neither need describe the template that was just verified.
+template_publication_metadata() {
+  python3 - "$WORKDIR/template.json" "$ENCLAVE_CONTAINER_NAME" "$WORKDIR/template-build-commit.txt" <<'PY'
+import json, sys
+
+digest, bundle, commit = "<image-digest>", "<bundle-version>", "<build-commit>"
+try:
+    with open(sys.argv[1]) as handle:
+        template = json.load(handle)
+    for container in template["resources"][0]["properties"]["containers"]:
+        if container.get("name") != sys.argv[2]:
+            continue
+        image = container["properties"].get("image", "")
+        if "@sha256:" in image:
+            digest = image.split("@", 1)[1]
+        for item in container["properties"].get("environmentVariables", []):
+            if item.get("name") == "QUILL_AZURE_BUNDLE_VERSION" and item.get("value"):
+                bundle = str(item["value"])
+except (OSError, ValueError, KeyError, IndexError, TypeError):
+    pass
+try:
+    with open(sys.argv[3]) as handle:
+        pinned = handle.read().strip()
+    if pinned:
+        commit = pinned
+except OSError:
+    pass
+print(digest, bundle, commit)
+PY
+}
+
 # ---------------------------------------------------------------------------
 # the container-group environment — ONE definition, three consumers
 # ---------------------------------------------------------------------------
@@ -1131,13 +1166,18 @@ phase_build() {
     return 0
   fi
 
+  # Resolved ONCE and used for both the image's SOURCE_REVISION and the
+  # build-commit.txt the publish hint reads, so the two cannot disagree when
+  # HEAD moves during a long build.
+  local source_revision
+  source_revision="$(git -C "$REPO_ROOT" rev-parse HEAD 2>/dev/null || true)"
   log "phase build: $ACR/$IMAGE_REPO:$IMAGE_TAG (linux/amd64, single-arch)"
   az_rw acr build \
     --registry "$ACR" \
     --platform linux/amd64 \
     --image "${IMAGE_REPO}:${IMAGE_TAG}" \
     --file enclave-go/Dockerfile.enclave.azure.multi \
-    --build-arg "SOURCE_REVISION=$(git -C "$REPO_ROOT" rev-parse HEAD)" \
+    --build-arg "SOURCE_REVISION=$source_revision" \
     "$REPO_ROOT/enclave-go"
 
   local digest=""
@@ -1151,12 +1191,10 @@ phase_build() {
     digest="sha256:DRYRUN0000000000000000000000000000000000000000000000000000000000"
   fi
   printf '%s' "$digest" > "$WORKDIR/image-digest.txt"
-  # The commit this image was built from, kept next to its digest: the publish
-  # hint at the end of verify names the build from these two files rather than
-  # from HEAD, which may have moved by then (and REUSE_IMAGE=1 deploys an image
-  # built on an earlier run).
-  git -C "$REPO_ROOT" rev-parse HEAD > "$WORKDIR/build-commit.txt" 2>/dev/null \
-    || printf '%s' "" > "$WORKDIR/build-commit.txt"
+  # The commit this image was built from, beside its digest. phase_template
+  # pins it to the template it renders, and the publish hint reads that pin —
+  # never HEAD, which may have moved, and never a later build's file.
+  printf '%s' "$source_revision" > "$WORKDIR/build-commit.txt"
   log "image digest: $digest"
   if [ -n "$previous_digest" ] && [ "$previous_digest" != "$digest" ]; then
     log "image digest CHANGED since the last run in this workdir"
@@ -1351,6 +1389,14 @@ with open(out_path, "w") as handle:
 print(f"[ok] wrote {out_path}")
 PY
   log "template: $WORKDIR/template.json (ccePolicy empty, filled by the policy phase)"
+  # Pin the build commit to THIS template. image-digest.txt and build-commit.txt
+  # describe the latest build, which a later `build` can replace without a new
+  # template; the publish hint must name the build the verified template deploys.
+  if [ -s "$WORKDIR/build-commit.txt" ]; then
+    cp "$WORKDIR/build-commit.txt" "$WORKDIR/template-build-commit.txt"
+  else
+    printf '' > "$WORKDIR/template-build-commit.txt"
+  fi
 }
 
 # ---------------------------------------------------------------------------
@@ -2437,16 +2483,16 @@ EOF
     log "which is not in the published set"
     log "  ${published:-<nothing published>}"
     log ""
-    # Name THIS region's build in the hint, from the files the build phase
-    # wrote, so the operator does not reach for HEAD (which may have moved) or
-    # retype a digest by hand.
-    local build_commit="<build-commit>" image_digest="<image-digest>"
-    [ -s "$WORKDIR/build-commit.txt" ] && build_commit="$(cat "$WORKDIR/build-commit.txt")"
-    [ -s "$WORKDIR/image-digest.txt" ] && image_digest="$(cat "$WORKDIR/image-digest.txt")"
-    log "Publish it before calling the deploy done — Azure files only, naming this region's build:"
+    # Name the build THIS verified template deploys — digest and bundle version
+    # from template.json, the commit pinned to it at template time — so the
+    # operator neither reaches for HEAD (which may have moved) nor retypes a
+    # digest by hand, and a later `build` that was never deployed cannot leak in.
+    local image_digest bundle_version build_commit
+    read -r image_digest bundle_version build_commit <<< "$(template_publication_metadata)"
+    log "Publish it before calling the deploy done — Azure files only, naming the build this template deploys:"
     log "  python3 tools/capture-plane-measurements.py --plane azure --write --keep-accepted \\"
     log "      --source-commit <oldest build still serving in any region> \\"
-    log "      --azure-region ${CONTAINER_GROUP}=${QUILL_AZURE_BUNDLE_VERSION:-<bundle-version>},${build_commit},${image_digest}"
+    log "      --azure-region ${CONTAINER_GROUP}=${bundle_version},${build_commit},${image_digest}"
     log "  # then commit trust-page/ — that fires publish-trust-azure.yml"
     log ""
     log "Use --keep-accepted while any region is still serving the old policy, and keep"

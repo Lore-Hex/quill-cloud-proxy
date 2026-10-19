@@ -189,12 +189,19 @@ def parse_azure_region_provenance(specs: list[str]) -> dict[str, dict[str, str]]
     is validated here, before any plane is read, so a typo fails before a write.
     """
     provenance: dict[str, dict[str, str]] = {}
+    configured = {hostname.split(".")[0] for _, hostname, _ in AZURE_ATTESTATION_ORIGINS}
     for spec in specs:
         group, separator, rest = spec.partition("=")
         parts = [part.strip() for part in rest.split(",")]
         if not separator or not group or len(parts) != 3:
             raise ValueError(
                 f"--azure-region {spec!r}: expected GROUP=BUNDLE_VERSION,BUILD_COMMIT,IMAGE_DIGEST"
+            )
+        if group not in configured:
+            # Checked here, against the configured origins, so a typo fails on
+            # a dry run too — not only once a record is being built.
+            raise ValueError(
+                f"--azure-region {group}: not a configured Azure region (one of {', '.join(sorted(configured))})"
             )
         bundle, commit, digest = parts
         if not _BUNDLE_VERSION_RE.fullmatch(bundle):
@@ -255,12 +262,29 @@ def _region_provenance(
     if group in explicit:
         return dict(explicit[group])
     previous = published.get(region["origin_hostname"])
-    if (
-        previous is not None
-        and previous.get("hostdata") == region["hostdata"]
-        and all(isinstance(previous.get(field), str) and previous[field] for field in AZURE_PROVENANCE_FIELDS)
-    ):
-        return {field: previous[field] for field in AZURE_PROVENANCE_FIELDS}
+    if previous is not None and previous.get("hostdata") == region["hostdata"]:
+        # Field by field, never all-or-nothing: a block that names its build
+        # commit but not its digest still constrains the record's commit, and
+        # dropping the commit because the digest is missing would let a newer
+        # top-level commit through check_oldest_build unopposed.
+        carried: dict[str, str] = {}
+        for field in AZURE_PROVENANCE_FIELDS:
+            value = previous.get(field)
+            if not (isinstance(value, str) and value):
+                # A region's source_commit IS its build commit; either stands in
+                # for the other when only one was published.
+                twin = {"source_commit": "image_build_commit", "image_build_commit": "source_commit"}.get(field)
+                value = previous.get(twin) if twin else None
+            carried[field] = value if isinstance(value, str) and value else SOURCE_COMMIT_UNSET
+        missing = [field for field, value in carried.items() if value == SOURCE_COMMIT_UNSET]
+        if missing:
+            print(
+                f"      WARNING {group}: hostdata unchanged, but the published block lacks "
+                f"{', '.join(missing)}; carrying what it has and recording not-configured for the "
+                f"rest. Pass --azure-region {group}=<bundle>,<commit>,<digest> to complete it.",
+                file=sys.stderr,
+            )
+        return carried
     print(
         f"      WARNING {group} attests hostdata {region['hostdata'][:12]}… that the published "
         f"record carries no provenance for, and no --azure-region {group}=<bundle>,<commit>,<digest> "
@@ -968,6 +992,18 @@ def main() -> int:
                 print(f"      issuer   {region['issuer']}")
         except Exception as exc:  # noqa: BLE001
             failures.append(f"Azure: {exc}")
+    if provenance and not azure:
+        # The operator described an Azure build that was not captured. With
+        # --plane all that would otherwise go on to write the AWS files and
+        # exit 1 — a half-publish nobody asked for. Nothing is written.
+        for failure in failures:
+            print(f"FAILED {failure}", file=sys.stderr)
+        print(
+            "REFUSING: --azure-region was given but no Azure measurement was captured; "
+            "nothing is written.",
+            file=sys.stderr,
+        )
+        return 1
     if azure and args.check_published:
         # The Azure counterpart of the AWS pin check below: what is RUNNING in
         # every region must already be in what is PUBLISHED locally.
