@@ -17,7 +17,7 @@
 # a new bundle (which regenerates this file and prints a new version), pin the
 # new QUILL_AZURE_BUNDLE_VERSION, and commit this file in the same change.
 #
-# bundle-version: f2d126c744894b7fa48f2f2d89c9a655
+# bundle-version: e6da7ad860994d658b8a2afb10b65496
 quill-device-keys
 quill-openrouter-key
 tr-azure-acme-cache-key
@@ -47,6 +47,7 @@ trustedrouter-elevenlabs-api-key
 trustedrouter-engy-api-key
 trustedrouter-exa-api-key
 trustedrouter-fireworks-api-key
+trustedrouter-fortanix-api-key
 trustedrouter-friendli-api-key
 trustedrouter-gemini-api-key
 trustedrouter-gmi-api-key
