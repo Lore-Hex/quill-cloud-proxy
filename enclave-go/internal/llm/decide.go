@@ -148,10 +148,9 @@ func (c *openAICompatibleClient) InvokeDecide(ctx context.Context, req *DecideRe
 	if upstream := strings.TrimSpace(option.UpstreamModel); upstream != "" {
 		model = upstream
 	}
-	// Two hosts serve the same decision model with different wire shapes. The
-	// caller sees neither: both are translated to decide.Answer and then held
-	// to the same decide.Verify.
-	if provider == typeSafeProvider || system1Tier(provider) != "" || provider == "azure" {
+	// Hosts expose different decision wire shapes. Translate both protocols
+	// to decide.Answer, then enforce the same decide.Verify contract.
+	if provider == typeSafeProvider || system1Tier(provider) != "" || provider == "azure" || provider == "regolo" {
 		return invokeSystemOne(ctx, httpc, provider, c.baseURL, c.apiKey, model, req)
 	}
 	wire := *req
@@ -272,6 +271,11 @@ func invokeSystemOne(ctx context.Context, httpc *http.Client, provider, baseURL,
 		return nil, err
 	}
 	if tier := system1Tier(provider); tier != "" && (parsed.Tier != tier || parsed.Model != model || parsed.Usage.InputTokens <= 0 || parsed.Usage.OutputTokens == nil || *parsed.Usage.OutputTokens != 0 || parsed.Usage.Decisions != 1) {
+		return nil, &DecideError{Provider: provider, Class: DecideErrDecode}
+	}
+	// Regolo's decision endpoint has an input-only tariff. Do not settle a
+	// different model, missing usage, or newly billed output as Clef-Flash.
+	if provider == "regolo" && (model != "clef-flash" || parsed.Model != model || parsed.Usage.InputTokens <= 0 || parsed.Usage.OutputTokens == nil || *parsed.Usage.OutputTokens != 0) {
 		return nil, &DecideError{Provider: provider, Class: DecideErrDecode}
 	}
 	// Azure returns the underlying model identity rather than its deployment
