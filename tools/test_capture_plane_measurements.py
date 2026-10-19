@@ -752,7 +752,7 @@ class PlaneScopingTests(unittest.TestCase):
 
 
 class AzureRegionProvenanceTests(unittest.TestCase):
-    """Each Azure region names the build it runs; the record's one commit is the oldest of them.
+    """Each Azure region names the build it runs; the record's one commit is an ancestor of all of them.
 
     Every Azure record published since 2026-10-10 carried bundle_version,
     image_build_commit, image_digest and source_commit per region, added by

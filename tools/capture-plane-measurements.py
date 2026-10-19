@@ -45,7 +45,10 @@ new hostdata needs --azure-region, or its fields record not-configured. While
 the regions' builds differ, the top-level source_commit must be the OLDEST build
 still serving — quill-router's check_format_ordering.py reads it as the
 capability every enclave has, and a newer value would let the control plane
-assume a format the lagging region cannot read. That is checked, not advised.
+assume a format the lagging region cannot read. The checkable form of that
+rule is enforced: the top-level commit must be an ancestor of (or equal to)
+every commit any region block names; a newer one is refused, an even older one
+is accepted as merely over-conservative.
 
 Both records now carry source_commit, which they did not before: aws-release.json
 and azure-release.json had no such key at all, so their running measurements were
@@ -302,14 +305,17 @@ def _region_provenance(
 
 
 def check_oldest_build(source_commit: str, region_commits: list[str]) -> None:
-    """While the regions run different builds, the record's one commit is the oldest.
+    """The record's one commit must be an ancestor of (or equal to) every region's build.
 
     quill-router's check_format_ordering.py reads the top-level source_commit
     as the capability EVERY enclave behind this record has. During a roll that
     is the build the lagging region still runs, never the one just deployed: a
     newer value would let the control plane assume a format the old region
-    cannot read. Refused rather than warned, because the reader is a machine
-    that cannot tell.
+    cannot read. What is enforced is ancestry — the checkable form of "the
+    oldest build still serving": a commit newer than, or unrelated to, any
+    region's build is refused; an even older one passes, over-conservative but
+    safe. Refused rather than warned, because the reader is a machine that
+    cannot tell.
     """
     known = [commit for commit in region_commits if commit != SOURCE_COMMIT_UNSET]
     if source_commit == SOURCE_COMMIT_UNSET or not known:
@@ -320,7 +326,8 @@ def check_oldest_build(source_commit: str, region_commits: list[str]) -> None:
             raise ValueError(
                 f"--source-commit {source_commit!r} is newer than, or unrelated to, a region's build "
                 f"{commit[:12]}. While the regions run different builds the record's source_commit "
-                "must be the OLDEST build still serving: an ancestor of every region's build commit."
+                "must be an ancestor of (or equal to) every region's build commit — in practice the "
+                "OLDEST build still serving."
             )
 
 
@@ -798,9 +805,10 @@ def build_azure_record(
             "--azure-region names a region this capture did not observe: " + ", ".join(unknown)
         )
     builds = [_region_provenance(region, explicit, published) for region in regions]
-    # Both commit fields of every block constrain the record's commit: they are
-    # the same commit by construction, and a block that knows only one of them
-    # still knows the build.
+    # Both commit fields of every block constrain the record's commit. Explicit
+    # --azure-region input writes them equal; a carried block keeps whatever
+    # was published, which a hand-edited record can make disagree — and a block
+    # that knows only one of them still knows the build.
     check_oldest_build(
         source_commit,
         [build[field] for build in builds for field in ("image_build_commit", "source_commit")],
@@ -818,10 +826,12 @@ def build_azure_record(
         "source_repo": ATTESTED_GATEWAY_REPO,
         # ONE commit for a record that describes TWO regions. Honest while both
         # run the same build, which is the steady state but not the state
-        # during a roll; then it is the OLDEST build still serving, which
-        # check_oldest_build enforces, and each region's own build is in its
-        # block below. quill-router's ordering gate reads this one value as what
-        # every enclave behind the record can read.
+        # during a roll; then it must be an ancestor of (or equal to) every
+        # build a block names — check_oldest_build enforces exactly that, the
+        # checkable form of "the oldest build still serving" — and each
+        # region's own build is in its block below. quill-router's ordering
+        # gate reads this one value as what every enclave behind the record can
+        # read.
         "source_commit": source_commit,
         # See build_aws_record: an assertion checked against this repository,
         # not a value reproduced from the measurement.
@@ -842,8 +852,9 @@ def build_azure_record(
                 "compliance_status": region["compliance"],
                 # The build THIS region runs: Key Vault bundle version, the
                 # commit the image was built from, the image digest the CCE
-                # policy measured, and that commit again as this region's
-                # source_commit. Operator-asserted, like the top-level one.
+                # policy measured, and the region's source_commit (equal to the
+                # build commit when given explicitly; a carried block keeps
+                # what was published). Operator-asserted, like the top-level one.
                 **build,
             }
             for region, build in zip(regions, builds)
