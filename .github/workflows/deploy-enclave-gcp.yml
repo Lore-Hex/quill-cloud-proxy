@@ -80,6 +80,7 @@ permissions:
   pages: write      # for the publish-trust-page job
 
 env:
+  QUILL_NYTE_API_ALIASES_ENABLED: "1"
   QUILL_CANONICAL_GEO: ${{ vars.QUILL_CANONICAL_GEO || '0' }}
   QUILL_GEO_HEALTH_CHECK: ${{ vars.QUILL_GEO_HEALTH_CHECK }}
   PROJECT_ID: quill-cloud-proxy
@@ -741,7 +742,7 @@ jobs:
           # manager whitelists every SNI
           # value and issues separate cached certs as needed; TLS still
           # terminates only inside the attested workload.
-          API_HOST: api.quillrouter.com,api-us-central1.quillrouter.com,api.trustedrouter.com,api.allyrouter.com,api.uptimerouter.com
+          API_HOST: api.quillrouter.com,api-us-central1.quillrouter.com,api.trustedrouter.com,api.allyrouter.com,api.uptimerouter.com,api.nytokenexchange.com
           # REGION_SHORT must match the existing prod MIG suffix —
           # `quill-enclave-mig-us`, not `quill-enclave-mig-uscentral1`.
           REGION_SHORT: us
@@ -890,7 +891,7 @@ jobs:
             us-central1 \
             quill-enclave-mig-us \
             quill-enclave-mig-us- \
-            api.quillrouter.com,api-us-central1.quillrouter.com,api.trustedrouter.com,api.allyrouter.com,api.uptimerouter.com \
+            api.quillrouter.com,api-us-central1.quillrouter.com,api.trustedrouter.com,api.allyrouter.com,api.uptimerouter.com,api.nytokenexchange.com \
             "${PREV_US}" \
             "${PREV_DRAIN_STATE}" \
             "${PREV_DRAIN_ORIGIN}"
@@ -922,7 +923,7 @@ jobs:
             quill-enclave-mig-eu \
             quill-enclave-mig-eu- \
             eu \
-            api.quillrouter.com,api-europe-west4.quillrouter.com,api.trustedrouter.com,api.allyrouter.com,api.uptimerouter.com \
+            api.quillrouter.com,api-europe-west4.quillrouter.com,api.trustedrouter.com,api.allyrouter.com,api.uptimerouter.com,api.nytokenexchange.com \
             "${PREV_TEMPLATE}" \
             c3-standard-4 \
             TDX \
@@ -951,7 +952,7 @@ jobs:
             quill-enclave-mig-useast4 \
             quill-enclave-mig-useast4- \
             useast4 \
-            api.quillrouter.com,api-us-east4.quillrouter.com,api.trustedrouter.com,api.allyrouter.com,api.uptimerouter.com \
+            api.quillrouter.com,api-us-east4.quillrouter.com,api.trustedrouter.com,api.allyrouter.com,api.uptimerouter.com,api.nytokenexchange.com \
             "${PREV_TEMPLATE}" \
             c3-standard-4 \
             TDX \
@@ -990,7 +991,7 @@ jobs:
             quill-enclave-mig-uswest1 \
             quill-enclave-mig-uswest1- \
             uswest1 \
-            api.quillrouter.com,api-us-west1.quillrouter.com,api.trustedrouter.com,api.allyrouter.com,api.uptimerouter.com \
+            api.quillrouter.com,api-us-west1.quillrouter.com,api.trustedrouter.com,api.allyrouter.com,api.uptimerouter.com,api.nytokenexchange.com \
             "${PREV_TEMPLATE}" \
             c3-standard-4 \
             TDX \

@@ -15,6 +15,7 @@ permissions:
   id-token: write
 
 env:
+  QUILL_NYTE_API_ALIASES_ENABLED: "1"
   QUILL_CANONICAL_GEO: ${{ vars.QUILL_CANONICAL_GEO || '0' }}
   QUILL_GEO_HEALTH_CHECK: ${{ vars.QUILL_GEO_HEALTH_CHECK }}
 

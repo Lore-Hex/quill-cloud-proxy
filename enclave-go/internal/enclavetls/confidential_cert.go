@@ -13,7 +13,7 @@ import (
 	"golang.org/x/crypto/acme/autocert"
 )
 
-// Confidential origins cannot pass TLS-ALPN validation before DNS publication,
+// Confidential origins and new NYTE aliases cannot pass TLS-ALPN validation before DNS publication,
 // and DNS publication requires their certificates. Only DNS-01 may issue them.
 // Cache successful reads briefly inside the enclave; never cache bootstrap misses.
 func confidentialCertificateGetter(names []string, cache autocert.Cache, next func(*tls.ClientHelloInfo) (*tls.Certificate, error)) func(*tls.ClientHelloInfo) (*tls.Certificate, error) {
@@ -29,7 +29,7 @@ func confidentialCertificateGetter(names []string, cache autocert.Cache, next fu
 	certificates := make(map[string]entry)
 	return func(hello *tls.ClientHelloInfo) (*tls.Certificate, error) {
 		name := strings.ToLower(strings.TrimSuffix(hello.ServerName, "."))
-		if !apihosts.Confidential(name) {
+		if !apihosts.Confidential(name) && name != "api.nytokenexchange.com" {
 			return next(hello)
 		}
 		if !allowed[name] {

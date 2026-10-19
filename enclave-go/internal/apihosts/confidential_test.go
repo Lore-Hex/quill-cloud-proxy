@@ -35,7 +35,7 @@ func TestWithConfidentialAliases(t *testing.T) {
 }
 
 func TestChallengeDelegations(t *testing.T) {
-	for _, owner := range []string{"quillrouter", "allyrouter", "uptimerouter"} {
+	for _, owner := range []string{"quillrouter", "allyrouter", "uptimerouter", "nytokenexchange"} {
 		host := "api.confidential." + owner + ".com"
 		want := "_acme-challenge.api-confidential-" + owner + ".trustedrouter.com"
 		if got := ChallengeRecord(host, "trustedrouter-com"); got != want {
@@ -49,5 +49,22 @@ func TestChallengeDelegations(t *testing.T) {
 		if ChallengeRecord(host, "trustedrouter-com") != "" {
 			t.Fatal("ordinary challenge modified")
 		}
+	}
+}
+
+func TestNyteAPIAliases(t *testing.T) {
+	configured := "api.trustedrouter.com,api.nytokenexchange.com"
+	got := WithConfidentialAliases(configured)
+	if got != configured+",api.confidential.trustedrouter.com,api.confidential.nytokenexchange.com" {
+		t.Fatalf("NYTE certificate aliases: %s", got)
+	}
+	if Confidential("api.nytokenexchange.com") || Confidential("api.confidential.nytokenexchange.com.evil") {
+		t.Fatal("ordinary or lookalike NYTE host classified confidential")
+	}
+	if ChallengeRecord("api.nytokenexchange.com", "trustedrouter-com") != "_acme-challenge.api-nytokenexchange.trustedrouter.com" {
+		t.Fatal("NYTE API certificate challenge is not delegated")
+	}
+	if ChallengeRecord("api.nytokenexchange.com", "other-zone") != "" {
+		t.Fatal("NYTE challenge escaped the configured zone")
 	}
 }
