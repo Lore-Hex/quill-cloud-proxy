@@ -23,7 +23,7 @@ var scaleDownPaths = map[string]string{
 func InputOnlyModel(model string) bool {
 	// Classification returns a label and scores, not generated tokens. Keep
 	// its explicit zero instead of estimating tokens from the answer JSON.
-	if model == "neurometric/structured-decisions" {
+	if model == "neurometric/structured-decisions" || model == clairicModel {
 		return true
 	}
 	if !strings.HasPrefix(model, "scaledown/") {

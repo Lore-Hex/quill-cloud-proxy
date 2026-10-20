@@ -7,7 +7,7 @@ import (
 
 func TestScaleDownUsagePreservesNativeInputOnlyMeter(t *testing.T) {
 	result := adapter.StreamResult{Usage: &adapter.StreamUsage{InputTokens: 394, OutputTokens: 0}}
-	for _, model := range []string{"scaledown/compress", "scaledown/summarize", "scaledown/extract", "scaledown/classify"} {
+	for _, model := range []string{"scaledown/compress", "scaledown/summarize", "scaledown/extract", "scaledown/classify", "cloudflare/clairic"} {
 		in, out, estimated := realOrEstimatedTokens(result, 10, 80, model)
 		if in != 394 || out != 0 || estimated {
 			t.Fatalf("%s got %d %d %v", model, in, out, estimated)
