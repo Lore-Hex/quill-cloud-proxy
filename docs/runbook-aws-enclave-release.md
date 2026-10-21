@@ -139,6 +139,14 @@ rollback with explicit numbered desired configuration, and gate subsequent
 replacements on per-instance attestation and health. The standalone candidate
 stays outside production and can be terminated after that region is verified.
 
+When using instance-refresh checkpoints, end `CheckpointPercentages` at `100`
+(for example, `[50, 100]`). A list ending at `50` requests a partial refresh;
+it does not pause halfway and then replace the rest. A `Successful` refresh
+therefore does not by itself prove the fleet is current. Check every ASG member,
+its launch-template version, serving target health and individual attestation.
+Keep the previous numbered launch template as the rollback configuration until
+the complete refresh and bake have succeeded.
+
 Finish and verify eu-west-3 before starting eu-west-1. Use an isolated candidate
 there too, because a different regional host image/build toolchain must not be
 assumed to produce the same PCR0. If its verified PCR0 differs, publish and
