@@ -379,6 +379,27 @@ func TestRelayAnthropicStreamSynthesizesFramingAndRemapsIndexes(t *testing.T) {
 	}
 }
 
+func TestRelayAnthropicStreamKeepsPriceTierInputPrivate(t *testing.T) {
+	for _, native := range []bool{false, true} {
+		var in strings.Builder
+		if native {
+			in.WriteString("event: message_start\ndata: {\"type\":\"message_start\",\"message\":{\"id\":\"msg_test\",\"usage\":{\"input_tokens\":6}}}\n\n")
+		}
+		in.WriteString("event: message_delta\ndata: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"stop\"},\"usage\":{\"input_tokens\":1266,\"output_tokens\":22,\"price_tier_input_tokens\":6}}\n\nevent: message_stop\ndata: {\"type\":\"message_stop\"}\n\n")
+		var out bytes.Buffer
+		result, err := RelayAnthropicStream(strings.NewReader(in.String()), &out, "msg_test", "fugu-ultra-v1.1")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if result.Usage == nil || result.Usage.PriceTierInputTokens != 6 {
+			t.Fatalf("native=%v captured usage=%#v", native, result.Usage)
+		}
+		if strings.Contains(out.String(), "price_tier_input_tokens") {
+			t.Fatalf("native=%v leaked internal pricing field", native)
+		}
+	}
+}
+
 func TestRelayAnthropicStreamEmitsValidAnthropicStopReasonsForGeminiStops(t *testing.T) {
 	valid := map[string]bool{
 		"end_turn":      true,

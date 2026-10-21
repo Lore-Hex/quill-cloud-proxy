@@ -476,7 +476,17 @@ func RelayAnthropicStreamWithTerminalHook(r io.Reader, w io.Writer, messageID, m
 					finishReason = mapStopReason(reason)
 				}
 			}
-			mergeUsage(&usage, getMap(dataJSON, "usage"))
+			usageBody := getMap(dataJSON, "usage")
+			mergeUsage(&usage, usageBody)
+			if _, private := usageBody["price_tier_input_tokens"]; private {
+				delete(usageBody, "price_tier_input_tokens")
+				// Passthrough and deferred terminal events also use raw bytes.
+				body, err := json.Marshal(dataJSON)
+				if err != nil {
+					return StreamResult{}, err
+				}
+				raw = []byte("event: " + eventName + "\ndata: " + string(body))
+			}
 		}
 
 		if eventName == "message_delta" && getString(getMap(dataJSON, "delta"), "stop_reason") != "" {

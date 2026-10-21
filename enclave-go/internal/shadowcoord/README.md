@@ -226,7 +226,9 @@ Round-2 findings, mutation kills, startup traces, performance and the complete
 five-tag gate results are recorded in [round2-verification.md](round2-verification.md).
 
 The timing-only authorize error fixture SHA-256 is
-`a2f388da8afd619793fedfb78013dcdf61843ae0a9b5dca936647ca8582746d4`.
+`0914d1c934d7f05aff1833addbefd0dc1329b25350486e44c6e354bf72376e74`.
+The credit denial now explains the upfront reservation and output-token budget;
+its status, error type, timing envelope, and shadow classification are unchanged.
 `TestLiteralAuthorizeErrorEnvelopes` decodes every case through the HTTP client,
 checking status, authenticated type/classification, Retry-After, typed timing and
 absent scope. Round-3 recovery, mutations, split cost measurements and full gates

@@ -1339,7 +1339,7 @@ func nativeVisibleBody(
 		"fallback_attempt_count":        0,
 		"contains_prompt_or_completion": false,
 		"generation_id":                 usage.GenerationID,
-		"region":                        usage.Region,
+		"gateway_region":                usage.Region,
 		"usage_type":                    "Credits",
 		"cost_microdollars":             usage.CostMicrodollars,
 		"total_cost_microdollars":       usage.CostMicrodollars,
