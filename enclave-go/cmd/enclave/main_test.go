@@ -166,7 +166,8 @@ func TestSettlementRetryQueueRetriesSettleAndBroadcast(t *testing.T) {
 			t.Fatalf("decode settle body: %v", err)
 		}
 		settleBodies = append(settleBodies, body)
-		if settleCalls == 1 {
+		// Exhaust the inline HTTP retry budget before testing queue recovery.
+		if settleCalls <= 3 {
 			http.Error(w, "temporarily down", http.StatusBadGateway)
 			return
 		}
@@ -209,13 +210,16 @@ func TestSettlementRetryQueueRetriesSettleAndBroadcast(t *testing.T) {
 		},
 	}
 	q.process(context.Background(), job)
+	if len(q.jobs) != 1 {
+		t.Fatalf("queued retries = %d, want 1", len(q.jobs))
+	}
 	retry := <-q.jobs
 	if retry.attempt != 2 {
 		t.Fatalf("retry attempt = %d, want 2", retry.attempt)
 	}
 	q.process(context.Background(), retry)
-	if settleCalls != 2 {
-		t.Fatalf("settle calls = %d, want 2", settleCalls)
+	if settleCalls != 4 {
+		t.Fatalf("settle calls = %d, want 4 (3 inline, 1 queued)", settleCalls)
 	}
 	// A retried settle must carry the same gateway_request_id the first
 	// attempt did, even though the worker runs on the queue's own context.
