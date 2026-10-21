@@ -2231,8 +2231,12 @@ source tools/wait-canonical-drained.sh us-east4
         for host in ("api.trustedrouter.com", "api.quillrouter.com."):
             # Execute only the configuration prefix before any cloud operation.
             prefix = SCRIPT.with_name("deploy-azure-aci.sh").read_text().split("# Additional SNI names")[0]
-            result = subprocess.run(["bash", "-c", prefix], env=dict(os.environ, API_HOST=host),
-                                    capture_output=True, text=True)
+            # A real script gives BASH_SOURCE[0] a value under strict Bash too.
+            with tempfile.TemporaryDirectory() as tmp:
+                script = Path(tmp) / "azure-config.sh"
+                script.write_text(prefix)
+                result = subprocess.run(["bash", str(script)], env=dict(os.environ, API_HOST=host),
+                                        capture_output=True, text=True)
             self.assertEqual(result.returncode, 2)
             self.assertIn("fleet-managed", result.stderr)
 
