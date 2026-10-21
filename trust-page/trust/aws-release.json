@@ -1,6 +1,5 @@
 {
   "accepted_pcr0s": [
-    "56c7a2b9b438dfa06b51b257682e827107b8d77cf7f5d2907d62f81d958a8f08bf897502ec6eac336a7bef7a9df858f9",
     "d2046a1b5b70033ca4a6a861b38079f6a95f042d74ac917769886cdce8735ce29cfffebdaa1b638de410f7ee2562d283"
   ],
   "api_base_url": "https://api-aws.trustedrouter.com/v1",
@@ -13,12 +12,12 @@
     "prompt_output_storage": false
   },
   "image_digest": "sha256:ac2ef391efd1af8975bba313b1598aab757918a9517af199df9165116d83396a",
-  "measurement_provenance": "An isolated eu-west-3 candidate outside the serving ASG, target group and routing DNS was verified through SSM against the Nitro root, exact PCR0, signed module identity, certificate/SPKI binding, TLS exporter and same-socket follow-up, and passed health checks. Both healthy Fargate runtime pin consumers accept the old and new measurements. Serving enclaves have not yet been replaced. Source-to-image provenance is operator-asserted, not a reproduced-build claim.",
+  "measurement_provenance": "All four serving enclaves across eu-west-3 and eu-west-1 were individually verified against the Nitro root, exact PCR0, signed module identity, certificate/SPKI binding, TLS exporter and same-socket follow-up, and passed health and real inference checks. Both complete regional refreshes and bake periods succeeded. Both healthy Fargate runtime pin consumers accept only this measurement. Source-to-image provenance is operator-asserted, not a reproduced-build claim.",
   "measurement_type": "nitro-pcr0-sha384",
-  "observed_module_id": "i-0f9ccbe35a2cd5354-enc01a1601286dcba3e",
+  "observed_module_id": "i-0d6fb4e7d255ba8e8-enc01a16064bd1a4ef2",
   "pcr0": "d2046a1b5b70033ca4a6a861b38079f6a95f042d74ac917769886cdce8735ce29cfffebdaa1b638de410f7ee2562d283",
   "platform": "aws-nitro-enclaves",
-  "release_state": "rolling",
+  "release_state": "current",
   "reproduce": "tools/verify-pcr0.sh",
   "source_commit": "a7c79aaab77643088429bc13ef3478a05adc1beb",
   "source_commit_provenance": "operator-asserted",
