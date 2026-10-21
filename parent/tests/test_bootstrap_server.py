@@ -345,6 +345,7 @@ def test_build_payload_iterates_all_known_providers() -> None:
         "amazon-bedrock",
         "elevenlabs",
         "greenference",
+        "hixtube",
         "coralbricks",
         "fortanix",
         "boundless",

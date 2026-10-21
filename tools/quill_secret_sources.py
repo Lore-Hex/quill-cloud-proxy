@@ -117,6 +117,7 @@ PROVIDER_KEY_ALIASES: dict[str, str] = {
     "BEDROCK_API_KEY": "trustedrouter-bedrock-api-key",
     "ELEVEN_LABS_API_KEY": "trustedrouter-elevenlabs-api-key",
     "GREENFERENCE_API_KEY": "trustedrouter-greenference-api-key",
+    "HIXTUBE_API_KEY": "trustedrouter-hixtube-api-key",
     "CORALBRICKS_API_KEY": "trustedrouter-coralbricks-api-key",
     "FORTANIX_API_KEY": "trustedrouter-fortanix-api-key",
     "BOUNDLESS_API_KEY": "trustedrouter-boundless-api-key",

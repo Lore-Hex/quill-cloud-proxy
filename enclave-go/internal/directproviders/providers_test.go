@@ -13,14 +13,24 @@ func TestSpecsAreValidAndImmutable(t *testing.T) {
 		t.Fatal(err)
 	}
 	all := All()
-	if len(all) != 48 {
-		t.Fatalf("provider specs = %d, want 48", len(all))
+	if len(all) != 49 {
+		t.Fatalf("provider specs = %d, want 49", len(all))
 	}
 	original := all[0]
 	all[0].Provider = "mutated"
 	got, ok := Lookup(original.Provider)
 	if !ok || got != original {
 		t.Fatalf("All exposed mutable package state: got %#v, ok=%v", got, ok)
+	}
+}
+
+func TestHixtubeUsesSeparatePilotOriginAndSecret(t *testing.T) {
+	spec, ok := Lookup("hixtube")
+	if !ok || spec.BaseURL != "https://api.hixtube.com/v1" || spec.ChatPath() != "/chat/completions" {
+		t.Fatal("Hixtube must use its separate provider origin")
+	}
+	if spec.SecretEnv != "QUILL_HIXTUBE_SECRET" || spec.SecretName != "trustedrouter-hixtube-api-key" || spec.MediaOnly {
+		t.Fatal("Hixtube secret contract changed")
 	}
 }
 
