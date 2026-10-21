@@ -35,6 +35,27 @@ orders while it has no published address. TLS private keys stay in the enclave
 and its existing sealed certificate cache. No new parent/CDN TLS terminator is
 introduced. The apex website is a separate surface, not an inference proxy.
 
+The existing four-host confidential TXT IAM condition does not cover NYTE.
+The enclave workload needs the existing `confidentialAcmeTxtWriter` role on
+`trustedrouter-com`, restricted to these two additional TXT records and their
+enclosing Change resources:
+
+- `_acme-challenge.api-nytokenexchange.trustedrouter.com.`
+- `_acme-challenge.api-confidential-nytokenexchange.trustedrouter.com.`
+
+Preview the exact additive grant with a separately authenticated deploy identity:
+
+```sh
+python3 tools/nyte_acme_iam.py --account tr-deploy@quill-cloud-proxy.iam.gserviceaccount.com
+```
+
+Only after explicit approval for that IAM change, repeat with `--apply`.
+The helper verifies the role has exactly the three certificate-write permissions,
+preserves unrelated bindings, and retains the policy etag to reject concurrent
+updates. It does not grant project-wide DNS access or alter the ops identity.
+Certificate renewal retries happen inside the enclave; do not mint certificates
+on an operator machine, copy private keys, or publish an unqualified API record.
+
 After the normal CI-gated sequential GCP rollout, verify public HTTPS, catalog
 and browser preflight on both names. Run `tools/verify-attestation.py` with each
 `--api-host`, adding `--require-confidential-host` for the confidential name.
