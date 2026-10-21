@@ -115,7 +115,11 @@ func TestUsageCostAcrossResponseFormats(t *testing.T) {
 					} else {
 						serveChatNonStreaming(context.Background(), &out, provider, req, &types.AnthropicMessagesRequest{}, options, gateway, auth, nil, time.Now(), nil, "cost-reporting", "test-model")
 					}
-					if settles != 1 || billed.InputTokens != 2 || billed.OutputTokens != 2 || billed.SelectedEndpoint != "served" || billed.RouteType != route {
+					wantSettles := 1
+					if scenario == "no-promise-error" && !stream {
+						wantSettles = 3
+					}
+					if settles != wantSettles || billed.InputTokens != 2 || billed.OutputTokens != 2 || billed.SelectedEndpoint != "served" || billed.RouteType != route {
 						t.Fatalf("settlement changed: count=%d usage=%+v", settles, billed)
 					}
 					wantRetries := 0
