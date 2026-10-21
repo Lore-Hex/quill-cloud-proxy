@@ -31,12 +31,12 @@ func TestUsageCostAcrossResponseFormats(t *testing.T) {
 	t.Setenv("QUILL_USAGE_HEARTBEAT", "off")
 	t.Setenv("QUILL_SETTLE_BEFORE_TERMINAL_MS", "5")
 	originalQueue := settlementRetries
-	settlementRetries = &settlementRetryQueue{jobs: make(chan settlementRetryJob, 100)}
 	t.Cleanup(func() { settlementRetries = originalQueue })
 	for _, route := range []string{"chat.completions", "responses", "messages"} {
 		for _, stream := range []bool{false, true} {
 			for _, scenario := range []string{"settled", "mismatch", "zero", "late", "error", "no-promise-error", "rejected", "durable", "missing", "ineligible-missing", "ineligible-late", "snapshot-not-authoritative"} {
 				t.Run(fmt.Sprintf("%s/stream=%t/%s", route, stream, scenario), func(t *testing.T) {
+					settlementRetries = &settlementRetryQueue{jobs: make(chan settlementRetryJob, 100)}
 					auth := costReportingAuthorization()
 					if strings.HasPrefix(scenario, "ineligible") {
 						auth.StageD.Eligible = false
@@ -115,7 +115,15 @@ func TestUsageCostAcrossResponseFormats(t *testing.T) {
 					} else {
 						serveChatNonStreaming(context.Background(), &out, provider, req, &types.AnthropicMessagesRequest{}, options, gateway, auth, nil, time.Now(), nil, "cost-reporting", "test-model")
 					}
-					if settles != 1 || billed.InputTokens != 2 || billed.OutputTokens != 2 || billed.SelectedEndpoint != "served" || billed.RouteType != route {
+					minSettles, maxSettles := 1, 1
+					if scenario == "error" || scenario == "no-promise-error" {
+						// Jitter may fit extra attempts within the 5 ms terminal deadline.
+						maxSettles = 3
+					}
+					if scenario == "no-promise-error" && !stream {
+						minSettles = 3
+					}
+					if settles < minSettles || settles > maxSettles || billed.InputTokens != 2 || billed.OutputTokens != 2 || billed.SelectedEndpoint != "served" || billed.RouteType != route {
 						t.Fatalf("settlement changed: count=%d usage=%+v", settles, billed)
 					}
 					wantRetries := 0
@@ -527,6 +535,7 @@ func TestMessagesWriteFailureHasOneBillingOutcome(t *testing.T) {
 			if scenario == "before-terminal" {
 				wantSettles, wantRefunds = 0, 1
 			} else if scenario == "error" {
+				wantSettles = 3
 				wantRetries = 1
 			}
 			if len(out.failed) == 0 || settles != wantSettles || refunds != wantRefunds || len(settlementRetries.jobs) != wantRetries {

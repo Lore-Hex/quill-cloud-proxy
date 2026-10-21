@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"io"
+	"net/http"
 	"strings"
 	"syscall"
 	"time"
@@ -33,6 +34,17 @@ func (c *Client) postSettlementJSON(ctx context.Context, auth *Authorization, bo
 func retryableSettlementError(err error) bool {
 	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
 		return false
+	}
+	var controlErr *ControlPlaneError
+	if errors.As(err, &controlErr) {
+		// A retiring proxy can return 5xx even when the settlement committed.
+		// Replay only the frozen body at its pinned authority, never inference.
+		switch controlErr.StatusCode {
+		case http.StatusInternalServerError, http.StatusBadGateway, http.StatusServiceUnavailable, http.StatusGatewayTimeout:
+			return true
+		default:
+			return false
+		}
 	}
 	return errors.Is(err, syscall.ECONNRESET) || errors.Is(err, syscall.EPIPE) ||
 		errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF)
