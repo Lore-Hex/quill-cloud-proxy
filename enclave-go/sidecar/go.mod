@@ -1,6 +1,6 @@
 module github.com/Lore-Hex/quill-cloud-proxy/enclave-go-sidecar
 
-go 1.26.0
+go 1.26.10
 
 require (
 	github.com/google/go-tdx-guest v0.3.1
