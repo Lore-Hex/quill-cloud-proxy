@@ -16,13 +16,16 @@
 
 # ─── Builder ────────────────────────────────────────────────────────────────
 #
-# Same pinned Go 1.25 builder as the GCP multi image. The history behind
+# Same pinned Go 1.26.10 builder as the GCP multi image. The history behind
 # pinning it (deploy 25592563258, the sidecar module split) is written up in
 # Dockerfile.enclave.gcp.multi and applies unchanged here.
-FROM golang:1.26-bookworm@sha256:d9c68c2c51161e12fd77e4c6320687c9cd86e1af1e3ad6e6cd63ff970641453c AS builder
+FROM golang:1.26.10-bookworm@sha256:ee3901c61e423732605a51f1b8157c849ec01194ea0a274213b5202b2c11e7bf AS builder
 
 RUN apt-get update \
     && apt-get install -y --no-install-recommends ca-certificates \
+    && sed -i -e 's|^mozilla/emSign_ECC_Root_CA_-_G3.crt$|!&|' \
+              -e 's|^mozilla/Comodo_AAA_Services_root.crt$|!&|' /etc/ca-certificates.conf \
+    && update-ca-certificates --fresh \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /src

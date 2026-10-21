@@ -11,7 +11,7 @@
 #   - Larger PCR0/image_digest surface
 #   - Both providers' egress targets must be in the firewall
 
-# Single Go 1.25 builder. Earlier we kept the main enclave on Go 1.24
+# Single Go 1.26.10 builder. Earlier we kept the main enclave on Go 1.24
 # because deploy 25592563258 (which linked the tinfoil verifier directly
 # into the main binary AND bumped Go to 1.25) trashed the enclave's
 # vsock+TLS request loop within minutes of rollout. Two variables
@@ -30,10 +30,13 @@
 # revert to the two-stage variant in git history (commit ea094b1) —
 # that cleanly isolates Go 1.25 stdlib as the actual culprit.
 
-FROM golang:1.26-bookworm@sha256:d9c68c2c51161e12fd77e4c6320687c9cd86e1af1e3ad6e6cd63ff970641453c AS builder
+FROM golang:1.26.10-bookworm@sha256:ee3901c61e423732605a51f1b8157c849ec01194ea0a274213b5202b2c11e7bf AS builder
 
 RUN apt-get update \
     && apt-get install -y --no-install-recommends ca-certificates \
+    && sed -i -e 's|^mozilla/emSign_ECC_Root_CA_-_G3.crt$|!&|' \
+              -e 's|^mozilla/Comodo_AAA_Services_root.crt$|!&|' /etc/ca-certificates.conf \
+    && update-ca-certificates --fresh \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /src
