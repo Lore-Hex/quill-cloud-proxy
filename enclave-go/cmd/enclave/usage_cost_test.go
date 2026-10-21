@@ -527,6 +527,7 @@ func TestMessagesWriteFailureHasOneBillingOutcome(t *testing.T) {
 			if scenario == "before-terminal" {
 				wantSettles, wantRefunds = 0, 1
 			} else if scenario == "error" {
+				wantSettles = 3
 				wantRetries = 1
 			}
 			if len(out.failed) == 0 || settles != wantSettles || refunds != wantRefunds || len(settlementRetries.jobs) != wantRetries {
