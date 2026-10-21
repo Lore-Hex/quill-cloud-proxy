@@ -362,8 +362,9 @@ func (u *openAIStreamUsage) cachedTokens() int {
 }
 
 // inputTokens includes provider-side orchestration input. Sakana's Fugu
-// routes report the final model prompt in prompt_tokens and the panel/router
-// work in prompt_tokens_details.orchestration_input_tokens; both are billable.
+// routes report the user input sent to the first model in prompt_tokens and
+// the panel/router work in prompt_tokens_details.orchestration_input_tokens;
+// both are billable.
 func (u *openAIStreamUsage) inputTokens() int {
 	if u == nil {
 		return 0
@@ -373,7 +374,7 @@ func (u *openAIStreamUsage) inputTokens() int {
 		input = cached
 	}
 	if u.PromptTokensDetails != nil {
-		orchestrationInput := u.PromptTokensDetails.OrchestrationInputTokens
+		orchestrationInput := max(u.PromptTokensDetails.OrchestrationInputTokens, 0)
 		if cached := u.PromptTokensDetails.OrchestrationInputCachedTokens; cached > orchestrationInput {
 			orchestrationInput = cached
 		}
@@ -387,11 +388,14 @@ func (u *openAIStreamUsage) inputTokens() int {
 // selects Fugu's long-context tier from this count, not from the additive
 // orchestration tokens included by inputTokens.
 func (u *openAIStreamUsage) priceTierInputTokens() int {
-	if u == nil || u.PromptTokensDetails == nil ||
-		u.PromptTokensDetails.OrchestrationInputTokens <= 0 {
+	if u == nil || u.PromptTokensDetails == nil {
 		return 0
 	}
-	return u.PromptTokens
+	if u.PromptTokensDetails.OrchestrationInputTokens <= 0 &&
+		u.PromptTokensDetails.OrchestrationInputCachedTokens <= 0 {
+		return 0
+	}
+	return max(u.PromptTokens, u.baseCachedTokens())
 }
 
 // outputTokens returns every provider-reported non-input token. Most OpenAI-
@@ -427,7 +431,7 @@ func (u *openAIStreamUsage) reasoningTokens() int {
 	// classified visible and orchestration output can represent hidden work.
 	classified := u.CompletionTokens
 	if u.CompletionTokensDetails != nil {
-		classified += u.CompletionTokensDetails.OrchestrationOutputTokens
+		classified += max(u.CompletionTokensDetails.OrchestrationOutputTokens, 0)
 	}
 	if residual := u.outputTokens() - classified; residual > 0 {
 		return residual

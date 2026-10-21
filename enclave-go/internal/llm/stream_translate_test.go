@@ -424,6 +424,30 @@ func TestOpenAIStreamUsageDoesNotCallOrchestrationOutputReasoning(t *testing.T) 
 	}
 }
 
+func TestOpenAIStreamUsageMalformedOrchestrationPreservesBillingBasis(t *testing.T) {
+	usage := openAIStreamUsage{
+		PromptTokens:     5,
+		CompletionTokens: 22,
+		TotalTokens:      27,
+		PromptTokensDetails: &openAIPromptTokenDetails{
+			CachedTokens:                   7,
+			OrchestrationInputTokens:       -100,
+			OrchestrationInputCachedTokens: -50,
+		},
+		CompletionTokensDetails: &openAIStreamUsageDetails{OrchestrationOutputTokens: -40},
+	}
+	if got := usage.inputTokens(); got != 7 {
+		t.Fatalf("inputTokens() = %d, want 7", got)
+	}
+	if got := usage.reasoningTokens(); got != 0 {
+		t.Fatalf("reasoningTokens() = %d, want 0", got)
+	}
+	usage.PromptTokensDetails.OrchestrationInputCachedTokens = 100
+	if got := usage.priceTierInputTokens(); got != 7 {
+		t.Fatalf("priceTierInputTokens() = %d, want 7", got)
+	}
+}
+
 func TestTranslateOpenAIStreamSurfacesSakanaOrchestrationUsage(t *testing.T) {
 	var out bytes.Buffer
 	in := "data: " + `{"choices":[{"delta":{},"finish_reason":"stop"}],"usage":{"prompt_tokens":5,"completion_tokens":22,"total_tokens":1327,"prompt_tokens_details":{"cached_tokens":2,"orchestration_input_tokens":1260,"orchestration_input_cached_tokens":1200},"completion_tokens_details":{"reasoning_tokens":3,"orchestration_output_tokens":40}}}` + "\n\ndata: [DONE]\n\n"
