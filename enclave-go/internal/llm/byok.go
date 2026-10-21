@@ -1919,6 +1919,11 @@ func normalizeDirectProvider(provider string) string {
 	slug = strings.ReplaceAll(slug, " ", "-")
 	slug = strings.ReplaceAll(slug, "_", "-")
 	switch slug {
+	// Public rebrand; keep the deployed credential slots and regional keys stable.
+	case "decisionmodelsio":
+		return "system1models"
+	case "decisionmodelsio-eu":
+		return "system1models-eu"
 	case "google", "google-ai", "gemini":
 		return "gemini"
 	case "google-ai-studio", "ai-studio":

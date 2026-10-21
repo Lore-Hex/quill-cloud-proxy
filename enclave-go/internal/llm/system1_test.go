@@ -12,10 +12,10 @@ import (
 )
 
 func TestSystem1TierKeyWireAndUsage(t *testing.T) {
-	for _, provider := range []string{"system1models", "system1models-eu"} {
+	for _, provider := range []string{"system1models", "system1models-eu", "decisionmodelsio", "decisionmodelsio-eu"} {
 		t.Run(provider, func(t *testing.T) {
 			tier := system1Tier(provider)
-			spec, ok := directproviders.Lookup(provider)
+			spec, ok := directproviders.Lookup(normalizeDirectProvider(provider))
 			if !ok || spec.SecretName != "trustedrouter-system1models-"+tier+"-api-key" {
 				t.Fatal("regional secret not isolated")
 			}
