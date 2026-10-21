@@ -1705,7 +1705,7 @@ else:
         rollout = workflow.split("\n  rollout:\n", 1)[1].split(
             "\n  finalize-trust-artifacts:\n", 1
         )[0]
-        checkout = rollout.split("- uses: actions/checkout@v4", 1)[1].split(
+        checkout = rollout.split("- uses: actions/checkout@v7", 1)[1].split(
             "\n      - ", 1
         )[0]
         # Moving main injected a new env into an older measured image, which
