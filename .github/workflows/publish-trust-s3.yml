@@ -23,12 +23,12 @@ jobs:
     if: github.event_name != 'workflow_run' || github.event.workflow_run.conclusion == 'success'
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           # workflow_run otherwise checks out the triggering run's head. Trust
           # artifacts are committed by several workflows, so main is canonical.
           ref: main
-      - uses: aws-actions/configure-aws-credentials@v4
+      - uses: aws-actions/configure-aws-credentials@v6
         with:
           role-to-assume: ${{ secrets.AWS_TRUST_PUBLISH_ROLE_ARN }}
           aws-region: us-east-1
