@@ -1380,7 +1380,7 @@ esac
             self.assertLess(previous_roll, refresh)
             self.assertLess(refresh, roll)
             segment = workflow[refresh:roll]
-            self.assertIn("uses: aws-actions/configure-aws-credentials@v4", segment)
+            self.assertIn("uses: aws-actions/configure-aws-credentials@v6", segment)
             self.assertIn("role-to-assume: ${{ secrets.AWS_DEPLOY_ROLE_ARN }}", segment)
             previous_roll = roll
 
