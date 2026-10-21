@@ -154,7 +154,7 @@ func TestEmbeddingsReportOnlyKnownSettledCostAndPreserveResponse(t *testing.T) {
 					if batch {
 						wantUsage["provider_usage"] = map[string]any{
 							"usage_type": "Credits", "selected_model": model, "selected_provider": "openai",
-							"region": "test-region", "contains_prompt_or_completion": false,
+							"gateway_region": "test-region", "contains_prompt_or_completion": false,
 						}
 					} else if !bytes.Contains(body, []byte(`"embedding":`+vector)) {
 						t.Error("interactive embedding encoding or precision changed")
