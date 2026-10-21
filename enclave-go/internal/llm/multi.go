@@ -217,6 +217,15 @@ func (m *multiClient) InvokeStreaming(
 		}
 		return m.openRouterExclusive.InvokeStreaming(ctx, req, body, out, options...)
 	case "google-vertex", "gemini":
+		if provider == "google-vertex" && strings.HasPrefix(directModelID(provider, req.Model, option.UpstreamModel), "claude-") {
+			if err := validateVertexClaudeCacheTTL(body); err != nil {
+				return err
+			}
+			// The public Vertex provider hosts both publishers. Reuse its
+			// global OAuth client, not the legacy `vertex` client's gateway
+			// region: Claude is not served in every gateway region.
+			return m.googleVertex.auth.InvokeStreaming(ctx, req, body, out, options...)
+		}
 		// `gemini` is the pre-split compatibility slug. It intentionally keeps
 		// the old prepaid behavior (Vertex OAuth) for in-flight/replayed
 		// authorizations while new control planes emit google-vertex explicitly.
