@@ -1380,7 +1380,7 @@ esac
             self.assertLess(previous_roll, refresh)
             self.assertLess(refresh, roll)
             segment = workflow[refresh:roll]
-            self.assertIn("uses: aws-actions/configure-aws-credentials@v4", segment)
+            self.assertIn("uses: aws-actions/configure-aws-credentials@v6", segment)
             self.assertIn("role-to-assume: ${{ secrets.AWS_DEPLOY_ROLE_ARN }}", segment)
             previous_roll = roll
 
@@ -1705,7 +1705,7 @@ else:
         rollout = workflow.split("\n  rollout:\n", 1)[1].split(
             "\n  finalize-trust-artifacts:\n", 1
         )[0]
-        checkout = rollout.split("- uses: actions/checkout@v4", 1)[1].split(
+        checkout = rollout.split("- uses: actions/checkout@v7", 1)[1].split(
             "\n      - ", 1
         )[0]
         # Moving main injected a new env into an older measured image, which
