@@ -2228,13 +2228,18 @@ source tools/wait-canonical-drained.sh us-east4
         self.assertNotIn("absent from authoritative", result.stdout)
 
     def test_azure_deploy_refuses_canonical_or_mirror_dns_ownership(self):
-        for host in ("api.trustedrouter.com", "api.quillrouter.com."):
-            # Execute only the configuration prefix before any cloud operation.
-            prefix = SCRIPT.with_name("deploy-azure-aci.sh").read_text().split("# Additional SNI names")[0]
-            result = subprocess.run(["bash", "-c", prefix], env=dict(os.environ, API_HOST=host),
-                                    capture_output=True, text=True)
-            self.assertEqual(result.returncode, 2)
-            self.assertIn("fleet-managed", result.stderr)
+        # Execute only the configuration prefix before any cloud operation.
+        # A real file supplies BASH_SOURCE[0]; `bash -c` does not on Bash 5.
+        prefix = SCRIPT.with_name("deploy-azure-aci.sh").read_text().split("# Additional SNI names")[0]
+        with tempfile.TemporaryDirectory() as tmp:
+            script = Path(tmp) / "azure-config-prefix.sh"
+            script.write_text(prefix)
+            for host in ("api.trustedrouter.com", "api.quillrouter.com."):
+                with self.subTest(host=host):
+                    result = subprocess.run(["bash", str(script)], env=dict(os.environ, API_HOST=host),
+                                            capture_output=True, text=True)
+                    self.assertEqual(result.returncode, 2, result.stdout + result.stderr)
+                    self.assertIn("fleet-managed", result.stderr)
 
     def test_workflow_writers_share_setting_and_image_contains_parser(self):
         root = SCRIPT.parent.parent
