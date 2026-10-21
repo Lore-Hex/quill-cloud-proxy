@@ -48,7 +48,8 @@ var HostedModels = map[string]bool{
 // their namespace does not authorize them: the control plane must still issue
 // an exact model/provider endpoint before any paid inference can happen.
 func IsSystem1Model(model string) bool {
-	return strings.HasPrefix(model, "system1models/s1-") || strings.HasPrefix(model, "system1models-eu/s1-")
+	return strings.HasPrefix(model, "decisionmodelsio/s1-") || strings.HasPrefix(model, "decisionmodelsio-eu/s1-") ||
+		strings.HasPrefix(model, "system1models/s1-") || strings.HasPrefix(model, "system1models-eu/s1-")
 }
 
 func IsHostedModel(model string) bool {

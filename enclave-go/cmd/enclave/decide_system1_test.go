@@ -28,7 +28,7 @@ func system1TestImage(t *testing.T) string {
 }
 
 func TestSystem1DecisionLimitsBeforeInference(t *testing.T) {
-	for _, model := range []string{"system1models/s1-fast", "system1models-eu/s1-fast"} {
+	for _, model := range []string{"system1models/s1-fast", "system1models-eu/s1-fast", "decisionmodelsio/s1-fast", "decisionmodelsio-eu/s1-fast"} {
 		for _, change := range []string{"two_questions", "oversized_state", "image_on_text", "remote_image", "bad_image", "two_images"} {
 			t.Run(model+"/"+change, func(t *testing.T) {
 				body := map[string]any{"model": model, "state": "red", "questions": map[string]any{"q": map[string]any{"type": "boolean", "instructions": "Red?"}}}
@@ -62,7 +62,7 @@ func TestSystem1DecisionLimitsBeforeInference(t *testing.T) {
 
 func TestSystem1SettlementUsesReportedInputExactlyOnce(t *testing.T) {
 	imageURL := system1TestImage(t)
-	for _, slug := range []string{"system1models", "system1models-eu"} {
+	for _, slug := range []string{"system1models", "system1models-eu", "decisionmodelsio", "decisionmodelsio-eu"} {
 		for _, fail := range []bool{false, true} {
 			model := slug + "/s1-vision"
 			endpoint := model + "@" + slug + "/prepaid"
@@ -107,7 +107,7 @@ func TestSystem1SettlementUsesReportedInputExactlyOnce(t *testing.T) {
 
 func TestSystem1UsesVerifiedHostedPath(t *testing.T) {
 	probability := 0.9
-	for _, model := range []string{"system1models/s1-fast", "system1models-eu/s1-pro", "system1models/s1-future"} {
+	for _, model := range []string{"system1models/s1-fast", "system1models-eu/s1-pro", "system1models/s1-future", "decisionmodelsio/s1-fast", "decisionmodelsio-eu/s1-pro", "decisionmodelsio/s1-future"} {
 		client := &fakeDecider{answers: map[string]decide.Answer{"q": {Type: decide.TypeBoolean, Probability: &probability}}}
 		status, _ := runDecide(t, client, `{"model":"`+model+`","state":"red","questions":{"q":{"type":"noul","instructions":"Red?"}}}`)
 		if status != 200 || client.seen == nil {
