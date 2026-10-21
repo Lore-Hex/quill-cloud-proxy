@@ -231,9 +231,9 @@ const typeSafeBoolean = "noul"
 
 func system1Tier(provider string) string {
 	switch provider {
-	case "system1models":
+	case "system1models", "decisionmodelsio":
 		return "global"
-	case "system1models-eu":
+	case "system1models-eu", "decisionmodelsio-eu":
 		return "eu"
 	}
 	return ""
