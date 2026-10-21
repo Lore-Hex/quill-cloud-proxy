@@ -38,7 +38,7 @@ func TestOpenRouterRoutingMetadataDescribesSelectedFallbackWithoutSensitiveField
 	if metadata["requested"] != "trustedrouter/auto" || metadata["strategy"] != "fallback" {
 		t.Fatalf("metadata = %#v", metadata)
 	}
-	if metadata["attempt"] != 2 || metadata["region"] != "us-central1" {
+	if metadata["attempt"] != 2 || metadata["gateway_region"] != "us-central1" {
 		t.Fatalf("metadata = %#v", metadata)
 	}
 	endpoints := metadata["endpoints"].(map[string]any)
@@ -46,7 +46,7 @@ func TestOpenRouterRoutingMetadataDescribesSelectedFallbackWithoutSensitiveField
 	if len(available) != 2 || available[1]["selected"] != true {
 		t.Fatalf("available = %#v", available)
 	}
-	for _, forbidden := range []string{"tags", "user", "session_id", "trace", "prompt", "output"} {
+	for _, forbidden := range []string{"region", "tags", "user", "session_id", "trace", "prompt", "output"} {
 		if _, exists := metadata[forbidden]; exists {
 			t.Fatalf("metadata contains forbidden field %q: %#v", forbidden, metadata)
 		}
@@ -212,8 +212,11 @@ func TestAnnotateSettlementOnlyUsageAddsIntegerCostWithoutContent(t *testing.T) 
 		t.Fatalf("usage = %#v", usage)
 	}
 	providerUsage := usage["provider_usage"].(map[string]any)
-	if providerUsage["usage_type"] != "Credits" || providerUsage["contains_prompt_or_completion"] != false {
+	if providerUsage["usage_type"] != "Credits" || providerUsage["contains_prompt_or_completion"] != false || providerUsage["gateway_region"] != "us-central1" {
 		t.Fatalf("provider_usage = %#v", providerUsage)
+	}
+	if _, exists := providerUsage["region"]; exists {
+		t.Fatalf("ambiguous gateway region in provider_usage: %#v", providerUsage)
 	}
 	for _, forbidden := range []string{"prompt", "completion", "messages", "input", "output"} {
 		if strings.Contains(string(annotated), `"`+forbidden+`"`) {
@@ -242,5 +245,36 @@ func TestBatchSettlementUsageDoesNotChangeOrdinaryResponses(t *testing.T) {
 	}
 	if bytes.Equal(annotated, body) || !bytes.Contains(annotated, []byte(`"cost_microdollars":9`)) {
 		t.Fatalf("batch response missing accounting metadata: %s", annotated)
+	}
+}
+
+func TestSettlementOnlyGatewayRegionCannotBeSpoofedOrLeakPrivateRoute(t *testing.T) {
+	for _, hidden := range []bool{false, true} {
+		for _, region := range []string{"europe-west4", ""} {
+			body, err := annotateSettlementOnlyUsage(
+				[]byte(`{"usage":{"provider_usage":{"region":"upstream-region","gateway_region":"upstream-gateway"}}}`),
+				&trustedrouter.SettleResult{Region: region},
+				&trustedrouter.Authorization{HidePublicMetadata: hidden},
+			)
+			if err != nil {
+				t.Fatal(err)
+			}
+			var payload map[string]any
+			if err := json.Unmarshal(body, &payload); err != nil {
+				t.Fatal(err)
+			}
+			providerUsage := payload["usage"].(map[string]any)["provider_usage"].(map[string]any)
+			if _, exists := providerUsage["region"]; exists {
+				t.Fatalf("legacy region preserved: %s", body)
+			}
+			value, exists := providerUsage["gateway_region"]
+			if hidden || region == "" {
+				if exists {
+					t.Fatalf("unknown or private gateway region exposed: %s", body)
+				}
+			} else if value != region {
+				t.Fatalf("authoritative gateway region missing: %s", body)
+			}
+		}
 	}
 }

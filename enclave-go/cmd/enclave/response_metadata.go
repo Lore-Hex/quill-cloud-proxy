@@ -123,7 +123,8 @@ func annotateSettledResponseMetadata(
 			routeUsage["usage_type"] = settlement.UsageType
 		}
 		if settlement.Region != "" && !hidesPublicRouteMetadata(authorization) {
-			routeUsage["region"] = settlement.Region
+			// Settlement records the gateway's region, not the upstream GPU location.
+			routeUsage["gateway_region"] = settlement.Region
 		}
 	}
 	routeUsage = pruneEmptyProviderUsage(routeUsage)
@@ -174,6 +175,9 @@ func annotateSettlementOnlyUsage(
 	if providerUsage == nil {
 		providerUsage = map[string]any{}
 	}
+	// Do not preserve upstream-supplied or legacy gateway location claims.
+	delete(providerUsage, "region")
+	delete(providerUsage, "gateway_region")
 	if settlement.UsageType != "" {
 		providerUsage["usage_type"] = settlement.UsageType
 	}
@@ -190,7 +194,7 @@ func annotateSettlementOnlyUsage(
 		providerUsage["selected_provider"] = selectedProvider
 	}
 	if settlement.Region != "" && !hidesPublicRouteMetadata(authorization) {
-		providerUsage["region"] = settlement.Region
+		providerUsage["gateway_region"] = settlement.Region
 	}
 	providerUsage["contains_prompt_or_completion"] = false
 	usage["provider_usage"] = providerUsage
@@ -315,7 +319,7 @@ func openRouterRoutingMetadata(
 		},
 	}
 	if privateModelID == "" {
-		metadata["region"] = region
+		metadata["gateway_region"] = region
 		metadata["is_byok"] = strings.EqualFold(usageType, "BYOK")
 	}
 	return metadata
