@@ -15,6 +15,12 @@ import (
 func (m *multiClient) InvokeDecide(ctx context.Context, req *DecideRequest, options ...InvokeOptions) (*DecideResponse, error) {
 	option := firstOptions(options)
 	provider := normalizeDirectProvider(option.Provider)
+	if provider == "tinfoil" {
+		if m.tinfoil == nil {
+			return nil, &DecideError{Provider: provider, Class: DecideErrConfig}
+		}
+		return m.tinfoil.InvokeDecide(ctx, req, options...)
+	}
 	if provider == "regolo" && (option.ProviderAPIKey != "" || strings.EqualFold(option.UsageType, "BYOK")) {
 		return newOpenAICompatible(provider, "").InvokeDecide(ctx, req, options...)
 	}

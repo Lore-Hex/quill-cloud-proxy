@@ -60,9 +60,34 @@ func TestSystem1DecisionLimitsBeforeInference(t *testing.T) {
 	}
 }
 
+func TestTinfoilDecisionChoiceLimitBeforeInference(t *testing.T) {
+	for _, size := range []string{"small", "medium", "large"} {
+		for _, count := range []int{26, 27} {
+			criteria := make(map[string]string, count)
+			for i := 0; i < count; i++ {
+				criteria[fmt.Sprintf("choice%d", i)] = "option"
+			}
+			body, _ := json.Marshal(map[string]any{
+				"model": "tinfoil/decision-" + size, "state": "test",
+				"questions": map[string]any{"q": map[string]any{
+					"type": "choice", "instructions": "Choose", "criteria": criteria,
+				}},
+			})
+			client := &fakeDecider{}
+			status, _ := runDecide(t, client, string(body))
+			if count == 27 && (status != 400 || client.seen != nil) {
+				t.Fatalf("over-limit request reached inference: %s, %d", size, status)
+			}
+			if count == 26 && client.seen == nil {
+				t.Fatalf("valid choice limit rejected: %s, %d", size, status)
+			}
+		}
+	}
+}
+
 func TestHostedSettlementUsesReportedInputExactlyOnce(t *testing.T) {
 	imageURL := system1TestImage(t)
-	for _, slug := range []string{"system1models", "system1models-eu", "decisionmodelsio", "decisionmodelsio-eu", "regolo"} {
+	for _, slug := range []string{"system1models", "system1models-eu", "decisionmodelsio", "decisionmodelsio-eu", "regolo", "tinfoil"} {
 		for _, fail := range []bool{false, true} {
 			model := slug + "/s1-vision"
 			upstream := "s1-vision"
@@ -73,6 +98,9 @@ func TestHostedSettlementUsesReportedInputExactlyOnce(t *testing.T) {
 				upstream = "clef-flash"
 				reportedInput = 140
 				images = ""
+			}
+			if slug == "tinfoil" {
+				model, upstream, reportedInput, images = "tinfoil/decision-small", "decision-small", 307, ""
 			}
 			endpoint := model + "@" + slug + "/prepaid"
 			authorizations, settlements, refunds := 0, 0, 0
