@@ -3,9 +3,9 @@
 # PCR0 also depends on the Nitro CLI/kernel/initramfs, not just this OCI image.
 #
 # Rebuilds the enclave Docker image deterministically from the current
-# checkout, runs nitro-cli describe-eif against it, and prints the PCR0.
-# Compare to the value at trust-page/pcr0.txt and at
-# https://trust.quill.lorehex.co/pcr0.txt.
+# checkout, builds an EIF, and prints its PCR0. Compare to the repository's
+# trust-page/trust/pcr0-aws.txt. Verify signed release provenance and fresh
+# TLS-bound live attestation separately before trusting a running endpoint.
 #
 # Requires:
 #   - docker
@@ -74,9 +74,10 @@ if [[ -f "$PUBLISHED_FILE" ]]; then
   PUBLISHED=$(cat "$PUBLISHED_FILE")
   echo "PCR0 (published): $PUBLISHED"
   if [[ "$PCR0" == "$PUBLISHED" ]]; then
-    echo "MATCH ✓ — the running enclave runs this exact source."
+    echo "MATCH: local EIF PCR0 matches the checked-out measurement record."
+    echo "This is not live attestation; separately verify the signed release and live TLS binding."
   else
-    echo "MISMATCH ✗ — published PCR0 differs from local rebuild." >&2
+    echo "MISMATCH: recorded PCR0 differs from local rebuild." >&2
     exit 1
   fi
 fi

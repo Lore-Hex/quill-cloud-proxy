@@ -1,7 +1,11 @@
 """Offline fail-closed tests; real two-builder digest comparisons gate releases."""
 import copy
+import hashlib
 import importlib.util
+import io
 import json
+import tarfile
+import tempfile
 import unittest
 from pathlib import Path
 from unittest.mock import patch
@@ -13,6 +17,40 @@ spec.loader.exec_module(repro)
 
 
 class Reproducibility(unittest.TestCase):
+    def archive(self, destination, corruption=None):
+        config = b'{"architecture":"amd64","os":"linux"}'
+        layer = b"all binaries, certificates and file metadata"
+        def digest(data):
+            return "sha256:" + hashlib.sha256(data).hexdigest()
+        manifest = json.dumps({"config": {"digest": digest(config)},
+                               "layers": [{"digest": digest(layer)}]}).encode()
+        descriptor = {"mediaType": "application/vnd.oci.image.manifest.v1+json", "digest": digest(manifest)}
+        manifests = [descriptor, descriptor] if corruption == "index" else [descriptor]
+        with tarfile.open(destination, "w") as archive:
+            entries = {"index.json": json.dumps({"manifests": manifests}).encode(),
+                       "blobs/sha256/" + digest(manifest)[7:]: manifest,
+                       "blobs/sha256/" + digest(config)[7:]: config,
+                       "blobs/sha256/" + digest(layer)[7:]: layer}
+            bad = {"manifest": manifest, "config": config, "layer": layer}.get(corruption)
+            if bad is not None:
+                entries["blobs/sha256/" + digest(bad)[7:]] = b"changed"
+            for name, data in entries.items():
+                entry = tarfile.TarInfo(name)
+                entry.size = len(data)
+                archive.addfile(entry, io.BytesIO(data))
+        return digest(manifest)
+
+    def test_archive_verifies_manifest_config_and_every_layer(self):
+        with tempfile.TemporaryDirectory() as temp:
+            path = Path(temp) / "image.tar"
+            expected = self.archive(path)
+            self.assertEqual(repro.archive_digest(path), expected)
+            for corruption in ("manifest", "config", "layer", "index"):
+                with self.subTest(corruption=corruption):
+                    self.archive(path, corruption)
+                    with self.assertRaises(ValueError):
+                        repro.archive_digest(path)
+
     def record(self):
         return {"schema": "trustedrouter-reproducible-image/1", "source_commit": "a" * 40,
                 "source_date_epoch": 1000, "plane": "gcp", "platform": "linux/amd64",

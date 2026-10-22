@@ -1156,14 +1156,10 @@ phase_build() {
 
   # REUSE_IMAGE=1 skips the build and keeps the digest already in the workdir.
   #
-  # It exists because a re-run with no source change is NOT guaranteed to be a
-  # no-op: IMAGE_TAG is minted from a fresh timestamp on every invocation and
-  # `az acr build` runs unconditionally, so whether "nothing changed" survives
-  # to the deploy depends entirely on whether ACR produces a byte-identical
-  # manifest — and an OCI image config carries a `created` timestamp. If the
-  # digest moves, the template moves, the CCE policy moves, and phase_deploy
-  # correctly DELETES AND RECREATES production for a source tree that did not
-  # change. This flag is the escape hatch; the log line below is the warning.
+  # Older releases included build timestamps and could change on rebuild.
+  # The pinned recipe below now requires two matching images. Reuse remains
+  # useful when resuming a reviewed rollout without rebuilding its image;
+  # it does not remove the policy, attestation or deployment gates.
   if [ "${REUSE_IMAGE:-0}" = "1" ] && [ -n "$previous_digest" ]; then
     log "phase build: REUSE_IMAGE=1 — skipping the build, keeping $previous_digest"
     return 0
@@ -1217,9 +1213,9 @@ phase_build() {
     note "was: $previous_digest"
     note "now: $digest"
     note "The digest is measured, so this alone re-binds the SKR key and forces a"
-    note "DELETE + RECREATE of the container group. If the source tree did not change,"
-    note "the rebuild moved the digest on its own; re-run with REUSE_IMAGE=1 to avoid"
-    note "churning production for a build that produced the same code."
+    note "DELETE + RECREATE of the container group. Confirm the source commit and"
+    note "recipe change are intentional. REUSE_IMAGE=1 can resume an already reviewed"
+    note "image; do not use it to conceal a failed reproducibility comparison."
   fi
 
   # The image is pinned BY DIGEST in the template, never by tag. A tag is a
