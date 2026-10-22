@@ -12,7 +12,6 @@ import json
 import os
 from pathlib import Path
 import re
-import shutil
 import subprocess
 import tarfile
 import tempfile
@@ -111,13 +110,17 @@ def build(plane: str, commit: str, output: Path, values: list[str], push: str | 
         context = Path(temp)
         archive_source(commit, context)
         client = client_image(context)
-        command = ["docker", "run", "--rm", "--volume", f"{docker_socket()}:/var/run/docker.sock",
+        command = ["docker", "run", "--rm", "--env", "DOCKER_HOST=unix:///var/run/docker.sock",
+                   "--volume", f"{docker_socket()}:/var/run/docker.sock",
                    "--volume", f"{context}:/workspace:ro", "--volume", f"{output.resolve()}:/output"]
         config = Path(os.environ.get("DOCKER_CONFIG", str(Path.home() / ".docker")))
         if (config / "config.json").is_file():
             auth = context / "client-auth"
             auth.mkdir(mode=0o700)
-            shutil.copyfile(config / "config.json", auth / "config.json")
+            # Host-specific contexts/keychain helper binaries do not exist in
+            # the pinned client. Release jobs use short-lived docker-login auth.
+            credentials = json.loads((config / "config.json").read_text())
+            (auth / "config.json").write_text(json.dumps({"auths": credentials.get("auths", {})}))
             (auth / "config.json").chmod(0o600)
             command += ["--volume", f"{auth}:/root/.docker"]
         target = f"type=image,name={push},push=true" if push else "type=oci,dest=/output/image.tar"
