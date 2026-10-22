@@ -30,10 +30,13 @@ set. CI checks source equality, upstream Sigstore verification tests, sidecar
 tests and telemetry absence from the final runtime executables. Upstream updates
 require explicitly reviewing the pin, generated diff and all these gates.
 
-`go.mod`/`go.sum` are unchanged upstream dependency metadata. The generated HTTP
-client remains for upstream Sigstore tests that construct signed entries, but
+`go.mod`/`go.sum` are maintained locally for this smaller package closure, with
+security updates checked by the repository dependency scanner. They are not
+copied or overwritten by the source generator. The generated HTTP client
+remains for upstream Sigstore tests that construct signed entries, but
 is not imported by runtime verification. The go-openapi runtime's model
 interfaces are still required; its instrumented `runtime/client` package is not.
 Test/tool dependencies in a module graph are not evidence of a linked SDK;
-the release gate inspects actual Go build info. Do not run `go mod tidy` inside
-this pinned subset: its metadata intentionally matches upstream.
+the release gate inspects actual Go build info. Run `go mod tidy` after updating
+this subset's dependencies, then rerun the upstream verification regressions
+and complete runtime-image audit.

@@ -45,7 +45,7 @@ func main() {
 		panic("unexpected Rekor module checksum")
 	}
 	files := map[string][]byte{}
-	for _, name := range []string{"LICENSE", "go.mod", "go.sum"} {
+	for _, name := range []string{"LICENSE"} {
 		files[name], err = os.ReadFile(filepath.Join(mod.Dir, name))
 		must(err)
 	}
@@ -77,7 +77,7 @@ func main() {
 			if err != nil {
 				return err
 			}
-			if rel != "README.md" && files[rel] == nil {
+			if rel != "README.md" && rel != "go.mod" && rel != "go.sum" && files[rel] == nil {
 				return fmt.Errorf("unreviewed vendored file: %s", rel)
 			}
 			return nil
