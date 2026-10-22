@@ -36,14 +36,58 @@ func settleArrivals(t *testing.T) (*trustedrouter.Client, <-chan time.Time) {
 	return gateway, arrivals
 }
 
-func TestSettlementRetryQueueHoldsAbandonedSettlePastRouterBudget(t *testing.T) {
+// The router values here are COPIED from quill-router, not read from it, so
+// this test cannot notice a router change: _BILLING_PATH_SPANNER_BUDGET_SECONDS
+// (20 s) and the 25 s enclave-side budget its comment allows
+// (routes/internal/gateway.py). It pins the production wiring and that the
+// hold plus the 2 s terminal wait reaches the copied 25 s envelope.
+func TestSettlementRetryHoldReachesCopiedRouterEnvelope(t *testing.T) {
 	t.Setenv("QUILL_SETTLEMENT_RETRY_QUEUE_SIZE", "")
 	q := newSettlementRetryQueueFromEnv()
-	// quill-router: _BILLING_PATH_SPANNER_BUDGET_SECONDS (20 s) bounds a settle,
-	// and _ROLLBACK_FLOOR_SECONDS (2 s) bounds its rollback after that budget.
-	routerSettleBound := 20*time.Second + 2*time.Second
-	if q.abandonedDelay != abandonedSettleRetryDelay || q.abandonedDelay <= routerSettleBound {
-		t.Fatalf("abandoned delay = %s, want %s > router bound %s", q.abandonedDelay, abandonedSettleRetryDelay, routerSettleBound)
+	const copiedRouterBudget, copiedEnclaveSideEnvelope = 20 * time.Second, 25 * time.Second
+	if q.abandonedDelay != abandonedSettleRetryDelay || q.abandonedDelay <= copiedRouterBudget ||
+		q.abandonedDelay+defaultSettleBeforeTerminal < copiedEnclaveSideEnvelope {
+		t.Fatalf("abandoned delay = %s, want %s, past %s and with the terminal wait at least %s",
+			q.abandonedDelay, abandonedSettleRetryDelay, copiedRouterBudget, copiedEnclaveSideEnvelope)
+	}
+}
+
+// At shutdown the process exits long before a hold ends. A held retry,
+// including one whose settle was cancelled before it was ever sent, must be
+// sent by the shutdown flush rather than lost.
+func TestSettlementRetryFlushSendsHeldRetry(t *testing.T) {
+	gateway, arrivals := settleArrivals(t)
+	q := &settlementRetryQueue{jobs: make(chan settlementRetryJob, 4), maxAttempts: 1, abandonedDelay: time.Hour}
+	q.Start(t.Context())
+	if !q.Enqueue(settlementRetryJob{
+		trGateway: gateway, authorization: &trustedrouter.Authorization{AuthorizationID: "auth_shutdown"},
+		requestLogID: "shutdown", cause: context.Canceled,
+	}) {
+		t.Fatal("held retry was not accepted")
+	}
+	time.Sleep(20 * time.Millisecond)
+	if q.deferred.Load() != 1 || len(arrivals) != 0 {
+		t.Fatalf("deferred=%d sent=%d before shutdown, want one held and none sent", q.deferred.Load(), len(arrivals))
+	}
+	flush, stop := context.WithTimeout(context.Background(), 3*time.Second)
+	defer stop()
+	q.Flush(flush)
+	if flush.Err() != nil {
+		t.Fatal("flush did not finish before its deadline")
+	}
+	if len(arrivals) != 1 || q.deferred.Load() != 0 || len(q.jobs) != 0 {
+		t.Fatalf("sent=%d deferred=%d queued=%d after flush, want the held retry sent once", len(arrivals), q.deferred.Load(), len(q.jobs))
+	}
+	// After release nothing is held: the process is about to exit.
+	q.Enqueue(settlementRetryJob{
+		trGateway: gateway, authorization: &trustedrouter.Authorization{AuthorizationID: "auth_late"},
+		requestLogID: "late", cause: context.Canceled,
+	})
+	if q.deferred.Load() != 0 {
+		t.Fatalf("deferred=%d after release, want the late retry queued", q.deferred.Load())
+	}
+	if err := q.WaitForIdle(flush); err != nil || len(arrivals) != 2 {
+		t.Fatalf("late retry sent=%t err=%v", len(arrivals) == 2, err)
 	}
 }
 

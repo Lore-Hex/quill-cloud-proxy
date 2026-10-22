@@ -18,6 +18,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"regexp"
 	"runtime"
 	"slices"
 	"sort"
@@ -9683,6 +9684,8 @@ func (f *failingStreamingLLM) InvokeStreaming(
 	return errors.New("provider exploded")
 }
 
+var retryCauseField = regexp.MustCompile(`\bcause:\s*([A-Za-z_][A-Za-z0-9_]*)\s*(?:,|}|$)`)
+
 func TestEverySettlementRetryEnqueueSiteCarriesRequestLogIDAndClientContext(t *testing.T) {
 	// The retry worker runs on the queue's own context, so per-request values
 	// (audit id, client telemetry) only reach a retried settle if the enqueue
@@ -9716,10 +9719,15 @@ func TestEverySettlementRetryEnqueueSiteCarriesRequestLogIDAndClientContext(t *t
 				t.Fatalf("%s: unterminated settlementRetryJob literal at byte %d", name, start)
 			}
 			literal := text[start : start+end]
-			for _, field := range []string{"requestLogID:", "clientContext:", "cause:"} {
+			for _, field := range []string{"requestLogID:", "clientContext:"} {
 				if !strings.Contains(literal, field) {
 					t.Errorf("%s: settlementRetryJob literal at byte %d does not set %s", name, start, field)
 				}
+			}
+			// cause must name the failing error variable; a literal nil would
+			// compile and silently send every abandoned settle's retry at once.
+			if match := retryCauseField.FindStringSubmatch(literal); match == nil || match[1] == "nil" {
+				t.Errorf("%s: settlementRetryJob literal at byte %d does not pass its error as cause", name, start)
 			}
 			sites++
 			offset = start + end

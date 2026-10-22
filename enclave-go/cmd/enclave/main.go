@@ -560,14 +560,7 @@ func main() {
 	if trGateway.Enabled() {
 		flushStarted := time.Now()
 		flushContext, stopFlush := context.WithTimeout(context.Background(), 3*time.Second)
-		if flushErr := settlementRetries.WaitForIdle(flushContext); flushErr != nil {
-			fmt.Fprintf(os.Stderr, "enclave.shutdown_settlement_pending queued=%d err=%q\n", len(settlementRetries.jobs), flushErr.Error())
-		}
-		if deferred := settlementRetries.deferred.Load(); deferred > 0 {
-			// Not sent: each waits for an abandoned original settle that the
-			// router may still be running. Unsent work is reported, not hidden.
-			fmt.Fprintf(os.Stderr, "enclave.shutdown_settlement_deferred count=%d\n", deferred)
-		}
+		settlementRetries.Flush(flushContext)
 		stopFlush()
 		startupHarness.RecordShutdownWait(flushStarted, time.Now())
 	}

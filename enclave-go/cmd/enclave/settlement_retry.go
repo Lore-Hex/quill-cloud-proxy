@@ -20,16 +20,25 @@ const (
 	defaultSettlementRetryMaxDelay  = 15 * time.Second
 	// abandonedSettleRetryDelay holds back the first retry of a settle or
 	// refund the enclave stopped waiting for (its context deadline passed or
-	// was cancelled). The router keeps running that request after the
-	// enclave disconnects, for at most its shared billing-path Spanner budget
-	// (_BILLING_PATH_SPANNER_BUDGET_SECONDS = 20 s, quill-router
-	// routes/internal/gateway.py) plus the rollback floor
-	// (_ROLLBACK_FLOOR_SECONDS = 2 s, storage_gcp_io.py). A retry sent sooner
-	// races the original for the same reservation and authorization rows; on
-	// 2026-10-22 such a duplicate pushed an original settle into the router's
-	// durable fallback and a 503 after 20 s. One second of margin covers
-	// serialization and transit. Retries after a real error (5xx, connection
-	// reset) keep their existing timing: that request has already ended.
+	// was cancelled). The router keeps running that request after the enclave
+	// disconnects. A retry sent meanwhile races the original for the same
+	// reservation and authorization rows; on 2026-10-22 such a duplicate
+	// pushed an original settle into the router's durable fallback and a 503
+	// after 20 s.
+	//
+	// quill-router's billing-path Spanner budget is 20 s
+	// (_BILLING_PATH_SPANNER_BUDGET_SECONDS, routes/internal/gateway.py), but
+	// it starts when the sync handler enters its worker thread, so threadpool
+	// queueing before that is not bounded by it. The router's own comment
+	// there budgets the settle at 25 s from the enclave's side, matching this
+	// client's 25 s response-header timeout. The hold is measured from
+	// enqueue, which is at least settleBeforeTerminal (2 s) after the send on
+	// the terminal paths, so the retry reaches the router about 25-27 s after
+	// the original was sent: at or past that 25 s envelope. A context
+	// cancelled before the send (request cancellation at shutdown) sends
+	// nothing, and the hold then only delays the retry. Retries after a real
+	// error (5xx, connection reset, rejection) keep their existing timing:
+	// that request has already ended.
 	abandonedSettleRetryDelay = 23 * time.Second
 )
 
@@ -70,6 +79,11 @@ type settlementRetryQueue struct {
 	// ended. They wait on timers, not in jobs, so they never delay the
 	// retries queued behind them.
 	deferred atomic.Int64
+	// release is closed by ReleaseDeferred at shutdown; held retries then
+	// enqueue at once instead of waiting out their hold.
+	releaseMu sync.Mutex
+	release   chan struct{}
+	released  bool
 }
 
 func newSettlementRetryQueueFromEnv() *settlementRetryQueue {
@@ -131,6 +145,23 @@ func (q *settlementRetryQueue) WaitForIdle(ctx context.Context) error {
 		case <-ctx.Done():
 			return ctx.Err()
 		}
+	}
+}
+
+// Flush is the shutdown drain: it releases held retries, which would
+// otherwise outlive the process, and waits until the queue is idle or ctx
+// ends. Call it only after request handlers have drained.
+func (q *settlementRetryQueue) Flush(ctx context.Context) {
+	if !q.Enabled() {
+		return
+	}
+	q.ReleaseDeferred()
+	if err := q.WaitForIdle(ctx); err != nil {
+		fmt.Fprintf(os.Stderr, "enclave.shutdown_settlement_pending queued=%d err=%q\n", len(q.jobs), err.Error())
+	}
+	if deferred := q.deferred.Load(); deferred > 0 {
+		// Released held retries that still had not reached the queue.
+		fmt.Fprintf(os.Stderr, "enclave.shutdown_settlement_deferred count=%d\n", deferred)
 	}
 }
 
@@ -213,13 +244,48 @@ func (q *settlementRetryQueue) Enqueue(job settlementRetryJob) bool {
 	}
 }
 
+// releaseSignal returns the channel ReleaseDeferred closes, and whether it
+// already has.
+func (q *settlementRetryQueue) releaseSignal() (<-chan struct{}, bool) {
+	q.releaseMu.Lock()
+	defer q.releaseMu.Unlock()
+	if q.release == nil {
+		q.release = make(chan struct{})
+	}
+	return q.release, q.released
+}
+
+// ReleaseDeferred enqueues every held retry now, and stops holding new ones.
+// Call it at shutdown before WaitForIdle: the process exits before a hold
+// would end, and a duplicate settle is safe for billing because the router
+// keeps the first writer, while a dropped one is not.
+func (q *settlementRetryQueue) ReleaseDeferred() {
+	if !q.Enabled() {
+		return
+	}
+	q.releaseMu.Lock()
+	defer q.releaseMu.Unlock()
+	if q.release == nil {
+		q.release = make(chan struct{})
+	}
+	if !q.released {
+		q.released = true
+		close(q.release)
+	}
+}
+
 // deferUntilDue parks a job whose notBefore is in the future and enqueues it
-// when due. If as many jobs are parked as the queue holds, the job is queued
-// now instead, which is the behaviour before deferral existed: a duplicate
-// settle is safe for billing because the router keeps the first writer.
+// when due or when ReleaseDeferred is called. If as many jobs are parked as
+// the queue holds, or the queue is releasing, the job is queued now instead,
+// which is the behaviour before deferral existed: a duplicate settle is safe
+// for billing because the router keeps the first writer.
 func (q *settlementRetryQueue) deferUntilDue(job settlementRetryJob) bool {
 	wait := time.Until(job.notBefore)
 	if wait <= 0 {
+		return false
+	}
+	release, released := q.releaseSignal()
+	if released {
 		return false
 	}
 	if q.deferred.Add(1) > int64(cap(q.jobs)) {
@@ -241,10 +307,19 @@ func (q *settlementRetryQueue) deferUntilDue(job settlementRetryJob) bool {
 		job.attempt,
 		wait.Milliseconds(),
 	)
-	time.AfterFunc(wait, func() {
+	go func() {
+		// Decrement only after Enqueue, so WaitForIdle cannot report idle
+		// while a released job is between the hold and the queue.
 		defer q.deferred.Add(-1)
+		timer := time.NewTimer(wait)
+		defer timer.Stop()
+		select {
+		case <-timer.C:
+		case <-release:
+		}
+		job.notBefore = time.Time{}
 		q.Enqueue(job)
-	})
+	}()
 	return true
 }
 
@@ -256,7 +331,7 @@ func (q *settlementRetryQueue) run(ctx context.Context) {
 		case job := <-q.jobs:
 			q.process(ctx, job)
 		case check := <-q.idleChecks:
-			check <- len(q.jobs) == 0
+			check <- len(q.jobs) == 0 && q.deferred.Load() == 0
 		}
 	}
 }
