@@ -93,7 +93,7 @@ func main() {
 			}
 		} else {
 			must(os.MkdirAll(filepath.Dir(target), 0755))
-			must(os.WriteFile(target, want, 0644))
+			must(os.WriteFile(target, want, 0600))
 		}
 	}
 	fmt.Printf("Verified %d Rekor files from %s (%s); only unused online declarations omitted\n", len(files), upstream, checksum)

@@ -35,17 +35,18 @@ func TestRuntimeInventoryFailsClosed(t *testing.T) {
 				if name == "missing" && binary == "attest-sidecar" {
 					continue
 				}
-				if err := os.WriteFile(filepath.Join(root, binary), []byte("\x7fELF"), 0755); err != nil {
+				if err := os.WriteFile(filepath.Join(root, binary), []byte("\x7fELF"), 0600); err != nil {
 					t.Fatal(err)
 				}
 			}
 			switch name {
 			case "extra":
-				if err := os.WriteFile(filepath.Join(root, "unexpected"), []byte("\x7fELF"), 0644); err != nil {
+				if err := os.WriteFile(filepath.Join(root, "unexpected"), []byte("\x7fELF"), 0600); err != nil {
 					t.Fatal(err)
 				}
 			case "script":
-				if err := os.WriteFile(filepath.Join(root, "unexpected"), []byte("#!/bin/sh\n"), 0755); err != nil {
+				// An executable test fixture is required to exercise script rejection.
+				if err := os.WriteFile(filepath.Join(root, "unexpected"), []byte("#!/bin/sh\n"), 0700); err != nil { // #nosec G306 -- never executed; isolated t.TempDir fixture
 					t.Fatal(err)
 				}
 			case "symlink":
@@ -62,7 +63,7 @@ func TestRuntimeInventoryFailsClosed(t *testing.T) {
 
 func TestUninspectableBinaryFailsClosed(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "binary")
-	if err := os.WriteFile(path, []byte("\x7fELFnot-a-real-binary"), 0755); err != nil {
+	if err := os.WriteFile(path, []byte("\x7fELFnot-a-real-binary"), 0600); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := inspect(path); err == nil || !strings.Contains(err.Error(), "expected ELF") {
