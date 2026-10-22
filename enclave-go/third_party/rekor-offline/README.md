@@ -6,11 +6,15 @@ Module checksum: `h1:rL7SghHd5HLCtsCrxw0yQg+NczGvM75EjSPPWuGjaiQ=`.
 
 This is the runtime and verification-test package closure used by our Sigstore bundle verifier.
 No signature, checkpoint, inclusion-proof, SET, schema or key-verification
-implementation has been rewritten. The only code change is omission of two
+implementation used by the sidecar has been rewritten. Runtime changes omit two
 unused online helpers (`ProveConsistency` and `VerifyCurrentCheckpoint`) and
 their generated HTTP-client imports from `pkg/verify/verify.go`. Their caller
 tests/mock are omitted too; upstream inclusion and checkpoint tests remain.
-All other retained source files are byte-for-byte upstream copies.
+The test-only PGP key adapter uses ProtonMail's maintained OpenPGP library
+instead of retired `x/crypto/openpgp` (GO-2026-5932), passes its default config,
+and rejects obsolete v3 signatures. The generator also checks that exact
+mechanical transformation. All other retained source files are byte-for-byte
+upstream copies. Neither PGP implementation is imported by the sidecar.
 
 Those online helpers pulled go-openapi's tracing HTTP client and OpenTelemetry
 into the sidecar even though our verification path never called them. Missing

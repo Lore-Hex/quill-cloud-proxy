@@ -68,6 +68,7 @@ func main() {
 	tests, err := os.ReadFile(filepath.Join(mod.Dir, "pkg/verify/verify_test.go"))
 	must(err)
 	files["pkg/verify/verify_test.go"] = offline(tests, true)
+	files["pkg/pki/pgp/pgp.go"] = maintainedPGP(files["pkg/pki/pgp/pgp.go"])
 	if *check {
 		must(filepath.WalkDir(*dest, func(path string, entry os.DirEntry, err error) error {
 			if err != nil || entry.IsDir() {
@@ -96,7 +97,66 @@ func main() {
 			must(os.WriteFile(target, want, 0600))
 		}
 	}
-	fmt.Printf("Verified %d Rekor files from %s (%s); only unused online declarations omitted\n", len(files), upstream, checksum)
+	fmt.Printf("Verified %d Rekor files from %s (%s); offline proofs unchanged, test-only PGP dependency patched\n", len(files), upstream, checksum)
+}
+
+// Sigstore's signing fixtures import the generic key factory. Keep that
+// test-only factory buildable without importing the retired x/crypto OpenPGP.
+func maintainedPGP(source []byte) []byte {
+	fset := token.NewFileSet()
+	f, err := parser.ParseFile(fset, "pgp.go", source, parser.ParseComments)
+	must(err)
+	imports, calls, legacy := 0, 0, 0
+	for _, spec := range f.Imports {
+		path, err := strconv.Unquote(spec.Path.Value)
+		must(err)
+		if path == "golang.org/x/crypto/openpgp" || strings.HasPrefix(path, "golang.org/x/crypto/openpgp/") {
+			spec.Path.Value = strconv.Quote(strings.Replace(path, "golang.org/x/crypto", "github.com/ProtonMail/go-crypto", 1))
+			spec.Comment = nil
+			imports++
+		}
+	}
+	ast.Inspect(f, func(node ast.Node) bool {
+		if call, ok := node.(*ast.CallExpr); ok {
+			if name, ok := call.Fun.(*ast.Ident); ok && name.Name == "verifyFn" && len(call.Args) == 3 {
+				call.Args = append(call.Args, ast.NewIdent("nil"))
+				calls++
+			}
+		}
+		if block, ok := node.(*ast.BlockStmt); ok {
+			for i, stmt := range block.List {
+				cond, ok := stmt.(*ast.IfStmt)
+				if !ok {
+					continue
+				}
+				assign, ok := cond.Init.(*ast.AssignStmt)
+				if !ok || len(assign.Rhs) != 1 {
+					continue
+				}
+				assertion, ok := assign.Rhs[0].(*ast.TypeAssertExpr)
+				if !ok {
+					continue
+				}
+				ptr, ok := assertion.Type.(*ast.StarExpr)
+				if !ok {
+					continue
+				}
+				sel, ok := ptr.X.(*ast.SelectorExpr)
+				if ok && sel.Sel.Name == "SignatureV3" {
+					// The maintained parser rejects obsolete v3 signatures.
+					block.List[i] = cond.Body
+					legacy++
+				}
+			}
+		}
+		return true
+	})
+	if imports != 3 || calls != 1 || legacy != 1 {
+		panic("upstream test-only PGP adapter changed")
+	}
+	var buf bytes.Buffer
+	must(format.Node(&buf, fset, f))
+	return buf.Bytes()
 }
 
 func offline(source []byte, tests bool) []byte {

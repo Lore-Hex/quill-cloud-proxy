@@ -31,9 +31,9 @@ import (
 	"github.com/asaskevich/govalidator"
 
 	//TODO: https://github.com/sigstore/rekor/issues/286
-	"golang.org/x/crypto/openpgp"        //nolint:staticcheck
-	"golang.org/x/crypto/openpgp/armor"  //nolint:staticcheck
-	"golang.org/x/crypto/openpgp/packet" //nolint:staticcheck
+	"github.com/ProtonMail/go-crypto/openpgp"        //nolint:staticcheck
+	"github.com/ProtonMail/go-crypto/openpgp/armor"  //nolint:staticcheck
+	"github.com/ProtonMail/go-crypto/openpgp/packet" //nolint:staticcheck
 
 	"github.com/sigstore/rekor/pkg/pki/identity"
 	"github.com/sigstore/sigstore/pkg/cryptoutils"
@@ -80,7 +80,7 @@ func NewSignature(r io.Reader) (*Signature, error) {
 	}
 
 	if _, ok := sigPkt.(*packet.Signature); !ok {
-		if _, ok := sigPkt.(*packet.SignatureV3); !ok {
+		{
 			return nil, errors.New("valid PGP signature was not detected")
 		}
 	}
@@ -158,7 +158,7 @@ func (s Signature) Verify(r io.Reader, k interface{}, _ ...sigsig.VerifyOption) 
 		verifyFn = openpgp.CheckArmoredDetachedSignature
 	}
 
-	if _, err := verifyFn(key.key, r, bytes.NewReader(s.signature)); err != nil {
+	if _, err := verifyFn(key.key, r, bytes.NewReader(s.signature), nil); err != nil {
 		return err
 	}
 

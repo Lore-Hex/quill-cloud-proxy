@@ -12,7 +12,9 @@ export, and this repair does not claim a historical export occurred.
 `enclave-go/third_party/rekor-offline` preserves pinned upstream Rekor v1.5.0
 verification and model code. Only two unused online helpers and their client
 imports are omitted. Its generator verifies the Go module checksum and exact
-source equality. Upstream cryptographic verification is retained, not replaced
+source transformations. A separate test-only PGP adapter uses the maintained
+ProtonMail library instead of the retired x/crypto parser; it is not imported
+by runtime verification. Upstream attestation verification is retained, not replaced
 by a hand-written verifier or success-returning stubs. Hardware evidence,
 certificate chains, signatures, transparency proofs, identity, measurements
 and TLS binding keep their existing checks and fail-closed behavior.
