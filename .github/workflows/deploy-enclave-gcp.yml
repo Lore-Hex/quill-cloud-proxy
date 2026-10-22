@@ -3,7 +3,7 @@
 # This is the trust-critical workflow. Customers verifying
 # https://trust.trustedrouter.com/ are reading artifacts produced by THIS
 # job. Each release:
-#   1. Builds the enclave image via Cloud Build (no human in the build path)
+#   1. Builds the enclave twice on independent runners and compares whole images
 #   2. Resolves the immutable OCI digest from Artifact Registry
 #   3. Publishes a transition allowlist containing the old and new measured
 #      digests before any serving region changes.
@@ -28,6 +28,9 @@ on:
     paths:
       - "enclave-go/**"
       - "tools/release-gcp.sh"
+      - "tools/reproducible_build.py"
+      - "tools/reproducible-build.env"
+      - "tools/build-enclave-context.sh"
       - "tools/deploy-gcp-mig.sh"
       - "tools/cloud-rollout.py"
       - "tools/cloud-rollout-source.json"
@@ -159,8 +162,46 @@ jobs:
           tools/tests/test-enclave-rollout-drains.sh
       - run: go test -tags 'cloud_gcp,llm_multi' ./...
 
-  build-and-release:
+  reproduce-image:
     needs: [test, gate-on-ci]
+    # Separate VMs, fresh BuildKit stores, no shared cache. A disagreement
+    # stops before trust publication, secret-policy changes or any rollout.
+    strategy:
+      fail-fast: false
+      matrix:
+        builder: [1, 2]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - id: auth
+        uses: google-github-actions/auth@v3
+        with:
+          workload_identity_provider: projects/44325983244/locations/global/workloadIdentityPools/github-actions/providers/github
+          service_account: tr-deploy@quill-cloud-proxy.iam.gserviceaccount.com
+          token_format: access_token
+          create_credentials_file: false
+      - name: Build complete measured image with pinned tools
+        env:
+          ACCESS_TOKEN: ${{ steps.auth.outputs.access_token }}
+          DOCKER_CONFIG: ${{ runner.temp }}/repro-docker
+        run: |
+          set -euo pipefail
+          mkdir -m 700 -p "$DOCKER_CONFIG"
+          trap 'rm -rf "$DOCKER_CONFIG"' EXIT
+          printf '%s' "$ACCESS_TOKEN" | docker login \
+            -u oauth2accesstoken --password-stdin "${REGION}-docker.pkg.dev"
+          image="${REGION}-docker.pkg.dev/${PROJECT_ID}/${ARTIFACT_REPO}/${IMAGE_NAME}:repro-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}-${{ matrix.builder }}"
+          python3 tools/reproducible_build.py build --plane gcp --commit "$GITHUB_SHA" \
+            --image "$image" --output-dir "${RUNNER_TEMP}/repro-output"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: reproduction-${{ matrix.builder }}
+          path: ${{ runner.temp }}/repro-output/*.json
+          retention-days: 14
+          if-no-files-found: error
+
+  build-and-release:
+    needs: [test, gate-on-ci, reproduce-image]
     runs-on: ubuntu-latest
     outputs:
       image_ref: ${{ steps.set-vars.outputs.image_ref }}
@@ -180,7 +221,7 @@ jobs:
 
       - id: set-vars
         run: |
-          SHA="$(git rev-parse --short HEAD)"
+          SHA="$(git rev-parse HEAD)"
           IMAGE_TAG="gcp-release-${SHA}"
           IMAGE_REF="${REGION}-docker.pkg.dev/${PROJECT_ID}/${ARTIFACT_REPO}/${IMAGE_NAME}:${IMAGE_TAG}"
           {
@@ -235,60 +276,17 @@ jobs:
       - name: Configure docker auth (for image describe)
         run: gcloud auth configure-docker "${REGION}-docker.pkg.dev" --quiet
 
-      - name: Build enclave image via Cloud Build
-        working-directory: enclave-go
-        # The Dockerfile pins its golang:1.24-bookworm base image to a
-        # single-arch digest (arm64, since it was originally generated on
-        # a Mac). Cloud Build runners are amd64. Without QEMU + buildx,
-        # docker can't pull/run the arm64 builder. Steps below install
-        # QEMU emulators, set up a buildx builder, then cross-build the
-        # final amd64 image — matches what local docker-buildx-on-Mac
-        # has been producing.
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: reproduction-*
+          path: ${{ runner.temp }}/reproduction
+      - name: Compare independent images and promote unchanged manifest
         run: |
           set -euo pipefail
-          cat > /tmp/cloudbuild-enclave.yaml <<'EOF'
-          steps:
-            - name: gcr.io/cloud-builders/docker
-              entrypoint: bash
-              args:
-                - -c
-                - |
-                  set -e
-                  docker run --privileged --rm tonistiigi/binfmt --install arm64,amd64
-                  docker buildx create --use --name=enclave-builder
-                  docker buildx inspect --bootstrap
-                  docker buildx build --platform=linux/amd64 \
-                    --file=${_DOCKERFILE} \
-                    --build-arg SOURCE_REVISION=${_SOURCE_REVISION} \
-                    --tag=${_IMAGE} \
-                    --push \
-                    .
-          options:
-            machineType: E2_HIGHCPU_8
-          EOF
-          BUILD_ID=$(gcloud builds submit \
-            --config=/tmp/cloudbuild-enclave.yaml \
-            --substitutions="_IMAGE=${IMAGE_REF},_DOCKERFILE=${DOCKERFILE},_SOURCE_REVISION=${GITHUB_SHA}" \
-            --project="${PROJECT_ID}" \
-            --region="${REGION}" \
-            --async \
-            --format='value(id)' \
-            .)
-          echo "build id: ${BUILD_ID}"
-          while true; do
-            STATUS=$(gcloud builds describe "${BUILD_ID}" \
-              --project="${PROJECT_ID}" --region="${REGION}" \
-              --format='value(status)')
-            echo "  status: ${STATUS}"
-            case "${STATUS}" in
-              SUCCESS) break ;;
-              FAILURE|TIMEOUT|CANCELLED|EXPIRED)
-                echo "build ${STATUS}"
-                gcloud builds log "${BUILD_ID}" --project="${PROJECT_ID}" --region="${REGION}" || true
-                exit 1 ;;
-            esac
-            sleep 8
-          done
+          python3 tools/reproducible_build.py promote \
+            --record "${RUNNER_TEMP}/reproduction/reproduction-1/reproduction.json" \
+            --record "${RUNNER_TEMP}/reproduction/reproduction-2/reproduction.json" \
+            --image "${IMAGE_REF}"
 
       - id: resolve-digest
         name: Resolve image digest
@@ -422,6 +420,7 @@ jobs:
             --commit "${SHA}" \
             --image-reference "${IMAGE_REF}" \
             --image-digest "${DIGEST}" \
+            --reproducible-build-record "${RUNNER_TEMP}/reproduction/reproduction-1/reproduction.json" \
             --accepted-image-digests "${previous}" \
             --accepted-image-references "${previous_references}"
           accepted="$(cat trust-page/accepted-image-digests-gcp.txt)"
@@ -444,6 +443,7 @@ jobs:
               --commit "${SHA}" \
               --image-reference "${IMAGE_REF}" \
               --image-digest "${DIGEST}" \
+              --reproducible-build-record "${RUNNER_TEMP}/reproduction/reproduction-1/reproduction.json" \
               --accepted-image-digests "${accepted}" \
               --accepted-image-references "${accepted_references}"
             git add trust-page/image-digest-gcp.txt trust-page/image-reference-gcp.txt trust-page/accepted-image-digests-gcp.txt trust-page/accepted-image-references-gcp.txt trust-page/gcp-release.json trust-page/index.html trust-page/trust trust-page/gcp/stage-d-accepted.json trust-page/trust/gcp/stage-d-accepted.json
@@ -1085,6 +1085,10 @@ jobs:
     outputs:
       stage_d_policy_sha256: ${{ steps.finalize.outputs.policy_sha256 }}
     steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: reproduction-1
+          path: ${{ runner.temp }}/reproduction-final
       - uses: actions/checkout@v7
         with:
           ref: main
@@ -1106,7 +1110,8 @@ jobs:
             --out-dir trust-page \
             --commit "${IMAGE_REF##*gcp-release-}" \
             --image-reference "${IMAGE_REF}" \
-            --image-digest "${IMAGE_DIGEST}"
+            --image-digest "${IMAGE_DIGEST}" \
+            --reproducible-build-record "${RUNNER_TEMP}/reproduction-final/reproduction.json"
           python3 tools/write-stage-d-policy.py \
             --output trust-page/gcp/stage-d-accepted.json \
             --github-run-number "${GITHUB_RUN_NUMBER}" \

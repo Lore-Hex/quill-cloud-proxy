@@ -8,14 +8,15 @@ from __future__ import annotations
 
 import argparse
 import hashlib
+import io
 import json
 import os
-from pathlib import Path
 import re
 import subprocess
 import tarfile
 import tempfile
 import urllib.request
+from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 DIGEST = re.compile(r"sha256:[0-9a-f]{64}\Z")
@@ -56,14 +57,13 @@ def build_args(plane: str, values: list[str]) -> dict[str, str]:
 def archive_source(commit: str, destination: Path) -> None:
     # No .git, credentials, generated files or untracked artifacts enter COPY . .
     archive = subprocess.check_output(["git", "-C", str(ROOT), "archive", commit])
-    import io
     with tarfile.open(fileobj=io.BytesIO(archive)) as source:
         source.extractall(destination, filter="data")
 
 
 def client_image(context: Path) -> str:
     text = (context / "tools/reproducible-build.env").read_text()
-    match = re.search(r"^REPRO_CLIENT='([^']+@sha256:[0-9a-f]{64})'$", text, re.M)
+    match = re.search(r"^REPRO_CLIENT='([^']+@sha256:[0-9a-f]{64})'$", text, re.MULTILINE)
     if match is None:
         raise ValueError("missing immutable Docker client pin")
     return match[1]
@@ -99,6 +99,14 @@ def archive_digest(path: Path) -> str:
         manifest = archive.extractfile("blobs/sha256/" + digest.split(":")[1]).read()
         if "sha256:" + hashlib.sha256(manifest).hexdigest() != digest:
             raise ValueError("corrupt OCI manifest")
+        content = json.loads(manifest)
+        for descriptor in [content["config"], *content["layers"]]:
+            blob_digest = descriptor["digest"]
+            if not DIGEST.fullmatch(blob_digest):
+                raise ValueError("invalid OCI blob digest")
+            blob = archive.extractfile("blobs/sha256/" + blob_digest.split(":")[1])
+            if "sha256:" + hashlib.file_digest(blob, "sha256").hexdigest() != blob_digest:
+                raise ValueError("corrupt OCI image content")
         return digest
 
 
@@ -150,8 +158,10 @@ def compare(records: list[dict]) -> str:
     return records[0]["image_digest"]
 
 
-def promote(records: list[dict], image: str) -> str:
+def promote(records: list[dict], image: str, expected_commit: str | None = None) -> str:
     digest = compare(records)
+    if expected_commit is not None and records[0]["source_commit"] != expected_commit:
+        raise ValueError("build records belong to a different release commit")
     source = records[0]["image_reference"]
     if not source:
         raise ValueError("promotion requires registry build records")
@@ -162,6 +172,16 @@ def promote(records: list[dict], image: str) -> str:
     if actual != digest:
         raise ValueError("registry promotion changed the verified image digest")
     return digest
+
+
+def require_safe_cosign() -> None:
+    version = json.loads(run("cosign", "version", "--json"))["gitVersion"]
+    match = re.fullmatch(r"v(\d+)\.(\d+)\.(\d+)", version)
+    if not match:
+        raise ValueError("unsupported cosign version")
+    parts = tuple(map(int, match.groups()))
+    if not ((parts[0] == 2 and parts >= (2, 6, 5)) or (parts[0] == 3 and parts >= (3, 1, 3))):
+        raise ValueError("cosign 2.6.5+ or 3.1.3+ required for safe legacy identity verification")
 
 
 def main() -> None:
@@ -177,15 +197,17 @@ def main() -> None:
     child = sub.add_parser("promote")
     child.add_argument("--record", type=Path, action="append", required=True)
     child.add_argument("--image", required=True)
+    child.add_argument("--commit", default="HEAD")
     child = sub.add_parser("verify")
     child.add_argument("--trust-url", default="https://trust.trustedrouter.com/trust/gcp-release.json")
     child.add_argument("--output-dir", type=Path, required=True)
     args = parser.parse_args()
     if args.command == "promote":
-        print(promote([json.loads(p.read_text()) for p in args.record], args.image))
+        print(promote([json.loads(p.read_text()) for p in args.record], args.image, source_commit(args.commit)))
         return
     require_clean()
     if args.command == "verify":
+        require_safe_cosign()
         # The authenticated record, not an unsigned web response, selects source.
         with tempfile.TemporaryDirectory(prefix="tr-release-signature-") as temp:
             record = Path(temp) / "release.json"
@@ -218,7 +240,7 @@ def main() -> None:
     else:
         records = [build(args.plane, commit, args.output_dir / str(i), args.build_arg,
                          args.image + f"-repro-{i}") for i in (1, 2)]
-        print(promote(records, args.image))
+        print(promote(records, args.image, commit))
 
 
 if __name__ == "__main__":

@@ -352,6 +352,9 @@ while index < len(argv):
 # already records the invocation for assertions.
 if argv and argv[0] == "pull":
     sys.exit(0)
+if argv and argv[0] == "login":
+    sys.stdin.read()
+    sys.exit(0)
 
 work_spec = mounts.get("/work")
 if not work_spec:
@@ -446,6 +449,13 @@ class DeployHarness(unittest.TestCase):
         python.write_text(
             '#!/bin/bash\n'
             'case "$1" in */cloud-rollout.py) exit 0 ;; esac\n'
+            'case "$1" in */reproducible_build.py)\n'
+            '  echo MUTATE-ACR-BUILD >> "$STUB_STATE/mutations.log"\n'
+            '  while [ "$#" -gt 0 ]; do\n'
+            '    if [ "$1" = --commit ]; then printf "SOURCE_REVISION=%s" "$2" > "$STUB_STATE/acr-build-arg"; fi\n'
+            '    shift\n'
+            '  done\n'
+            '  exit 0 ;; esac\n'
             f'exec "{sys.executable}" "$@"\n'
         )
         python.chmod(0o755)

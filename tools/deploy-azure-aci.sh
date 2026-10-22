@@ -1179,13 +1179,22 @@ phase_build() {
   local SOURCE_REVISION
   SOURCE_REVISION=$(git -C "$REPO_ROOT" rev-parse HEAD)
   log "phase build: $ACR/$IMAGE_REPO:$IMAGE_TAG (linux/amd64, single-arch)"
-  az_rw acr build \
-    --registry "$ACR" \
-    --platform linux/amd64 \
-    --image "${IMAGE_REPO}:${IMAGE_TAG}" \
-    --file enclave-go/Dockerfile.enclave.azure.multi \
-    --build-arg "SOURCE_REVISION=$SOURCE_REVISION" \
-    "$REPO_ROOT/enclave-go"
+  if [ "$APPLY" = "1" ]; then
+    require_tool docker
+    (
+      export DOCKER_CONFIG="$(mktemp -d)"
+      trap 'rm -rf "$DOCKER_CONFIG"' EXIT
+      az_cli acr login --name "$ACR" --expose-token --query accessToken -o tsv \
+        | docker login "${ACR_LOGIN_SERVER:-${ACR}.azurecr.io}" \
+            -u 00000000-0000-0000-0000-000000000000 --password-stdin >/dev/null
+      python3 "$REPO_ROOT/tools/reproducible_build.py" release --plane azure \
+        --commit "$SOURCE_REVISION" \
+        --image "${ACR_LOGIN_SERVER:-${ACR}.azurecr.io}/${IMAGE_REPO}:${IMAGE_TAG}" \
+        --output-dir "$(mktemp -d)/builds"
+    )
+  else
+    log 'dry run: two fresh pinned builders must agree before image promotion'
+  fi
 
   local digest=""
   if [ "$APPLY" = "1" ]; then

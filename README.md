@@ -10,7 +10,24 @@
 
 The prompt-handling proxy for Quill Cloud. The workload runs inside **AWS Nitro
 Enclaves** or **GCP Confidential Space**, depending on the deployment target.
-Open source. Zero data retention. The signed workload image is the boundary.
+Public source. Zero data retention. The signed workload image is the boundary.
+
+## Reproduce the complete image
+
+[Build verification instructions](docs/reproducible-builds.md) cover the full
+image, including the attestation sidecar, Privatemode encryption client,
+certificates and configuration. For releases explicitly marked with
+`reproducible_build.schema` in the signed release record:
+
+```sh
+bash tools/verify-build.sh
+```
+
+This checks the release signature and rebuilds the exact image digest from the
+recorded commit. It rejects legacy releases rather than claiming a main-binary
+comparison proves the whole image. GCP release publication requires matching
+images from two independent runner VMs. Fresh TLS-bound runtime attestation is
+the separate final step; see the instructions for cloud-specific limitations.
 
 ## What this repo is
 

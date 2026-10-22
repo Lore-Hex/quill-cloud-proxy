@@ -2,8 +2,8 @@
 import copy
 import importlib.util
 import json
-from pathlib import Path
 import unittest
+from pathlib import Path
 from unittest.mock import patch
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -43,10 +43,35 @@ class Reproducibility(unittest.TestCase):
         with self.assertRaises(ValueError):
             repro.compare([self.record()])
 
+    def test_wrong_release_commit_is_not_promoted(self):
+        with patch.object(repro.subprocess, "run") as mutation:
+            with self.assertRaisesRegex(ValueError, "different release commit"):
+                repro.promote([self.record(), self.record()], "prod/image:release", "d" * 40)
+            mutation.assert_not_called()
+
+    def test_release_gate_uses_independent_runners_and_no_rollout_bypass(self):
+        import yaml
+        workflow = yaml.safe_load((ROOT / ".github/workflows/deploy-enclave-gcp.yml").read_text())
+        jobs = workflow["jobs"]
+        self.assertEqual(jobs["reproduce-image"]["strategy"]["matrix"]["builder"], [1, 2])
+        self.assertIn("reproduce-image", jobs["build-and-release"]["needs"])
+        steps = jobs["build-and-release"]["steps"]
+        compare_at = next(i for i, s in enumerate(steps) if "reproducible_build.py promote" in s.get("run", ""))
+        publish_at = next(i for i, s in enumerate(steps) if "write-trust-artifacts.py" in s.get("run", ""))
+        self.assertLess(compare_at, publish_at)
+
     def test_dirty_source_rejected_before_docker(self):
-        with patch.object(repro, "run", return_value=" M enclave-go/main.go"):
-            with self.assertRaisesRegex(ValueError, "dirty"):
-                repro.require_clean()
+        with patch.object(repro, "run", return_value=" M enclave-go/main.go"), self.assertRaisesRegex(ValueError, "dirty"):
+            repro.require_clean()
+
+    def test_vulnerable_cosign_cannot_verify_a_release(self):
+        for version in ("v2.6.4", "v3.1.2", "v2.6.5", "v3.1.4"):
+            with patch.object(repro, "run", return_value=json.dumps({"gitVersion": version})):
+                if version in ("v2.6.4", "v3.1.2"):
+                    with self.assertRaises(ValueError):
+                        repro.require_safe_cosign()
+                else:
+                    repro.require_safe_cosign()
 
     def test_full_revision_resolution(self):
         for ref in ("a" * 7, "a" * 8, "a" * 40):
