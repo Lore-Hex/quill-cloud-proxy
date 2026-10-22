@@ -804,6 +804,19 @@ allowlist:
   - {address: api.deepinfra.com,             port: 443}
   - {address: api.tokenfactory.nebius.com,   port: 443}
   - {address: api.minimax.io,                port: 443}
+  - {address: api.voyageai.com,              port: 443}
+  - {address: api.xiaomimimo.com,            port: 443}
+  - {address: api.telnyx.com,                port: 443}
+  - {address: inference.do-ai.run,          port: 443}
+  - {address: api.inceptron.io,              port: 443}
+  - {address: api.morphllm.com,              port: 443}
+  - {address: api.atlascloud.ai,             port: 443}
+  - {address: vanchin.streamlake.ai,         port: 443}
+  - {address: inference.pearlresearch.ai,    port: 443}
+  - {address: api.engy.ai,                   port: 443}
+  - {address: api.stepfun.ai,                port: 443}
+  - {address: models.relace.ai,              port: 443}
+  - {address: router-api.0g.ai,              port: 443}
   - {address: api.friendli.ai,               port: 443}
   - {address: inference.baseten.co,          port: 443}
   - {address: tinker.thinkingmachines.dev,  port: 443}
@@ -1007,6 +1020,19 @@ write_vsock_unit 8073 inference.api.nscale.com
 write_vsock_unit 8087 api.regolo.ai
 write_vsock_unit 8103 api.lyceum.technology
 write_vsock_unit 8116 bedrock-mantle.us-east-1.api.aws
+write_vsock_unit 8117 api.voyageai.com
+write_vsock_unit 8118 api.xiaomimimo.com
+write_vsock_unit 8119 api.telnyx.com
+write_vsock_unit 8120 inference.do-ai.run
+write_vsock_unit 8121 api.inceptron.io
+write_vsock_unit 8122 api.morphllm.com
+write_vsock_unit 8123 api.atlascloud.ai
+write_vsock_unit 8124 vanchin.streamlake.ai
+write_vsock_unit 8125 inference.pearlresearch.ai
+write_vsock_unit 8126 api.engy.ai
+write_vsock_unit 8127 api.stepfun.ai
+write_vsock_unit 8128 models.relace.ai
+write_vsock_unit 8129 router-api.0g.ai
 write_vsock_unit 8108 llm.eu.greenference.com
 write_vsock_unit 8117 api.hixtube.com
 write_vsock_unit 8130 inference.muna.ai
