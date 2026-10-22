@@ -333,6 +333,14 @@ func serveDecide(
 		writeOpenAIError(conn, 400, message, "invalid_request_error", "bad_request", param)
 		return
 	}
+	if decide.IsTinfoilModel(req.Model) {
+		for _, spec := range specs {
+			if spec.Type == decide.TypeChoice && len(spec.Options) > 26 {
+				writeOpenAIError(conn, 400, "Tinfoil decision models accept at most 26 choices", "invalid_request_error", "bad_request", "questions."+spec.Name+".criteria")
+				return
+			}
+		}
+	}
 	if decide.IsHostedModel(req.Model) {
 		// A hosted decision model has no thinking to turn on and no token
 		// budget, and its hosts are the vendor and its relay in that order.

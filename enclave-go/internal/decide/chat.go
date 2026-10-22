@@ -43,6 +43,13 @@ var HostedModels = map[string]bool{
 	"cloudflare/clef-flash":          true,
 	"microsoft/microsoft-decision-1": true,
 	"typesafe-ai/jev":                true,
+	"tinfoil/decision-small":         true,
+	"tinfoil/decision-medium":        true,
+	"tinfoil/decision-large":         true,
+}
+
+func IsTinfoilModel(model string) bool {
+	return strings.HasPrefix(model, "tinfoil/") && HostedModels[model]
 }
 
 // System1 models are discovered from a priced, canaried catalog. Recognizing

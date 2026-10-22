@@ -152,9 +152,16 @@ func (c *openAICompatibleClient) InvokeDecide(ctx context.Context, req *DecideRe
 	if err != nil {
 		return nil, &DecideError{Provider: provider, Class: DecideErrConfig}
 	}
+	if (c.provider == "tinfoil" || provider == "tinfoil") &&
+		(c.provider != "tinfoil" || provider != "tinfoil" || c.httpcGetter == nil || httpc == nil) {
+		return nil, &DecideError{Provider: "tinfoil", Class: DecideErrConfig}
+	}
 	model := req.Model
 	if upstream := strings.TrimSpace(option.UpstreamModel); upstream != "" {
 		model = upstream
+	}
+	if provider == "tinfoil" {
+		return invokeTinfoilDecide(ctx, httpc, baseURL, apiKey, model, req)
 	}
 	// Hosts expose different decision wire shapes. Translate both protocols
 	// to decide.Answer, then enforce the same decide.Verify contract.
