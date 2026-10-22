@@ -1,5 +1,6 @@
 {
   "accepted_pcr0s": [
+    "bc6e00078bcaa6b585c703d002deea9673345a94cf1cf56c76a7b18bc92457b609d6e36141bdcdf3bcb1e7b33a70b043",
     "d2046a1b5b70033ca4a6a861b38079f6a95f042d74ac917769886cdce8735ce29cfffebdaa1b638de410f7ee2562d283"
   ],
   "api_base_url": "https://api-aws.trustedrouter.com/v1",
@@ -11,15 +12,15 @@
     "control_plane_prompt_access": false,
     "prompt_output_storage": false
   },
-  "image_digest": "sha256:ac2ef391efd1af8975bba313b1598aab757918a9517af199df9165116d83396a",
-  "measurement_provenance": "All four serving enclaves across eu-west-3 and eu-west-1 were individually verified against the Nitro root, exact PCR0, signed module identity, certificate/SPKI binding, TLS exporter and same-socket follow-up, and passed health and real inference checks. Both complete regional refreshes and bake periods succeeded. Both healthy Fargate runtime pin consumers accept only this measurement. Source-to-image provenance is operator-asserted, not a reproduced-build claim.",
+  "image_digest": "sha256:feb629e3ba9711dc860629123125919e17a48887d444607ebb60f08a28035894",
+  "measurement_provenance": "The isolated eu-west-3 candidate was verified against the Nitro root, exact PCR0, certificate/SPKI binding, TLS exporter and same-socket follow-up before traffic admission. Both healthy Fargate runtime pin consumers accept the new and outgoing measurements. The serving enclave fleet has not yet rolled. Source-to-image provenance is operator-asserted, not a reproduced-build claim.",
   "measurement_type": "nitro-pcr0-sha384",
-  "observed_module_id": "i-0d6fb4e7d255ba8e8-enc01a16064bd1a4ef2",
-  "pcr0": "d2046a1b5b70033ca4a6a861b38079f6a95f042d74ac917769886cdce8735ce29cfffebdaa1b638de410f7ee2562d283",
+  "observed_module_id": "i-022ac64da4d749316-enc01a165d859db4121",
+  "pcr0": "bc6e00078bcaa6b585c703d002deea9673345a94cf1cf56c76a7b18bc92457b609d6e36141bdcdf3bcb1e7b33a70b043",
   "platform": "aws-nitro-enclaves",
-  "release_state": "current",
+  "release_state": "rolling",
   "reproduce": "tools/verify-pcr0.sh",
-  "source_commit": "a7c79aaab77643088429bc13ef3478a05adc1beb",
+  "source_commit": "030fa9ac2513b49d81dde995c69844fdb972b9fc",
   "source_commit_provenance": "operator-asserted",
   "source_repo": "https://github.com/Lore-Hex/quill-cloud-proxy",
   "tls": {
