@@ -1,15 +1,55 @@
 # Chutes TEE measurement snapshot
 
 `chutes_measurements.json` contains the release-pinned snapshot fetched from
-`https://api.chutes.ai/servers/tee/measurements` on 2026-08-15, plus the eight
-live-verified 1.4.1 profiles described below.
+`https://api.chutes.ai/servers/tee/measurements` on 2026-08-15, plus the ten
+live-verified profiles described below.
 
-SHA-256: `56b56d62fb942da670160de52d79e8854b98109f5bfb4abf85d8bbb4ec3c20ac`
+SHA-256: `e723ade31bb414d5b6d2fa3d46f28e858796643a485ba1c4fd698e9e691ad0ac`
 
 The verifier accepts only an exact MRTD and runtime RTMR0 through RTMR3 match
 from this file. A Chutes measurement change therefore fails closed until the
 new public snapshot is reviewed, tested, committed, and deployed in a newly
 attested TrustedRouter image.
+
+## October 22, 2026 Qwen 397B investigation
+
+The live TEE catalog contained 14 models. Twelve passed fresh verified,
+encrypted PONG tests using the prior pinned verifier. Qwen3.5 397B failed
+on two missing exact workload profiles; Qwen3 235B Thinking still returned
+404 from E2E instance discovery and remains held out of routing.
+
+Both observed Qwen 397B instances passed real Intel collateral/TDX verification,
+nonce and encryption-key binding, and NVIDIA verification against the published
+reference manifest. Only their exact `8xh200 [10.2.1, numa-188c-1128g-nvsw-node0]`
+profiles, versions `1.4.1` and `1.5.0`, were added. The downloaded reference
+manifest SHA-256 was
+`436acb89f726599d9de29990137dde99ec521d2055dea74b5b1dadd4eda96b07`.
+
+Reviewed 1.5.0 source is pinned to
+[`a526aef429e96f07a8971483736c4c000dcbf07a`](https://github.com/chutesai/sek8s/tree/a526aef429e96f07a8971483736c4c000dcbf07a).
+The [changelog](https://github.com/chutesai/sek8s/blob/a526aef429e96f07a8971483736c4c000dcbf07a/changelogs/vm/CHANGELOG.md)
+and measured boot/root-filesystem checks retain the TDX runtime measurement
+boundary while adding SEV-SNP support upstream. TrustedRouter still accepts
+only verified TDX evidence here, not arbitrary SNP reports. The 1.4.1 source
+review is linked below. This is not an independent guest-image rebuild.
+
+The new [attestation service](https://github.com/chutesai/sek8s/blob/a526aef429e96f07a8971483736c4c000dcbf07a/src/sek8s/sek8s/services/attestation.py)
+uses `quote` instead of `tdx_quote` inside the signed evidence. The verifier
+now supports both spellings after verifying the signature, rejects conflicting
+aliases, and never substitutes the unsigned outer quote. All existing hardware,
+nonce, key-binding, workload, and GPU checks remain mandatory.
+
+Regression tests failed before these changes for the generic signed quote and
+both profiles, and for acceptance of conflicting aliases. Tests cover both
+quote formats, tampering, missing signed evidence, and mutation of MRTD and
+each runtime register. No live reference-manifest override is enabled in
+production.
+
+With these release-pinned profiles, a fresh Qwen 397B encrypted PONG passed in
+12.65 seconds, including CPU/GPU verification and authenticated decryption.
+No candidate-manifest override was used. This completes a successful local
+encrypted request for each of the 13 currently listed models, not proof of
+every instance or a production rollout.
 
 ## October 8, 2026 pool-wide investigation
 
