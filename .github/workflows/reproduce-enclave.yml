@@ -7,6 +7,9 @@ on:
       - 'tools/reproducible-build.env'
       - 'tools/build-enclave-context.sh'
       - 'tools/verify_privatemode_binary.py'
+      - 'tools/test_reproducible_build.py'
+      - 'tools/test_verify_privatemode_binary.py'
+      - 'tools/test_verify_pcr0_build_args.py'
       - '.github/workflows/reproduce-enclave.yml'
   workflow_dispatch: {}
 permissions:

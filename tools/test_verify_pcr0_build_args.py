@@ -48,8 +48,10 @@ class VerifyPcr0BuildArgs(unittest.TestCase):
         # final runtime must retain Docker's requested target architecture.
         stages = [line for line in dockerfile.splitlines() if line.startswith("FROM ")]
         self.assertEqual(len(stages), 3)
-        self.assertNotIn("--platform", stages[1])
-        self.assertEqual(stages[2], "FROM scratch")
+        vendor = [stage for stage in stages if stage.endswith(" AS privatemode")]
+        self.assertEqual(len(vendor), 1)
+        self.assertNotIn("--platform", vendor[0])
+        self.assertEqual(stages[-1], "FROM scratch")
 
     def test_measured_build_args_match_the_release_script(self) -> None:
         release = _assignments(RELEASE)
