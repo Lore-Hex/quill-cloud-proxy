@@ -2163,6 +2163,7 @@ func runAuthorizedFusionCallAttempt(
 	cancelSettle()
 	if err != nil {
 		settlementRetries.Enqueue(settlementRetryJob{
+			cause:         err,
 			trGateway:     trGateway,
 			authorization: authz,
 			usage:         usage,
@@ -2513,6 +2514,7 @@ func serveFusionFinalStreamingAttempt(
 			settleErr,
 		)
 		settlementRetries.Enqueue(settlementRetryJob{
+			cause:         settleErr,
 			trGateway:     trGateway,
 			authorization: authorization,
 			usage:         usage,
