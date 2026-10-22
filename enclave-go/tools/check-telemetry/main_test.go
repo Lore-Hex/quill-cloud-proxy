@@ -46,7 +46,8 @@ func TestRuntimeInventoryFailsClosed(t *testing.T) {
 				}
 			case "script":
 				// An executable test fixture is required to exercise script rejection.
-				if err := os.WriteFile(filepath.Join(root, "unexpected"), []byte("#!/bin/sh\n"), 0700); err != nil { // #nosec G306 -- never executed; isolated t.TempDir fixture
+				//nolint:gosec // Never executed; isolated t.TempDir fixture tests executable-mode rejection.
+				if err := os.WriteFile(filepath.Join(root, "unexpected"), []byte("#!/bin/sh\n"), 0700); err != nil {
 					t.Fatal(err)
 				}
 			case "symlink":
