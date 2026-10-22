@@ -80,6 +80,27 @@ jobs:
       - name: Test (${{ matrix.tags }})
         run: go test -race -tags '${{ matrix.tags }}' ./...
 
+      - name: Verify pinned offline dependency sources
+        working-directory: enclave-go
+        run: go run ./tools/rekor-offline -check
+      - name: Upstream offline proof and Sigstore verification regressions
+        run: go test github.com/sigstore/rekor/pkg/verify github.com/sigstore/sigstore-go/pkg/tlog github.com/sigstore/sigstore-go/pkg/verify
+
+  attested-image-telemetry:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        dockerfile:
+          - Dockerfile.enclave.gcp.multi
+          - Dockerfile.enclave.azure.multi
+          - Dockerfile.enclave
+    steps:
+      - uses: actions/checkout@v7
+      - name: Build and inspect every runtime executable
+        working-directory: enclave-go
+        run: docker build --platform linux/amd64 --build-arg BUILD_TAGS=cloud_aws,llm_multi --build-arg SOURCE_REVISION=${{ github.sha }} -f '${{ matrix.dockerfile }}' -t telemetry-checked .
+
   parent:
     runs-on: ubuntu-latest
     defaults:

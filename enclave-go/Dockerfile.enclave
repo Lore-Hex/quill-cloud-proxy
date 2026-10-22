@@ -76,7 +76,7 @@ RUN mkdir -p /out/rootfs/tmp && chmod 1777 /out/rootfs/tmp
 # Vendor-distributed proxy, pinned for both supply chain and verifier behavior.
 FROM ghcr.io/edgelesssys/privatemode/privatemode-proxy:v1.59.0@sha256:3cd4da0ee6ceee91ca84dde4e3e3f0e94e8b354d7c1d46987e4331a5c2f8bcff AS privatemode
 
-FROM scratch
+FROM scratch AS runtime
 ENV TR_ASYNC_SETTLE_SHADOW=on
 ENV TR_ASYNC_SETTLE_NEGOTIATE=off
 # TR_ASYNC_SETTLE_TICKET_PUBLIC_KEYS: JSON {"kid":"issuer~base64url_key"}; empty disables negotiation.
@@ -150,3 +150,10 @@ ENV QUILL_TLS_MODE=${QUILL_TLS_MODE} \
     QUILL_ACME_EMAIL=acme-aws-us-west-2@trustedrouter.com
 
 ENTRYPOINT ["/quill-enclave"]
+
+FROM builder AS telemetry-audit
+COPY --from=runtime / /audit-root/
+RUN GOOS= GOARCH= go run ./tools/check-telemetry --root /audit-root > /telemetry-audit.json
+
+FROM runtime
+COPY --from=telemetry-audit /telemetry-audit.json /telemetry-audit.json
