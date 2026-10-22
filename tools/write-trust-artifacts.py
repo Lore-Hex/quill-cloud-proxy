@@ -185,7 +185,7 @@ def trust_html(release: dict[str, Any]) -> str:
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>TrustedRouter Trust</title>
-  <meta name="description" content="Verify that api.trustedrouter.com runs the published open-source attested workload.">
+  <meta name="description" content="Verify that api.trustedrouter.com runs the attested workload built from public source.">
   <link rel="canonical" href="{CANONICAL_TRUST_URL}">
   <style>
     :root {{
@@ -248,9 +248,10 @@ def trust_html(release: dict[str, Any]) -> str:
     <section class="hero">
       <div class="panel">
         <p class="status"><span class="dot"></span>Trust boundary</p>
-        <h1>Verify that the hosted API runs the published open-source workload.</h1>
+        <h1>Verify the hosted API against its public source.</h1>
         <p><code>api.trustedrouter.com</code> is the prompt path (<code>api.quillrouter.com</code> is a permanent alias to the same attested endpoint). Public TLS terminates inside the measured GCP Confidential Space workload. The TrustedRouter control plane does not serve production inference routes and does not receive prompt or output bodies.</p>
         <p>Clients can fetch live attestation, verify issuer/audience/digest, and compare the measured image digest with the release data published here.</p>
+        <p><a href="{ATTESTED_GATEWAY_REPO}/blob/main/docs/reproducible-builds.md">Rebuild and verify the complete gateway image</a>. Whole-image reproduction applies only when the signed release record declares <code>reproducible_build.schema</code>. Older releases and cloud-specific measurement limits are documented in the recipe.</p>
       </div>
       <aside class="panel">
         <h2>GCP workload release</h2>

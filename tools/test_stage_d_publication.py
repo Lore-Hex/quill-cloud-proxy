@@ -108,14 +108,29 @@ class StageDPublicationTests(unittest.TestCase):
         self.env.update(
             GITHUB_RUN_NUMBER="601" if kind == "transitional" else "600",
             GITHUB_OUTPUT=str(self.root / "output"),
-            SHA="0123456",
+            SHA="0123456789abcdef0123456789abcdef01234567",
             DIGEST="sha256:" + "a" * 64,
             IMAGE_DIGEST="sha256:" + "a" * 64,
-            IMAGE_REF="example.invalid/enclave:gcp-release-0123456",
+            IMAGE_REF="example.invalid/enclave:gcp-release-0123456789abcdef0123456789abcdef01234567",
             RUNNING_DIGESTS="sha256:" + "b" * 64,
             RUNNING_REFERENCES="example.invalid/enclave:gcp-release-previous",
             TR_TRUST_PUSH_DEPLOY_KEY="",
+            RUNNER_TEMP=str(self.root / "runner-temp"),
         )
+        evidence = {
+            "schema": "trustedrouter-reproducible-image/1",
+            "source_commit": self.env["SHA"],
+            "source_date_epoch": 1000,
+            "plane": "gcp",
+            "platform": "linux/amd64",
+            "build_args": {},
+            "image_digest": self.env["DIGEST"],
+            "client_image": "docker@sha256:" + "c" * 64,
+        }
+        for relative in ("reproduction/reproduction-1", "reproduction-final"):
+            directory = Path(self.env["RUNNER_TEMP"]) / relative
+            directory.mkdir(parents=True, exist_ok=True)
+            (directory / "reproduction.json").write_text(json.dumps(evidence))
         # Run real local Git, but never contact a remote from these workflow steps.
         self.env["REAL_GIT"] = shutil.which("git")
         self.stub("git", 'case "$1" in pull|push) exit 0 ;; esac\nexec "$REAL_GIT" "$@"\n')
@@ -201,6 +216,18 @@ class StageDPublicationTests(unittest.TestCase):
                 self.assertNotEqual(result.returncode, 0)
                 self.assertEqual(before, (self.root / "trust-page/gcp-release.json").read_bytes())
                 self.env[variable] = value
+
+    def test_transition_refuses_mismatched_build_evidence(self) -> None:
+        self.prepare_release("transitional", False)
+        path = Path(self.env["RUNNER_TEMP"]) / "reproduction/reproduction-1/reproduction.json"
+        evidence = json.loads(path.read_text())
+        evidence["image_digest"] = "sha256:" + "f" * 64
+        path.write_text(json.dumps(evidence))
+        before = (self.root / "trust-page/gcp-release.json").read_bytes()
+        result = self.run_step("deploy-enclave-gcp.yml", "Write transitional trust-page artifacts")
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("does not match the published release", result.stderr)
+        self.assertEqual(before, (self.root / "trust-page/gcp-release.json").read_bytes())
 
     def test_running_inventory_outputs_feed_transitional_allowlist(self) -> None:
         self.prepare_release("transitional", False)

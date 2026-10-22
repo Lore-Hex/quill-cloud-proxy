@@ -68,21 +68,16 @@ On AWS, the KMS keys needed to decrypt the device-key list are released only to
 an enclave whose `PCR0` measurement matches the published value. On GCP, Secret
 Manager access is gated by Confidential Space image attestation. Change a single
 line of workload code → new measurement/image digest → secret access fails.
-Anyone can rebuild from this repo and check the published measurement.
+Use the [verification recipe](docs/reproducible-builds.md) to distinguish source
+reproduction, signed release provenance, and fresh TLS-bound live attestation.
+Comparing a digest alone does not verify a signature or prove the running code.
 
-> **Verify any deployed AWS Quill in <2 min:**
-> ```bash
-> ./tools/verify-pcr0.sh
-> ```
-> Rebuilds the enclave deterministically and compares to the value at
-> [`trust-page/pcr0.txt`](trust-page/pcr0.txt) and at
-> <https://trust.quill.lorehex.co/pcr0.txt>.
->
-> **Verify the current GCP production build:**
-> compare the live Confidential Space JWT's
-> `submods.container.image_digest` claim to
-> [`trust-page/image-digest-gcp.txt`](trust-page/image-digest-gcp.txt).
-> The device service does this automatically before sending prompt traffic.
+`tools/verify-pcr0.sh` compares a locally built AWS EIF with the checked-out PCR0
+record. Matching the complete Nitro measurement also requires matching its
+kernel, initramfs and EIF tooling. It is not a two-minute or live-verification
+guarantee. GCP whole-image reproduction applies only to signed release records
+that explicitly declare the new recipe; older releases are not retroactively
+covered.
 
 ## What gets retained
 
