@@ -1,3 +1,4 @@
+# syntax=docker/dockerfile:1.27.0@sha256:bde3983e9c939224420ddaf6b784cc30e09b035a4dea01f581230c50809f372e
 # Build container for the Go enclave EIF.
 # Two stages:
 #   - builder: pinned golang base, builds a static-PIE binary
@@ -22,14 +23,13 @@ FROM --platform=$BUILDPLATFORM golang:1.26.10-bookworm@sha256:ee3901c61e42373260
 # runtime to verify TLS peers (Bedrock in our case). The scratch base has no
 # trust store, so without this the enclave fails every outbound HTTPS dial
 # with "x509: certificate signed by unknown authority".
-RUN apt-get update \
-    && apt-get install -y --no-install-recommends ca-certificates \
-    && sed -i -e 's|^mozilla/emSign_ECC_Root_CA_-_G3.crt$|!&|' \
+# Use the CA package in the digest-pinned builder, never a moving apt mirror.
+RUN sed -i -e 's|^mozilla/emSign_ECC_Root_CA_-_G3.crt$|!&|' \
               -e 's|^mozilla/Comodo_AAA_Services_root.crt$|!&|' /etc/ca-certificates.conf \
-    && update-ca-certificates --fresh \
-    && rm -rf /var/lib/apt/lists/*
+    && update-ca-certificates --fresh
 
 WORKDIR /src
+ENV GOTOOLCHAIN=local GOFLAGS=-mod=readonly
 COPY go.mod go.sum ./
 RUN go mod download
 

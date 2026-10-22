@@ -1,3 +1,4 @@
+# syntax=docker/dockerfile:1.27.0@sha256:bde3983e9c939224420ddaf6b784cc30e09b035a4dea01f581230c50809f372e
 # Multi-provider GCP Confidential Space build. Compiles BOTH the direct
 # Anthropic client and the Vertex-direct client into the same enclave
 # binary. At request time, the dispatcher (internal/llm/multi.go) picks
@@ -32,14 +33,13 @@
 
 FROM golang:1.26.10-bookworm@sha256:ee3901c61e423732605a51f1b8157c849ec01194ea0a274213b5202b2c11e7bf AS builder
 
-RUN apt-get update \
-    && apt-get install -y --no-install-recommends ca-certificates \
-    && sed -i -e 's|^mozilla/emSign_ECC_Root_CA_-_G3.crt$|!&|' \
+# Use the CA package in the digest-pinned builder, never a moving apt mirror.
+RUN sed -i -e 's|^mozilla/emSign_ECC_Root_CA_-_G3.crt$|!&|' \
               -e 's|^mozilla/Comodo_AAA_Services_root.crt$|!&|' /etc/ca-certificates.conf \
-    && update-ca-certificates --fresh \
-    && rm -rf /var/lib/apt/lists/*
+    && update-ca-certificates --fresh
 
 WORKDIR /src
+ENV GOTOOLCHAIN=local GOFLAGS=-mod=readonly
 
 # ─── Main enclave binary ────────────────────────────────────────────────────
 COPY go.mod go.sum ./
