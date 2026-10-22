@@ -13,6 +13,7 @@ import json
 import os
 import re
 import subprocess
+import sys
 import tarfile
 import tempfile
 import urllib.request
@@ -160,6 +161,14 @@ def compare(records: list[dict]) -> str:
     return records[0]["image_digest"]
 
 
+def verify_vendor_source(commit: str, output: Path) -> None:
+    with tempfile.TemporaryDirectory(prefix="tr-vendor-recipe-") as temp:
+        context = Path(temp)
+        archive_source(commit, context)
+        subprocess.run([sys.executable, str(context / "tools/verify_privatemode_binary.py"),
+                        "--output-dir", str(output.resolve())], check=True)
+
+
 def promote(records: list[dict], image: str, expected_commit: str | None = None) -> str:
     digest = compare(records)
     if expected_commit is not None and records[0]["source_commit"] != expected_commit:
@@ -240,6 +249,7 @@ def main() -> None:
         result = build(args.plane, commit, args.output_dir, args.build_arg, args.image)
         print(result["image_digest"])
     else:
+        verify_vendor_source(commit, args.output_dir / "privatemode")
         records = [build(args.plane, commit, args.output_dir / str(i), args.build_arg,
                          args.image + f"-repro-{i}") for i in (1, 2)]
         print(promote(records, args.image, commit))

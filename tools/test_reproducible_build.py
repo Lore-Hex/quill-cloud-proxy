@@ -4,6 +4,8 @@ import hashlib
 import importlib.util
 import io
 import json
+import subprocess
+import sys
 import tarfile
 import tempfile
 import unittest
@@ -80,6 +82,19 @@ class Reproducibility(unittest.TestCase):
     def test_two_builds_required(self):
         with self.assertRaises(ValueError):
             repro.compare([self.record()])
+
+    def test_manual_release_never_builds_or_promotes_after_vendor_rebuild_failure(self):
+        argv = ["reproducible_build.py", "release", "--plane", "aws", "--commit", "a" * 40,
+                "--image", "registry.example.invalid/release", "--output-dir", "/tmp/test-evidence"]
+        with patch.object(sys, "argv", argv), \
+                patch.object(repro, "require_clean"), \
+                patch.object(repro, "source_commit", return_value="a" * 40), \
+                patch.object(repro, "verify_vendor_source", side_effect=subprocess.CalledProcessError(1, "verify")), \
+                patch.object(repro, "build") as build, patch.object(repro, "promote") as promote:
+            with self.assertRaises(subprocess.CalledProcessError):
+                repro.main()
+            build.assert_not_called()
+            promote.assert_not_called()
 
     def test_wrong_release_commit_is_not_promoted(self):
         with patch.object(repro.subprocess, "run") as mutation:

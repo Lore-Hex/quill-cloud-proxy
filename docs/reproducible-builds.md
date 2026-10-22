@@ -86,11 +86,34 @@ Other providers do not pass through it. The supervisor drops privileges, grants
 no inherited credentials and uses certificate-pinned loopback TLS. Failure does
 not enable a plaintext fallback. See [the boundary and pins](runbooks/privatemode.md).
 
-The recipe currently consumes the vendor's digest-pinned binary. This proves the
-complete image can be reconstructed from our source **plus that declared binary
-dependency**. It does not independently prove the vendor binary corresponds to
-its public source. Rebuilding the vendor binary from its source is a separate
-supply-chain verification task. Do not imply otherwise.
+The vendor's v1.59.0 linux/amd64 executable was independently rebuilt on
+2026-10-22 from public commit `17ad265a79a39f30596ae2f12ec64ccbd9127275`.
+The rebuilt executable and the executable extracted from the pinned vendor image
+match byte-for-byte, with SHA-256
+`0113ea23b7035fd3e3dd078cbb0d5ddc9471cfeac44a49c392802e55ee7f6487`.
+The vendor image was never executed to obtain this comparison.
+
+Repeat that check without API keys or cloud access:
+
+```sh
+python3 tools/verify_privatemode_binary.py --output-dir /tmp/privatemode-verification
+```
+
+This uses the vendor's committed Nix lockfile and build recipe inside a pinned
+build container. Only the official Nix cache supplies general build dependencies;
+the vendor's Cachix cache and flake-provided cache settings are disabled. The
+source build has no host Docker socket or credential mounts. The helper compares
+both executables to our reviewed checksum and writes `verification.json` only
+after all comparisons pass. Use a new output directory for each run.
+
+All three production Dockerfiles verify that executable checksum before copying
+it into the runtime. PR image comparison, GCP production release, and the shared
+manual AWS/Azure/GCP release command require a successful source rebuild. A vendor
+upgrade requires updating the source/image/checksum pins together and passing
+these gates again. This proves the executable corresponds to the specified
+source under the declared build toolchain, not that the source is bug-free or
+that the entire upstream inference deployment has been reproduced. The compiler,
+Nix dependencies and remote-attestation checks remain separate trust inputs.
 
 ## AWS and Azure
 

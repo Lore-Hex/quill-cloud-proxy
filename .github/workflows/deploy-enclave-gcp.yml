@@ -31,6 +31,7 @@ on:
       - "tools/reproducible_build.py"
       - "tools/reproducible-build.env"
       - "tools/build-enclave-context.sh"
+      - "tools/verify_privatemode_binary.py"
       - "tools/deploy-gcp-mig.sh"
       - "tools/cloud-rollout.py"
       - "tools/cloud-rollout-source.json"
@@ -162,8 +163,27 @@ jobs:
           tools/tests/test-enclave-rollout-drains.sh
       - run: go test -tags 'cloud_gcp,llm_multi' ./...
 
-  reproduce-image:
+  privatemode-source:
     needs: [test, gate-on-ci]
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v7
+      - name: Require vendor source-to-binary match before release
+        run: python3 tools/verify_privatemode_binary.py --output-dir "$RUNNER_TEMP/privatemode"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: privatemode-source-verification
+          path: |
+            ${{ runner.temp }}/privatemode/verification.json
+            ${{ runner.temp }}/privatemode/build.log
+          retention-days: 14
+
+  reproduce-image:
+    needs: [test, gate-on-ci, privatemode-source]
     # Separate VMs, fresh BuildKit stores, no shared cache. A disagreement
     # stops before trust publication, secret-policy changes or any rollout.
     strategy:

@@ -43,6 +43,13 @@ Pins reviewed and approved on 2026-10-16:
 Pins are not themselves proof that a deployment passed: preserve independent
 policy reproduction results and regional inference results with the release.
 
+The v1.59.0 linux/amd64 client executable was independently rebuilt from the
+above source commit on 2026-10-22, without the vendor binary cache. Its bytes
+match the pinned vendor executable exactly (SHA-256
+`0113ea23b7035fd3e3dd078cbb0d5ddc9471cfeac44a49c392802e55ee7f6487`).
+See [the repeatable source-to-binary check](../reproducible-builds.md#privatemode-dependency).
+This client check is distinct from reproducing the remote deployment policies.
+
 Historical v1.57 reproduction passed for all nine policy hashes in Cloud Build
 `f291e343-c4a0-4580-b90c-6ea549ba5046` (2026-09-25, us-central1). The public
 generated manifest is retained at
