@@ -6,6 +6,7 @@ import (
 	"os"
 	"strconv"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/Lore-Hex/quill-cloud-proxy/enclave-go/internal/trustedrouter"
@@ -17,6 +18,19 @@ const (
 	defaultSettlementRetryAttempts  = 6
 	defaultSettlementRetryBaseDelay = 500 * time.Millisecond
 	defaultSettlementRetryMaxDelay  = 15 * time.Second
+	// abandonedSettleRetryDelay holds back the first retry of a settle or
+	// refund the enclave stopped waiting for (its context deadline passed or
+	// was cancelled). The router keeps running that request after the
+	// enclave disconnects, for at most its shared billing-path Spanner budget
+	// (_BILLING_PATH_SPANNER_BUDGET_SECONDS = 20 s, quill-router
+	// routes/internal/gateway.py) plus the rollback floor
+	// (_ROLLBACK_FLOOR_SECONDS = 2 s, storage_gcp_io.py). A retry sent sooner
+	// races the original for the same reservation and authorization rows; on
+	// 2026-10-22 such a duplicate pushed an original settle into the router's
+	// durable fallback and a 503 after 20 s. One second of margin covers
+	// serialization and transit. Retries after a real error (5xx, connection
+	// reset) keep their existing timing: that request has already ended.
+	abandonedSettleRetryDelay = 23 * time.Second
 )
 
 var settlementRetries = newSettlementRetryQueueFromEnv()
@@ -35,6 +49,11 @@ type settlementRetryJob struct {
 	refundType     string
 	refundElapsed  float64
 	refundMetadata map[string]any
+	// cause is the error that failed the request-path attempt. Enqueue reads
+	// it once to decide whether the original may still be running at the
+	// router, then drops it.
+	cause     error
+	notBefore time.Time
 }
 
 type settlementRetryQueue struct {
@@ -44,6 +63,13 @@ type settlementRetryQueue struct {
 	maxAttempts int
 	baseDelay   time.Duration
 	maxDelay    time.Duration
+	// abandonedDelay is abandonedSettleRetryDelay in production. Zero sends
+	// every first retry immediately.
+	abandonedDelay time.Duration
+	// deferred counts retries held back until the abandoned original has
+	// ended. They wait on timers, not in jobs, so they never delay the
+	// retries queued behind them.
+	deferred atomic.Int64
 }
 
 func newSettlementRetryQueueFromEnv() *settlementRetryQueue {
@@ -61,10 +87,11 @@ func newSettlementRetryQueueFromEnv() *settlementRetryQueue {
 		maxDelay = baseDelay
 	}
 	return &settlementRetryQueue{
-		jobs:        make(chan settlementRetryJob, size),
-		maxAttempts: maxAttempts,
-		baseDelay:   baseDelay,
-		maxDelay:    maxDelay,
+		jobs:           make(chan settlementRetryJob, size),
+		maxAttempts:    maxAttempts,
+		baseDelay:      baseDelay,
+		maxDelay:       maxDelay,
+		abandonedDelay: abandonedSettleRetryDelay,
 	}
 }
 
@@ -121,9 +148,15 @@ func (q *settlementRetryQueue) Enqueue(job settlementRetryJob) bool {
 	if job.attempt <= 0 {
 		job.attempt = 1
 	}
+	if job.attempt == 1 && job.notBefore.IsZero() && q.abandonedDelay > 0 && stageDTimeout(job.cause) {
+		job.notBefore = time.Now().Add(q.abandonedDelay)
+	}
 	job = compactSettlementRetryJob(job)
 	if job.enqueuedAt.IsZero() {
 		job.enqueuedAt = time.Now()
+	}
+	if q.deferUntilDue(job) {
+		return true
 	}
 	select {
 	case q.jobs <- job:
@@ -178,6 +211,41 @@ func (q *settlementRetryQueue) Enqueue(job settlementRetryJob) bool {
 		)
 		return false
 	}
+}
+
+// deferUntilDue parks a job whose notBefore is in the future and enqueues it
+// when due. If as many jobs are parked as the queue holds, the job is queued
+// now instead, which is the behaviour before deferral existed: a duplicate
+// settle is safe for billing because the router keeps the first writer.
+func (q *settlementRetryQueue) deferUntilDue(job settlementRetryJob) bool {
+	wait := time.Until(job.notBefore)
+	if wait <= 0 {
+		return false
+	}
+	if q.deferred.Add(1) > int64(cap(q.jobs)) {
+		q.deferred.Add(-1)
+		fmt.Fprintf(os.Stderr,
+			"enclave.settlement_retry_defer_full request_log_id=%q request_id=%q auth_id=%q capacity=%d\n",
+			job.requestLogID,
+			job.usage.RequestID,
+			authorizationID(job.authorization),
+			cap(q.jobs),
+		)
+		return false
+	}
+	fmt.Fprintf(os.Stderr,
+		"enclave.settlement_retry_deferred request_log_id=%q request_id=%q auth_id=%q attempt=%d delay_ms=%d\n",
+		job.requestLogID,
+		job.usage.RequestID,
+		authorizationID(job.authorization),
+		job.attempt,
+		wait.Milliseconds(),
+	)
+	time.AfterFunc(wait, func() {
+		defer q.deferred.Add(-1)
+		q.Enqueue(job)
+	})
+	return true
 }
 
 func (q *settlementRetryQueue) run(ctx context.Context) {
@@ -299,6 +367,7 @@ func compactSettlementRetryJob(job settlementRetryJob) settlementRetryJob {
 	job.usage.HTTPReferer = ""
 	job.usage.AppCategories = nil
 	job.refundMetadata = nil
+	job.cause = nil
 	return job
 }
 

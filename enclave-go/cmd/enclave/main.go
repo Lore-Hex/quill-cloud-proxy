@@ -563,6 +563,11 @@ func main() {
 		if flushErr := settlementRetries.WaitForIdle(flushContext); flushErr != nil {
 			fmt.Fprintf(os.Stderr, "enclave.shutdown_settlement_pending queued=%d err=%q\n", len(settlementRetries.jobs), flushErr.Error())
 		}
+		if deferred := settlementRetries.deferred.Load(); deferred > 0 {
+			// Not sent: each waits for an abandoned original settle that the
+			// router may still be running. Unsent work is reported, not hidden.
+			fmt.Fprintf(os.Stderr, "enclave.shutdown_settlement_deferred count=%d\n", deferred)
+		}
 		stopFlush()
 		startupHarness.RecordShutdownWait(flushStarted, time.Now())
 	}
@@ -2095,6 +2100,7 @@ func serveStreaming(
 				reportedCost = costForRetry(reportedSettlement(settlement, authorization, usage, settleErr))
 			}
 			settlementRetries.Enqueue(settlementRetryJob{
+				cause:     settleErr,
 				trGateway: trGateway, authorization: authorization, usage: usage,
 				reportedCost: reportedCost,
 				requestLogID: requestLogID, clientContext: trustedrouter.ClientContextFromContext(ctx),
@@ -2156,6 +2162,7 @@ func serveStreaming(
 					}
 					fmt.Fprintf(os.Stderr, "enclave.stream_settle_failed request_log_id=%q request_id=%q model=%q route_type=%q err=%v\n", requestLogID, requestID, req.Model, routeType, settleErr)
 					settlementRetries.Enqueue(settlementRetryJob{
+						cause:     settleErr,
 						trGateway: trGateway, authorization: authorization, usage: usage,
 						reportedCost: costForRetry(reportedSettlement(settlement, authorization, usage, settleErr)),
 						requestLogID: requestLogID, clientContext: trustedrouter.ClientContextFromContext(ctx),
@@ -2361,6 +2368,7 @@ func serveStreaming(
 				}
 				if refundErr != nil {
 					settlementRetries.Enqueue(settlementRetryJob{
+						cause:     refundErr,
 						trGateway: trGateway, authorization: refundAuthorization, requestLogID: requestLogID,
 						clientContext: trustedrouter.ClientContextFromContext(ctx), kind: "refund",
 						refundStatus: status, refundType: failureReason(err), refundElapsed: time.Since(requestStarted).Seconds(), refundMetadata: req.Metadata,
@@ -2644,6 +2652,7 @@ func serveMessages(
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "enclave.messages_stream_settle_failed request_log_id=%q request_id=%q model=%q err=%v\n", requestLogID, messageID, req.Model, err)
 			settlementRetries.Enqueue(settlementRetryJob{
+				cause:     err,
 				trGateway: trGateway, authorization: authorization, usage: usage,
 				reportedCost: costForRetry(reportedSettlement(settlement, authorization, usage, err)),
 				requestLogID: requestLogID, clientContext: trustedrouter.ClientContextFromContext(ctx),

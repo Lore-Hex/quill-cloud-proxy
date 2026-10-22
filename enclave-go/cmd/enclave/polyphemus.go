@@ -243,7 +243,7 @@ func preparePolyphemus(ctx context.Context, req *types.OpenAIChatRequest, gatewa
 		elapsed := time.Since(started)
 		if err := gateway.Refund(finalCtx, auth, 502, reason, elapsed.Seconds(), req.Metadata); err != nil {
 			if live, ok := gateway.(*trustedrouter.Client); ok {
-				settlementRetries.Enqueue(settlementRetryJob{trGateway: live, authorization: auth, kind: "refund", refundStatus: 502, refundType: reason, refundElapsed: elapsed.Seconds(), refundMetadata: req.Metadata, requestLogID: requestLogID, clientContext: trustedrouter.ClientContextFromContext(ctx)})
+				settlementRetries.Enqueue(settlementRetryJob{trGateway: live, authorization: auth, kind: "refund", refundStatus: 502, refundType: reason, refundElapsed: elapsed.Seconds(), refundMetadata: req.Metadata, requestLogID: requestLogID, clientContext: trustedrouter.ClientContextFromContext(ctx), cause: err})
 			}
 			return ctx, polyphemusError(502, "Model selection refund pending; do not replay this request")
 		}
@@ -278,7 +278,7 @@ func preparePolyphemus(ctx context.Context, req *types.OpenAIChatRequest, gatewa
 	cancel()
 	if err != nil {
 		if live, ok := gateway.(*trustedrouter.Client); ok {
-			settlementRetries.Enqueue(settlementRetryJob{trGateway: live, authorization: auth, usage: usage, requestLogID: requestLogID, clientContext: trustedrouter.ClientContextFromContext(ctx)})
+			settlementRetries.Enqueue(settlementRetryJob{trGateway: live, authorization: auth, usage: usage, requestLogID: requestLogID, clientContext: trustedrouter.ClientContextFromContext(ctx), cause: err})
 		}
 		return ctx, polyphemusError(502, "Model selection settlement pending; do not replay this request")
 	}

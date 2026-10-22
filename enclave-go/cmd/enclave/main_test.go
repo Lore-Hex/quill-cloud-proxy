@@ -9688,6 +9688,8 @@ func TestEverySettlementRetryEnqueueSiteCarriesRequestLogIDAndClientContext(t *t
 	// (audit id, client telemetry) only reach a retried settle if the enqueue
 	// site copies them onto the job. A new site that forgets one would still
 	// compile and still settle -- it would just silently lose the value.
+	// cause decides whether the first retry must wait for an abandoned
+	// original settle the router may still be running.
 	entries, err := os.ReadDir(".")
 	if err != nil {
 		t.Fatal(err)
@@ -9714,7 +9716,7 @@ func TestEverySettlementRetryEnqueueSiteCarriesRequestLogIDAndClientContext(t *t
 				t.Fatalf("%s: unterminated settlementRetryJob literal at byte %d", name, start)
 			}
 			literal := text[start : start+end]
-			for _, field := range []string{"requestLogID:", "clientContext:"} {
+			for _, field := range []string{"requestLogID:", "clientContext:", "cause:"} {
 				if !strings.Contains(literal, field) {
 					t.Errorf("%s: settlementRetryJob literal at byte %d does not set %s", name, start, field)
 				}
