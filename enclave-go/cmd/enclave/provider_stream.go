@@ -308,6 +308,7 @@ func invokeProviderStream(
 			finishFailure(lastErr)
 			return
 		}
+		selectedRoute.RecordFallbackFailure(option, err)
 	}
 	if lastErr != nil {
 		fmt.Fprintf(os.Stderr,
@@ -466,6 +467,7 @@ type selectedRouteTracker struct {
 	attempts int
 	selected bool
 	routes   []routeAttempt
+	failures []string
 }
 
 type routeAttempt struct {
@@ -561,6 +563,28 @@ func (t *selectedRouteTracker) AttemptedRoutes() []routeAttempt {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	return append([]routeAttempt(nil), t.routes...)
+}
+
+// Only pre-output failures that advance to another candidate are recorded.
+// The class contains no provider response text, prompt, output or credential.
+func (t *selectedRouteTracker) RecordFallbackFailure(option llm.InvokeOptions, err error) {
+	if t == nil || err == nil {
+		return
+	}
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	if len(t.failures) < 8 {
+		t.failures = append(t.failures, option.Provider+"|"+option.EndpointID+"|"+errorClass(err))
+	}
+}
+
+func (t *selectedRouteTracker) Failures() []string {
+	if t == nil {
+		return nil
+	}
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	return append([]string(nil), t.failures...)
 }
 
 func (t *selectedRouteTracker) Ready() <-chan struct{} {

@@ -303,7 +303,7 @@ QUILL_BEDROCK_SECRET="${QUILL_BEDROCK_SECRET-trustedrouter-bedrock-api-key}"
 QUILL_ELEVENLABS_SECRET="${QUILL_ELEVENLABS_SECRET-trustedrouter-elevenlabs-api-key}"
 # Opt in only after the cloud-local bundle has been sealed with this key.
 QUILL_GREENFERENCE_SECRET="${QUILL_GREENFERENCE_SECRET:-}"
-QUILL_CORALBRICKS_SECRET="${QUILL_CORALBRICKS_SECRET:-}"
+QUILL_CORALBRICKS_SECRET="${QUILL_CORALBRICKS_SECRET:-trustedrouter-coralbricks-api-key}"
 QUILL_FORTANIX_SECRET="${QUILL_FORTANIX_SECRET:-trustedrouter-fortanix-api-key}"
 QUILL_BOUNDLESS_SECRET="${QUILL_BOUNDLESS_SECRET-trustedrouter-boundless-api-key}"
 QUILL_ZRO_SECRET="${QUILL_ZRO_SECRET-trustedrouter-zro-api-key}"

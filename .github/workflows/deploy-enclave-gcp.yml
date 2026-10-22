@@ -145,7 +145,7 @@ jobs:
       run:
         working-directory: enclave-go
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: actions/setup-go@v7
         with:
           go-version: "1.26.10"
@@ -169,7 +169,7 @@ jobs:
       accepted_references: ${{ steps.write-trust.outputs.accepted_references }}
       stage_d_policy_sha256: ${{ steps.stage-d-transition.outputs.policy_sha256 }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           fetch-depth: 0   # need history for the auto-commit + push back
           # Trust-artifact commits push directly to protected main. The
@@ -200,7 +200,7 @@ jobs:
           workload_identity_provider: projects/44325983244/locations/global/workloadIdentityPools/github-actions/providers/github
           service_account: tr-deploy@quill-cloud-proxy.iam.gserviceaccount.com
 
-      - uses: google-github-actions/setup-gcloud@v2
+      - uses: google-github-actions/setup-gcloud@v3
 
       - uses: sigstore/cosign-installer@v3
         with:
@@ -511,7 +511,7 @@ jobs:
     needs: build-and-release
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           ref: main
       - uses: sigstore/cosign-installer@v3
@@ -539,7 +539,7 @@ jobs:
     runs-on: ubuntu-latest
     environment: batch-release
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: Require explicit Batch storage activation
         env:
           TR_BATCH_STORAGE_ENABLED: ${{ vars.TR_BATCH_STORAGE_ENABLED }}
@@ -553,7 +553,7 @@ jobs:
         with:
           workload_identity_provider: projects/44325983244/locations/global/workloadIdentityPools/github-actions/providers/github
           service_account: tr-batch-release@quill-cloud-proxy.iam.gserviceaccount.com
-      - uses: google-github-actions/setup-gcloud@v2
+      - uses: google-github-actions/setup-gcloud@v3
       - name: Grant only the new measured enclave digest
         env:
           IMAGE_DIGEST: ${{ needs.build-and-release.outputs.image_digest }}
@@ -567,7 +567,7 @@ jobs:
     outputs:
       operation: ${{ steps.admit.outputs.TR_DEPLOY_MUTEX_OPERATION }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: google-github-actions/auth@v3
         with:
           workload_identity_provider: projects/44325983244/locations/global/workloadIdentityPools/github-actions/providers/github
@@ -598,7 +598,7 @@ jobs:
       GH_TOKEN: ${{ secrets.TRUST_PUSH_TOKEN }}
       STAGE_D_PROBE_API_KEY: ${{ secrets.STAGE_D_PROBE_API_KEY }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           # Match the image source, not a newer main containing runtime envs
           # that the built Confidential Space image does not allow. Trust
@@ -610,18 +610,18 @@ jobs:
         with:
           workload_identity_provider: projects/44325983244/locations/global/workloadIdentityPools/github-actions/providers/github
           service_account: tr-deploy@quill-cloud-proxy.iam.gserviceaccount.com
-      - uses: google-github-actions/setup-gcloud@v2
+      - uses: google-github-actions/setup-gcloud@v3
         with:
           # MIG minReadySec is still exposed through the beta command group.
           # Install it explicitly so a non-interactive runner never pauses to
           # ask whether it may install the component mid-rollout.
           install_components: beta
-      - uses: astral-sh/setup-uv@v5
+      - uses: astral-sh/setup-uv@v7
 
       - name: Verify shared cloud reservation before mutations
         run: python3 tools/cloud-rollout.py assert --cloud gcp
       - name: Authenticate to AWS for backup-domain DNS
-        uses: aws-actions/configure-aws-credentials@v4
+        uses: aws-actions/configure-aws-credentials@v6
         with:
           role-to-assume: ${{ secrets.AWS_DEPLOY_ROLE_ARN }}
           aws-region: us-east-1
@@ -843,7 +843,7 @@ jobs:
       # close to that, and the restore below writes Route 53.
       - name: Refresh AWS credentials before restoring us-central1
         if: ${{ steps.canary_us.outcome == 'success' }}
-        uses: aws-actions/configure-aws-credentials@v4
+        uses: aws-actions/configure-aws-credentials@v6
         with:
           role-to-assume: ${{ secrets.AWS_DEPLOY_ROLE_ARN }}
           aws-region: us-east-1
@@ -875,7 +875,7 @@ jobs:
 
       - name: Refresh AWS credentials for primary recovery
         if: ${{ always() && (failure() || steps.canary_us.outcome == 'failure') }}
-        uses: aws-actions/configure-aws-credentials@v4
+        uses: aws-actions/configure-aws-credentials@v6
         with:
           role-to-assume: ${{ secrets.AWS_DEPLOY_ROLE_ARN }}
           aws-region: us-east-1
@@ -902,7 +902,7 @@ jobs:
       # immediately before every region instead of reusing the session created
       # near the start of this long-running job.
       - name: Refresh AWS credentials for Europe backup-domain DNS
-        uses: aws-actions/configure-aws-credentials@v4
+        uses: aws-actions/configure-aws-credentials@v6
         with:
           role-to-assume: ${{ secrets.AWS_DEPLOY_ROLE_ARN }}
           aws-region: us-east-1
@@ -931,7 +931,7 @@ jobs:
             "${PREV_DRAIN_ORIGIN}"
 
       - name: Refresh AWS credentials for US East backup-domain DNS
-        uses: aws-actions/configure-aws-credentials@v4
+        uses: aws-actions/configure-aws-credentials@v6
         with:
           role-to-assume: ${{ secrets.AWS_DEPLOY_ROLE_ARN }}
           aws-region: us-east-1
@@ -960,7 +960,7 @@ jobs:
             "${PREV_DRAIN_ORIGIN}"
 
       - name: Refresh AWS credentials for US West backup-domain DNS
-        uses: aws-actions/configure-aws-credentials@v4
+        uses: aws-actions/configure-aws-credentials@v6
         with:
           role-to-assume: ${{ secrets.AWS_DEPLOY_ROLE_ARN }}
           aws-region: us-east-1
@@ -1085,7 +1085,7 @@ jobs:
     outputs:
       stage_d_policy_sha256: ${{ steps.finalize.outputs.policy_sha256 }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           ref: main
           fetch-depth: 0
@@ -1146,7 +1146,7 @@ jobs:
     needs: [build-and-release, finalize-trust-artifacts]
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           ref: main
       - uses: sigstore/cosign-installer@v3
@@ -1175,7 +1175,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: google-github-actions/auth@v3
         with:
           workload_identity_provider: projects/44325983244/locations/global/workloadIdentityPools/github-actions/providers/github

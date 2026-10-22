@@ -798,6 +798,8 @@ type Usage struct {
 	RouteType            string
 	SelectedModel        string
 	SelectedEndpoint     string
+	RouteFallbacks       int
+	RouteFailures        []string
 	User                 string
 	SessionID            string
 	Trace                map[string]any
@@ -1284,6 +1286,10 @@ func (c *Client) Settle(ctx context.Context, auth *Authorization, usage Usage) (
 	}
 	if usage.AdditionalCostMicrodollars > 0 {
 		body["additional_cost_microdollars"] = usage.AdditionalCostMicrodollars
+	}
+	if usage.RouteFallbacks > 0 {
+		body["route_fallbacks"] = usage.RouteFallbacks
+		body["route_failures"] = usage.RouteFailures[:min(8, len(usage.RouteFailures))]
 	}
 	if usage.RouteType != "" {
 		body["route_type"] = usage.RouteType
