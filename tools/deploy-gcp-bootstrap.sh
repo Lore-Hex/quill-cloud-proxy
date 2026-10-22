@@ -121,6 +121,7 @@ LYCEUM_SECRET="${LYCEUM_SECRET:-trustedrouter-lyceum-api-key}"
 BEDROCK_SECRET="${BEDROCK_SECRET:-trustedrouter-bedrock-api-key}"
 ELEVENLABS_SECRET="${ELEVENLABS_SECRET:-trustedrouter-elevenlabs-api-key}"
 GREENFERENCE_SECRET="${GREENFERENCE_SECRET:-trustedrouter-greenference-api-key}"
+MUNA_SECRET="${MUNA_SECRET:-trustedrouter-muna-api-key}"
 CORALBRICKS_SECRET="${CORALBRICKS_SECRET:-trustedrouter-coralbricks-api-key}"
 FORTANIX_SECRET="${FORTANIX_SECRET:-trustedrouter-fortanix-api-key}"
 BOUNDLESS_SECRET="${BOUNDLESS_SECRET:-trustedrouter-boundless-api-key}"
@@ -300,6 +301,7 @@ for secret in \
   "$BEDROCK_SECRET" \
   "$ELEVENLABS_SECRET" \
   "$GREENFERENCE_SECRET" \
+  "$MUNA_SECRET" \
   "$CORALBRICKS_SECRET" \
   "$FORTANIX_SECRET" \
   "$BOUNDLESS_SECRET" \
