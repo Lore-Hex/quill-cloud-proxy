@@ -331,7 +331,10 @@ func (q *settlementRetryQueue) run(ctx context.Context) {
 		case job := <-q.jobs:
 			q.process(ctx, job)
 		case check := <-q.idleChecks:
-			check <- len(q.jobs) == 0 && q.deferred.Load() == 0
+			// deferred first: a held job is pushed before its counter drops, so a
+			// zero count means every released job is already in q.jobs, which
+			// only this goroutine drains. The reverse order can miss one in flight.
+			check <- q.deferred.Load() == 0 && len(q.jobs) == 0
 		}
 	}
 }
