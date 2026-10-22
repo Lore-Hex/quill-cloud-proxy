@@ -68,6 +68,7 @@ def release_payload(
     image_digest: str,
     accepted_image_digests: Sequence[str] | None = None,
     accepted_image_references: Sequence[str] | None = None,
+    reproducible_build: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     target = normalize_image_digests(image_digest)[0]
     accepted = normalize_image_digests(target, accepted_image_digests)
@@ -75,7 +76,7 @@ def release_payload(
     accepted_references = normalize_image_references(
         target_reference, accepted_image_references
     )
-    return {
+    payload = {
         "platform": "gcp-confidential-space",
         "source_repo": ATTESTED_GATEWAY_REPO,
         "source_repositories": {
@@ -142,6 +143,22 @@ def release_payload(
         },
         "released_by": "github-actions:deploy-enclave-gcp",
     }
+    if reproducible_build is not None:
+        if (
+            reproducible_build.get("schema") != "trustedrouter-reproducible-image/1"
+            or reproducible_build.get("source_commit") != commit
+            or reproducible_build.get("image_digest") != target
+            or reproducible_build.get("plane") != "gcp"
+            or reproducible_build.get("platform") != "linux/amd64"
+            or reproducible_build.get("build_args") != {}
+            or not re.fullmatch(r"[0-9a-f]{40}", commit)
+        ):
+            raise ValueError("reproducible build record does not match the published release")
+        payload["reproducible_build"] = {
+            key: reproducible_build[key]
+            for key in ("schema", "source_date_epoch", "plane", "platform", "build_args", "client_image")
+        }
+    return payload
 
 
 def write_text(path: Path, value: str) -> None:
@@ -168,7 +185,7 @@ def trust_html(release: dict[str, Any]) -> str:
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>TrustedRouter Trust</title>
-  <meta name="description" content="Verify that api.trustedrouter.com runs the published open-source attested workload.">
+  <meta name="description" content="Verify that api.trustedrouter.com runs the attested workload built from public source.">
   <link rel="canonical" href="{CANONICAL_TRUST_URL}">
   <style>
     :root {{
@@ -231,9 +248,10 @@ def trust_html(release: dict[str, Any]) -> str:
     <section class="hero">
       <div class="panel">
         <p class="status"><span class="dot"></span>Trust boundary</p>
-        <h1>Verify that the hosted API runs the published open-source workload.</h1>
+        <h1>Verify the hosted API against its public source.</h1>
         <p><code>api.trustedrouter.com</code> is the prompt path (<code>api.quillrouter.com</code> is a permanent alias to the same attested endpoint). Public TLS terminates inside the measured GCP Confidential Space workload. The TrustedRouter control plane does not serve production inference routes and does not receive prompt or output bodies.</p>
         <p>Clients can fetch live attestation, verify issuer/audience/digest, and compare the measured image digest with the release data published here.</p>
+        <p><a href="{ATTESTED_GATEWAY_REPO}/blob/main/docs/reproducible-builds.md">Rebuild and verify the complete gateway image</a>. Whole-image reproduction applies only when the signed release record declares <code>reproducible_build.schema</code>. Older releases and cloud-specific measurement limits are documented in the recipe.</p>
       </div>
       <aside class="panel">
         <h2>GCP workload release</h2>
@@ -379,6 +397,7 @@ def main() -> int:
     parser.add_argument("--commit", required=True)
     parser.add_argument("--image-reference", required=True)
     parser.add_argument("--image-digest", required=True)
+    parser.add_argument("--reproducible-build-record", type=Path)
     parser.add_argument(
         "--accepted-image-digests",
         default="",
@@ -400,6 +419,8 @@ def main() -> int:
             [args.accepted_image_references]
             if args.accepted_image_references
             else None,
+            json.loads(args.reproducible_build_record.read_text())
+            if args.reproducible_build_record else None,
         ),
     )
     return 0

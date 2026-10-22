@@ -48,8 +48,10 @@ class VerifyPcr0BuildArgs(unittest.TestCase):
         # final runtime must retain Docker's requested target architecture.
         stages = [line for line in dockerfile.splitlines() if line.startswith("FROM ")]
         self.assertEqual(len(stages), 3)
-        self.assertNotIn("--platform", stages[1])
-        self.assertEqual(stages[2], "FROM scratch")
+        vendor = [stage for stage in stages if stage.endswith(" AS privatemode")]
+        self.assertEqual(len(vendor), 1)
+        self.assertNotIn("--platform", vendor[0])
+        self.assertEqual(stages[-1], "FROM scratch")
 
     def test_measured_build_args_match_the_release_script(self) -> None:
         release = _assignments(RELEASE)
@@ -73,7 +75,7 @@ class VerifyPcr0BuildArgs(unittest.TestCase):
         for script in (RELEASE, VERIFY):
             text = script.read_text()
             self.assertIn(
-                '--build-arg "SOURCE_REVISION=$(git -C "$REPO_ROOT" rev-parse HEAD)"',
+                'SOURCE_REVISION=$(git -C "$REPO_ROOT" rev-parse HEAD)',
                 text,
                 script.name,
             )
@@ -82,13 +84,8 @@ class VerifyPcr0BuildArgs(unittest.TestCase):
 
     def test_verify_script_builds_from_paths_that_exist(self) -> None:
         text = VERIFY.read_text()
-        dockerfile = re.search(r"--file (\S+)", text)
-        self.assertIsNotNone(dockerfile, "verify-pcr0.sh no longer names a Dockerfile")
-        assert dockerfile is not None
-        self.assertTrue(
-            (REPO_ROOT / dockerfile.group(1)).is_file(),
-            f"{dockerfile.group(1)} does not exist; the verification path is broken",
-        )
+        self.assertIn("reproducible_build.py build --plane aws", text)
+        self.assertTrue((REPO_ROOT / "enclave-go/Dockerfile.enclave").is_file())
         # The build context must exist too — the original defect was a `cd` into
         # a directory that was never in the repository.
         for match in re.finditer(r'cd "\$REPO_ROOT(/[^"]*)?"', text):

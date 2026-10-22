@@ -76,12 +76,13 @@ class RolloutSafetyTests(unittest.TestCase):
             self.assertIn("ARG SOURCE_REVISION", docker)
             self.assertIn("trustedrouter.ShadowBuildRevision=${SOURCE_REVISION}", docker)
         for name in ("release-aws-enclave.sh", "release-gcp.sh", "deploy-azure-aci.sh",
-                     "verify-pcr0.sh", "verify-build.sh"):
+                     "verify-pcr0.sh"):
             self.assertIn('SOURCE_REVISION=$(git -C "$REPO_ROOT" rev-parse HEAD)',
                           (ROOT / "tools" / name).read_text())
         workflow = (ROOT / ".github/workflows/deploy-enclave-gcp.yml").read_text()
-        self.assertIn("--build-arg SOURCE_REVISION=${_SOURCE_REVISION}", workflow)
-        self.assertIn("_SOURCE_REVISION=${GITHUB_SHA}", workflow)
+        self.assertIn('--commit "$GITHUB_SHA"', workflow)
+        self.assertIn("reproducible_build.py promote", workflow)
+        self.assertIn("reproducible_build.py\" verify", (ROOT / "tools/verify-build.sh").read_text())
 
     def test_shared_deploy_lock_queues_without_evicting_pending_releases(self) -> None:
         import yaml
@@ -377,7 +378,7 @@ class RolloutSafetyTests(unittest.TestCase):
         inventory_check = workflow.index(
             "      - name: Verify GCP enclave MIG inventory"
         )
-        image_build = workflow.index("      - name: Build enclave image via Cloud Build")
+        image_build = workflow.index("      - name: Compare independent images and promote unchanged manifest")
         self.assertLess(inventory_check, image_build)
         inventory_step = workflow[inventory_check:image_build]
         self.assertIn("gcloud compute instance-groups managed list", inventory_step)

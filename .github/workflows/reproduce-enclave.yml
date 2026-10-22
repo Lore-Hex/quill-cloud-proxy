@@ -1,0 +1,72 @@
+name: Reproduce complete enclave images
+on:
+  pull_request:
+    paths:
+      - 'enclave-go/**'
+      - 'tools/reproducible_build.py'
+      - 'tools/reproducible-build.env'
+      - 'tools/build-enclave-context.sh'
+      - 'tools/verify_privatemode_binary.py'
+      - 'tools/test_reproducible_build.py'
+      - 'tools/test_verify_privatemode_binary.py'
+      - 'tools/test_verify_pcr0_build_args.py'
+      - '.github/workflows/reproduce-enclave.yml'
+  workflow_dispatch: {}
+permissions:
+  contents: read
+jobs:
+  privatemode-source:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v7
+      - name: Reproduce vendor executable from public source
+        run: python3 tools/verify_privatemode_binary.py --output-dir "$RUNNER_TEMP/privatemode"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: privatemode-source-verification
+          path: |
+            ${{ runner.temp }}/privatemode/verification.json
+            ${{ runner.temp }}/privatemode/build.log
+          retention-days: 7
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        plane: [gcp, aws, azure]
+        builder: [1, 2]
+    steps:
+      - uses: actions/checkout@v7
+      - name: Build complete image in a fresh pinned builder
+        run: |
+          python3 tools/reproducible_build.py build --plane '${{ matrix.plane }}' \
+            --commit "$GITHUB_SHA" --output-dir "$RUNNER_TEMP/reproduction"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: reproduce-${{ matrix.plane }}-${{ matrix.builder }}
+          path: ${{ runner.temp }}/reproduction/*.json
+          if-no-files-found: error
+          retention-days: 7
+  compare:
+    needs: [build, privatemode-source]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: reproduce-*
+          path: evidence
+      - name: Require exact image digests across independent runners
+        run: |
+          python3 - <<'PY'
+          import json, sys
+          from pathlib import Path
+          sys.path.insert(0, 'tools')
+          from reproducible_build import compare
+          for plane in ('gcp', 'aws', 'azure'):
+              records = [json.loads(Path(f'evidence/reproduce-{plane}-{i}/reproduction.json').read_text()) for i in (1, 2)]
+              print(plane, compare(records))
+          PY

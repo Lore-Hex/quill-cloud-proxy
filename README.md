@@ -10,7 +10,24 @@
 
 The prompt-handling proxy for Quill Cloud. The workload runs inside **AWS Nitro
 Enclaves** or **GCP Confidential Space**, depending on the deployment target.
-Open source. Zero data retention. The signed workload image is the boundary.
+Public source. Zero data retention. The signed workload image is the boundary.
+
+## Reproduce the complete image
+
+[Build verification instructions](docs/reproducible-builds.md) cover the full
+image, including the attestation sidecar, Privatemode encryption client,
+certificates and configuration. For releases explicitly marked with
+`reproducible_build.schema` in the signed release record:
+
+```sh
+bash tools/verify-build.sh
+```
+
+This checks the release signature and rebuilds the exact image digest from the
+recorded commit. It rejects legacy releases rather than claiming a main-binary
+comparison proves the whole image. GCP release publication requires matching
+images from two independent runner VMs. Fresh TLS-bound runtime attestation is
+the separate final step; see the instructions for cloud-specific limitations.
 
 ## What this repo is
 
@@ -51,21 +68,16 @@ On AWS, the KMS keys needed to decrypt the device-key list are released only to
 an enclave whose `PCR0` measurement matches the published value. On GCP, Secret
 Manager access is gated by Confidential Space image attestation. Change a single
 line of workload code → new measurement/image digest → secret access fails.
-Anyone can rebuild from this repo and check the published measurement.
+Use the [verification recipe](docs/reproducible-builds.md) to distinguish source
+reproduction, signed release provenance, and fresh TLS-bound live attestation.
+Comparing a digest alone does not verify a signature or prove the running code.
 
-> **Verify any deployed AWS Quill in <2 min:**
-> ```bash
-> ./tools/verify-pcr0.sh
-> ```
-> Rebuilds the enclave deterministically and compares to the value at
-> [`trust-page/pcr0.txt`](trust-page/pcr0.txt) and at
-> <https://trust.quill.lorehex.co/pcr0.txt>.
->
-> **Verify the current GCP production build:**
-> compare the live Confidential Space JWT's
-> `submods.container.image_digest` claim to
-> [`trust-page/image-digest-gcp.txt`](trust-page/image-digest-gcp.txt).
-> The device service does this automatically before sending prompt traffic.
+`tools/verify-pcr0.sh` compares a locally built AWS EIF with the checked-out PCR0
+record. Matching the complete Nitro measurement also requires matching its
+kernel, initramfs and EIF tooling. It is not a two-minute or live-verification
+guarantee. GCP whole-image reproduction applies only to signed release records
+that explicitly declare the new recipe; older releases are not retroactively
+covered.
 
 ## What gets retained
 

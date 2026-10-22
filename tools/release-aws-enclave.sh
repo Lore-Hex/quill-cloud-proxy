@@ -97,6 +97,7 @@ cd "$(dirname "$0")/.."
 # deploy-azure-aci.sh and verify-pcr0.sh do; it is linked into the binary and
 # therefore measured.
 REPO_ROOT="$(pwd)"
+SOURCE_REVISION=$(git -C "$REPO_ROOT" rev-parse HEAD)
 
 verify_aws() {
   say "Checking live AWS measurement and both healthy serving Fargate pin sets..."
@@ -139,24 +140,23 @@ for region in $REGIONS; do
   run aws ecr get-login-password --region "$region" \
     --output text >/dev/null
 
-  if [ "$APPLY" -eq 1 ]; then
-    aws ecr get-login-password --region "$region" \
-      | docker login --username AWS --password-stdin "$registry" >/dev/null
-  fi
-
-  run docker buildx build \
-    --platform "$PLATFORM" \
-    --file enclave-go/Dockerfile.enclave \
-    --build-arg "SOURCE_REVISION=$(git -C "$REPO_ROOT" rev-parse HEAD)" \
+  [ "$PLATFORM" = linux/amd64 ] || { say 'reproducible AWS recipe requires linux/amd64'; exit 1; }
+  (
+    export DOCKER_CONFIG="$(mktemp -d)"
+    trap 'rm -rf "$DOCKER_CONFIG"' EXIT
+    if [ "$APPLY" -eq 1 ]; then
+      aws ecr get-login-password --region "$region" \
+        | docker login --username AWS --password-stdin "$registry" >/dev/null
+    fi
+    run python3 "$REPO_ROOT/tools/reproducible_build.py" release --plane aws \
+    --commit "$SOURCE_REVISION" --output-dir "$(mktemp -d)/builds" \
     --build-arg "BUILD_TAGS=${BUILD_TAGS}" \
     --build-arg "QUILL_TLS_MODE=${QUILL_TLS_MODE}" \
     --build-arg "QUILL_ACME_DNS_GCP_PROJECT=${QUILL_ACME_DNS_GCP_PROJECT}" \
     --build-arg "QUILL_ACME_DNS_MANAGED_ZONE=${QUILL_ACME_DNS_MANAGED_ZONE}" \
     --build-arg "QUILL_API_HOST=${QUILL_API_HOST}" \
-    --tag "$image" \
-    --provenance=false \
-    --push \
-    enclave-go
+    --image "$image"
+  )
 
   say "  published: ${image}"
 done

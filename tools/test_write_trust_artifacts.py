@@ -21,6 +21,17 @@ NEW_REF = "example/image:new"
 
 
 class TrustArtifactTests(unittest.TestCase):
+    def test_reproduction_claim_requires_exact_full_commit_and_image(self) -> None:
+        record = {"schema": "trustedrouter-reproducible-image/1", "source_commit": "a" * 40,
+                  "image_digest": NEW, "plane": "gcp", "platform": "linux/amd64",
+                  "build_args": {}, "source_date_epoch": 1000, "client_image": "docker@sha256:" + "b" * 64}
+        release = trust.release_payload("a" * 40, NEW_REF, NEW, reproducible_build=record)
+        self.assertEqual(release["reproducible_build"]["schema"], record["schema"])
+        for commit, digest in (("b" * 40, NEW), ("a" * 40, OLD), ("a" * 8, NEW)):
+            with self.assertRaises(ValueError):
+                trust.release_payload(commit, NEW_REF, digest, reproducible_build=record)
+        self.assertNotIn("reproducible_build", trust.release_payload("old", OLD_REF, OLD))
+
     def test_agent_prompt_is_first_and_script_free_on_both_static_pages(self) -> None:
         release = trust.release_payload("abc123", NEW_REF, NEW)
         pages = {
