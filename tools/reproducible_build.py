@@ -130,7 +130,9 @@ def build(plane: str, commit: str, output: Path, values: list[str], push: str | 
             credentials = json.loads((config / "config.json").read_text())
             (auth / "config.json").write_text(json.dumps({"auths": credentials.get("auths", {})}))
             (auth / "config.json").chmod(0o600)
-            command += ["--volume", f"{auth}:/root/.docker"]
+            # Only the credential file is shared. Buildx writes root-owned
+            # private state; keep it inside the disposable client container.
+            command += ["--volume", f"{auth / 'config.json'}:/root/.docker/config.json:ro"]
         target = f"type=image,name={push},push=true" if push else "type=oci,dest=/output/image.tar"
         command += ["--entrypoint", "sh", client, "/workspace/tools/build-enclave-context.sh",
                     plane, commit, epoch, target]

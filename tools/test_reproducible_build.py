@@ -102,6 +102,42 @@ class Reproducibility(unittest.TestCase):
         with patch.object(repro, "run", return_value=" M enclave-go/main.go"), self.assertRaisesRegex(ValueError, "dirty"):
             repro.require_clean()
 
+    def test_client_auth_is_read_only_and_buildx_state_is_not_host_mounted(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            config = root / "docker"
+            config.mkdir()
+            (config / "config.json").write_text(json.dumps({
+                "auths": {"registry.example.invalid": {"auth": "test-only"}},
+                "currentContext": "host-only",
+                "credsStore": "host-keychain",
+            }))
+
+            def source(_commit, context):
+                (context / "tools").mkdir()
+                (context / "tools/reproducible-build.env").write_text(
+                    "REPRO_CLIENT='docker@sha256:" + "c" * 64 + "'\n"
+                )
+
+            def client(command, **_kwargs):
+                mounts = [command[i + 1] for i, arg in enumerate(command) if arg == "--volume"]
+                auth = next(item for item in mounts if "/root/.docker/" in item)
+                self.assertTrue(auth.endswith(":/root/.docker/config.json:ro"))
+                self.assertFalse(any(item.endswith(":/root/.docker") for item in mounts))
+                self.assertEqual(json.loads(Path(auth.split(":")[0]).read_text()), {
+                    "auths": {"registry.example.invalid": {"auth": "test-only"}}
+                })
+                (root / "output/build-metadata.json").write_text(json.dumps({
+                    "containerimage.digest": "sha256:" + "b" * 64
+                }))
+
+            with patch.dict(repro.os.environ, {"DOCKER_CONFIG": str(config)}), \
+                    patch.object(repro, "archive_source", side_effect=source), \
+                    patch.object(repro, "docker_socket", return_value="/test/docker.sock"), \
+                    patch.object(repro, "run", return_value="1000"), \
+                    patch.object(repro.subprocess, "run", side_effect=client):
+                repro.build("gcp", "a" * 40, root / "output", [], "registry.example.invalid/test:build")
+
     def test_vulnerable_cosign_cannot_verify_a_release(self):
         for version in ("v2.6.4", "v3.1.2", "v2.6.5", "v3.1.4"):
             with patch.object(repro, "run", return_value=json.dumps({"gitVersion": version})):
