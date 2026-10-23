@@ -75,8 +75,9 @@ Do not describe UID isolation as per-child egress or resource isolation.
   `639ffa3485cccde4d54618bea008378022551119564adf22cffd2d2852f85109`.
   Evidence prefix:
   `gs://44325983244.cloudbuild-logs.googleusercontent.com/privatemode-policy-audit/abfa8900-e456-481b-b1ac-b0f66c0d3dd8/`.
-  `manifest.json`, `deployment.yaml`, and `layers-cache.json` are build outputs;
-  `adjusted-manifest.json` records the documented public transformations.
+  `manifest.json`, `deployment.yaml`, and `layers-cache.json` are retained build
+  outputs. The adjusted hash is reproducible using the transformations below;
+  its upload was not permitted, so it is not claimed as a retained cloud object.
 - Reproduction command: `contrast generate --disable-updates
   --reference-values=metal-qemu-snp-gpu
   --reference-value-patches=scripts/snp-guestpolicy-patch.json
