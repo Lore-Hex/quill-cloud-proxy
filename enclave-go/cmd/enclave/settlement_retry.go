@@ -63,6 +63,13 @@ type settlementRetryJob struct {
 	// router, then drops it.
 	cause     error
 	notBefore time.Time
+	// frozen is the exact control-plane request every attempt of this retry
+	// sends, built once from the compacted job (freezeSettlementRetry). nil
+	// with frozenSet is a refund without an authorization: nothing to send.
+	// frozenErr is why it could not be built; each attempt reports it.
+	frozen    *trustedrouter.FrozenTerminal
+	frozenErr error
+	frozenSet bool
 }
 
 type settlementRetryQueue struct {
@@ -355,17 +362,18 @@ func (q *settlementRetryQueue) process(ctx context.Context, job settlementRetryJ
 		}
 	}
 
-	// The retry worker runs on the queue's own context; re-attach the
-	// request's audit id so a retried settle carries the same
-	// gateway_request_id the first attempt would have.
-	retryContext := trustedrouter.WithRequestLogID(ctx, job.requestLogID)
-	retryContext = trustedrouter.WithClientContext(retryContext, job.clientContext)
+	// The frozen request already carries the request's audit id and client
+	// context, so a retried settle names the same gateway_request_id the
+	// first attempt did although the worker runs on the queue's own context.
 	var result *trustedrouter.SettleResult
 	var err error
-	if job.kind == "refund" {
-		result, err = job.trGateway.RefundDetailed(retryContext, job.authorization, job.refundStatus, job.refundType, job.refundElapsed, job.refundMetadata)
-	} else {
-		result, err = job.trGateway.Settle(retryContext, job.authorization, job.usage)
+	switch {
+	case job.frozenErr != nil:
+		err = job.frozenErr
+	case job.frozen == nil:
+		result = &trustedrouter.SettleResult{}
+	default:
+		result, err = job.trGateway.PostFrozenTerminal(ctx, *job.frozen)
 	}
 	if err == nil {
 		if job.kind != "refund" && job.reportedCost != nil && result.HasCost() && *job.reportedCost != result.CostMicrodollars {
@@ -446,7 +454,26 @@ func compactSettlementRetryJob(job settlementRetryJob) settlementRetryJob {
 	job.usage.AppCategories = nil
 	job.refundMetadata = nil
 	job.cause = nil
+	if !job.frozenSet {
+		job.frozen, job.frozenErr = freezeSettlementRetry(job)
+		job.frozenSet = true
+	}
 	return job
+}
+
+// freezeSettlementRetry builds the request a compacted job retries: the
+// settle or refund the request path would send for the job's compacted
+// authorization and usage, on a context carrying only its audit id and client
+// context. Compaction has already dropped the user, session, trace, metadata,
+// refund metadata and the authorization's async and shadow state, so none of
+// it reaches the frozen bytes.
+func freezeSettlementRetry(job settlementRetryJob) (*trustedrouter.FrozenTerminal, error) {
+	ctx := trustedrouter.WithRequestLogID(context.Background(), job.requestLogID)
+	ctx = trustedrouter.WithClientContext(ctx, job.clientContext)
+	if job.kind == "refund" {
+		return job.trGateway.FreezeRefund(ctx, job.authorization, job.refundStatus, job.refundType, job.refundElapsed, job.refundMetadata)
+	}
+	return job.trGateway.FreezeSettle(ctx, job.authorization, job.usage)
 }
 
 func (q *settlementRetryQueue) delay(attempt int) time.Duration {

@@ -1245,6 +1245,24 @@ func (c *Client) Settle(ctx context.Context, auth *Authorization, usage Usage) (
 		}()
 	}
 	ctx = c.withShadowHeader(ctx, auth, usage, "settle")
+	body, err := buildSettleBody(ctx, auth, usage)
+	if err != nil {
+		return nil, err
+	}
+	var decoded struct {
+		Data SettleResult `json:"data"`
+	}
+	if err := c.postSettlementJSON(ctx, auth, body, &decoded); err != nil {
+		return nil, err
+	}
+	return &decoded.Data, nil
+}
+
+// buildSettleBody returns the exact bytes a settle sends for auth and usage.
+// The request log id and client context are read from ctx. A queued retry
+// freezes these bytes once (FreezeSettle), so this is the single source of the
+// settle wire body.
+func buildSettleBody(ctx context.Context, auth *Authorization, usage Usage) ([]byte, error) {
 	finishReason := usage.FinishReason
 	if finishReason == "" {
 		finishReason = "stop"
@@ -1338,13 +1356,7 @@ func (c *Client) Settle(ctx context.Context, auth *Authorization, usage Usage) (
 	if usage.ServiceTier != "" {
 		body["service_tier"] = usage.ServiceTier
 	}
-	var decoded struct {
-		Data SettleResult `json:"data"`
-	}
-	if err := c.postSettlementJSON(ctx, auth, body, &decoded); err != nil {
-		return nil, err
-	}
-	return &decoded.Data, nil
+	return json.Marshal(body)
 }
 
 // refundDeadline bounds a refund now that it no longer inherits the request's
@@ -1395,23 +1407,31 @@ func (c *Client) refundDetailed(
 		return &SettleResult{}, nil
 	}
 	ctx = c.withShadowHeader(ctx, auth, Usage{}, "refund")
-	if status < 100 {
-		status = 502
-	}
-	// A refund closes an authorization, so it must LEAVE, whatever has happened
-	// to the request it belongs to. A draining gateway cancels in-flight
-	// requests, and a refund sent on a cancelled context never leaves the
-	// process: the caller's hold is stranded until the control plane reaps it.
-	// This used to be each call site's job, and review found sites that had
-	// not done it three rounds running (Fusion's, the key-resolution one, the
-	// version-skew ones in this file). It is a property of a refund, so it
-	// lives here: the request's values are kept, its cancellation is dropped,
-	// and the call gets its own deadline.
 	if ctx == nil {
 		ctx = context.Background()
 	}
-	ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), refundDeadline)
-	defer cancel()
+	body, err := buildRefundBody(ctx, auth, status, errorType, elapsedSeconds, metadata, attribution)
+	if err != nil {
+		return nil, err
+	}
+	return c.postRefund(ctx, auth.pinnedControlPlaneEndpoint(), body, "")
+}
+
+// buildRefundBody returns the exact bytes a refund sends. The request log id
+// and client context are read from ctx. A queued retry freezes these bytes
+// once (FreezeRefund), so this is the single source of the refund wire body.
+func buildRefundBody(
+	ctx context.Context,
+	auth *Authorization,
+	status int,
+	errorType string,
+	elapsedSeconds float64,
+	metadata map[string]any,
+	attribution RefundAttribution,
+) ([]byte, error) {
+	if status < 100 {
+		status = 502
+	}
 	if errorType == "" {
 		errorType = "provider_error"
 	}
@@ -1446,12 +1466,31 @@ func (c *Client) refundDetailed(
 	if attribution.Trace != nil {
 		body["trace"] = attribution.Trace
 	}
+	return json.Marshal(body)
+}
+
+// postRefund sends a refund once, at endpoint (-1: the first dialable
+// authority).
+//
+// A refund closes an authorization, so it must LEAVE, whatever has happened
+// to the request it belongs to. A draining gateway cancels in-flight
+// requests, and a refund sent on a cancelled context never leaves the
+// process: the caller's hold is stranded until the control plane reaps it.
+// This used to be each call site's job, and review found sites that had
+// not done it three rounds running (Fusion's, the key-resolution one, the
+// version-skew ones in this file). It is a property of a refund, so it
+// lives here: the request's values are kept, its cancellation is dropped,
+// and the call gets its own deadline.
+func (c *Client) postRefund(ctx context.Context, endpoint int, body []byte, bootAuth string) (*SettleResult, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), refundDeadline)
+	defer cancel()
 	var decoded struct {
 		Data SettleResult `json:"data"`
 	}
-	if _, err := c.postJSONAtEndpoint(
-		ctx, "/internal/gateway/refund", body, &decoded, auth.pinnedControlPlaneEndpoint(),
-	); err != nil {
+	if _, err := c.postJSONBytesWithBootAuthAtEndpoint(ctx, refundPath, body, &decoded, endpoint, bootAuth); err != nil {
 		return nil, err
 	}
 	return &decoded.Data, nil
