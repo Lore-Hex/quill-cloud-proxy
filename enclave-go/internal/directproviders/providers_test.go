@@ -13,8 +13,8 @@ func TestSpecsAreValidAndImmutable(t *testing.T) {
 		t.Fatal(err)
 	}
 	all := All()
-	if len(all) != 49 {
-		t.Fatalf("provider specs = %d, want 49", len(all))
+	if len(all) != 50 {
+		t.Fatalf("provider specs = %d, want 50", len(all))
 	}
 	original := all[0]
 	all[0].Provider = "mutated"
@@ -32,8 +32,18 @@ func TestAbliterateUsesItsOwnAPIAndSecret(t *testing.T) {
 	if spec.SecretEnv != "QUILL_ABLITERATE_SECRET" || spec.SecretName != "trustedrouter-abliterate-api-key" || spec.MediaOnly {
 		t.Fatalf("Abliterate secret contract = %#v", spec)
 	}
-	if _, ok := Lookup("abliteration"); ok {
+	if other, ok := Lookup("abliteration"); !ok || other.BaseURL == spec.BaseURL || other.SecretName == spec.SecretName {
 		t.Fatal("unrelated provider must not alias Abliterate")
+	}
+}
+
+func TestAbliterationUsesItsOwnAPIAndSecret(t *testing.T) {
+	spec, ok := Lookup("abliteration")
+	if !ok || spec.BaseURL != "https://api.abliteration.ai/v1" || spec.ChatPath() != "/chat/completions" {
+		t.Fatalf("Abliteration API contract = %#v", spec)
+	}
+	if spec.SecretEnv != "QUILL_ABLITERATION_SECRET" || spec.SecretName != "trustedrouter-abliteration-api-key" || spec.MediaOnly {
+		t.Fatalf("Abliteration secret contract = %#v", spec)
 	}
 }
 

@@ -109,6 +109,7 @@ var awsProviderTunnels = []vsockhttp.Tunnel{
 	{Host: "bedrock-mantle.us-east-1.api.aws", CID: 3, Port: 8116},
 	{Host: "llm.eu.greenference.com", CID: 3, Port: 8108},
 	{Host: "inference.muna.ai", CID: 3, Port: 8130},
+	{Host: "api.abliteration.ai", CID: 3, Port: 8131},
 	{Host: "inference.coralbricks.ai", CID: 3, Port: 8115},
 	{Host: "ctf.armet.ai", CID: 3, Port: 8113},
 	{Host: "api.elevenlabs.io", CID: 3, Port: 8109},

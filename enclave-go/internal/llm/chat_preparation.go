@@ -44,6 +44,16 @@ func PrepareChatRequest(provider, upstreamModel string, req *qtypes.OpenAIChatRe
 	if normalizeDirectProvider(provider) == "coralbricks" && req != nil && len(req.PromptCacheOptions) != 0 {
 		return PreparedChatRequest{}, &upstreamHTTPError{status: http.StatusBadRequest, body: "CoralBricks paid cache retention options are not supported"}
 	}
+	if normalizeDirectProvider(provider) == "abliteration" && req != nil {
+		// Native search/fetch carry separate charges and are outside the ZDR
+		// policy. Only caller-executed function tools belong on this route.
+		for _, raw := range req.Tools {
+			tool, ok := raw.(map[string]any)
+			if !ok || tool["type"] != "function" {
+				return PreparedChatRequest{}, &upstreamHTTPError{status: http.StatusBadRequest, body: "Abliteration supports function tools only; native web tools are not enabled"}
+			}
+		}
+	}
 	reqBody := buildOpenAICompatibleRequest(provider, upstreamID, req, body, msgs)
 	// Wharf omits decision confidence/probabilities from SSE. Fetch this small
 	// task result once as JSON, then use the same response pipeline for both
