@@ -1,0 +1,82 @@
+// Copyright (c) Lore Hex Corp
+// SPDX-License-Identifier: MIT
+package httpapi
+
+import (
+	"context"
+	"errors"
+	"io"
+	"net/http"
+	"strings"
+	"testing"
+	"time"
+
+	"github.com/edgelesssys/continuum/internal/oss/auth"
+)
+
+type limitTransport func(*http.Request) (*http.Response, error)
+
+func (f limitTransport) RoundTrip(r *http.Request) (*http.Response, error) { return f(r) }
+
+type countingBody struct{ remaining, read int }
+
+func (b *countingBody) Read(p []byte) (int, error) {
+	if b.remaining == 0 {
+		return 0, io.EOF
+	}
+	n := min(len(p), b.remaining)
+	clear(p[:n])
+	b.remaining -= n
+	b.read += n
+	return n, nil
+}
+func (*countingBody) Close() error { return nil }
+
+func TestTRControlReadLimit(t *testing.T) {
+	for _, status := range []int{200, 401, 500} {
+		body := &countingBody{remaining: 2 * maxControlResponseBytes}
+		client := &http.Client{Transport: limitTransport(func(r *http.Request) (*http.Response, error) {
+			deadline, ok := r.Context().Deadline()
+			if !ok || time.Until(deadline) > controlRequestTimeout {
+				t.Fatal("missing control deadline")
+			}
+			return &http.Response{StatusCode: status, Body: body}, nil
+		})}
+		got, err := Do(t.Context(), client, "POST", "https://example.invalid", nil, auth.Credential{}, nil)
+		if err == nil || got != nil || body.read != maxControlResponseBytes+1 {
+			t.Fatalf("read cap not enforced: bytes=%d err=%v", body.read, err)
+		}
+	}
+}
+
+func TestTRControlCancellation(t *testing.T) {
+	ctx, cancel := context.WithTimeout(t.Context(), 10*time.Millisecond)
+	defer cancel()
+	client := &http.Client{Transport: limitTransport(func(r *http.Request) (*http.Response, error) {
+		<-r.Context().Done()
+		return nil, r.Context().Err()
+	})}
+	_, err := Do(ctx, client, "POST", "https://example.invalid", nil, auth.Credential{}, nil)
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatal(err)
+	}
+}
+
+func TestTRControlResponseStatusAndPrivacy(t *testing.T) {
+	for _, status := range []int{200, 401, 500} {
+		client := &http.Client{Transport: limitTransport(func(*http.Request) (*http.Response, error) {
+			return &http.Response{StatusCode: status, Body: io.NopCloser(strings.NewReader("synthetic-secret"))}, nil
+		})}
+		body, err := Do(t.Context(), client, "POST", "https://example.invalid", nil, auth.Credential{}, nil)
+		if status == 200 {
+			if err != nil || string(body) != "synthetic-secret" {
+				t.Fatal("successful response changed")
+			}
+		} else if err == nil || strings.Contains(err.Error(), "synthetic-secret") || body != nil {
+			t.Fatal("error body was exposed")
+		}
+		if status == 401 && !errors.Is(err, ErrUnauthorized) {
+			t.Fatal("lost auth error classification")
+		}
+	}
+}
