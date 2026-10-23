@@ -144,6 +144,16 @@ plaintext provider to work around a failed verification or unavailable cloud.
 
 ## Pin Updates
 
+### 2026-10-22 v1.60 Deployment Drift
+
+The repair and its release evidence are tracked in
+[the v1.60 review](privatemode-v160-review-2026-10-22.md). The provider changed
+its immutable deployment, causing secret initialization to return 401 despite
+valid credentials. The candidate replaces the old pin only after independent
+policy reproduction. It also source-builds the MIT client using Go 1.26.10,
+with bounded control-plane reads and secret-refresh deadlines. The review
+distinguishes local qualification from completed regional production rollout.
+
 ### 2026-10-16 v1.59 Media Integration
 
 Independent policy reproduction produced manifest SHA-256
