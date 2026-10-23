@@ -1,7 +1,6 @@
 {
   "accepted_pcr0s": [
-    "3122d498a0668abe78c751741cb2f77ecaf90ddc22edf19c8596bf9e9605c9397cfe9392d5d5946ccddcb4abd3602fd3",
-    "bc6e00078bcaa6b585c703d002deea9673345a94cf1cf56c76a7b18bc92457b609d6e36141bdcdf3bcb1e7b33a70b043"
+    "3122d498a0668abe78c751741cb2f77ecaf90ddc22edf19c8596bf9e9605c9397cfe9392d5d5946ccddcb4abd3602fd3"
   ],
   "api_base_url": "https://api-aws.trustedrouter.com/v1",
   "attestation_format": "cose-sign1-nitro-attestation-document",
@@ -13,12 +12,12 @@
     "prompt_output_storage": false
   },
   "image_digest": "sha256:5fed3daa469855bfc48d529c6b94402144e6441417674740d0075b805892ab92",
-  "measurement_provenance": "The isolated eu-west-3 candidate passed Nitro root, exact PCR0, instance module identity, certificate/SPKI, TLS exporter and fresh nonce verification. Both healthy Fargate runtime pin consumers accept the current and candidate measurements during the guarded rollout. Source-to-image provenance is operator-asserted, not a reproduced-build claim.",
+  "measurement_provenance": "All four serving instances in eu-west-1 and eu-west-3 passed Nitro root, exact PCR0, instance module identity, certificate/SPKI, TLS exporter and fresh nonce verification. Both guarded regional refreshes completed successfully. All three Privatemode models streamed successfully on each instance. Both healthy Fargate runtime pin consumers now accept only this measurement. Source-to-image provenance is operator-asserted, not a reproduced-build claim.",
   "measurement_type": "nitro-pcr0-sha384",
-  "observed_module_id": "i-0bf853c246f531253-enc01a166a95ca8f6f8",
+  "observed_module_id": "i-071c629490c5d2aaf-enc01a166ec132901c8",
   "pcr0": "3122d498a0668abe78c751741cb2f77ecaf90ddc22edf19c8596bf9e9605c9397cfe9392d5d5946ccddcb4abd3602fd3",
   "platform": "aws-nitro-enclaves",
-  "release_state": "rolling",
+  "release_state": "current",
   "reproduce": "tools/verify-pcr0.sh",
   "source_commit": "037d0e32f22cb6d86cc85ac8886300a38f71f7d5",
   "source_commit_provenance": "operator-asserted",
