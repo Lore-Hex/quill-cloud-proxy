@@ -510,6 +510,8 @@ func main() {
 		}
 	}
 	stageDConfig := stageDConfigFromEnv()
+	// Before any boot registration starts: every registration path sends it.
+	declareStageDBootCapabilities(trGateway, stageDConfig)
 	fmt.Fprintf(os.Stderr, "spend_lease.local_admission_flag enabled=%t\n", boot.SpendLeaseLocalAdmission)
 	fmt.Fprintf(os.Stderr, "enclave.stage_d_flags usage_heartbeat=%t terminate_at_cap=%t heartbeat_budget_ms=%d settle_before_terminal_ms=%d\n",
 		stageDConfig.usageHeartbeat, stageDConfig.terminateAtCap, stageDConfig.heartbeatBudget.Milliseconds(), stageDConfig.settleBeforeTerminal.Milliseconds())

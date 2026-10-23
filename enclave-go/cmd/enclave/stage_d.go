@@ -38,6 +38,14 @@ func stageDConfigFromEnv() stageDConfig {
 	}
 }
 
+// declareStageDBootCapabilities makes every boot registration declare usage
+// heartbeats exactly when this boot sends them: stageDStreamEligible gates
+// the heartbeats on the same flag. The control plane's Stage D rule reads the
+// declaration once stage_d_require_heartbeat_declaration is on.
+func declareStageDBootCapabilities(gateway *trustedrouter.Client, config stageDConfig) {
+	gateway.DeclareBootCapabilities(trustedrouter.BootCapabilities{UsageHeartbeat: config.usageHeartbeat})
+}
+
 func stageDFlagEnabled(name string) bool {
 	switch strings.ToLower(strings.TrimSpace(os.Getenv(name))) {
 	case "1", "true", "on", "yes":
