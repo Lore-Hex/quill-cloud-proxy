@@ -64,7 +64,21 @@ func assertPrivatemodeUnprivileged(t *testing.T) {
 			!bytes.Contains(status, []byte("CapEff:\t0000000000000000")) {
 			t.Fatal("proxy privilege isolation failed")
 		}
-		t.Log("proxy runs as uid/gid 65532, no capabilities, no_new_privs=1")
+		limits, err := os.ReadFile(filepath.Join(filepath.Dir(path), "limits"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		coreDisabled := false
+		for _, line := range strings.Split(string(limits), "\n") {
+			fields := strings.Fields(line)
+			if len(fields) >= 6 && strings.Join(fields[:4], " ") == "Max core file size" {
+				coreDisabled = fields[4] == "0" && fields[5] == "0"
+			}
+		}
+		if !coreDisabled {
+			t.Fatal("proxy core dumps are not disabled")
+		}
+		t.Log("proxy runs as uid/gid 65532, no capabilities, no_new_privs=1, core limits=0")
 		return
 	}
 	t.Fatal("vendor child not found")

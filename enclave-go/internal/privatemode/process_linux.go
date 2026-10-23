@@ -33,6 +33,9 @@ func ProxyEntrypoint() bool {
 	if os.Geteuid() != 65532 || os.Getegid() != 65532 || unix.Prctl(unix.PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0) != nil {
 		os.Exit(1)
 	}
+	if err := disableCoreDumps(); err != nil {
+		os.Exit(1)
+	}
 	// #nosec G204 -- fixed measured binary; only our launcher supplies these arguments, never a request or shell.
 	if err := syscall.Exec(proxyBinary, append([]string{proxyBinary}, os.Args[2:]...), os.Environ()); err != nil {
 		os.Exit(1)
@@ -88,14 +91,7 @@ func startProcessWithManifest(ctx context.Context, expectedManifest []byte) (*ht
 	}
 	client := localClient(cert)
 	// #nosec G204 -- fixed launcher and flags; workspace is a private MkdirTemp path, not caller input.
-	cmd := exec.CommandContext(ctx, "/quill-enclave", "--privatemode-proxy-child",
-		"--listen-address=127.0.0.1", "--port=18489",
-		"--apiEndpoint=api.privatemode.ai",
-		"--tlsCertPath=/proc/self/fd/3", "--tlsKeyPath=/proc/self/fd/4",
-		"--manifestPath=/proc/self/fd/5", "--workspace="+workspace,
-		"--nvidiaOCSPAllowUnknown=false", "--nvidiaOCSPRevokedGracePeriod=0",
-		"--log-level=error",
-	)
+	cmd := exec.CommandContext(ctx, "/quill-enclave", proxyArguments(workspace)...)
 	cmd.Env = env // Do not inherit provider keys, proxy settings, or debug flags.
 	cmd.ExtraFiles = files
 	cmd.SysProcAttr = &syscall.SysProcAttr{Credential: &syscall.Credential{Uid: 65532, Gid: 65532, Groups: []uint32{}}}
@@ -145,9 +141,26 @@ func startProcessWithManifest(ctx context.Context, expectedManifest []byte) (*ht
 				continue
 			}
 			cleanup = false
-			fmt.Fprintf(os.Stderr, "privatemode.proxy_listening version=v1.59.0 manifest=%x\n", sha256.Sum256(expectedManifest))
+			fmt.Fprintf(os.Stderr, "privatemode.proxy_listening version=v1.60.0 manifest=%x\n", sha256.Sum256(expectedManifest))
 			return client, done, nil
 		}
+	}
+}
+
+func disableCoreDumps() error {
+	return unix.Setrlimit(unix.RLIMIT_CORE, &unix.Rlimit{Cur: 0, Max: 0})
+}
+
+func proxyArguments(workspace string) []string {
+	return []string{
+		"--privatemode-proxy-child",
+		"--listen-address=127.0.0.1", "--port=18489",
+		"--api-endpoint=api.privatemode.ai",
+		"--tls-cert-path=/proc/self/fd/3", "--tls-key-path=/proc/self/fd/4",
+		"--manifest-path=/proc/self/fd/5", "--workspace=" + workspace,
+		"--nvidia-ocsp-allow-unknown=false", "--nvidia-ocsp-revoked-grace-period=0",
+		"--insecure-api-connection=false", "--dump-requests=false",
+		"--log-level=error",
 	}
 }
 
