@@ -1,8 +1,9 @@
 # Privatemode v1.60 deployment review
 
-Status: local encrypted tests and independent policy/image reproduction passed.
-Production rollout is pending. Do not treat local qualification as production
-evidence.
+Status: local encrypted tests, independent policy/image reproduction, and
+production-origin verification passed. The repaired image has been deployed to
+GCP, AWS and both Azure regions. Production results below are distinct from the
+local qualification evidence.
 
 ## Incident
 
@@ -121,12 +122,52 @@ Do not describe UID isolation as per-child egress or resource isolation.
   tests passed (59). CI checks the Linux test helper and cross-compilation-stage
   assertions before merge.
 
-## Remaining release gates
+## Production verification, October 23
 
-1. Complete current full-suite and CI checks.
-2. Deploy through coordinated measured-image rollouts and verify real pinned
-   Privatemode requests in each serving cloud. Leave unrelated provider failures
-   separate from platform health.
+- GCP: all eight serving instances across four regions passed fresh hardware
+  attestation, exact image matching, nonce and TLS channel binding, and direct
+  pinned Privatemode streaming. The final image is
+  `sha256:dcfef2b9db88562816e993439dc57b7f09f98e725538fb2d7b3b7cea5cd326fc`.
+  Stage D sequence 1223 accepts only that image. Final pins were published in
+  [PR 586](https://github.com/Lore-Hex/quill-cloud-proxy/pull/586).
+- AWS: all four serving instances in Paris and Dublin passed the corresponding
+  Nitro attestation and pinned inference checks. The image is
+  `sha256:5fed3daa469855bfc48d529c6b94402144e6441417674740d0075b805892ab92`.
+  Final pins were published in
+  [PR 585](https://github.com/Lore-Hex/quill-cloud-proxy/pull/585).
+- Azure: Dubai and Sydney both passed exact HOSTDATA, pinned MAA issuer, JWT
+  signature, nonce, TLS certificate/exporter bindings and non-debug checks.
+  Both run image
+  `sha256:4cb87fa983893f81d3e8165685faad52ec128737c34a489c682cd31d3be510bb`,
+  built from `2573d2314b0b5f097639a2e749635038e53aa9ac`. The sealed bundle remains
+  `2e721965adec4b0f8c258c7b0ff50d2a`; all 103 existing environment variables were
+  preserved. Dubai's new HOSTDATA is
+  `70a6879700815e6951241d6eb04b86ed05ab8c1a6fb35610b105f55ba1b4bd97`;
+  Sydney's is `2f439c09e80dfc7eb92fd22863ad61a42ae3192e81b34e3574df000dbc1d0f4c`.
+- On both Azure origins, GPT OSS 120B, GLM 5.3, GLM 5.3 Flash,
+  `trustedrouter/trusted` and `nyte/trusted` returned HTTP 200, nonempty PONG,
+  final usage and stream completion with Privatemode as the selected provider.
+  Tests used synthetic prompts with fallbacks disabled, not customer content.
+- The Azure rollout reserved the shared coordinator with AWS as its healthy
+  holdback. Traffic Manager drained one region at a time. Each old Key Vault
+  measurement stayed available for rollback until the replacement attested;
+  completing the rollout requires `verify`, `narrow` and a clean `audit` for
+  each region, plus both endpoints Online. The transition record is
+  [PR 587](https://github.com/Lore-Hex/quill-cloud-proxy/pull/587).
+- Public Azure records are verified byte-for-byte and against the exact
+  `publish-trust-azure.yml@refs/heads/main` signing identity before a replaced
+  region returns to traffic. Local DNS briefly retained a retired origin IP;
+  capture used Azure's current origin IPs while preserving the API hostname,
+  certificate-chain validation and full attestation verification.
+- The separate diagnostic false alarm was fixed in
+  [quill-router PR 1995](https://github.com/Lore-Hex/quill-router/pull/1995).
+  Health probes now parse the bounded JSON response instead of requiring an
+  exact byte string. All 16 latest cold/reused regional probe combinations
+  were up at 14:33 UTC; reused-path checks reported actual connection reuse.
+
+Provider errors remain separate from platform health. For a later upstream
+manifest change, repeat the review and reproduction rather than widening pins
+to an unreviewed deployment.
 
 References: [public release source](https://github.com/edgelesssys/privatemode-public/tree/317d813671769c16238b8e93245e5e2e06060a92),
 [policy reproduction](https://docs.privatemode.ai/cookbook/verify-source/),
