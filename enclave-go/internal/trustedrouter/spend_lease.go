@@ -33,11 +33,48 @@ type BootRegistrationEvidence struct {
 	AttestationKind string
 }
 
+// BootCapabilities is what this boot declares about itself when it registers
+// (quill-router `GatewayBootCapabilities`). The control plane stores the
+// declarations of the latest registration on the boot record; a missing
+// declaration means undeclared. Declare only what this boot actually does.
+type BootCapabilities struct {
+	// UsageHeartbeat is true when this boot heartbeats every stream the router
+	// marks Stage D eligible (QUILL_USAGE_HEARTBEAT). The heartbeat at stream
+	// open (`stream_open_heartbeat`) is a separate declaration this enclave
+	// does not make: its first heartbeat waits for the provider to answer.
+	UsageHeartbeat bool
+}
+
+// bootRegistrationCapabilities is the wire form. Only declarations that are
+// true are sent, and with none the whole object is omitted, so a boot that
+// declares nothing posts exactly the pre-capabilities registration body.
+type bootRegistrationCapabilities struct {
+	UsageHeartbeat bool `json:"usage_heartbeat,omitempty"`
+}
+
+func (c BootCapabilities) wire() *bootRegistrationCapabilities {
+	if !c.UsageHeartbeat {
+		return nil
+	}
+	return &bootRegistrationCapabilities{UsageHeartbeat: true}
+}
+
 type bootRegistrationRequest struct {
-	KID                 string      `json:"kid"`
-	ReceiptPublicKey    receipt.JWK `json:"receipt_public_key"`
-	AttestationEvidence string      `json:"attestation_evidence"`
-	AttestationKind     string      `json:"attestation_kind"`
+	KID                 string                        `json:"kid"`
+	ReceiptPublicKey    receipt.JWK                   `json:"receipt_public_key"`
+	AttestationEvidence string                        `json:"attestation_evidence"`
+	AttestationKind     string                        `json:"attestation_kind"`
+	Capabilities        *bootRegistrationCapabilities `json:"capabilities,omitempty"`
+}
+
+// DeclareBootCapabilities sets what every boot registration from this client
+// declares, on whichever registration path the boot runs (Stage D, spend-lease
+// or speculation shadow). Call it before any Start*BootRegistration: the
+// registration goroutines read it without a lock.
+func (c *Client) DeclareBootCapabilities(capabilities BootCapabilities) {
+	if c != nil {
+		c.bootCapabilities = capabilities
+	}
 }
 
 // ConfigureSpendLeaseShadow enables only the additive Stage A protocol. It is
@@ -132,6 +169,7 @@ func (c *Client) registerAttestedBoot(ctx context.Context, signer *receipt.Signe
 			payload := bootRegistrationRequest{
 				KID: signer.Kid(), ReceiptPublicKey: signer.JWK(),
 				AttestationEvidence: evidence.Attestation, AttestationKind: evidence.AttestationKind,
+				Capabilities: c.bootCapabilities.wire(),
 			}
 			var decoded struct {
 				Data struct {
