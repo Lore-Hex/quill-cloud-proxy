@@ -60,7 +60,7 @@ func TestCoreDumpsDisabled(t *testing.T) {
 		return
 	}
 	// The hard limit cannot be raised again: isolate this assertion from other tests.
-	cmd := exec.Command(os.Args[0], "-test.run=^TestCoreDumpsDisabled$")
+	cmd := exec.Command("/proc/self/exe", "-test.run=^TestCoreDumpsDisabled$")
 	cmd.Env = append(os.Environ(), "TR_TEST_CORE_LIMIT_CHILD=1")
 	if out, err := cmd.CombinedOutput(); err != nil {
 		t.Fatalf("child failed: %v %s", err, out)
