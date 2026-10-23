@@ -1,15 +1,21 @@
 package main
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"reflect"
 	"strings"
 	"sync"
 	"syscall"
 	"testing"
+	"time"
 
+	"github.com/Lore-Hex/quill-cloud-proxy/enclave-go/internal/llm"
 	"github.com/Lore-Hex/quill-cloud-proxy/enclave-go/internal/trustedrouter"
 	"github.com/Lore-Hex/quill-cloud-proxy/enclave-go/internal/types"
 )
@@ -25,8 +31,9 @@ type frozenRetryCapture struct {
 }
 
 // frozenRetryGateway is a two-authority control plane that records every
-// settle and refund, so a test can see which authority got which bytes.
-func frozenRetryGateway(t *testing.T) (*trustedrouter.Client, func() []frozenRetryCapture) {
+// settle and refund, so a test can see which authority got which bytes. status
+// picks each response's code by arrival (nil: always 200).
+func frozenRetryGateway(t *testing.T, status func(arrival int) int) (*trustedrouter.Client, func() []frozenRetryCapture) {
 	t.Helper()
 	var mu sync.Mutex
 	var captured []frozenRetryCapture
@@ -38,7 +45,14 @@ func frozenRetryGateway(t *testing.T) (*trustedrouter.Client, func() []frozenRet
 			}
 			mu.Lock()
 			captured = append(captured, frozenRetryCapture{endpoint: endpoint, path: r.URL.Path, body: string(raw), header: r.Header.Clone()})
+			arrival := len(captured)
 			mu.Unlock()
+			if status != nil {
+				if code := status(arrival); code != http.StatusOK {
+					http.Error(w, `{"error":{"message":"fixture"}}`, code)
+					return
+				}
+			}
 			_, _ = io.WriteString(w, `{"data":{"cost_microdollars":15,"disposition":"finalized"}}`)
 		})
 	}
@@ -239,7 +253,7 @@ func frozenRetryCases() []struct {
 func TestSettlementRetrySendsGoldenFrozenBytes(t *testing.T) {
 	for _, tc := range frozenRetryCases() {
 		t.Run(tc.name, func(t *testing.T) {
-			gateway, captured := frozenRetryGateway(t)
+			gateway, captured := frozenRetryGateway(t, nil)
 			q := &settlementRetryQueue{jobs: make(chan settlementRetryJob, 2), maxAttempts: 1}
 			job := tc.job()
 			job.trGateway = gateway
@@ -247,6 +261,12 @@ func TestSettlementRetrySendsGoldenFrozenBytes(t *testing.T) {
 				t.Fatal("retry was not accepted")
 			}
 			queued := <-q.jobs
+			if queued.frozenErr != nil || queued.frozen == nil {
+				t.Fatalf("job was not frozen: err=%v", queued.frozenErr)
+			}
+			if queued.frozen.Path != tc.wantPath || string(queued.frozen.Body) != tc.wantBody {
+				t.Fatalf("frozen %s changed\n got: %s\nwant: %s", queued.frozen.Path, queued.frozen.Body, tc.wantBody)
+			}
 			q.process(t.Context(), queued)
 			got := captured()
 			if len(got) != 1 {
@@ -274,4 +294,131 @@ func TestSettlementRetrySendsGoldenFrozenBytes(t *testing.T) {
 			}
 		})
 	}
+}
+
+// compactedSettleBody is what the compaction policy leaves of a request-path
+// settle body: no user, session, trace, metadata, referer, app categories or
+// cache affinity, and the default app.
+func compactedSettleBody(t *testing.T, raw string) map[string]any {
+	t.Helper()
+	var body map[string]any
+	if err := json.Unmarshal([]byte(raw), &body); err != nil {
+		t.Fatal(err)
+	}
+	for _, key := range []string{"user", "session_id", "trace", "metadata", "http_referer", "app_categories", "cache_affinity_key", "cache_affinity_explicit"} {
+		delete(body, key)
+	}
+	body["app"] = "attested-gateway"
+	return body
+}
+
+// assertFrozenRetry checks that the retry sent the job's frozen bytes, to the
+// authority of the request-path settle, and that those bytes are the request
+// body under the compaction policy.
+func assertFrozenRetry(t *testing.T, job settlementRetryJob, original, retry frozenRetryCapture) {
+	t.Helper()
+	if job.frozen == nil || retry.body != string(job.frozen.Body) || retry.path != job.frozen.Path {
+		t.Fatalf("retry did not send the frozen bytes\n got: %s", retry.body)
+	}
+	if retry.endpoint != original.endpoint || retry.path != original.path {
+		t.Fatalf("retry went to %s at %d, original to %s at %d", retry.path, retry.endpoint, original.path, original.endpoint)
+	}
+	var sent map[string]any
+	if err := json.Unmarshal([]byte(retry.body), &sent); err != nil {
+		t.Fatal(err)
+	}
+	if want := compactedSettleBody(t, original.body); !reflect.DeepEqual(sent, want) {
+		t.Fatalf("retry body is not the compacted request body\n got: %s\nrequest: %s", retry.body, original.body)
+	}
+	if strings.Contains(retry.body, "private") {
+		t.Fatalf("retry body carries request-private data: %s", retry.body)
+	}
+}
+
+// settleForUsageResponse: the priced body response settle fails, and its
+// retry sends the frozen, compacted request body.
+func TestSettlementRetryFreezesBodyResponseSettle(t *testing.T) {
+	t.Setenv("QUILL_SETTLE_BEFORE_TERMINAL_MS", "2000")
+	original := settlementRetries
+	settlementRetries = &settlementRetryQueue{jobs: make(chan settlementRetryJob, 2), maxAttempts: 1}
+	t.Cleanup(func() { settlementRetries = original })
+	gateway, captured := frozenRetryGateway(t, func(arrival int) int {
+		if arrival == 1 {
+			return http.StatusServiceUnavailable
+		}
+		return http.StatusOK
+	})
+	auth := costReportingAuthorization()
+	usage := frozenRetryPrivateUsage()
+	usage.SelectedEndpoint, usage.SelectedModel = "served", "test-model"
+	ctx := trustedrouter.WithRequestLogID(t.Context(), frozenRetryRequestLogID)
+	ctx = trustedrouter.WithClientContext(ctx, &types.ClientContext{V: 1, Source: "tr", Attempt: intPtrMainTest(1)})
+	if _, err := settleForUsageResponse(ctx, gateway, auth, nil, usage, &types.OpenAIChatRequest{}, nil, "answer", frozenRetryRequestLogID); err != nil {
+		t.Fatal(err)
+	}
+	if len(settlementRetries.jobs) != 1 {
+		t.Fatalf("queued retries = %d, want 1", len(settlementRetries.jobs))
+	}
+	job := <-settlementRetries.jobs
+	settlementRetries.process(t.Context(), job)
+	got := captured()
+	if len(got) != 2 {
+		t.Fatalf("settles = %d, want the original and one retry", len(got))
+	}
+	if !strings.Contains(got[0].body, `"user":"user-private"`) {
+		t.Fatalf("request-path settle lost its attribution: %s", got[0].body)
+	}
+	assertFrozenRetry(t, job, got[0], got[1])
+}
+
+// Stage D BeforeTerminal: the terminal settle is rejected and its retry sends
+// the frozen, compacted request body.
+func TestSettlementRetryFreezesStageDTerminalSettle(t *testing.T) {
+	t.Setenv("QUILL_USAGE_HEARTBEAT", "on")
+	t.Setenv("QUILL_TERMINATE_AT_CAP", "off")
+	q := &settlementRetryQueue{jobs: make(chan settlementRetryJob, 4), maxAttempts: 1, abandonedDelay: time.Hour}
+	original := settlementRetries
+	settlementRetries = q
+	t.Cleanup(func() { settlementRetries = original })
+
+	var settles []frozenRetryCapture
+	gateway := stageDStreamingGateway(t, func(request *http.Request) (*http.Response, error) {
+		switch request.URL.Path {
+		case trustedrouter.HeartbeatPath:
+			return &http.Response{StatusCode: 200, Header: make(http.Header), Body: io.NopCloser(bytes.NewReader(enclaveStageDFixture(t, "heartbeat_response_accepted.json"))), Request: request}, nil
+		case "/internal/gateway/settle":
+			raw, err := io.ReadAll(request.Body)
+			if err != nil {
+				return nil, err
+			}
+			settles = append(settles, frozenRetryCapture{path: request.URL.Path, body: string(raw), header: request.Header.Clone()})
+			if len(settles) == 1 {
+				return &http.Response{StatusCode: http.StatusBadRequest, Header: make(http.Header), Request: request,
+					Body: io.NopCloser(strings.NewReader(`{"error":{"message":"fixture rejected settlement"}}`))}, nil
+			}
+			return &http.Response{StatusCode: 200, Header: make(http.Header), Request: request,
+				Body: io.NopCloser(strings.NewReader(`{"data":{"cost_microdollars":15,"disposition":"finalized"}}`))}, nil
+		default:
+			return nil, errors.New("unexpected path: " + request.URL.Path)
+		}
+	})
+	provider := &scriptedProviderStreamClient{invoke: func(_ llm.InvokeOptions, out io.Writer) error {
+		_, err := io.WriteString(out, providerStreamTestResponse)
+		return err
+	}}
+	ctx := trustedrouter.WithRequestLogID(t.Context(), frozenRetryRequestLogID)
+	var out bytes.Buffer
+	serveStreaming(ctx, &out, provider,
+		&types.OpenAIChatRequest{Model: "model", Stream: true, User: "user-private", SessionID: "session-private"}, &types.AnthropicMessagesRequest{},
+		[]llm.InvokeOptions{{Model: "model", EndpointID: "anthropic/test"}}, gateway, stageDStreamingAuthorization(), nil,
+		time.Now(), nil, "chat.completions", frozenRetryRequestLogID, "model")
+	if len(q.jobs) != 1 {
+		t.Fatalf("queued retries = %d, want 1", len(q.jobs))
+	}
+	job := <-q.jobs
+	q.process(t.Context(), job)
+	if len(settles) != 2 {
+		t.Fatalf("settles = %d, want the original and one retry", len(settles))
+	}
+	assertFrozenRetry(t, job, settles[0], settles[1])
 }
