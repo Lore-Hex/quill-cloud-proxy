@@ -137,6 +137,7 @@ type Client struct {
 	modelEndpointsBytes int
 	spendLease          *spendLeaseProtocol
 	stageDBootSigner    spendlease.DigestSigner
+	bootCapabilities    BootCapabilities
 }
 
 // CachedModelOutputLimit returns a known output cap from the public catalog
