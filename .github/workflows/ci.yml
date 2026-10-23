@@ -7,6 +7,18 @@ on:
     branches: [main]
 
 jobs:
+  privatemode-client:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v7
+      - name: Build pinned client and run control-plane safety tests
+        working-directory: enclave-go
+        run: docker build --platform linux/amd64 --target privatemode -f Dockerfile.enclave.gcp.multi .
+      - name: Build Azure-compatible pinned client
+        working-directory: enclave-go
+        run: docker build --platform linux/amd64 --target privatemode -f Dockerfile.enclave.azure.multi .
+
   enclave-go:
     runs-on: ubuntu-latest
     defaults:
