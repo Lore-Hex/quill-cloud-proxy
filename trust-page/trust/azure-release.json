@@ -1,7 +1,8 @@
 {
   "accepted_hostdata": [
-    "e85511584e0753fc9ebb510269c907405e6d26ff656c97b902b28ca97aad5c98",
-    "77ad08b8938f7798ac04091f623b78144e63fb54f7c9ed02b87ebe6e6e8b2a0d"
+    "70a6879700815e6951241d6eb04b86ed05ab8c1a6fb35610b105f55ba1b4bd97",
+    "77ad08b8938f7798ac04091f623b78144e63fb54f7c9ed02b87ebe6e6e8b2a0d",
+    "e85511584e0753fc9ebb510269c907405e6d26ff656c97b902b28ca97aad5c98"
   ],
   "api_base_url": "https://api-azure.trustedrouter.com/v1",
   "attestation_format": "microsoft-azure-attestation-jwt",
@@ -17,7 +18,7 @@
     "prompt_output_storage": false
   },
   "evidence_note": "MAA re-attests the SEV-SNP report; verifiers see Microsoft's assertion, not the raw hardware report or the AMD certificate chain.",
-  "hostdata": "e85511584e0753fc9ebb510269c907405e6d26ff656c97b902b28ca97aad5c98",
+  "hostdata": "70a6879700815e6951241d6eb04b86ed05ab8c1a6fb35610b105f55ba1b4bd97",
   "measurement_type": "sev-snp-hostdata-sha256",
   "platform": "azure-confidential-containers-sev-snp",
   "regions": [
@@ -26,12 +27,12 @@
       "attestation_url": "https://api-azure.trustedrouter.com/attestation",
       "bundle_version": "2e721965adec4b0f8c258c7b0ff50d2a",
       "compliance_status": "azure-compliant-uvm",
-      "hostdata": "e85511584e0753fc9ebb510269c907405e6d26ff656c97b902b28ca97aad5c98",
-      "image_build_commit": "030fa9ac2513b49d81dde995c69844fdb972b9fc",
-      "image_digest": "sha256:d660445cfc0788c124390df08dc5e5164784e66ac4334c63ce9c11767c1d2986",
+      "hostdata": "70a6879700815e6951241d6eb04b86ed05ab8c1a6fb35610b105f55ba1b4bd97",
+      "image_build_commit": "2573d2314b0b5f097639a2e749635038e53aa9ac",
+      "image_digest": "sha256:4cb87fa983893f81d3e8165685faad52ec128737c34a489c682cd31d3be510bb",
       "launch_measurement": "dc3f5a934489232a9b1818f12a0a88d2324ced00f8ab370f40451a76b7880bc3e211849a0739642d3d6c3b2b4bfb9866",
       "origin_hostname": "quill-enclave-uaenorth.uaenorth.azurecontainer.io",
-      "source_commit": "030fa9ac2513b49d81dde995c69844fdb972b9fc"
+      "source_commit": "2573d2314b0b5f097639a2e749635038e53aa9ac"
     },
     {
       "attestation_issuer": "https://trquillsyd.eau.attest.azure.net",
