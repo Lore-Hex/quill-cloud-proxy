@@ -546,6 +546,10 @@ func main() {
 	if trGateway.Enabled() {
 		settleOutbox = startSettleOutbox(settlementContext, settleOutboxPlan, trGateway.RegisteredBootSigner())
 		settlementRetries.SetOutbox(settleOutbox)
+		// The sweeper replays what any boot in the pool parked. Off unless
+		// QUILL_SETTLE_OUTBOX_SWEEP=on as well; it stops with the retry
+		// queue's context and never runs on a request path.
+		startSettleOutboxSweeper(settlementContext, settleOutboxPlan, settleOutboxSweepEnabled(), trGateway)
 	}
 	if err := initializeSpeculation(ctx, trGateway, speculationMode); err != nil {
 		fmt.Fprintln(os.Stderr, err)
