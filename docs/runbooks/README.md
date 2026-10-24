@@ -202,6 +202,7 @@ it by hand, or Terraform will try to put the cold CNAME back.
 | [historical-outage-investigation.md](./historical-outage-investigation.md) | Status-page bucket > 1h ago is red and you need to figure out why. |
 | [enclave-deploy-monitoring-checklist.md](./enclave-deploy-monitoring-checklist.md) | Checklist to run during every enclave deploy so public API, attestation, digest, and debug state are checked at each step. |
 | [enclave-deploy-debugging.md](./enclave-deploy-debugging.md) | A GHA enclave deploy failed or rolled back. |
+| [settle-outbox.md](./settle-outbox.md) | The settle outbox alert fired (dead/quarantined objects or the sweeper refused), or you are about to set `QUILL_SETTLE_OUTBOX_SWEEP=on`. |
 | [provider-onboarding.md](./provider-onboarding.md) | Adding a new upstream LLM provider (Together, Fireworks, …). |
 
 ## Tooling

@@ -215,6 +215,53 @@ func controlPlaneStatus(status int) error {
 	return &trustedrouter.ControlPlaneError{Path: "/internal/gateway/settle", StatusCode: status, Type: "fixture"}
 }
 
+// The router's two refusals of the caller's internal service token
+// (quill-router routes/internal/_shared.py, require_internal_gateway).
+func internalTokenInvalid() error {
+	return &trustedrouter.ControlPlaneError{Path: "/internal/gateway/settle", StatusCode: 401, Type: "unauthorized", Message: "Invalid internal service token"}
+}
+
+func internalTokenRequired() error {
+	return &trustedrouter.ControlPlaneError{Path: "/internal/gateway/settle", StatusCode: 403, Type: "forbidden", Message: "Internal service token is required"}
+}
+
+// R3's refusal of the object's boot auth (quill-router PR #2048).
+func bootAuthRefused() error {
+	return &trustedrouter.ControlPlaneError{Path: "/internal/gateway/settle", StatusCode: 401, Type: "unauthorized", Message: "Gateway boot was not accepted", Reason: BootAuthRefusedReason}
+}
+
+// readRefusal, the one reader of a 401 or 403, on the three shapes the
+// router produces and on shapes that are none of them.
+func TestReadRefusalTellsTheObjectFromTheSender(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		err  error
+		kind refusalKind
+	}{
+		{"boot_not_accepted_401", bootAuthRefused(), refusalKindBootAuth},
+		{"internal_token_invalid_401", internalTokenInvalid(), refusalKindSender},
+		{"internal_token_required_403", internalTokenRequired(), refusalKindSender},
+		{"boot_not_accepted_reason_on_403_is_not_r3", &trustedrouter.ControlPlaneError{StatusCode: 403, Type: "forbidden", Reason: BootAuthRefusedReason}, refusalKindSenderUnknown},
+		{"unauthorized_without_reason", &trustedrouter.ControlPlaneError{StatusCode: 401, Type: "unauthorized", Message: "Gateway boot was not accepted"}, refusalKindSenderUnknown},
+		{"forbidden_other", &trustedrouter.ControlPlaneError{StatusCode: 403, Type: "forbidden", Message: "billing_paused"}, refusalKindSenderUnknown},
+		{"untyped_401", controlPlaneStatus(401), refusalKindSenderUnknown},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var controlErr *trustedrouter.ControlPlaneError
+			if !errors.As(tc.err, &controlErr) {
+				t.Fatal("fixture is not a ControlPlaneError")
+			}
+			if kind := readRefusal(controlErr); kind != tc.kind {
+				t.Fatalf("readRefusal = %q, want %q", kind, tc.kind)
+			}
+			verdict := classify(tc.err)
+			if wantQuarantine := tc.kind == refusalKindBootAuth; (verdict.outcome == OutcomeQuarantined) != wantQuarantine || verdict.senderRefused == wantQuarantine {
+				t.Fatalf("classify = %+v for %q", verdict, tc.kind)
+			}
+		})
+	}
+}
+
 // newTestSweeper is a sweeper on store over replay with a fake clock. The
 // interval is not a divisor of the lease, so the backoff's cap at the lease
 // is exercised (45 s, 90 s, then 120 s rather than 180 s).
@@ -297,8 +344,9 @@ func TestSweepReplaysASignedObjectAndFilesItUnderDone(t *testing.T) {
 }
 
 // Every router answer lands where §9.2 says: 2xx done, 404 and 409 dead,
-// 401 and 403 quarantine. Other 4xx the contract does not name: 408 and 429
-// retry, the rest are deterministic and go to dead.
+// R3's boot-auth refusal quarantine. Every other 401 or 403 is the sender's
+// problem (the next test). Other 4xx the contract does not name: 408 and
+// 429 retry, the rest are deterministic and go to dead.
 func TestSweepFilesEachRouterAnswerWhereTheContractSays(t *testing.T) {
 	for _, tc := range []struct {
 		name   string
@@ -309,8 +357,7 @@ func TestSweepFilesEachRouterAnswerWhereTheContractSays(t *testing.T) {
 		{"settled", nil, DonePrefix, Report{Listed: 1, Claimed: 1, Settled: 1}},
 		{"404_unknown_authorization", controlPlaneStatus(404), DeadPrefix, Report{Listed: 1, Claimed: 1, Dead: 1}},
 		{"409_retired_kind", controlPlaneStatus(409), DeadPrefix, Report{Listed: 1, Claimed: 1, Dead: 1}},
-		{"401_refused", controlPlaneStatus(401), QuarantinePrefix, Report{Listed: 1, Claimed: 1, Quarantined: 1}},
-		{"403_refused", controlPlaneStatus(403), QuarantinePrefix, Report{Listed: 1, Claimed: 1, Quarantined: 1}},
+		{"401_boot_not_accepted", bootAuthRefused(), QuarantinePrefix, Report{Listed: 1, Claimed: 1, Quarantined: 1}},
 		{"422_rejected", controlPlaneStatus(422), DeadPrefix, Report{Listed: 1, Claimed: 1, Dead: 1}},
 		{"429_throttled", controlPlaneStatus(429), ObjectPrefix, Report{Listed: 1, Claimed: 1, Retried: 1}},
 		{"503_server_error", controlPlaneStatus(503), ObjectPrefix, Report{Listed: 1, Claimed: 1, Retried: 1}},
@@ -721,6 +768,137 @@ func TestSweepLeaseExpiryHandsAStalledObjectToASibling(t *testing.T) {
 	}
 }
 
+// The router refusing the sweeper's own internal token is not about the
+// object: the page stops at the first such answer, nothing is filed, the
+// lease is released, Sweep reports ErrSenderRefused, and no page is listed
+// for one lease. The backlog is intact and replays once the pause ends.
+func TestSweepStopsAndPausesWhenTheRouterRefusesTheSendersToken(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		err  error
+	}{
+		{"401_invalid_token", internalTokenInvalid()},
+		{"403_token_required", internalTokenRequired()},
+		{"403_other_fails_safe", controlPlaneStatus(403)},
+		{"401_other_fails_safe", controlPlaneStatus(401)},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			store := newSweepStore()
+			clock := &fakeClock{now: time.Unix(1_700_000_100, 0)}
+			logs := &logBuffer{}
+			signer := testSigner(t)
+			var rests []string
+			for i := 0; i < 3; i++ {
+				_, rest := park(t, store, settleTerminal(bodyFor(fmt.Sprintf("auth_sender_%d", i))), signer)
+				rests = append(rests, rest)
+			}
+			var refuse atomic.Bool
+			refuse.Store(true)
+			replay := &recordingReplayer{answer: func(trustedrouter.FrozenTerminal) (*trustedrouter.SettleResult, error) {
+				if refuse.Load() {
+					return nil, tc.err
+				}
+				return &trustedrouter.SettleResult{Settled: true}, nil
+			}}
+			sweeper := newTestSweeper(store, replay, clock, logs, "sweeper_a")
+			report, err := sweeper.Sweep(context.Background())
+			if !errors.Is(err, ErrSenderRefused) {
+				t.Fatalf("Sweep error = %v, want ErrSenderRefused", err)
+			}
+			if replay.count() != 1 {
+				t.Fatalf("replays = %d after the router refused the sender; the page must stop", replay.count())
+			}
+			if !report.SenderRefused || report.Listed != 3 || report.Claimed != 1 || report.Retried != 1 || report.Quarantined != 0 || report.Dead != 0 {
+				t.Fatalf("report = %+v", report)
+			}
+			if pending := store.names(ObjectPrefix); len(pending) != 3 {
+				t.Fatalf("pending = %v, want all three still parked", pending)
+			}
+			for _, prefix := range []string{QuarantinePrefix, DeadPrefix, DonePrefix} {
+				if names := store.names(prefix); len(names) != 0 {
+					t.Fatalf("filed under %s: %v", prefix, names)
+				}
+			}
+			leased := 0
+			for _, rest := range rests {
+				if held, ok := store.lease(t, rest); ok {
+					leased++
+					if held.Owner != "" || held.Until <= clock.Now().UnixMilli() {
+						t.Fatalf("lease not released into a backoff: %+v", held)
+					}
+				}
+			}
+			if leased != 1 {
+				t.Fatalf("%d leases, want the one released", leased)
+			}
+			if !strings.Contains(logs.all(), "settle_outbox.sweep_sender_refused") {
+				t.Fatalf("logs:\n%s", logs.all())
+			}
+			// Paused: nothing is listed or replayed inside the lease.
+			refuse.Store(false)
+			clock.Advance(sweeper.lease - time.Second)
+			report, err = sweeper.Sweep(context.Background())
+			if err != nil || report != (Report{}) || replay.count() != 1 {
+				t.Fatalf("swept inside the pause: report=%+v err=%v replays=%d", report, err, replay.count())
+			}
+			clock.Advance(2 * time.Second)
+			if _, err := sweeper.Sweep(context.Background()); err != nil {
+				t.Fatal(err)
+			}
+			if replay.count() != 4 || len(store.names(DonePrefix)) != 3 || len(store.names(ObjectPrefix)) != 0 {
+				t.Fatalf("after the pause: replays=%d done=%d pending=%d", replay.count(), len(store.names(DonePrefix)), len(store.names(ObjectPrefix)))
+			}
+		})
+	}
+}
+
+// A lease whose pending object is gone (a sweeper died between moving the
+// object and dropping the lease) is dropped once it has expired; a live one
+// is left for its owner, and one whose object still exists is left for the
+// pending sweep.
+func TestSweepDropsOrphanLeasesOnceExpired(t *testing.T) {
+	store := newSweepStore()
+	clock := &fakeClock{now: time.Unix(1_700_000_100, 0)}
+	ctx := context.Background()
+	write := func(rest string, until time.Time) {
+		data, _ := json.Marshal(lease{Owner: "sweeper_dead", Until: until.UnixMilli(), Attempts: 1})
+		if _, err := store.Put(ctx, leasePrefix+rest, data, batch.PutCondition{Generation: 0}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	write("settle/auth_orphan_expired/aa.json", clock.Now().Add(-time.Second))
+	write("settle/auth_orphan_live/bb.json", clock.Now().Add(time.Minute))
+	_, kept := park(t, store, settleTerminal(bodyFor("auth_kept")), testSigner(t))
+	write(kept, clock.Now().Add(-time.Second))
+	replay := &recordingReplayer{}
+	sweeper := newTestSweeper(store, replay, clock, nil, "sweeper_a")
+
+	report, err := sweeper.Sweep(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if report.OrphanLeases != 1 || report.Settled != 1 {
+		t.Fatalf("report = %+v", report)
+	}
+	if _, ok := store.data(leasePrefix + "settle/auth_orphan_expired/aa.json"); ok {
+		t.Fatal("expired orphan lease kept")
+	}
+	if _, ok := store.data(leasePrefix + "settle/auth_orphan_live/bb.json"); !ok {
+		t.Fatal("live lease dropped under its owner")
+	}
+	if _, ok := store.lease(t, kept); ok {
+		t.Fatal("the kept object's expired lease should have been claimed, replayed and dropped by the pending sweep")
+	}
+	clock.Advance(2 * time.Minute)
+	report, err = sweeper.Sweep(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if report.OrphanLeases != 1 || len(store.names(leasePrefix)) != 0 {
+		t.Fatalf("report = %+v leases = %v", report, store.names(leasePrefix))
+	}
+}
+
 // Through the real control-plane client: the router receives the object's
 // exact bytes at base_url+path, the boot-auth header verbatim, and no
 // settlement mode or shadow header; its answers classify as the contract
@@ -742,7 +920,8 @@ func TestSweepPostsTheExactBytesAndBootAuthToTheRouter(t *testing.T) {
 		{"refund_200", http.StatusOK, refundTerminal, DonePrefix, 1},
 		{"settle_404", http.StatusNotFound, settleTerminal, DeadPrefix, 1},
 		{"settle_409", http.StatusConflict, settleTerminal, DeadPrefix, 1},
-		{"settle_403", http.StatusForbidden, settleTerminal, QuarantinePrefix, 1},
+		{"settle_401_boot_not_accepted", http.StatusUnauthorized, settleTerminal, QuarantinePrefix, 1},
+		{"settle_403_internal_token", http.StatusForbidden, settleTerminal, ObjectPrefix, 1},
 		// A pinned settle for a named authorization retries 5xx inside the
 		// client's own budget (3 attempts); the sweeper then backs off.
 		{"settle_503", http.StatusServiceUnavailable, settleTerminal, ObjectPrefix, 3},
@@ -755,7 +934,16 @@ func TestSweepPostsTheExactBytesAndBootAuthToTheRouter(t *testing.T) {
 				mu.Lock()
 				got = append(got, received{path: r.URL.Path, body: string(raw), header: r.Header.Clone()})
 				mu.Unlock()
-				if tc.status != http.StatusOK {
+				switch tc.status {
+				case http.StatusOK:
+				case http.StatusUnauthorized:
+					// R3's exact body (quill-router PR #2048).
+					http.Error(w, `{"error":{"code":401,"message":"Gateway boot was not accepted","type":"unauthorized","reason":"`+BootAuthRefusedReason+`"}}`, tc.status)
+					return
+				case http.StatusForbidden:
+					http.Error(w, `{"error":{"code":403,"message":"Internal service token is required","type":"forbidden"}}`, tc.status)
+					return
+				default:
 					http.Error(w, `{"error":{"message":"fixture","type":"fixture"}}`, tc.status)
 					return
 				}
@@ -776,7 +964,10 @@ func TestSweepPostsTheExactBytesAndBootAuthToTheRouter(t *testing.T) {
 				t.Fatal(err)
 			}
 			sweeper := newTestSweeper(store, client, &fakeClock{now: time.Unix(1_700_000_100, 0)}, nil, "sweeper_a")
-			if _, err := sweeper.Sweep(context.Background()); err != nil {
+			report, err := sweeper.Sweep(context.Background())
+			if wantRefused := tc.status == http.StatusForbidden; errors.Is(err, ErrSenderRefused) != wantRefused || report.SenderRefused != wantRefused {
+				t.Fatalf("Sweep = %+v, %v; sender refused wanted %t", report, err, wantRefused)
+			} else if err != nil && !wantRefused {
 				t.Fatal(err)
 			}
 			mu.Lock()

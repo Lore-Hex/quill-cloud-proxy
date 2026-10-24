@@ -44,6 +44,15 @@
 // enclave without it never writes. Enable the sweeper separately with
 // tee-env-QUILL_SETTLE_OUTBOX_SWEEP=on once this file's sweeper grant is
 // applied; the bucket alone leaves it off.
+//
+// HARD RULE: QUILL_SETTLE_OUTBOX_SWEEP=on must never be set before the
+// router's verify-when-present increment (quill-router R3: X-TR-Boot-Auth
+// verified on /settle and /refund when present) is deployed on the plane
+// the sweeper replays to. Until then the router accepts any shaped header
+// under the sweeper's own internal token, so an object any pool-admitted
+// workload created would settle as trusted. The sweeper refuses unsigned
+// objects itself; only the router can refuse a forged signature.
+// See docs/runbooks/settle-outbox.md.
 
 terraform {
   required_version = ">= 1.5"
@@ -125,10 +134,14 @@ resource "google_storage_bucket_iam_member" "enclave_create" {
   member = "principalSet://iam.googleapis.com/projects/${var.project_number}/locations/global/workloadIdentityPools/${var.workload_identity_pool}/*"
 }
 
-// The sweeper (E4): read and list to find and decode pending objects and
-// leases, delete to move them. Create is the grant above. A custom role
-// rather than roles/storage.objectAdmin, which would also carry update and
-// the IAM-on-objects permissions nothing here needs. The widening and what
+// The sweeper (E4): get and list to find and decode pending objects and
+// leases; delete to finish a move (the pending object goes once its copy
+// under done/, dead/ or quarantine/ exists) and to drop a lease. The lease
+// rewrite (a Put with ifGenerationMatch=<generation>, Batch's claim) also
+// needs storage.objects.delete: GCS treats replacing an object as delete
+// plus create. Create itself is the grant above. A custom role rather than
+// roles/storage.objectAdmin, which would also carry update and the
+// IAM-on-objects permissions nothing here needs. The widening and what
 // bounds it are in the header comment.
 resource "google_project_iam_custom_role" "settle_outbox_sweeper" {
   role_id     = "settleOutboxSweeper"
@@ -145,6 +158,69 @@ resource "google_storage_bucket_iam_member" "enclave_sweep" {
   bucket = google_storage_bucket.settle_outbox.name
   role   = google_project_iam_custom_role.settle_outbox_sweeper.id
   member = "principalSet://iam.googleapis.com/projects/${var.project_number}/locations/global/workloadIdentityPools/${var.workload_identity_pool}/*"
+}
+
+// Alerting. The enclave writes its log lines to the Confidential Space
+// launcher log (tools/dx/enclave-logs.sh reads the same stream). Every
+// sweep that saw pending objects logs one counter line,
+//   settle_outbox.sweep owner=... pending=N claimed=N settled=N dead=N quarantined=N retried=N skipped=N orphan_leases=N
+// A non-zero dead or quarantined count is a charge a human has to look at
+// (v1/dead/) or an object that must not be replayed (v1/quarantine/): the
+// metric below counts those lines and the policy pages on any. The sender
+// refusal line is included too: a sweeper the router no longer admits
+// recovers nothing until its token is fixed.
+variable "alert_notification_channels" {
+  type        = list(string)
+  description = "Cloud Monitoring notification channel ids the outbox alert pages. Empty means the policy exists and is visible in the console but pages nobody."
+  default     = []
+}
+
+resource "google_logging_metric" "settle_outbox_attention" {
+  name        = "settle_outbox_attention"
+  description = "Settle outbox sweeps that filed an object under dead/ or quarantine/, or were refused by the router."
+  filter      = <<-EOT
+    logName="projects/${var.project_id}/logs/confidential-space-launcher"
+    AND (
+      textPayload=~"settle_outbox\.sweep .*(dead|quarantined)=[1-9]"
+      OR jsonPayload.MESSAGE=~"settle_outbox\.sweep .*(dead|quarantined)=[1-9]"
+      OR textPayload:"settle_outbox.sweep_sender_refused"
+      OR jsonPayload.MESSAGE:"settle_outbox.sweep_sender_refused"
+    )
+  EOT
+
+  metric_descriptor {
+    metric_kind = "DELTA"
+    value_type  = "INT64"
+  }
+}
+
+resource "google_monitoring_alert_policy" "settle_outbox_attention" {
+  display_name = "Settle outbox: dead or quarantined objects"
+  combiner     = "OR"
+
+  conditions {
+    display_name = "Any sweep filed dead/quarantine or was refused"
+    condition_threshold {
+      filter          = "metric.type=\"logging.googleapis.com/user/${google_logging_metric.settle_outbox_attention.name}\" AND resource.type=\"gce_instance\""
+      comparison      = "COMPARISON_GT"
+      threshold_value = 0
+      duration        = "0s"
+      aggregations {
+        alignment_period   = "300s"
+        per_series_aligner = "ALIGN_SUM"
+      }
+      trigger {
+        count = 1
+      }
+    }
+  }
+
+  notification_channels = var.alert_notification_channels
+
+  documentation {
+    content   = "An enclave settle outbox sweep moved an object to v1/dead/ (the router refused the authorization: 404 or 409) or v1/quarantine/ (unsigned, malformed or boot-auth refused), or the router refused the sweeper's internal token. Runbook: docs/runbooks/settle-outbox.md."
+    mime_type = "text/markdown"
+  }
 }
 
 output "bucket" {
