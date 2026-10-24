@@ -117,6 +117,9 @@ func TestOutboxSignsOnlyWithARegisteredBootKey(t *testing.T) {
 	}{
 		{"unregistered", func(*trustedrouter.Client) {}, false},
 		{"stage_d", func(c *trustedrouter.Client) { c.ConfigureStageDBoot(signer) }, true},
+		// A shadow-only boot's authorize carries no boot auth, so nothing it
+		// signed could be verified: its objects stay unsigned.
+		{"shadow_only", func(c *trustedrouter.Client) { c.ConfigureShadowBoot(signer) }, false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			client := trustedrouter.New("http://127.0.0.1:18080", "internal", &http.Client{})

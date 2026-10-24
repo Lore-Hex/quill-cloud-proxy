@@ -164,8 +164,9 @@ func TestBootRegistrationDeclaresSettleOutboxExactlyWhenDeclared(t *testing.T) {
 	}
 }
 
-// RegisteredBootSigner is the key a registration path was started for, and
-// nil for a boot that registers nowhere.
+// RegisteredBootSigner is the key that also signs authorize (Stage D or
+// spend lease), and nil for a boot that registers nowhere or only as a
+// speculation shadow, whose authorizations store no boot kid.
 func TestRegisteredBootSignerFollowsTheRegistrationPaths(t *testing.T) {
 	signer, err := receipt.NewSignerFromSeed(bootCapabilitiesFixtureSeed)
 	if err != nil {
@@ -190,7 +191,7 @@ func TestRegisteredBootSignerFollowsTheRegistrationPaths(t *testing.T) {
 	}
 	shadow := New("http://127.0.0.1:18080", "internal", &http.Client{})
 	shadow.ConfigureShadowBoot(signer)
-	if got := shadow.RegisteredBootSigner(); got == nil || got.Kid() != signer.Kid() {
-		t.Fatalf("shadow signer = %v", got)
+	if got := shadow.RegisteredBootSigner(); got != nil {
+		t.Fatalf("shadow-only boot has a registered signer %v; its authorize carries no boot auth", got)
 	}
 }

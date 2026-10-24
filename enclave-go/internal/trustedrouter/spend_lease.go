@@ -65,19 +65,14 @@ func (c BootCapabilities) wire() *bootRegistrationCapabilities {
 	return &bootRegistrationCapabilities{UsageHeartbeat: c.UsageHeartbeat, SettleOutbox: c.SettleOutbox}
 }
 
-// RegisteredBootSigner is the boot key a registration path was started for:
-// Stage D, spend lease or the speculation shadow, in that order. nil when this
-// boot registers nowhere, so the control plane knows no kid for it.
-// Registration is asynchronous, so a non-nil signer means "the router was
-// told this kid", not "the router verified it".
+// RegisteredBootSigner is the boot key that also signs this boot's authorize
+// calls: Stage D, else spend lease. nil when this boot has neither, including
+// a speculation-shadow-only boot: its authorize carries no boot auth, so the
+// authorization stores no boot kid and the router could verify nothing
+// signed with that key. Registration is asynchronous, so a non-nil signer
+// means "the router was told this kid", not "the router verified it".
 func (c *Client) RegisteredBootSigner() spendlease.DigestSigner {
-	if signer := c.stageDBootDigestSigner(); signer != nil {
-		return signer
-	}
-	if c != nil && c.shadowSigner != nil {
-		return c.shadowSigner
-	}
-	return nil
+	return c.stageDBootDigestSigner()
 }
 
 type bootRegistrationRequest struct {
