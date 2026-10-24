@@ -45,6 +45,7 @@ import (
 	"github.com/Lore-Hex/quill-cloud-proxy/enclave-go/internal/llm"
 	"github.com/Lore-Hex/quill-cloud-proxy/enclave-go/internal/privatemode"
 	"github.com/Lore-Hex/quill-cloud-proxy/enclave-go/internal/requesttiming"
+	"github.com/Lore-Hex/quill-cloud-proxy/enclave-go/internal/settleoutbox"
 	"github.com/Lore-Hex/quill-cloud-proxy/enclave-go/internal/shadowobserve"
 	"github.com/Lore-Hex/quill-cloud-proxy/enclave-go/internal/speech"
 	"github.com/Lore-Hex/quill-cloud-proxy/enclave-go/internal/transcription"
@@ -533,6 +534,14 @@ func main() {
 			trGateway.StartStageDBootRegistration(ctx, receiptSigner, currentSpendLeaseEvidence)
 		}
 	}
+	// After the receipt signer exists, so parked terminals carry this boot's
+	// replay signature, and before serving starts, so no retry can be lost
+	// unparked. Off unless QUILL_SETTLE_OUTBOX_BUCKET is set.
+	var settleOutbox *settleoutbox.Writer
+	if trGateway.Enabled() {
+		settleOutbox = startSettleOutbox(settlementContext, receiptSigner)
+		settlementRetries.SetOutbox(settleOutbox)
+	}
 	if err := initializeSpeculation(ctx, trGateway, speculationMode); err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(1)
@@ -564,6 +573,15 @@ func main() {
 		flushContext, stopFlush := context.WithTimeout(context.Background(), 3*time.Second)
 		settlementRetries.Flush(flushContext)
 		stopFlush()
+		if settleOutbox != nil {
+			// Its own budget: the retry flush above has spent its 3 s when
+			// it parked anything.
+			outboxContext, stopOutbox := context.WithTimeout(context.Background(), 5*time.Second)
+			if flushErr := settleOutbox.Flush(outboxContext); flushErr != nil {
+				fmt.Fprintf(os.Stderr, "enclave.shutdown_settle_outbox_pending err=%q\n", flushErr.Error())
+			}
+			stopOutbox()
+		}
 		startupHarness.RecordShutdownWait(flushStarted, time.Now())
 	}
 	if err != nil {
