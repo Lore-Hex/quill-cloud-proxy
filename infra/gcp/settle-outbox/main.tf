@@ -35,7 +35,7 @@
 // only the bytes the object holds.
 //
 // Not applied by the PR that adds it. Run from this directory:
-//   terraform init
+//   terraform init    # state: gs://quill-cloud-proxy-tfstate/settle-outbox
 //   terraform plan -var project_number=<number>
 //   terraform apply
 //
@@ -56,6 +56,13 @@
 
 terraform {
   required_version = ">= 1.5"
+  // State lives in the project's shared Terraform state bucket (the same one
+  // tools/dns documents), under its own prefix, so an apply from any machine
+  // sees the bucket, roles and alert this root already created.
+  backend "gcs" {
+    bucket = "quill-cloud-proxy-tfstate"
+    prefix = "settle-outbox"
+  }
   required_providers {
     google = {
       source  = "hashicorp/google"
