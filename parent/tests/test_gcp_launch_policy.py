@@ -41,6 +41,25 @@ def test_gcp_multi_launch_policy_allows_deployed_env_overrides() -> None:
     assert "TR_NATIVE_BATCH_PROVIDERS" not in deploy_script.read_text()
 
 
+def test_settle_outbox_env_names_are_in_every_gcp_launch_policy_label() -> None:
+    # Confidential Space refuses to launch a workload whose tee-env name is
+    # not in the image label, so the sweep name must be allowed before the
+    # sweeper can ever be enabled. The deploy script must keep not setting it.
+    for suffix in ("gcp.multi", "gcp.anthropic"):
+        dockerfile = REPO_ROOT / "enclave-go" / f"Dockerfile.enclave.{suffix}"
+        label_match = re.search(
+            r'LABEL "tee\.launch_policy\.allow_env_override"="([^"]+)"',
+            dockerfile.read_text(),
+        )
+        assert label_match is not None, suffix
+        allowed_envs = set(label_match.group(1).split(","))
+        assert "QUILL_SETTLE_OUTBOX_BUCKET" in allowed_envs, suffix
+        assert "QUILL_SETTLE_OUTBOX_SWEEP" in allowed_envs, suffix
+
+    deploy_script = REPO_ROOT / "tools" / "deploy-gcp-mig.sh"
+    assert "QUILL_SETTLE_OUTBOX_SWEEP" not in deploy_script.read_text()
+
+
 def test_batch_resource_provisioning_is_attestation_and_retention_scoped() -> None:
     provision = (REPO_ROOT / "tools" / "provision-gcp-batch-resources.sh").read_text()
     reconcile = (REPO_ROOT / "tools" / "reconcile-gcp-batch-image-access.sh").read_text()

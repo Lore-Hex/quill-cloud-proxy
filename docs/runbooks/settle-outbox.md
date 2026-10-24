@@ -23,6 +23,39 @@ refusal is HTTP 401, `error.type` `unauthorized`, `error.reason`
 `boot_not_accepted` (`settleoutbox.BootAuthRefusedReason`); confirm the
 deployed router answers that before enabling.
 
+## Enabling order
+
+Enabling needs all of these, in this order:
+
+1. A serving image that carries `QUILL_SETTLE_OUTBOX_SWEEP` in its
+   `tee.launch_policy.allow_env_override` label (`Dockerfile.enclave.gcp.multi`
+   and `Dockerfile.enclave.gcp.anthropic`). That is a release built after the
+   label PR; earlier images do not have it.
+2. Router R3 deployed on the plane the sweeper replays to (hard rule above).
+3. Only then the tee-env `QUILL_SETTLE_OUTBOX_SWEEP=on` on the instance
+   templates. Confidential Space refuses to launch a workload whose tee-env
+   name is not in the image label, so the tee-env alone is not enough.
+
+Do not pin a pre-label image (for example `gcp-release-72be94e6`) while a
+tee-env for this feature is set: the launch would be refused. Unset the
+tee-env first, or roll forward to an image that has the label. Same for the
+bucket tee-env on any image older than the one that added
+`QUILL_SETTLE_OUTBOX_BUCKET` to the label.
+
+## What to expect in the logs while off
+
+With no bucket, each boot logs `enclave.settle_outbox_disabled reason=no_bucket`
+(or `reason=<error> bucket=<name>` if the store could not be built). With the
+bucket set and the sweep unset, each boot logs
+`enclave.settle_outbox_sweeper_disabled reason=sweep_off`. Other disabled
+reasons are `no_outbox` (sweep set, no bucket) and `no_control_plane`. These
+negative lines are the signal that the feature is off; the absence of
+`settle_outbox.` counter lines is expected.
+
+`capabilities.settle_outbox=true` is a field of the boot registration the
+enclave sends to the control plane; read it there. It is not a line that
+`tools/dx/enclave-logs.sh` prints.
+
 ## When the alert fires
 
 The alert (`google_monitoring_alert_policy.settle_outbox_attention`) pages on
