@@ -122,3 +122,75 @@ func TestBootRegistrationWithoutHeartbeatsKeepsLegacyBody(t *testing.T) {
 		}
 	}
 }
+
+// settle_outbox (E4 E3) rides next to usage_heartbeat: declared alone, with
+// heartbeats, and withdrawn when the outbox is off, on every registration
+// path, pinned to fixture bytes.
+func TestBootRegistrationDeclaresSettleOutboxExactlyWhenDeclared(t *testing.T) {
+	cases := []struct {
+		fixture      string
+		capabilities BootCapabilities
+		want         map[string]string
+	}{
+		{"boot_registration_settle_outbox.json", BootCapabilities{SettleOutbox: true}, map[string]string{"settle_outbox": "true"}},
+		{"boot_registration_usage_heartbeat_settle_outbox.json", BootCapabilities{UsageHeartbeat: true, SettleOutbox: true}, map[string]string{"usage_heartbeat": "true", "settle_outbox": "true"}},
+		{"boot_registration_usage_heartbeat.json", BootCapabilities{UsageHeartbeat: true}, map[string]string{"usage_heartbeat": "true"}},
+		{"boot_registration_undeclared.json", BootCapabilities{}, nil},
+	}
+	for name, start := range registrationPaths {
+		for _, tc := range cases {
+			t.Run(name+"/"+tc.fixture, func(t *testing.T) {
+				capabilities := tc.capabilities
+				body := firstRegistrationBody(t, &capabilities, start)
+				if want := registrationFixture(t, tc.fixture); !bytes.Equal(body, want) {
+					t.Fatalf("registration body:\n got %s\nwant %s", body, want)
+				}
+				var decoded struct {
+					Capabilities map[string]json.RawMessage `json:"capabilities"`
+				}
+				if err := json.Unmarshal(body, &decoded); err != nil {
+					t.Fatal(err)
+				}
+				if len(decoded.Capabilities) != len(tc.want) {
+					t.Fatalf("capabilities = %s, want %v", body, tc.want)
+				}
+				for key, value := range tc.want {
+					if string(decoded.Capabilities[key]) != value {
+						t.Fatalf("capabilities[%s] = %s, want %s", key, decoded.Capabilities[key], value)
+					}
+				}
+			})
+		}
+	}
+}
+
+// RegisteredBootSigner is the key a registration path was started for, and
+// nil for a boot that registers nowhere.
+func TestRegisteredBootSignerFollowsTheRegistrationPaths(t *testing.T) {
+	signer, err := receipt.NewSignerFromSeed(bootCapabilitiesFixtureSeed)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var nilClient *Client
+	if nilClient.RegisteredBootSigner() != nil {
+		t.Fatal("nil client has a registered signer")
+	}
+	client := New("http://127.0.0.1:18080", "internal", &http.Client{})
+	if client.RegisteredBootSigner() != nil {
+		t.Fatal("unregistered boot has a registered signer")
+	}
+	client.ConfigureStageDBoot(signer)
+	if got := client.RegisteredBootSigner(); got == nil || got.Kid() != signer.Kid() {
+		t.Fatalf("stage D signer = %v", got)
+	}
+	spendLease := New("http://127.0.0.1:18080", "internal", &http.Client{})
+	spendLease.ConfigureSpendLeaseShadow(signer, nil)
+	if got := spendLease.RegisteredBootSigner(); got == nil || got.Kid() != signer.Kid() {
+		t.Fatalf("spend-lease signer = %v", got)
+	}
+	shadow := New("http://127.0.0.1:18080", "internal", &http.Client{})
+	shadow.ConfigureShadowBoot(signer)
+	if got := shadow.RegisteredBootSigner(); got == nil || got.Kid() != signer.Kid() {
+		t.Fatalf("shadow signer = %v", got)
+	}
+}

@@ -512,7 +512,10 @@ func main() {
 	}
 	stageDConfig := stageDConfigFromEnv()
 	// Before any boot registration starts: every registration path sends it.
-	declareStageDBootCapabilities(trGateway, stageDConfig)
+	// The outbox is resolved (not started) here so the declaration says
+	// exactly whether this boot will park terminals.
+	settleOutboxPlan := prepareSettleOutbox(settleOutboxBucket(), settleOutboxStore)
+	declareStageDBootCapabilities(trGateway, stageDConfig, settleOutboxPlan.Configured())
 	fmt.Fprintf(os.Stderr, "spend_lease.local_admission_flag enabled=%t\n", boot.SpendLeaseLocalAdmission)
 	fmt.Fprintf(os.Stderr, "enclave.stage_d_flags usage_heartbeat=%t terminate_at_cap=%t heartbeat_budget_ms=%d settle_before_terminal_ms=%d\n",
 		stageDConfig.usageHeartbeat, stageDConfig.terminateAtCap, stageDConfig.heartbeatBudget.Milliseconds(), stageDConfig.settleBeforeTerminal.Milliseconds())
@@ -534,12 +537,14 @@ func main() {
 			trGateway.StartStageDBootRegistration(ctx, receiptSigner, currentSpendLeaseEvidence)
 		}
 	}
-	// After the receipt signer exists, so parked terminals carry this boot's
-	// replay signature, and before serving starts, so no retry can be lost
-	// unparked. Off unless QUILL_SETTLE_OUTBOX_BUCKET is set.
+	// After the registration paths above have chosen this boot's key, so
+	// parked terminals carry a replay signature the control plane can tie
+	// to a registered boot (none when this boot registers nowhere), and
+	// before serving starts, so no retry can be lost unparked. Off unless
+	// QUILL_SETTLE_OUTBOX_BUCKET is set.
 	var settleOutbox *settleoutbox.Writer
 	if trGateway.Enabled() {
-		settleOutbox = startSettleOutbox(settlementContext, receiptSigner)
+		settleOutbox = startSettleOutbox(settlementContext, settleOutboxPlan, trGateway.RegisteredBootSigner())
 		settlementRetries.SetOutbox(settleOutbox)
 	}
 	if err := initializeSpeculation(ctx, trGateway, speculationMode); err != nil {

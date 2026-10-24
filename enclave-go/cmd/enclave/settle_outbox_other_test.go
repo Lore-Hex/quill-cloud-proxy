@@ -10,7 +10,11 @@ func TestSettleOutboxStaysOffOutsideGCP(t *testing.T) {
 	if _, err := settleOutboxStore("outbox-bucket"); err == nil || err.Error() != "unsupported_cloud" {
 		t.Fatalf("settleOutboxStore = %v", err)
 	}
-	if writer := buildSettleOutbox(t.Context(), "outbox-bucket", settleOutboxStore, nil); writer != nil {
-		t.Fatal("outbox built outside GCP")
+	plan := prepareSettleOutbox("outbox-bucket", settleOutboxStore)
+	if plan.Configured() {
+		t.Fatal("outbox configured outside GCP: the boot would declare settle_outbox and never park")
+	}
+	if writer := startSettleOutbox(t.Context(), plan, nil); writer != nil {
+		t.Fatal("outbox started outside GCP")
 	}
 }

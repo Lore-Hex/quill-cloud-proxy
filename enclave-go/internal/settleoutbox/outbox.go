@@ -76,7 +76,10 @@ type Object struct {
 	// BootAuth is the X-TR-Boot-Auth header value for the replay: the
 	// writing boot's signature over POST, Path and Body
 	// (spendlease.AuthorizeDigest), so a sibling enclave can replay without
-	// this boot's key. Empty when the writer had no boot signer.
+	// this boot's key. The writer signs only with a boot key the control
+	// plane was told about at registration (Client.RegisteredBootSigner);
+	// otherwise it is empty, and an object without it is unverified: the
+	// sweeper must not replay it as trusted.
 	BootAuth string `json:"boot_auth,omitempty"`
 	BootKID  string `json:"boot_kid,omitempty"`
 

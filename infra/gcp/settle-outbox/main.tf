@@ -8,14 +8,19 @@
 //
 // Identity: the enclave writes with a federated token from its Confidential
 // Space attestation through the Batch workload identity pool
-// (tools/provision-gcp-batch-resources.sh creates the pool; its provider's
-// attribute condition admits only CONFIDENTIAL_SPACE, debug disabled, the
-// STABLE track, this project and the workload service account). Batch grants
-// its bucket per image digest from the release workflow
-// (tools/reconcile-gcp-batch-image-access.sh). The outbox grants the whole
-// pool create-only access instead: every approved enclave image may park a
-// terminal, none may read one back or delete it. Read and delete for the
-// sweeper come with the sweeper.
+// (tools/provision-gcp-batch-resources.sh creates the pool). The provider's
+// attribute condition admits CONFIDENTIAL_SPACE, debug disabled since boot,
+// the STABLE support track, this project number and the workload service
+// account. It does NOT gate on the image digest; Batch gets that from
+// per-digest grants on its bucket made by the release workflow
+// (tools/reconcile-gcp-batch-image-access.sh). This grant is to the whole
+// pool, create-only. Consequence: any image launchable under the workload
+// service account in this project may create objects here, approved or not;
+// none may read or delete one. An object is therefore untrusted until its
+// boot_auth verifies against a boot the control plane registered, and the
+// sweeper and the router must refuse an unsigned or unverifiable object
+// rather than replay it as trusted. Read and delete for the sweeper come
+// with the sweeper.
 //
 // Not applied by the PR that adds it. Run from this directory:
 //   terraform init

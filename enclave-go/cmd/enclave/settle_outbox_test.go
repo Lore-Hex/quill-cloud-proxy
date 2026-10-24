@@ -18,6 +18,7 @@ import (
 	"github.com/Lore-Hex/quill-cloud-proxy/enclave-go/internal/batch"
 	"github.com/Lore-Hex/quill-cloud-proxy/enclave-go/internal/receipt"
 	"github.com/Lore-Hex/quill-cloud-proxy/enclave-go/internal/settleoutbox"
+	"github.com/Lore-Hex/quill-cloud-proxy/enclave-go/internal/spendlease"
 	"github.com/Lore-Hex/quill-cloud-proxy/enclave-go/internal/trustedrouter"
 )
 
@@ -88,11 +89,50 @@ func outboxTestSigner(t *testing.T) *receipt.Signer {
 // outboxTestWriter is a started writer over store, flushed at test end.
 func outboxTestWriter(t *testing.T, store *outboxTestStore, signer *receipt.Signer) *settleoutbox.Writer {
 	t.Helper()
-	writer := buildSettleOutbox(t.Context(), "outbox-bucket", func(string) (settleoutbox.ObjectStore, error) { return store, nil }, signer)
+	plan := prepareSettleOutbox("outbox-bucket", func(string) (settleoutbox.ObjectStore, error) { return store, nil })
+	if !plan.Configured() {
+		t.Fatal("prepareSettleOutbox returned nil for a configured bucket")
+	}
+	// A nil *receipt.Signer must not become a non-nil interface.
+	var digestSigner spendlease.DigestSigner
+	if signer != nil {
+		digestSigner = signer
+	}
+	writer := startSettleOutbox(t.Context(), plan, digestSigner)
 	if writer == nil {
-		t.Fatal("buildSettleOutbox returned nil for a configured bucket")
+		t.Fatal("startSettleOutbox returned nil for a prepared plan")
 	}
 	return writer
+}
+
+// The writer signs with the key a registration path was started for, and with
+// nothing when this boot registers nowhere.
+func TestOutboxSignsOnlyWithARegisteredBootKey(t *testing.T) {
+	gateway, _ := frozenRetryGateway(t, nil)
+	signer := outboxTestSigner(t)
+	for _, tc := range []struct {
+		name     string
+		register func(*trustedrouter.Client)
+		signed   bool
+	}{
+		{"unregistered", func(*trustedrouter.Client) {}, false},
+		{"stage_d", func(c *trustedrouter.Client) { c.ConfigureStageDBoot(signer) }, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			client := trustedrouter.New("http://127.0.0.1:18080", "internal", &http.Client{})
+			tc.register(client)
+			store := newOutboxTestStore()
+			plan := prepareSettleOutbox("outbox-bucket", func(string) (settleoutbox.ObjectStore, error) { return store, nil })
+			writer := startSettleOutbox(t.Context(), plan, client.RegisteredBootSigner())
+			q := &settlementRetryQueue{}
+			q.SetOutbox(writer)
+			q.Enqueue(outboxSettleJob(gateway))
+			object := store.parked(t, 1)[0]
+			if (object.BootAuth != "") != tc.signed || (tc.signed && object.BootKID != signer.Kid()) || (!tc.signed && object.BootKID != "") {
+				t.Fatalf("boot_auth = %q kid = %q, want signed=%t", object.BootAuth, object.BootKID, tc.signed)
+			}
+		})
+	}
 }
 
 func outboxSettleJob(gateway *trustedrouter.Client) settlementRetryJob {
@@ -251,17 +291,20 @@ func TestParkSkipsJobsWithNothingToSend(t *testing.T) {
 	store.parked(t, 0)
 }
 
-func TestBuildSettleOutboxIsOffWithoutABucketOrAStore(t *testing.T) {
-	if writer := buildSettleOutbox(t.Context(), "", func(string) (settleoutbox.ObjectStore, error) {
+func TestPrepareSettleOutboxIsOffWithoutABucketOrAStore(t *testing.T) {
+	if plan := prepareSettleOutbox("", func(string) (settleoutbox.ObjectStore, error) {
 		t.Fatal("store built without a bucket")
 		return nil, nil
-	}, nil); writer != nil {
-		t.Fatal("writer built without a bucket")
+	}); plan.Configured() {
+		t.Fatal("plan built without a bucket")
 	}
-	if writer := buildSettleOutbox(t.Context(), "bucket", func(string) (settleoutbox.ObjectStore, error) {
+	if plan := prepareSettleOutbox("bucket", func(string) (settleoutbox.ObjectStore, error) {
 		return nil, errors.New("unsupported_cloud")
-	}, nil); writer != nil {
-		t.Fatal("writer built without a store")
+	}); plan.Configured() {
+		t.Fatal("plan built without a store")
+	}
+	if writer := startSettleOutbox(t.Context(), nil, nil); writer != nil {
+		t.Fatal("writer started from a nil plan")
 	}
 	var q *settlementRetryQueue
 	q.SetOutbox(nil)
@@ -300,9 +343,9 @@ func TestGCPLaunchPoliciesAllowTheOutboxBucketOverride(t *testing.T) {
 	}
 }
 
-// main must attach the outbox after the receipt signer exists (so parked
-// terminals are boot-signed) and before serving starts (so no retry is lost
-// unparked).
+// main must resolve the outbox before the boot declaration that reads it,
+// and attach the writer after the receipt signer exists (so parked terminals
+// can be boot-signed) and before serving starts (so no retry is lost unparked).
 func TestMainStartsTheOutboxAfterTheSignerAndBeforeServing(t *testing.T) {
 	fset := token.NewFileSet()
 	file, err := parser.ParseFile(fset, "main.go", nil, 0)
@@ -332,18 +375,35 @@ func TestMainStartsTheOutboxAfterTheSignerAndBeforeServing(t *testing.T) {
 			name = fun.Sel.Name
 		}
 		switch name {
-		case "startSettleOutbox", "SetOutbox", "initializeReceiptSignerWithSpendLease", "serveWithShadowV2Startup":
+		case "prepareSettleOutbox", "declareStageDBootCapabilities", "startSettleOutbox", "SetOutbox", "initializeReceiptSignerWithSpendLease", "serveWithShadowV2Startup":
 			positions[name] = append(positions[name], call.Pos())
+		}
+		if name == "startSettleOutbox" {
+			// The signer must be the registered boot's key, never the raw
+			// receipt signer: an unregistered boot's signature verifies
+			// against nothing and would be mistaken for trust.
+			signerCall, ok := call.Args[len(call.Args)-1].(*ast.CallExpr)
+			var signerName string
+			if ok {
+				if sel, ok := signerCall.Fun.(*ast.SelectorExpr); ok {
+					signerName = sel.Sel.Name
+				}
+			}
+			if signerName != "RegisteredBootSigner" {
+				t.Errorf("startSettleOutbox signer argument is not RegisteredBootSigner() at %s", fset.Position(call.Pos()))
+			}
 		}
 		return true
 	})
-	for _, name := range []string{"startSettleOutbox", "SetOutbox", "initializeReceiptSignerWithSpendLease", "serveWithShadowV2Startup"} {
+	for _, name := range []string{"prepareSettleOutbox", "declareStageDBootCapabilities", "startSettleOutbox", "SetOutbox", "initializeReceiptSignerWithSpendLease", "serveWithShadowV2Startup"} {
 		if len(positions[name]) != 1 {
 			t.Fatalf("%s called %d times in main, want 1", name, len(positions[name]))
 		}
 	}
 	line := func(name string) int { return fset.Position(positions[name][0]).Line }
-	if !(line("initializeReceiptSignerWithSpendLease") < line("startSettleOutbox") && line("startSettleOutbox") < line("SetOutbox") && line("SetOutbox") < line("serveWithShadowV2Startup")) {
-		t.Fatalf("order: signer %d, start %d, set %d, serve %d", line("initializeReceiptSignerWithSpendLease"), line("startSettleOutbox"), line("SetOutbox"), line("serveWithShadowV2Startup"))
+	// The plan is resolved before the declaration (which reads it), the
+	// writer starts after the signer and before serving.
+	if !(line("prepareSettleOutbox") < line("declareStageDBootCapabilities") && line("initializeReceiptSignerWithSpendLease") < line("startSettleOutbox") && line("startSettleOutbox") < line("SetOutbox") && line("SetOutbox") < line("serveWithShadowV2Startup")) {
+		t.Fatalf("order: prepare %d, declare %d, signer %d, start %d, set %d, serve %d", line("prepareSettleOutbox"), line("declareStageDBootCapabilities"), line("initializeReceiptSignerWithSpendLease"), line("startSettleOutbox"), line("SetOutbox"), line("serveWithShadowV2Startup"))
 	}
 }

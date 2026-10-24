@@ -43,6 +43,11 @@ type BootCapabilities struct {
 	// open (`stream_open_heartbeat`) is a separate declaration this enclave
 	// does not make: its first heartbeat waits for the provider to answer.
 	UsageHeartbeat bool
+	// SettleOutbox is true when this boot parks a settle or refund it could
+	// not deliver as a durable object for a later replay (E4 E3; the control
+	// plane stores it as declares_settle_outbox, E4 R2). Declared only when
+	// the outbox is configured and this build can write to it.
+	SettleOutbox bool
 }
 
 // bootRegistrationCapabilities is the wire form. Only declarations that are
@@ -50,13 +55,29 @@ type BootCapabilities struct {
 // declares nothing posts exactly the pre-capabilities registration body.
 type bootRegistrationCapabilities struct {
 	UsageHeartbeat bool `json:"usage_heartbeat,omitempty"`
+	SettleOutbox   bool `json:"settle_outbox,omitempty"`
 }
 
 func (c BootCapabilities) wire() *bootRegistrationCapabilities {
-	if !c.UsageHeartbeat {
+	if !c.UsageHeartbeat && !c.SettleOutbox {
 		return nil
 	}
-	return &bootRegistrationCapabilities{UsageHeartbeat: true}
+	return &bootRegistrationCapabilities{UsageHeartbeat: c.UsageHeartbeat, SettleOutbox: c.SettleOutbox}
+}
+
+// RegisteredBootSigner is the boot key a registration path was started for:
+// Stage D, spend lease or the speculation shadow, in that order. nil when this
+// boot registers nowhere, so the control plane knows no kid for it.
+// Registration is asynchronous, so a non-nil signer means "the router was
+// told this kid", not "the router verified it".
+func (c *Client) RegisteredBootSigner() spendlease.DigestSigner {
+	if signer := c.stageDBootDigestSigner(); signer != nil {
+		return signer
+	}
+	if c != nil && c.shadowSigner != nil {
+		return c.shadowSigner
+	}
+	return nil
 }
 
 type bootRegistrationRequest struct {
