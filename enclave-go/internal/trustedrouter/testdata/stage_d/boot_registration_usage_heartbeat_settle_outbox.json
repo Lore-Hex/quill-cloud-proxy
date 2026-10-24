@@ -1,0 +1,1 @@
+{"kid":"_oEsEvOrTOasXbaaw1L5BssbEe9D-zPiUu9_9VImOIk","receipt_public_key":{"kty":"OKP","crv":"Ed25519","x":"6kpsY-KcUgq-9VB7Ey7F-ZVHdq6-vnuSQh7qaRRG0iw"},"attestation_evidence":"evidence","attestation_kind":"gcp-cs-jwt","capabilities":{"usage_heartbeat":true,"settle_outbox":true}}
