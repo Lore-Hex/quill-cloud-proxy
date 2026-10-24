@@ -42,8 +42,10 @@
 // Enable the writer by setting tee-env-QUILL_SETTLE_OUTBOX_BUCKET to the
 // bucket name on the GCP instance templates (tools/deploy-gcp-mig.sh); an
 // enclave without it never writes. Enable the sweeper separately with
-// tee-env-QUILL_SETTLE_OUTBOX_SWEEP=on once this file's sweeper grant is
-// applied; the bucket alone leaves it off.
+// tee-env-QUILL_SETTLE_OUTBOX_SWEEP=on, but only after this file's sweeper
+// grant is applied AND the serving image carries QUILL_SETTLE_OUTBOX_SWEEP in
+// its tee.launch_policy.allow_env_override label (Confidential Space refuses
+// to launch an unlisted tee-env name). The bucket alone leaves it off.
 //
 // HARD RULE: QUILL_SETTLE_OUTBOX_SWEEP=on must never be set before the
 // router's verify-when-present increment (quill-router R3: X-TR-Boot-Auth
