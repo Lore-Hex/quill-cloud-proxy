@@ -23,6 +23,31 @@ refusal is HTTP 401, `error.type` `unauthorized`, `error.reason`
 `boot_not_accepted` (`settleoutbox.BootAuthRefusedReason`); confirm the
 deployed router answers that before enabling.
 
+## Enabling
+
+The store is on for the GCP fleet: `tools/deploy-gcp-mig.sh` defaults
+`QUILL_SETTLE_OUTBOX_BUCKET` to `quill-cloud-proxy-settle-outbox` (the
+`bucket_name` default in `infra/gcp/settle-outbox/main.tf`) and puts
+`tee-env-QUILL_SETTLE_OUTBOX_BUCKET=<bucket>` on every instance template
+(PR #599). Order of operations, which that PR did not change:
+
+1. Apply `infra/gcp/settle-outbox` (bucket, `objectCreator` for the pool,
+   the sweeper role, the alert) before a template carries the entry. An
+   enclave that parks into a bucket it cannot write to logs
+   `settle_outbox.write_failed` and then `settle_outbox.lost`, while its
+   boot registration already declared `capabilities.settle_outbox=true`.
+2. Merging the PR rolls the fleet. Evidence per boot in
+   `tools/dx/enclave-logs.sh`: `enclave.settle_outbox_started
+   bucket="quill-cloud-proxy-settle-outbox" boot_signed=true`, and
+   `capabilities.settle_outbox=true` in the boot registration.
+3. To roll back to an image older than the `allow_env_override` label that
+   admits the variable, export `QUILL_SETTLE_OUTBOX_BUCKET=` (empty): the
+   script then leaves the entry out. Confidential Space refuses a template
+   that supplies a tee-env the image's launch policy does not allow.
+
+The sweeper is a separate step with its own gate (next section). The deploy
+script never sets `QUILL_SETTLE_OUTBOX_SWEEP`; a test pins that.
+
 ## When the alert fires
 
 The alert (`google_monitoring_alert_policy.settle_outbox_attention`) pages on
