@@ -9,6 +9,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/Lore-Hex/quill-cloud-proxy/enclave-go/internal/settleoutbox"
 	"github.com/Lore-Hex/quill-cloud-proxy/enclave-go/internal/trustedrouter"
 	"github.com/Lore-Hex/quill-cloud-proxy/enclave-go/internal/types"
 )
@@ -91,6 +92,54 @@ type settlementRetryQueue struct {
 	releaseMu sync.Mutex
 	release   chan struct{}
 	released  bool
+	// outbox, when set, parks the frozen terminal of every job this queue
+	// would otherwise lose: retries exhausted, a drop when the queue is
+	// full or disabled, and jobs still queued when the shutdown flush ends.
+	// nil until SetOutbox; nil means the loss stays a log line, as before.
+	outbox atomic.Pointer[settleoutbox.Writer]
+}
+
+// SetOutbox attaches the durable settle outbox. Call it before serving
+// starts; nothing is enqueued before then.
+func (q *settlementRetryQueue) SetOutbox(outbox *settleoutbox.Writer) {
+	if q == nil {
+		return
+	}
+	q.outbox.Store(outbox)
+}
+
+// park hands a job the queue is giving up on to the outbox. It never blocks:
+// the outbox queues the write. A job with nothing to send (a refund without
+// an authorization) or whose terminal could not be frozen is not parked.
+func (q *settlementRetryQueue) park(job settlementRetryJob, reason string) {
+	if q == nil {
+		return
+	}
+	outbox := q.outbox.Load()
+	if outbox == nil {
+		return
+	}
+	job = compactSettlementRetryJob(job)
+	if job.attempt <= 0 {
+		job.attempt = 1
+	}
+	switch {
+	case job.frozenErr != nil:
+		fmt.Fprintf(os.Stderr,
+			"enclave.settle_outbox_skip request_log_id=%q auth_id=%q reason=%q cause=%q\n",
+			job.requestLogID, authorizationID(job.authorization), reason, errorClass(job.frozenErr))
+		return
+	case job.frozen == nil:
+		return
+	}
+	kind := job.kind
+	if kind == "" {
+		kind = settleoutbox.KindSettle
+	}
+	accepted := outbox.Offer(settleoutbox.Entry{Terminal: *job.frozen, Reason: reason, Attempts: job.attempt})
+	fmt.Fprintf(os.Stderr,
+		"enclave.settle_outbox_parked request_log_id=%q request_id=%q auth_id=%q kind=%q reason=%q attempts=%d accepted=%t\n",
+		job.requestLogID, job.usage.RequestID, authorizationID(job.authorization), kind, reason, job.attempt, accepted)
 }
 
 func newSettlementRetryQueueFromEnv() *settlementRetryQueue {
@@ -165,6 +214,21 @@ func (q *settlementRetryQueue) Flush(ctx context.Context) {
 	q.ReleaseDeferred()
 	if err := q.WaitForIdle(ctx); err != nil {
 		fmt.Fprintf(os.Stderr, "enclave.shutdown_settlement_pending queued=%d err=%q\n", len(q.jobs), err.Error())
+		// The process is about to exit with these still queued. Park what
+		// is in the queue; the worker may post one of them meanwhile, which
+		// is a duplicate the router keeps the first writer of.
+		for parked := 0; ; parked++ {
+			select {
+			case job := <-q.jobs:
+				q.park(job, "shutdown")
+				continue
+			default:
+			}
+			if parked > 0 {
+				fmt.Fprintf(os.Stderr, "enclave.shutdown_settlement_parked count=%d\n", parked)
+			}
+			break
+		}
 	}
 	if deferred := q.deferred.Load(); deferred > 0 {
 		// Released held retries that still had not reached the queue.
@@ -181,6 +245,7 @@ func (q *settlementRetryQueue) Enqueue(job settlementRetryJob) bool {
 			authorizationID(job.authorization),
 			"queue_disabled",
 		)
+		q.park(job, "queue_disabled")
 		return false
 	}
 	if job.attempt <= 0 {
@@ -222,6 +287,7 @@ func (q *settlementRetryQueue) Enqueue(job settlementRetryJob) bool {
 			len(q.jobs),
 			cap(q.jobs),
 		)
+		q.park(dropped, "evicted")
 	default:
 	}
 
@@ -247,6 +313,7 @@ func (q *settlementRetryQueue) Enqueue(job settlementRetryJob) bool {
 			len(q.jobs),
 			cap(q.jobs),
 		)
+		q.park(job, "queue_full")
 		return false
 	}
 }
@@ -415,6 +482,7 @@ func (q *settlementRetryQueue) process(ctx context.Context, job settlementRetryJ
 			job.attempt,
 			time.Since(job.enqueuedAt).Milliseconds(),
 		)
+		q.park(job, "retry_exhausted")
 		return
 	}
 	job.attempt++

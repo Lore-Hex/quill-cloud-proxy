@@ -2,6 +2,7 @@ package main
 
 import (
 	"encoding/json"
+	"errors"
 	"go/ast"
 	"go/parser"
 	"go/token"
@@ -12,6 +13,7 @@ import (
 	"time"
 
 	"github.com/Lore-Hex/quill-cloud-proxy/enclave-go/internal/receipt"
+	"github.com/Lore-Hex/quill-cloud-proxy/enclave-go/internal/settleoutbox"
 	"github.com/Lore-Hex/quill-cloud-proxy/enclave-go/internal/trustedrouter"
 )
 
@@ -38,7 +40,7 @@ func TestStageDBootDeclaresUsageHeartbeatExactlyWhenItHeartbeats(t *testing.T) {
 				}
 				return &http.Response{StatusCode: http.StatusOK, Header: make(http.Header), Request: request, Body: io.NopCloser(strings.NewReader(`{"data":{"verified":true}}`))}, nil
 			})})
-			declareStageDBootCapabilities(gateway, config)
+			declareStageDBootCapabilities(gateway, config, false)
 			gateway.StartStageDBootRegistration(t.Context(), signer, func() trustedrouter.BootRegistrationEvidence {
 				return trustedrouter.BootRegistrationEvidence{Attestation: "evidence", AttestationKind: "gcp-cs-jwt"}
 			})
@@ -119,5 +121,63 @@ func TestMainDeclaresBootCapabilitiesBeforeAnyBootRegistration(t *testing.T) {
 				t.Fatalf("%s at %s runs before the boot capabilities are declared at %s", name, fset.Position(pos), fset.Position(declares[0]))
 			}
 		}
+	}
+}
+
+// settle_outbox is declared exactly when this boot will park terminals: a
+// bucket is set and this build can write to it. A boot that cannot park
+// never claims it.
+func TestStageDBootDeclaresSettleOutboxExactlyWhenItCanPark(t *testing.T) {
+	store := func(string) (settleoutbox.ObjectStore, error) { return newOutboxTestStore(), nil }
+	noStore := func(string) (settleoutbox.ObjectStore, error) { return nil, errors.New("unsupported_cloud") }
+	for _, tc := range []struct {
+		name     string
+		bucket   string
+		newStore func(string) (settleoutbox.ObjectStore, error)
+		declared bool
+	}{
+		{"bucket_and_store", "outbox-bucket", store, true},
+		{"no_bucket", "", store, false},
+		{"bucket_no_store", "outbox-bucket", noStore, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Setenv("QUILL_USAGE_HEARTBEAT", "")
+			plan := prepareSettleOutbox(tc.bucket, tc.newStore)
+			if plan.Configured() != tc.declared {
+				t.Fatalf("Configured = %t, want %t", plan.Configured(), tc.declared)
+			}
+			signer, err := receipt.NewSigner()
+			if err != nil {
+				t.Fatal(err)
+			}
+			posted := make(chan []byte, 1)
+			gateway := trustedrouter.New("http://127.0.0.1:18080", "internal", &http.Client{Transport: roundTripFunc(func(request *http.Request) (*http.Response, error) {
+				body, _ := io.ReadAll(request.Body)
+				select {
+				case posted <- body:
+				default:
+				}
+				return &http.Response{StatusCode: http.StatusOK, Header: make(http.Header), Request: request, Body: io.NopCloser(strings.NewReader(`{"data":{"verified":true}}`))}, nil
+			})})
+			declareStageDBootCapabilities(gateway, stageDConfigFromEnv(), plan.Configured())
+			gateway.StartStageDBootRegistration(t.Context(), signer, func() trustedrouter.BootRegistrationEvidence {
+				return trustedrouter.BootRegistrationEvidence{Attestation: "evidence", AttestationKind: "gcp-cs-jwt"}
+			})
+			var body []byte
+			select {
+			case body = <-posted:
+			case <-time.After(5 * time.Second):
+				t.Fatal("boot registration was not posted")
+			}
+			var decoded struct {
+				Capabilities map[string]json.RawMessage `json:"capabilities"`
+			}
+			if err := json.Unmarshal(body, &decoded); err != nil {
+				t.Fatal(err)
+			}
+			if got := string(decoded.Capabilities["settle_outbox"]); (got == "true") != tc.declared || (tc.declared && len(decoded.Capabilities) != 1) || (!tc.declared && decoded.Capabilities != nil) {
+				t.Fatalf("declared settle_outbox=%q, want declared=%t: %s", got, tc.declared, body)
+			}
+		})
 	}
 }
