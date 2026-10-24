@@ -47,6 +47,20 @@ func (s *outboxTestStore) Put(_ context.Context, name string, data []byte, condi
 	return batch.StoredObject{Name: name, Data: data, Generation: int64(len(s.order))}, nil
 }
 
+// The writer only creates. The sweeper's methods are not reached from
+// these tests; a call is a test failure, not a silent no-op.
+func (s *outboxTestStore) Get(context.Context, string) (batch.StoredObject, error) {
+	return batch.StoredObject{}, errors.New("outboxTestStore: Get is not expected here")
+}
+
+func (s *outboxTestStore) Delete(context.Context, string, int64) error {
+	return errors.New("outboxTestStore: Delete is not expected here")
+}
+
+func (s *outboxTestStore) List(context.Context, string, int, string) ([]batch.ObjectMeta, string, error) {
+	return nil, "", errors.New("outboxTestStore: List is not expected here")
+}
+
 // objects waits until want objects exist and returns them decoded, in write
 // order.
 func (s *outboxTestStore) parked(t *testing.T, want int) []settleoutbox.Object {
@@ -89,7 +103,7 @@ func outboxTestSigner(t *testing.T) *receipt.Signer {
 // outboxTestWriter is a started writer over store, flushed at test end.
 func outboxTestWriter(t *testing.T, store *outboxTestStore, signer *receipt.Signer) *settleoutbox.Writer {
 	t.Helper()
-	plan := prepareSettleOutbox("outbox-bucket", func(string) (settleoutbox.ObjectStore, error) { return store, nil })
+	plan := prepareSettleOutbox("outbox-bucket", func(string) (settleoutbox.Store, error) { return store, nil })
 	if !plan.Configured() {
 		t.Fatal("prepareSettleOutbox returned nil for a configured bucket")
 	}
@@ -125,7 +139,7 @@ func TestOutboxSignsOnlyWithARegisteredBootKey(t *testing.T) {
 			client := trustedrouter.New("http://127.0.0.1:18080", "internal", &http.Client{})
 			tc.register(client)
 			store := newOutboxTestStore()
-			plan := prepareSettleOutbox("outbox-bucket", func(string) (settleoutbox.ObjectStore, error) { return store, nil })
+			plan := prepareSettleOutbox("outbox-bucket", func(string) (settleoutbox.Store, error) { return store, nil })
 			writer := startSettleOutbox(t.Context(), plan, client.RegisteredBootSigner())
 			q := &settlementRetryQueue{}
 			q.SetOutbox(writer)
@@ -295,13 +309,13 @@ func TestParkSkipsJobsWithNothingToSend(t *testing.T) {
 }
 
 func TestPrepareSettleOutboxIsOffWithoutABucketOrAStore(t *testing.T) {
-	if plan := prepareSettleOutbox("", func(string) (settleoutbox.ObjectStore, error) {
+	if plan := prepareSettleOutbox("", func(string) (settleoutbox.Store, error) {
 		t.Fatal("store built without a bucket")
 		return nil, nil
 	}); plan.Configured() {
 		t.Fatal("plan built without a bucket")
 	}
-	if plan := prepareSettleOutbox("bucket", func(string) (settleoutbox.ObjectStore, error) {
+	if plan := prepareSettleOutbox("bucket", func(string) (settleoutbox.Store, error) {
 		return nil, errors.New("unsupported_cloud")
 	}); plan.Configured() {
 		t.Fatal("plan built without a store")

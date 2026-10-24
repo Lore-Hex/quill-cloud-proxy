@@ -128,12 +128,12 @@ func TestMainDeclaresBootCapabilitiesBeforeAnyBootRegistration(t *testing.T) {
 // bucket is set and this build can write to it. A boot that cannot park
 // never claims it.
 func TestStageDBootDeclaresSettleOutboxExactlyWhenItCanPark(t *testing.T) {
-	store := func(string) (settleoutbox.ObjectStore, error) { return newOutboxTestStore(), nil }
-	noStore := func(string) (settleoutbox.ObjectStore, error) { return nil, errors.New("unsupported_cloud") }
+	store := func(string) (settleoutbox.Store, error) { return newOutboxTestStore(), nil }
+	noStore := func(string) (settleoutbox.Store, error) { return nil, errors.New("unsupported_cloud") }
 	for _, tc := range []struct {
 		name     string
 		bucket   string
-		newStore func(string) (settleoutbox.ObjectStore, error)
+		newStore func(string) (settleoutbox.Store, error)
 		declared bool
 	}{
 		{"bucket_and_store", "outbox-bucket", store, true},
