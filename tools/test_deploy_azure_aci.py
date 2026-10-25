@@ -2565,6 +2565,68 @@ class TestAzureFoundryRequiresSealedKey(DeployHarness):
         self.assertNotIn("keyvault secret show", script)
 
 
+class TestHixtubeSealedRollout(DeployHarness):
+    # These are already enabled on both gateways, but intentionally have no
+    # deploy-script default. Resealing and redeploying must carry them forward.
+    OPTIONALS = {
+        "QUILL_PRIVATEMODE_SECRET": "trustedrouter-privatemode-api-key",
+        "QUILL_SYSTEM1MODELS_GLOBAL_SECRET": "trustedrouter-system1models-global-api-key",
+        "QUILL_SYSTEM1MODELS_EU_SECRET": "trustedrouter-system1models-eu-api-key",
+        "QUILL_TELLUVIAN_SECRET": "trustedrouter-telluvian-api-key",
+    }
+
+    def measured_env(self, **overrides: str) -> dict[str, str]:
+        result = self.run_script("print-env", **(self.OPTIONALS | overrides))
+        self.assertEqual(result.returncode, 0, result.stderr)
+        return json.loads(result.stdout)
+
+    def test_opt_in_changes_only_hixtube_and_preserves_each_regional_env(self) -> None:
+        for host in ("api-azure.trustedrouter.com", "api-azure-syd.trustedrouter.com"):
+            with self.subTest(host=host):
+                disabled = self.measured_env(API_HOST=host, QUILL_HIXTUBE_SECRET="")
+                enabled = self.measured_env(API_HOST=host)
+                self.assertNotIn("QUILL_HIXTUBE_SECRET", disabled)
+                self.assertEqual(enabled.pop("QUILL_HIXTUBE_SECRET"), "trustedrouter-hixtube-api-key")
+                self.assertEqual(enabled, disabled)
+                self.assertEqual(enabled["QUILL_AZURE_BUNDLE_VERSION"], BUNDLE_VERSION)
+                for key, value in self.OPTIONALS.items():
+                    self.assertEqual(enabled[key], value)
+        self.assertEqual(self.mutations(), [])
+
+    def test_optional_bindings_remain_explicit_and_can_stay_disabled(self) -> None:
+        env = self.measured_env(**dict.fromkeys(self.OPTIONALS, ""))
+        for key in self.OPTIONALS:
+            self.assertNotIn(key, env)
+
+    def test_missing_any_rollout_key_is_rejected_before_mutation(self) -> None:
+        names = ["trustedrouter-hixtube-api-key", *self.OPTIONALS.values()]
+        for name in names:
+            with self.subTest(name=name):
+                manifest = self.state / "missing-rollout-key.manifest"
+                manifest.write_text("\n".join(
+                    row for row in AZURE_BUNDLE_MANIFEST.read_text().splitlines()
+                    if row != name
+                ) + "\n")
+                result = self.run_script(
+                    "--apply", "build", "template",
+                    **self.OPTIONALS,
+                    AZURE_BUNDLE_MANIFEST=str(manifest),
+                    ALLOW_AZURE_BUNDLE_MANIFEST_OVERRIDE="1",
+                )
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn("missing bundle names: " + name, result.stderr)
+                self.assertEqual(self.mutations(), [])
+
+    def test_previous_bundle_is_rejected_before_mutation(self) -> None:
+        result = self.run_script(
+            "--apply", "build", "template", **self.OPTIONALS,
+            QUILL_AZURE_BUNDLE_VERSION="b9a9040d8e694dd18c6d4899929aaea6",
+        )
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("bundle pin/manifest mismatch", result.stderr)
+        self.assertEqual(self.mutations(), [])
+
+
 class TestTheHarnessCannotReachARealCloudCLI(DeployHarness):
     """A unit test must not be able to change production DNS.
 

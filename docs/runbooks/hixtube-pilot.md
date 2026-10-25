@@ -38,3 +38,40 @@ changes. Ordinary inference through a pinned test certificate has passed, but
 public DNS/CA trust, conformance and production settlement remain activation
 gates. Keep this integration held until those gates are satisfied. Future
 confidential hardware requires a separately reviewed verifier.
+
+## Azure Sealed-Bundle Rollout
+
+The October 25 follow-up pins the generated 83-entry manifest to immutable
+bundle `db37a1ad4cc64cd18a40b49dc88c9ec5`. It preserves all 82 names from
+`b9a9040d8e694dd18c6d4899929aaea6` and adds only
+`trustedrouter-hixtube-api-key`. The incomplete earlier candidate was not
+selected. Uploading this bundle or merging this change does not replace either
+running gateway; the previous bundle remains their pin until an approved rollout.
+
+Carry these names through both `print-env`/resealing and the subsequent guarded
+rollout. Bare `print-env` omits the four existing optional providers; their
+defaults deliberately remain unchanged. No secret values belong in these vars.
+
+```bash
+export QUILL_AZURE_BUNDLE_VERSION=db37a1ad4cc64cd18a40b49dc88c9ec5
+export QUILL_HIXTUBE_SECRET=trustedrouter-hixtube-api-key
+export QUILL_PRIVATEMODE_SECRET=trustedrouter-privatemode-api-key
+export QUILL_SYSTEM1MODELS_GLOBAL_SECRET=trustedrouter-system1models-global-api-key
+export QUILL_SYSTEM1MODELS_EU_SECRET=trustedrouter-system1models-eu-api-key
+export QUILL_TELLUVIAN_SECRET=trustedrouter-telluvian-api-key
+```
+
+Hixtube now has a sealed-key default; an explicit `QUILL_HIXTUBE_SECRET=""`
+still disables it. Preserve each region's complete current non-secret deploy
+environment, not just these six values: regional identity/MAA, image and sidecar
+pins, resource limits, shared and regional SNI, Azure-local ACME cache, canonical
+billing authority, timeouts, and all remaining provider bindings. Compare the
+rendered environment with that region's recorded live environment; only the
+reviewed bundle pin and Hixtube binding should change. Image/source and resulting
+CCE measurements change separately through the normal release process.
+
+Follow the [Azure rollout runbook](azure-enclave.md), including cloud rollout
+reservation, healthy-peer/shared-SNI checks, one-region drain, measurement
+rebinding, attestation verification and final narrowing. There is no automatic
+Azure deployment on merge. GCP/AWS rollout configuration and trust records are
+unchanged by this follow-up; no confidential eligibility is added for Hixtube.

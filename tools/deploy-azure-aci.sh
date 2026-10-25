@@ -303,7 +303,9 @@ QUILL_BEDROCK_SECRET="${QUILL_BEDROCK_SECRET-trustedrouter-bedrock-api-key}"
 QUILL_ELEVENLABS_SECRET="${QUILL_ELEVENLABS_SECRET-trustedrouter-elevenlabs-api-key}"
 # Opt in only after the cloud-local bundle has been sealed with this key.
 QUILL_GREENFERENCE_SECRET="${QUILL_GREENFERENCE_SECRET:-}"
-QUILL_HIXTUBE_SECRET="${QUILL_HIXTUBE_SECRET:-}"
+# The October 25 bundle includes Hixtube. The manifest/version gate still
+# precedes mutation, and an explicit empty value keeps this provider disabled.
+QUILL_HIXTUBE_SECRET="${QUILL_HIXTUBE_SECRET-trustedrouter-hixtube-api-key}"
 QUILL_MUNA_SECRET="${QUILL_MUNA_SECRET:-trustedrouter-muna-api-key}"
 QUILL_ABLITERATION_SECRET="${QUILL_ABLITERATION_SECRET:-trustedrouter-abliteration-api-key}"
 QUILL_CORALBRICKS_SECRET="${QUILL_CORALBRICKS_SECRET:-trustedrouter-coralbricks-api-key}"

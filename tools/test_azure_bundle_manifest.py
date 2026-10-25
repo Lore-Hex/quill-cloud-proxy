@@ -128,6 +128,25 @@ class TestDeployNamesOnlyProvisionedSecrets(unittest.TestCase):
         self.assertEqual(self.demanded["QUILL_BYTEPLUS_SECRET"], name)
         self.assertIn(name, self.provisioned)
 
+    def test_hixtube_bundle_preserves_existing_optional_providers(self) -> None:
+        self.assertEqual(
+            sealer.read_manifest_version(self.manifest_text),
+            "db37a1ad4cc64cd18a40b49dc88c9ec5",
+        )
+        self.assertEqual(len(self.provisioned), 83)
+        self.assertEqual(
+            self.demanded["QUILL_HIXTUBE_SECRET"], "trustedrouter-hixtube-api-key"
+        )
+        for name in (
+            "trustedrouter-hixtube-api-key",
+            "trustedrouter-privatemode-api-key",
+            "trustedrouter-system1models-eu-api-key",
+            "trustedrouter-system1models-global-api-key",
+            "trustedrouter-telluvian-api-key",
+        ):
+            with self.subTest(name=name):
+                self.assertIn(name, self.provisioned)
+
 
 class TestDeployParseIsHonest(unittest.TestCase):
     """The parse must distinguish a named secret from a deliberately dark one."""
@@ -142,6 +161,19 @@ class TestDeployParseIsHonest(unittest.TestCase):
             sealer.deploy_demanded_names(sample),
             {"QUILL_STEPFUN_SECRET": "trustedrouter-stepfun-api-key"},
         )
+
+    def test_unset_only_defaults_are_checked_too(self) -> None:
+        provisioned = sealer.read_manifest_names(MANIFEST_PATH.read_text())
+        for operator in ("-", ":-"):
+            with self.subTest(operator=operator):
+                prefix = 'QUILL_GHOST_SECRET="${QUILL_GHOST_SECRET' + operator
+                sample = prefix + 'trustedrouter-ghost-api-key}"\n'
+                demanded = sealer.deploy_demanded_names(sample)
+                self.assertEqual(
+                    demanded, {"QUILL_GHOST_SECRET": "trustedrouter-ghost-api-key"}
+                )
+                self.assertNotIn(demanded["QUILL_GHOST_SECRET"], provisioned)
+                self.assertEqual(sealer.deploy_demanded_names(prefix + '}"\n'), {})
 
     def test_a_reintroduced_unprovisioned_default_would_fail(self) -> None:
         # Regression fixture for the Dubai crash: re-adding a non-empty default

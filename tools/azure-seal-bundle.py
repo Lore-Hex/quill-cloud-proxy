@@ -306,11 +306,11 @@ _THIS_DIR = Path(__file__).resolve().parent
 MANIFEST_PATH = _THIS_DIR / "azure-bundle.manifest"
 DEPLOY_SCRIPT_PATH = _THIS_DIR / "deploy-azure-aci.sh"
 
-# QUILL_X_SECRET="${QUILL_X_SECRET:-<default>}" — the deploy's per-provider
-# default. A non-empty default is a NAME the enclave will demand from the
+# QUILL_X_SECRET="${QUILL_X_SECRET:-<default>}" (or unset-only `-`).
+# A non-empty default is a NAME the enclave will demand from the
 # bundle; an empty one ("...:-}") is a provider deliberately left dark on Azure.
 _DEPLOY_DEFAULT = re.compile(
-    r'(QUILL_[A-Z0-9_]+_SECRET)="\$\{\1:-([^}]*)\}"'
+    r'(QUILL_[A-Z0-9_]+_SECRET)="\$\{\1:?-([^}]*)\}"'
 )
 
 
