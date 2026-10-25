@@ -41,6 +41,23 @@ def test_gcp_multi_launch_policy_allows_deployed_env_overrides() -> None:
     assert "TR_NATIVE_BATCH_PROVIDERS" not in deploy_script.read_text()
 
 
+def test_settle_outbox_env_names_are_in_every_gcp_launch_policy_label() -> None:
+    # Confidential Space refuses to launch a workload whose tee-env name is
+    # not in the image label, so the sweep name must be allowed before the
+    # sweeper can ever be enabled. (That the deploy script does not set it is
+    # pinned by test_settle_outbox_store_is_on_and_sweeper_is_off.)
+    for suffix in ("gcp.multi", "gcp.anthropic"):
+        dockerfile = REPO_ROOT / "enclave-go" / f"Dockerfile.enclave.{suffix}"
+        label_match = re.search(
+            r'LABEL "tee\.launch_policy\.allow_env_override"="([^"]+)"',
+            dockerfile.read_text(),
+        )
+        assert label_match is not None, suffix
+        allowed_envs = set(label_match.group(1).split(","))
+        assert "QUILL_SETTLE_OUTBOX_BUCKET" in allowed_envs, suffix
+        assert "QUILL_SETTLE_OUTBOX_SWEEP" in allowed_envs, suffix
+
+
 def test_settle_outbox_store_is_on_and_sweeper_is_off() -> None:
     """The GCP fleet parks undeliverable settles (store on); nothing replays them yet.
 
