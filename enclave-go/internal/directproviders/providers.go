@@ -57,6 +57,7 @@ var specs = [...]Spec{
 	{Provider: "lyceum", BaseURL: "https://api.lyceum.technology/openai/v1", SecretEnv: "QUILL_LYCEUM_SECRET", SecretName: "trustedrouter-lyceum-api-key", SecretLabel: "Lyceum key"},
 	{Provider: "amazon-bedrock", BaseURL: "https://bedrock-mantle.us-east-1.api.aws/v1", SecretEnv: "QUILL_BEDROCK_SECRET", SecretName: "trustedrouter-bedrock-api-key", SecretLabel: "Bedrock key"},
 	{Provider: "greenference", BaseURL: "https://llm.eu.greenference.com/trustedrouter/v1", SecretEnv: "QUILL_GREENFERENCE_SECRET", SecretName: "trustedrouter-greenference-api-key", SecretLabel: "Greenference key"},
+	{Provider: "hixtube", BaseURL: "https://api.hixtube.com/v1", SecretEnv: "QUILL_HIXTUBE_SECRET", SecretName: "trustedrouter-hixtube-api-key", SecretLabel: "Hixtube pilot key"},
 	{Provider: "muna", BaseURL: "https://inference.muna.ai/v1", SecretEnv: "QUILL_MUNA_SECRET", SecretName: "trustedrouter-muna-api-key", SecretLabel: "Muna key"},
 	{Provider: "abliteration", BaseURL: "https://api.abliteration.ai/v1", SecretEnv: "QUILL_ABLITERATION_SECRET", SecretName: "trustedrouter-abliteration-api-key", SecretLabel: "Abliteration key"},
 	{Provider: "coralbricks", BaseURL: "https://inference.coralbricks.ai/v1", SecretEnv: "QUILL_CORALBRICKS_SECRET", SecretName: "trustedrouter-coralbricks-api-key", SecretLabel: "CoralBricks key"},

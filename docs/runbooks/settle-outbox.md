@@ -38,15 +38,37 @@ The store is on for the GCP fleet: `tools/deploy-gcp-mig.sh` defaults
    boot registration already declared `capabilities.settle_outbox=true`.
 2. Merging the PR rolls the fleet. Evidence per boot in
    `tools/dx/enclave-logs.sh`: `enclave.settle_outbox_started
-   bucket="quill-cloud-proxy-settle-outbox" boot_signed=true`, and
-   `capabilities.settle_outbox=true` in the boot registration.
-3. To roll back to an image older than the `allow_env_override` label that
-   admits the variable, export `QUILL_SETTLE_OUTBOX_BUCKET=` (empty): the
-   script then leaves the entry out. Confidential Space refuses a template
-   that supplies a tee-env the image's launch policy does not allow.
+   bucket="quill-cloud-proxy-settle-outbox" boot_signed=true`.
+   `capabilities.settle_outbox=true` is a field of the boot registration the
+   enclave sends to the control plane; read it there. It is not a line that
+   `enclave-logs.sh` prints.
+3. Confidential Space refuses a template that supplies a tee-env name the
+   image's `tee.launch_policy.allow_env_override` label does not list. So do
+   not pin a pre-label image (for example `gcp-release-72be94e6`) while the
+   bucket tee-env is set: the launch would be refused. To roll back to an
+   image older than the label that admits the variable, export
+   `QUILL_SETTLE_OUTBOX_BUCKET=` (empty); the script then leaves the entry
+   out.
 
-The sweeper is a separate step with its own gate (next section). The deploy
-script never sets `QUILL_SETTLE_OUTBOX_SWEEP`; a test pins that.
+The deploy script never sets `QUILL_SETTLE_OUTBOX_SWEEP`; a test pins that.
+The sweeper is a separate step, in this order:
+
+1. A serving image whose label carries `QUILL_SETTLE_OUTBOX_SWEEP`
+   (`Dockerfile.enclave.gcp.multi` and `Dockerfile.enclave.gcp.anthropic`):
+   a release built after the label PR. Earlier images do not have it.
+2. Router R3 deployed on the plane the sweeper replays to (hard rule above).
+3. Only then the tee-env `QUILL_SETTLE_OUTBOX_SWEEP=on` on the instance
+   templates. The tee-env alone is not enough.
+
+## What to expect in the logs while the sweeper is off
+
+With no bucket, each boot logs `enclave.settle_outbox_disabled reason=no_bucket`
+(or `reason=<error> bucket=<name>` if the store could not be built). With the
+bucket set and the sweep unset, each boot logs
+`enclave.settle_outbox_sweeper_disabled reason=sweep_off`. Other disabled
+reasons are `no_outbox` (sweep set, no bucket) and `no_control_plane`. These
+negative lines are the signal that the feature is off; the absence of
+`settle_outbox.` counter lines is expected.
 
 ## When the alert fires
 
