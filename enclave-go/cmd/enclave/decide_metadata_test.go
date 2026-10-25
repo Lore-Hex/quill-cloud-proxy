@@ -121,7 +121,13 @@ func TestBatchDecideRoutingAgreesWithProviderUsage(t *testing.T) {
 		if usage["cost_microdollars"] != float64(123) {
 			t.Errorf("existing batch accounting changed: %s", body)
 		}
-		if hidden && (routing["selected_endpoint"] != nil || providerUsage["region"] != nil) {
+		if _, exists := providerUsage["region"]; exists {
+			t.Errorf("ambiguous gateway region: %s", body)
+		}
+		if !hidden && providerUsage["gateway_region"] != "us-central1" {
+			t.Errorf("gateway region missing: %s", body)
+		}
+		if hidden && (routing["selected_endpoint"] != nil || providerUsage["gateway_region"] != nil) {
 			t.Errorf("hidden route leaked: %s", body)
 		}
 	}

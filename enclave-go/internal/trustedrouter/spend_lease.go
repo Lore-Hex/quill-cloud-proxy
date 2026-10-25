@@ -33,11 +33,64 @@ type BootRegistrationEvidence struct {
 	AttestationKind string
 }
 
+// BootCapabilities is what this boot declares about itself when it registers
+// (quill-router `GatewayBootCapabilities`). The control plane stores the
+// declarations of the latest registration on the boot record; a missing
+// declaration means undeclared. Declare only what this boot actually does.
+type BootCapabilities struct {
+	// UsageHeartbeat is true when this boot heartbeats every stream the router
+	// marks Stage D eligible (QUILL_USAGE_HEARTBEAT). The heartbeat at stream
+	// open (`stream_open_heartbeat`) is a separate declaration this enclave
+	// does not make: its first heartbeat waits for the provider to answer.
+	UsageHeartbeat bool
+	// SettleOutbox is true when this boot parks a settle or refund it could
+	// not deliver as a durable object for a later replay (E4 E3; the control
+	// plane stores it as declares_settle_outbox, E4 R2). Declared only when
+	// the outbox is configured and this build can write to it.
+	SettleOutbox bool
+}
+
+// bootRegistrationCapabilities is the wire form. Only declarations that are
+// true are sent, and with none the whole object is omitted, so a boot that
+// declares nothing posts exactly the pre-capabilities registration body.
+type bootRegistrationCapabilities struct {
+	UsageHeartbeat bool `json:"usage_heartbeat,omitempty"`
+	SettleOutbox   bool `json:"settle_outbox,omitempty"`
+}
+
+func (c BootCapabilities) wire() *bootRegistrationCapabilities {
+	if !c.UsageHeartbeat && !c.SettleOutbox {
+		return nil
+	}
+	return &bootRegistrationCapabilities{UsageHeartbeat: c.UsageHeartbeat, SettleOutbox: c.SettleOutbox}
+}
+
+// RegisteredBootSigner is the boot key that also signs this boot's authorize
+// calls: Stage D, else spend lease. nil when this boot has neither, including
+// a speculation-shadow-only boot: its authorize carries no boot auth, so the
+// authorization stores no boot kid and the router could verify nothing
+// signed with that key. Registration is asynchronous, so a non-nil signer
+// means "the router was told this kid", not "the router verified it".
+func (c *Client) RegisteredBootSigner() spendlease.DigestSigner {
+	return c.stageDBootDigestSigner()
+}
+
 type bootRegistrationRequest struct {
-	KID                 string      `json:"kid"`
-	ReceiptPublicKey    receipt.JWK `json:"receipt_public_key"`
-	AttestationEvidence string      `json:"attestation_evidence"`
-	AttestationKind     string      `json:"attestation_kind"`
+	KID                 string                        `json:"kid"`
+	ReceiptPublicKey    receipt.JWK                   `json:"receipt_public_key"`
+	AttestationEvidence string                        `json:"attestation_evidence"`
+	AttestationKind     string                        `json:"attestation_kind"`
+	Capabilities        *bootRegistrationCapabilities `json:"capabilities,omitempty"`
+}
+
+// DeclareBootCapabilities sets what every boot registration from this client
+// declares, on whichever registration path the boot runs (Stage D, spend-lease
+// or speculation shadow). Call it before any Start*BootRegistration: the
+// registration goroutines read it without a lock.
+func (c *Client) DeclareBootCapabilities(capabilities BootCapabilities) {
+	if c != nil {
+		c.bootCapabilities = capabilities
+	}
 }
 
 // ConfigureSpendLeaseShadow enables only the additive Stage A protocol. It is
@@ -132,6 +185,7 @@ func (c *Client) registerAttestedBoot(ctx context.Context, signer *receipt.Signe
 			payload := bootRegistrationRequest{
 				KID: signer.Kid(), ReceiptPublicKey: signer.JWK(),
 				AttestationEvidence: evidence.Attestation, AttestationKind: evidence.AttestationKind,
+				Capabilities: c.bootCapabilities.wire(),
 			}
 			var decoded struct {
 				Data struct {

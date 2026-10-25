@@ -33,6 +33,8 @@ func TestConfidentialHostRejectsBeforeAuthorization(t *testing.T) {
 		{"sni without host", "", "api.confidential.trustedrouter.com"},
 		{"quill", "api.confidential.quillrouter.com", ""},
 		{"ally", "api.confidential.allyrouter.com", ""},
+		{"nyte", "api.confidential.nytokenexchange.com", ""},
+		{"nyte SNI cannot be bypassed", "api.nytokenexchange.com", "api.confidential.nytokenexchange.com"},
 		{"uptime case and port", "API.CONFIDENTIAL.UPTIMEROUTER.COM.:443", ""},
 	} {
 		t.Run(tc.name, func(t *testing.T) {

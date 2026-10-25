@@ -498,7 +498,9 @@ func TestClientContextIsReadOnlyBySettleAndRefundBodyBuilders(t *testing.T) {
 		})
 	}
 	sort.Strings(readers)
-	want := []string{"Settle", "refundDetailed"}
+	// The settle and refund bodies are built only by these two builders,
+	// which Settle, refundDetailed and the frozen-terminal freezers share.
+	want := []string{"buildRefundBody", "buildSettleBody"}
 	if !reflect.DeepEqual(readers, want) {
 		t.Fatalf("client context readers = %#v, want %#v", readers, want)
 	}

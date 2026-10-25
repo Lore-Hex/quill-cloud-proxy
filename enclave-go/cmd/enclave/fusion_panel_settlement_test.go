@@ -53,7 +53,7 @@ func TestFusionPanelSettlementOwnership(t *testing.T) {
 			case "/internal/gateway/settle":
 				id := fmt.Sprint(body["authorization_id"])
 				settleAttempts[id]++
-				if id == "auth_model_ok" && settleAttempts[id] == 1 {
+				if id == "auth_model_ok" && settleAttempts[id] <= 3 {
 					return response(503, `{"error":{"message":"settlement unavailable"}}`)
 				}
 				charged[id]++
@@ -83,8 +83,8 @@ func TestFusionPanelSettlementOwnership(t *testing.T) {
 	if refunded["auth_model_bad"] != 1 || settleAttempts["auth_model_bad"] != 0 {
 		t.Fatalf("failed member: refunds=%d settle attempts=%d, want 1 and 0", refunded["auth_model_bad"], settleAttempts["auth_model_bad"])
 	}
-	if charged["auth_model_ok"] != 0 || settleAttempts["auth_model_ok"] != 1 {
-		t.Fatalf("succeeded member before retry: charges=%d attempts=%d, want 0 and 1", charged["auth_model_ok"], settleAttempts["auth_model_ok"])
+	if charged["auth_model_ok"] != 0 || settleAttempts["auth_model_ok"] != 3 {
+		t.Fatalf("succeeded member before queued retry: charges=%d attempts=%d, want 0 and 3", charged["auth_model_ok"], settleAttempts["auth_model_ok"])
 	}
 	mu.Unlock()
 	if len(q.jobs) != 1 {

@@ -40,15 +40,24 @@ var zeroTemperature = 0.0
 // decision endpoint. Everything else named on /v1/decide is a chat model and
 // takes the native path.
 var HostedModels = map[string]bool{
+	"cloudflare/clef-flash":          true,
 	"microsoft/microsoft-decision-1": true,
 	"typesafe-ai/jev":                true,
+	"tinfoil/decision-small":         true,
+	"tinfoil/decision-medium":        true,
+	"tinfoil/decision-large":         true,
+}
+
+func IsTinfoilModel(model string) bool {
+	return strings.HasPrefix(model, "tinfoil/") && HostedModels[model]
 }
 
 // System1 models are discovered from a priced, canaried catalog. Recognizing
 // their namespace does not authorize them: the control plane must still issue
 // an exact model/provider endpoint before any paid inference can happen.
 func IsSystem1Model(model string) bool {
-	return strings.HasPrefix(model, "system1models/s1-") || strings.HasPrefix(model, "system1models-eu/s1-")
+	return strings.HasPrefix(model, "decisionmodelsio/s1-") || strings.HasPrefix(model, "decisionmodelsio-eu/s1-") ||
+		strings.HasPrefix(model, "system1models/s1-") || strings.HasPrefix(model, "system1models-eu/s1-")
 }
 
 func IsHostedModel(model string) bool {

@@ -177,6 +177,8 @@ SECRETS=(
   trustedrouter-elevenlabs-api-key
   trustedrouter-greenference-api-key
   trustedrouter-hixtube-api-key
+  trustedrouter-muna-api-key
+  trustedrouter-abliteration-api-key
   trustedrouter-coralbricks-api-key
   trustedrouter-fortanix-api-key
   trustedrouter-boundless-api-key

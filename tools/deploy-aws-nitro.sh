@@ -844,6 +844,8 @@ allowlist:
   - {address: eastus2.tts.speech.microsoft.com,  port: 443}
   - {address: llm.eu.greenference.com,          port: 443}
   - {address: api.hixtube.com,                  port: 443}
+  - {address: inference.muna.ai,                  port: 443}
+  - {address: api.abliteration.ai,                port: 443}
   - {address: inference.coralbricks.ai,        port: 443}
   - {address: ctf.armet.ai,                    port: 443}
   - {address: api.inference.boundless.network, port: 443}
@@ -1007,6 +1009,8 @@ write_vsock_unit 8103 api.lyceum.technology
 write_vsock_unit 8116 bedrock-mantle.us-east-1.api.aws
 write_vsock_unit 8108 llm.eu.greenference.com
 write_vsock_unit 8117 api.hixtube.com
+write_vsock_unit 8130 inference.muna.ai
+write_vsock_unit 8131 api.abliteration.ai
 write_vsock_unit 8115 inference.coralbricks.ai
 write_vsock_unit 8113 ctf.armet.ai
 write_vsock_unit 8109 api.elevenlabs.io
@@ -1412,7 +1416,7 @@ phase_cross_cloud_key() {
   #
   # This phase is responsible for:
   #   1. GCP service account: tr-aws-cross-cloud@quill-cloud-proxy.iam.gserviceaccount.com
-  #   2. Minimum IAM bindings (datastore.user for Spanner+Bigtable,
+  #   2. Minimum IAM bindings (datastore.user for Spanner,
   #      cloudkms.cryptoKeyDecrypter on byok-envelope, secretmanager.secretAccessor
   #      on the trustedrouter-* secrets).
   #   3. Mint a fresh JSON key.
@@ -1476,9 +1480,11 @@ phase_cross_cloud_key() {
   # 2. IAM bindings. Each call is idempotent — gcloud add-iam-policy-binding
   #    no-ops if the binding already exists.
   log "  granting IAM bindings to $sa_email"
+  # Bigtable was retired 2026-10-01 and its binding removed from this SA;
+  # re-granting it here would silently restore a privilege on every key
+  # rotation. Rotation must never widen access.
   for role in \
       roles/spanner.databaseUser \
-      roles/bigtable.user \
       roles/secretmanager.secretAccessor; do
     if [ $DRY_RUN -eq 0 ]; then
       gcloud projects add-iam-policy-binding "$gcp_project" \

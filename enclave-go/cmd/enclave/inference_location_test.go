@@ -78,6 +78,54 @@ func TestInferenceLocationNonStreamingPreservesCost(t *testing.T) {
 	}
 }
 
+func TestPublicGatewayRegionIsNotProviderServingRegion(t *testing.T) {
+	for _, shape := range []string{
+		`{"choices":[],"usage":{"prompt_tokens":11,"completion_tokens":3}}`,
+		`{"object":"response","output":[],"usage":{"input_tokens":11,"output_tokens":3}}`,
+	} {
+		for _, region := range []string{"europe-west4", ""} {
+			auth, _ := locationFixture()
+			tracker := newSelectedRouteTracker()
+			auth.Region = region
+			// The winning provider differs from the initial route. Its declared
+			// geography is still not a per-request serving-location receipt.
+			tracker.Select(llm.InvokeOptions{Model: "model", Provider: "scaleway", EndpointID: "scaleway-credits"})
+			body, err := annotateSettledResponseMetadata([]byte(shape), auth,
+				&trustedrouter.SettleResult{Model: "model", Provider: "scaleway", Region: region, CostMicrodollars: 9},
+				tracker, nil, adapter.StreamResult{}, true)
+			if err != nil {
+				t.Fatal(err)
+			}
+			var payload map[string]any
+			if err := json.Unmarshal(body, &payload); err != nil {
+				t.Fatal(err)
+			}
+			usage := payload["usage"].(map[string]any)
+			providerUsage := usage["provider_usage"].(map[string]any)
+			if region == "" {
+				if _, exists := providerUsage["gateway_region"]; exists {
+					t.Fatalf("unknown gateway region should be omitted: %s", body)
+				}
+			} else if providerUsage["gateway_region"] != region {
+				t.Fatalf("gateway region missing: %s", body)
+			}
+			metadata := payload["openrouter_metadata"].(map[string]any)
+			for _, fields := range []map[string]any{providerUsage, metadata} {
+				if _, exists := fields["region"]; exists {
+					t.Fatalf("ambiguous gateway region: %s", body)
+				}
+			}
+			location := usage["inference_location"].(map[string]any)
+			if value, exists := location["serving_region"]; !exists || value != nil || location["serving_region_status"] != "not_reported" {
+				t.Fatalf("gateway region misrepresented as provider location: %s", body)
+			}
+			if providerUsage["selected_provider"] != "scaleway" || usage["cost_microdollars"] != float64(9) {
+				t.Fatalf("attribution or cost changed: %s", body)
+			}
+		}
+	}
+}
+
 func TestInferenceLocationStreamingEmitsAfterExistingHook(t *testing.T) {
 	for _, responses := range []bool{false, true} {
 		auth, tracker := locationFixture()

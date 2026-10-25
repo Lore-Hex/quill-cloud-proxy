@@ -21,7 +21,7 @@ func TestLiteralAuthorizeErrorEnvelopes(t *testing.T) {
 		t.Fatal(err)
 	}
 	digest := sha256.Sum256(raw)
-	if hex.EncodeToString(digest[:]) != "a2f388da8afd619793fedfb78013dcdf61843ae0a9b5dca936647ca8582746d4" {
+	if hex.EncodeToString(digest[:]) != "0914d1c934d7f05aff1833addbefd0dc1329b25350486e44c6e354bf72376e74" {
 		t.Fatal("fixture changed")
 	}
 	var fixture struct {
@@ -61,6 +61,9 @@ func TestLiteralAuthorizeErrorEnvelopes(t *testing.T) {
 				want = "key_invalid"
 			case "insufficient_credits":
 				want = "credit_exhausted"
+				if !strings.Contains(cp.Message, "upfront reservation of $0.0006") || !strings.Contains(cp.Message, "max_output_tokens") {
+					t.Fatal("reservation guidance lost", cp.Message)
+				}
 			case "billing_paused":
 				kind, want = "forbidden", "billing_paused"
 			case "storage_unavailable", "storage_conflict":

@@ -7,6 +7,18 @@ on:
     branches: [main]
 
 jobs:
+  privatemode-client:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v7
+      - name: Build pinned client and run control-plane safety tests
+        working-directory: enclave-go
+        run: docker build --platform linux/amd64 --target privatemode -f Dockerfile.enclave.gcp.multi .
+      - name: Build Azure-compatible pinned client
+        working-directory: enclave-go
+        run: docker build --platform linux/amd64 --target privatemode -f Dockerfile.enclave.azure.multi .
+
   enclave-go:
     runs-on: ubuntu-latest
     defaults:
@@ -42,10 +54,10 @@ jobs:
           - "cloud_gcp,llm_vertex"
           - "cloud_gcp,llm_multi"
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: actions/setup-go@v7
         with:
-          go-version: "1.24"
+          go-version: "1.26.10"
       - name: Build (${{ matrix.tags }})
         run: go build -tags '${{ matrix.tags }}' ./...
       - name: Vet (${{ matrix.tags }})
@@ -69,10 +81,10 @@ jobs:
           - "cloud_aws"
           - "cloud_gcp"
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: actions/setup-go@v7
         with:
-          go-version: "1.25.5"
+          go-version: "1.26.10"
       - name: Build (${{ matrix.tags }})
         run: go build -tags '${{ matrix.tags }}' ./...
       - name: Vet (${{ matrix.tags }})
@@ -86,8 +98,8 @@ jobs:
       run:
         working-directory: parent
     steps:
-      - uses: actions/checkout@v4
-      - uses: astral-sh/setup-uv@v3
+      - uses: actions/checkout@v7
+      - uses: astral-sh/setup-uv@v7
         with:
           version: "latest"
       - name: Sync
@@ -106,15 +118,15 @@ jobs:
     # the static trust page before publish.
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           # Provenance validation resolves the exact commit that built each
           # published enclave. A shallow checkout makes older release commits
           # appear invalid even when they are ancestors of main.
           fetch-depth: 0
-      - uses: astral-sh/setup-uv@v5
+      - uses: astral-sh/setup-uv@v7
         with:
-          version: "0.11.2"
+          version: "0.13.4"
       # capture-plane-measurements.py imports cbor2 at module scope to parse
       # the Nitro COSE attestation; same install verify-trust-freshness.yml does.
       - run: pip install cbor2 'PyYAML>=6,<7'
@@ -133,6 +145,7 @@ jobs:
           python3 tools/test_check_trust_signatures.py
           python3 tools/test_wait_stage_d_policy.py
           python3 tools/test_reconcile_enclave_dns.py
+          python3 tools/test_nyte_acme_iam.py
           python3 tools/test_sync_route53_api_aliases.py
           python3 tools/test_dns_reconciler_scheduler.py
           python3 tools/test_rollout_safety.py

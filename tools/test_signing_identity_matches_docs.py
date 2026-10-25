@@ -69,6 +69,36 @@ def _signed_files(plane: str) -> set[str]:
 
 
 class SigningIdentityMatchesDocumentation(unittest.TestCase):
+    def test_signers_can_publish_to_protected_main_without_resigning_as_publisher(self) -> None:
+        import fnmatch
+        import yaml
+
+        release = yaml.safe_load((WORKFLOWS / "deploy-enclave-gcp.yml").read_text())
+        checkout = next(
+            step for step in release["jobs"]["build-and-release"]["steps"]
+            if str(step.get("uses", "")).startswith("actions/checkout@")
+        )
+        token = checkout["with"]["token"]
+        self.assertEqual(token, "${{ secrets.TRUST_PUSH_TOKEN }}")
+        for plane in PLANES:
+            with self.subTest(plane=plane):
+                document = yaml.safe_load((WORKFLOWS / f"publish-trust-{plane}.yml").read_text())
+                steps = document["jobs"]["sign"]["steps"]
+                checkout = next(
+                    step for step in steps
+                    if str(step.get("uses", "")).startswith("actions/checkout@")
+                )
+                self.assertEqual(checkout.get("with", {}).get("token"), token)
+                self.assertEqual(document["permissions"]["id-token"], "write")
+                triggers = document.get("on", document.get(True, {}))["push"]["paths"]
+                for source in _signed_files(plane):
+                    self.assertFalse(
+                        any(fnmatch.fnmatchcase(source + ".bundle", path) for path in triggers),
+                        f"{plane} would sign its own bundle commit again",
+                    )
+                runs = "\n".join(step.get("run", "") for step in steps)
+                self.assertLess(runs.index("cosign verify-blob"), runs.index("git push"))
+
     def test_every_signed_source_file_triggers_its_plane_workflow(self) -> None:
         import yaml
 

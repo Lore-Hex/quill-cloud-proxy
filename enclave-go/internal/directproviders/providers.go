@@ -58,6 +58,8 @@ var specs = [...]Spec{
 	{Provider: "amazon-bedrock", BaseURL: "https://bedrock-mantle.us-east-1.api.aws/v1", SecretEnv: "QUILL_BEDROCK_SECRET", SecretName: "trustedrouter-bedrock-api-key", SecretLabel: "Bedrock key"},
 	{Provider: "greenference", BaseURL: "https://llm.eu.greenference.com/trustedrouter/v1", SecretEnv: "QUILL_GREENFERENCE_SECRET", SecretName: "trustedrouter-greenference-api-key", SecretLabel: "Greenference key"},
 	{Provider: "hixtube", BaseURL: "https://api.hixtube.com/v1", SecretEnv: "QUILL_HIXTUBE_SECRET", SecretName: "trustedrouter-hixtube-api-key", SecretLabel: "Hixtube pilot key"},
+	{Provider: "muna", BaseURL: "https://inference.muna.ai/v1", SecretEnv: "QUILL_MUNA_SECRET", SecretName: "trustedrouter-muna-api-key", SecretLabel: "Muna key"},
+	{Provider: "abliteration", BaseURL: "https://api.abliteration.ai/v1", SecretEnv: "QUILL_ABLITERATION_SECRET", SecretName: "trustedrouter-abliteration-api-key", SecretLabel: "Abliteration key"},
 	{Provider: "coralbricks", BaseURL: "https://inference.coralbricks.ai/v1", SecretEnv: "QUILL_CORALBRICKS_SECRET", SecretName: "trustedrouter-coralbricks-api-key", SecretLabel: "CoralBricks key"},
 	{Provider: "fortanix", BaseURL: "https://ctf.armet.ai/v1", SecretEnv: "QUILL_FORTANIX_SECRET", SecretName: "trustedrouter-fortanix-api-key", SecretLabel: "Fortanix test key"},
 	{Provider: "boundless", BaseURL: "https://api.inference.boundless.network/v1", SecretEnv: "QUILL_BOUNDLESS_SECRET", SecretName: "trustedrouter-boundless-api-key", SecretLabel: "Boundless key"},

@@ -81,9 +81,9 @@ func TestFusionSettlementFinalization(t *testing.T) {
 								if !ok || time.Until(deadline) <= 0 || time.Until(deadline) > 10*time.Second {
 									t.Errorf("initial settlement must have a fresh bounded deadline: %v, %v", deadline, ok)
 								}
-								if scenario.fail && !scenario.ackLost {
-									return response(503, `{"error":{"message":"settlement unavailable"}}`)
-								}
+							}
+							if len(settleBodies) <= 3 && scenario.fail && !scenario.ackLost {
+								return response(503, `{"error":{"message":"settlement unavailable"}}`)
 							}
 							// Model the router's idempotent ledger, including a charge whose
 							// acknowledgement never reached the original caller.
@@ -142,6 +142,9 @@ func TestFusionSettlementFinalization(t *testing.T) {
 				wantAttempts := 1
 				if scenario.fail {
 					wantAttempts = 2
+					if !scenario.ackLost {
+						wantAttempts = 4
+					}
 				}
 				if len(settleBodies) != wantAttempts || authorizations != 1 || charges != 1 || len(q.jobs) != 0 {
 					t.Fatalf("settle attempts=%d authorizations=%d charges=%d queued=%d", len(settleBodies), authorizations, charges, len(q.jobs))

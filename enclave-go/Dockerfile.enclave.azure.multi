@@ -16,13 +16,28 @@
 
 # ─── Builder ────────────────────────────────────────────────────────────────
 #
-# Same pinned Go 1.25 builder as the GCP multi image. The history behind
+# Same pinned Go 1.26.10 builder as the GCP multi image. The history behind
 # pinning it (deploy 25592563258, the sidecar module split) is written up in
 # Dockerfile.enclave.gcp.multi and applies unchanged here.
-FROM golang:1.25-bookworm@sha256:61170847dd0e20c3c1e374aea35c7057c42e1d638d775c360afcd548531c05ab AS builder
+# Build only the MIT client from pinned source, with our bounded control-plane patch.
+# ACR's dependency scanner requires legacy-compatible Dockerfile syntax.
+# Both stages are native amd64; build.sh verifies the archive before extraction.
+FROM golang:1.26.10-bookworm@sha256:ee3901c61e423732605a51f1b8157c849ec01194ea0a274213b5202b2c11e7bf AS privatemode
+ENV CGO_ENABLED=0 GOOS=linux GOARCH=amd64
+WORKDIR /src
+RUN curl --fail --show-error --silent --location --retry 3 --max-time 300 \
+    https://codeload.github.com/edgelesssys/privatemode-public/tar.gz/317d813671769c16238b8e93245e5e2e06060a92 \
+    -o /tmp/privatemode-source.tar.gz
+COPY third_party/privatemode ./third_party/privatemode
+RUN bash third_party/privatemode/build.sh /tmp/privatemode-source.tar.gz /out/privatemode-proxy
+
+FROM golang:1.26.10-bookworm@sha256:ee3901c61e423732605a51f1b8157c849ec01194ea0a274213b5202b2c11e7bf AS builder
 
 RUN apt-get update \
     && apt-get install -y --no-install-recommends ca-certificates \
+    && sed -i -e 's|^mozilla/emSign_ECC_Root_CA_-_G3.crt$|!&|' \
+              -e 's|^mozilla/Comodo_AAA_Services_root.crt$|!&|' /etc/ca-certificates.conf \
+    && update-ca-certificates --fresh \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /src
@@ -80,11 +95,9 @@ RUN cd sidecar && go mod download \
 RUN mkdir -p /out/rootfs/tmp && chmod 1777 /out/rootfs/tmp
 
 # ─── Scratch runtime, both binaries ─────────────────────────────────────────
-# Vendor-distributed proxy, pinned for both supply chain and verifier behavior.
-FROM ghcr.io/edgelesssys/privatemode/privatemode-proxy:v1.59.0@sha256:3cd4da0ee6ceee91ca84dde4e3e3f0e94e8b354d7c1d46987e4331a5c2f8bcff AS privatemode
-
 FROM scratch
-COPY --from=privatemode /bin/privatemode-proxy /privatemode-proxy
+COPY --from=privatemode /out/privatemode-proxy /privatemode-proxy
+COPY --from=privatemode /out/privatemode-proxy.LICENSE /licenses/privatemode-MIT.txt
 COPY --from=builder /etc/ssl/certs/ca-certificates.crt /etc/ssl/certs/ca-certificates.crt
 COPY --from=builder /out/rootfs/ /
 COPY --from=builder /out/quill-enclave /quill-enclave

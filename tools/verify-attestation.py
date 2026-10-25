@@ -1258,7 +1258,7 @@ def fetch_attestation_same_tls_socket(
 
 CONFIDENTIAL_API_HOSTS = frozenset(
     f"api.confidential.{domain}"
-    for domain in ("trustedrouter.com", "quillrouter.com", "allyrouter.com", "uptimerouter.com")
+    for domain in ("trustedrouter.com", "quillrouter.com", "allyrouter.com", "uptimerouter.com", "nytokenexchange.com")
 )
 
 

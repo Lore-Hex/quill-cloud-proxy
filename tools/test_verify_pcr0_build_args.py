@@ -44,12 +44,26 @@ class VerifyPcr0BuildArgs(unittest.TestCase):
         self.assertRegex(dockerfile, r"(?m)^FROM --platform=\$BUILDPLATFORM golang:[^\s]+ AS builder$")
         self.assertIn("ARG TARGETARCH=amd64", dockerfile)
         self.assertIn("ENV CGO_ENABLED=0 GOOS=linux GOARCH=${TARGETARCH}", dockerfile)
-        # Only the build stage is host-native; vendored executables and the
-        # final runtime must retain Docker's requested target architecture.
+        # Both source-build stages run natively and cross-compile; the final
+        # runtime must retain Docker's requested target architecture.
         stages = [line for line in dockerfile.splitlines() if line.startswith("FROM ")]
         self.assertEqual(len(stages), 3)
-        self.assertNotIn("--platform", stages[1])
+        self.assertRegex(stages[0], r"^FROM --platform=\$BUILDPLATFORM golang:[^\s]+ AS privatemode$")
+        self.assertRegex(stages[1], r"^FROM --platform=\$BUILDPLATFORM golang:[^\s]+ AS builder$")
+        self.assertEqual(dockerfile.count("ARG TARGETARCH=amd64"), 2)
+        self.assertEqual(dockerfile.count("ENV CGO_ENABLED=0 GOOS=linux GOARCH=${TARGETARCH}"), 2)
         self.assertEqual(stages[2], "FROM scratch")
+
+    def test_azure_source_build_uses_acr_compatible_syntax_and_verifies_archive(self) -> None:
+        dockerfile = (REPO_ROOT / "enclave-go/Dockerfile.enclave.azure.multi").read_text()
+        recipe = (REPO_ROOT / "enclave-go/third_party/privatemode/build.sh").read_text()
+        self.assertNotIn("FROM --platform", dockerfile)
+        self.assertNotIn("ADD --checksum", dockerfile)
+        self.assertEqual(dockerfile.count("ENV CGO_ENABLED=0 GOOS=linux GOARCH=amd64"), 2)
+        self.assertIn("RUN curl --fail --show-error --silent --location --retry 3 --max-time 300", dockerfile)
+        self.assertIn("RUN bash third_party/privatemode/build.sh /tmp/privatemode-source.tar.gz", dockerfile)
+        self.assertIn("sha256sum -c -", recipe)
+        self.assertLess(recipe.index("sha256sum -c -"), recipe.index("tar -xzf"))
 
     def test_measured_build_args_match_the_release_script(self) -> None:
         release = _assignments(RELEASE)

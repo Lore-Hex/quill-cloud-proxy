@@ -38,6 +38,16 @@ func stageDConfigFromEnv() stageDConfig {
 	}
 }
 
+// declareStageDBootCapabilities makes every boot registration declare usage
+// heartbeats exactly when this boot sends them (stageDStreamEligible gates
+// the heartbeats on the same flag) and the settle outbox exactly when this
+// boot parks terminals (settleOutboxPlan.Configured). The control plane's
+// Stage D rule reads the first once stage_d_require_heartbeat_declaration is
+// on; it stores the second as declares_settle_outbox (E4 R2).
+func declareStageDBootCapabilities(gateway *trustedrouter.Client, config stageDConfig, settleOutbox bool) {
+	gateway.DeclareBootCapabilities(trustedrouter.BootCapabilities{UsageHeartbeat: config.usageHeartbeat, SettleOutbox: settleOutbox})
+}
+
 func stageDFlagEnabled(name string) bool {
 	switch strings.ToLower(strings.TrimSpace(os.Getenv(name))) {
 	case "1", "true", "on", "yes":

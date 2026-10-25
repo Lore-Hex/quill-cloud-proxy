@@ -118,6 +118,8 @@ PROVIDER_KEY_ALIASES: dict[str, str] = {
     "ELEVEN_LABS_API_KEY": "trustedrouter-elevenlabs-api-key",
     "GREENFERENCE_API_KEY": "trustedrouter-greenference-api-key",
     "HIXTUBE_API_KEY": "trustedrouter-hixtube-api-key",
+    "MUNA_API_KEY": "trustedrouter-muna-api-key",
+    "ABLITERATION_API_KEY": "trustedrouter-abliteration-api-key",
     "CORALBRICKS_API_KEY": "trustedrouter-coralbricks-api-key",
     "FORTANIX_API_KEY": "trustedrouter-fortanix-api-key",
     "BOUNDLESS_API_KEY": "trustedrouter-boundless-api-key",

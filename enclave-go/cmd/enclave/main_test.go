@@ -18,6 +18,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"regexp"
 	"runtime"
 	"slices"
 	"sort"
@@ -166,7 +167,8 @@ func TestSettlementRetryQueueRetriesSettleAndBroadcast(t *testing.T) {
 			t.Fatalf("decode settle body: %v", err)
 		}
 		settleBodies = append(settleBodies, body)
-		if settleCalls == 1 {
+		// Exhaust the inline HTTP retry budget before testing queue recovery.
+		if settleCalls <= 3 {
 			http.Error(w, "temporarily down", http.StatusBadGateway)
 			return
 		}
@@ -209,13 +211,16 @@ func TestSettlementRetryQueueRetriesSettleAndBroadcast(t *testing.T) {
 		},
 	}
 	q.process(context.Background(), job)
+	if len(q.jobs) != 1 {
+		t.Fatalf("queued retries = %d, want 1", len(q.jobs))
+	}
 	retry := <-q.jobs
 	if retry.attempt != 2 {
 		t.Fatalf("retry attempt = %d, want 2", retry.attempt)
 	}
 	q.process(context.Background(), retry)
-	if settleCalls != 2 {
-		t.Fatalf("settle calls = %d, want 2", settleCalls)
+	if settleCalls != 4 {
+		t.Fatalf("settle calls = %d, want 4 (3 inline, 1 queued)", settleCalls)
 	}
 	// A retried settle must carry the same gateway_request_id the first
 	// attempt did, even though the worker runs on the queue's own context.
@@ -9679,11 +9684,15 @@ func (f *failingStreamingLLM) InvokeStreaming(
 	return errors.New("provider exploded")
 }
 
+var retryCauseField = regexp.MustCompile(`\bcause:\s*([A-Za-z_][A-Za-z0-9_]*)\s*(?:,|}|$)`)
+
 func TestEverySettlementRetryEnqueueSiteCarriesRequestLogIDAndClientContext(t *testing.T) {
 	// The retry worker runs on the queue's own context, so per-request values
 	// (audit id, client telemetry) only reach a retried settle if the enqueue
 	// site copies them onto the job. A new site that forgets one would still
 	// compile and still settle -- it would just silently lose the value.
+	// cause decides whether the first retry must wait for an abandoned
+	// original settle the router may still be running.
 	entries, err := os.ReadDir(".")
 	if err != nil {
 		t.Fatal(err)
@@ -9714,6 +9723,11 @@ func TestEverySettlementRetryEnqueueSiteCarriesRequestLogIDAndClientContext(t *t
 				if !strings.Contains(literal, field) {
 					t.Errorf("%s: settlementRetryJob literal at byte %d does not set %s", name, start, field)
 				}
+			}
+			// cause must name the failing error variable; a literal nil would
+			// compile and silently send every abandoned settle's retry at once.
+			if match := retryCauseField.FindStringSubmatch(literal); match == nil || match[1] == "nil" {
+				t.Errorf("%s: settlementRetryJob literal at byte %d does not pass its error as cause", name, start)
 			}
 			sites++
 			offset = start + end

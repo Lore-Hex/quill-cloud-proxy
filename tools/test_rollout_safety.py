@@ -22,6 +22,14 @@ ASYNC_SETTLE_KEYRING = ('{"tr-async-settle-2026-10a":'
 
 
 class RolloutSafetyTests(unittest.TestCase):
+    def test_cross_cloud_key_rotation_does_not_restore_bigtable_access(self) -> None:
+        script = (ROOT / "tools/deploy-aws-nitro.sh").read_text()
+        phase = script.split("phase_cross_cloud_key() {", 1)[1].split("\n}", 1)[0]
+        roles = re.findall(r"roles/[A-Za-z.]+", phase)
+        self.assertNotIn("roles/bigtable.user", roles)
+        self.assertIn("roles/spanner.databaseUser", roles)
+        self.assertIn("roles/secretmanager.secretAccessor", roles)
+
     def test_async_settlement_rollout_pins_and_keyring_allowlist(self) -> None:
         # Public verification material only (runbook step 2). Installing it does not
         # enable negotiation: TR_ASYNC_SETTLE_NEGOTIATE stays off until step 8.
@@ -798,7 +806,7 @@ printf '%s\\n' "${GCLOUD_JSON}"
             "            quill-enclave-mig-uswest1 \\",
             "            quill-enclave-mig-uswest1- \\",
             "            uswest1 \\",
-            "            api.quillrouter.com,api-us-west1.quillrouter.com,api.trustedrouter.com,api.allyrouter.com,api.uptimerouter.com \\",
+            "            api.quillrouter.com,api-us-west1.quillrouter.com,api.trustedrouter.com,api.allyrouter.com,api.uptimerouter.com,api.nytokenexchange.com \\",
             "            c3-standard-4 \\",
             "            TDX \\",
         ):
@@ -1372,7 +1380,7 @@ esac
             self.assertLess(previous_roll, refresh)
             self.assertLess(refresh, roll)
             segment = workflow[refresh:roll]
-            self.assertIn("uses: aws-actions/configure-aws-credentials@v4", segment)
+            self.assertIn("uses: aws-actions/configure-aws-credentials@v6", segment)
             self.assertIn("role-to-assume: ${{ secrets.AWS_DEPLOY_ROLE_ARN }}", segment)
             previous_roll = roll
 
@@ -1697,7 +1705,7 @@ else:
         rollout = workflow.split("\n  rollout:\n", 1)[1].split(
             "\n  finalize-trust-artifacts:\n", 1
         )[0]
-        checkout = rollout.split("- uses: actions/checkout@v4", 1)[1].split(
+        checkout = rollout.split("- uses: actions/checkout@v7", 1)[1].split(
             "\n      - ", 1
         )[0]
         # Moving main injected a new env into an older measured image, which

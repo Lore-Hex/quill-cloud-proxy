@@ -41,7 +41,11 @@ jobs:
   sign:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
+        with:
+          # Match the attested release workflow's protected-main publisher.
+          # Signing still uses this workflow's separate OIDC identity.
+          token: ${{ secrets.TRUST_PUSH_TOKEN }}
       - uses: sigstore/cosign-installer@v3
         with:
           cosign-release: v2.6.5
@@ -109,9 +113,9 @@ jobs:
       # documents FAILED against the bundle it pointed at. Verified before this
       # change: documented publish-trust-gcp.yml, actual publish-trust-page.yml.
       #
-      # GITHUB_TOKEN pushes do not trigger push workflows, so this cannot loop.
-      # Publishing to Pages happens on the workflow_run backstop in
-      # publish-trust-page.yml, which fires when this workflow completes.
+      # Bundle-only commits do not match this signer's input paths. The GCP
+      # policy mirror already has the same source bytes, so it adds no trigger.
+      # Pages also has a workflow_run backstop when this signer completes.
       - name: Commit bundles
         run: |
           set -euo pipefail

@@ -2452,7 +2452,7 @@ func TestNativeVisibleBodyIncludesSettlementAttribution(t *testing.T) {
 	).(map[string]any)
 	providerUsage := visible["usage"].(map[string]any)["provider_usage"].(map[string]any)
 	if providerUsage["generation_id"] != "gen-native" ||
-		providerUsage["region"] != "us-east4" ||
+		providerUsage["gateway_region"] != "us-east4" ||
 		providerUsage["selected_provider"] != "openai" ||
 		providerUsage["selected_endpoint"] != "openai-endpoint" ||
 		providerUsage["usage_type"] != "Credits" ||
@@ -2462,6 +2462,9 @@ func TestNativeVisibleBodyIncludesSettlementAttribution(t *testing.T) {
 		providerUsage["reasoning_tokens"] != 1 ||
 		providerUsage["total_cost_microdollars"] != 7 {
 		t.Fatalf("provider_usage = %#v", providerUsage)
+	}
+	if _, exists := providerUsage["region"]; exists {
+		t.Fatalf("ambiguous gateway region in provider_usage: %#v", providerUsage)
 	}
 	usageMap := visible["usage"].(map[string]any)
 	trustedRouter := visible["trustedrouter"].(map[string]any)

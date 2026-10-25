@@ -78,10 +78,13 @@ func (c *openAICompatibleClient) InvokeStreaming(
 	if c.provider == "scaledown" {
 		return c.invokeScaleDown(ctx, req, out, firstOptions(options))
 	}
+	option := firstOptions(options)
+	if c.provider == "cloudflare-workers-ai" && (option.UpstreamModel == clairicUpstream || (option.UpstreamModel == "" && req != nil && req.Model == clairicModel)) {
+		return c.invokeClairic(ctx, req, out, option)
+	}
 	if handled, err := invokeBYOKStreaming(ctx, req, body, out, firstOptions(options)); handled {
 		return err
 	}
-	option := firstOptions(options)
 	provider := c.provider
 	if option.Provider != "" {
 		provider = normalizeDirectProvider(option.Provider)

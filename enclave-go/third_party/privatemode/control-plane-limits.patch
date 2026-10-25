@@ -1,0 +1,52 @@
+--- a/internal/oss/httpapi/httpapi.go
++++ b/internal/oss/httpapi/httpapi.go
+@@ -8,6 +8,7 @@
+ 	"fmt"
+ 	"io"
+ 	"net/http"
++	"time"
+ 
+ 	"github.com/edgelesssys/continuum/internal/oss/auth"
+ 	"github.com/edgelesssys/continuum/internal/oss/constants"
+@@ -16,8 +17,14 @@
+ // ErrUnauthorized is returned if the API returned 401, indicating that the credential is invalid.
+ var ErrUnauthorized = errors.New(http.StatusText(http.StatusUnauthorized))
+ 
++// These limits cover attestation and key exchange, not inference streams.
++const maxControlResponseBytes = 4 << 20
++const controlRequestTimeout = 30 * time.Second
++
+ // Do performs an HTTP request to the Privatemode API.
+ func Do(ctx context.Context, client *http.Client, method, url string, reqBody []byte, cred auth.Credential, extraHTTPHeaders http.Header) ([]byte, error) {
++	ctx, cancel := context.WithTimeout(ctx, controlRequestTimeout)
++	defer cancel()
+ 	req, err := http.NewRequestWithContext(ctx, method, url, bytes.NewReader(reqBody))
+ 	if err != nil {
+ 		return nil, fmt.Errorf("creating request: %w", err)
+@@ -34,10 +41,13 @@
+ 		return nil, fmt.Errorf("doing request: %w", err)
+ 	}
+ 	defer resp.Body.Close()
+-	respBody, err := io.ReadAll(resp.Body)
++	respBody, err := io.ReadAll(io.LimitReader(resp.Body, maxControlResponseBytes+1))
+ 	if err != nil {
+ 		return nil, fmt.Errorf("reading response body: %w", err)
+ 	}
++	if len(respBody) > maxControlResponseBytes {
++		return nil, errors.New("control response exceeds size limit")
++	}
+ 	if resp.StatusCode == http.StatusUnauthorized {
+ 		return nil, fmt.Errorf("%w (status code: %d)", ErrUnauthorized, resp.StatusCode)
+ 	}
+--- a/internal/oss/secretmanager/secretmanager.go
++++ b/internal/oss/secretmanager/secretmanager.go
+@@ -159,6 +159,9 @@
+ }
+ 
+ func (sm *SecretManager) updateSecret(ctx context.Context, now time.Time, cred auth.Credential) error {
++	// Bound collateral fetching and key exchange while the manager mutex is held.
++	ctx, cancel := context.WithTimeout(ctx, 2*time.Minute)
++	defer cancel()
+ 	id, data, err := sm.updateSecretFn(ctx, cred)
+ 	if sm.dropCredOnUnauthorized && errors.Is(err, httpapi.ErrUnauthorized) {
+ 		sm.credential = auth.Credential{}

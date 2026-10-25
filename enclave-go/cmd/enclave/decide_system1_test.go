@@ -28,7 +28,7 @@ func system1TestImage(t *testing.T) string {
 }
 
 func TestSystem1DecisionLimitsBeforeInference(t *testing.T) {
-	for _, model := range []string{"system1models/s1-fast", "system1models-eu/s1-fast"} {
+	for _, model := range []string{"system1models/s1-fast", "system1models-eu/s1-fast", "decisionmodelsio/s1-fast", "decisionmodelsio-eu/s1-fast"} {
 		for _, change := range []string{"two_questions", "oversized_state", "image_on_text", "remote_image", "bad_image", "two_images"} {
 			t.Run(model+"/"+change, func(t *testing.T) {
 				body := map[string]any{"model": model, "state": "red", "questions": map[string]any{"q": map[string]any{"type": "boolean", "instructions": "Red?"}}}
@@ -60,11 +60,48 @@ func TestSystem1DecisionLimitsBeforeInference(t *testing.T) {
 	}
 }
 
-func TestSystem1SettlementUsesReportedInputExactlyOnce(t *testing.T) {
+func TestTinfoilDecisionChoiceLimitBeforeInference(t *testing.T) {
+	for _, size := range []string{"small", "medium", "large"} {
+		for _, count := range []int{26, 27} {
+			criteria := make(map[string]string, count)
+			for i := 0; i < count; i++ {
+				criteria[fmt.Sprintf("choice%d", i)] = "option"
+			}
+			body, _ := json.Marshal(map[string]any{
+				"model": "tinfoil/decision-" + size, "state": "test",
+				"questions": map[string]any{"q": map[string]any{
+					"type": "choice", "instructions": "Choose", "criteria": criteria,
+				}},
+			})
+			client := &fakeDecider{}
+			status, _ := runDecide(t, client, string(body))
+			if count == 27 && (status != 400 || client.seen != nil) {
+				t.Fatalf("over-limit request reached inference: %s, %d", size, status)
+			}
+			if count == 26 && client.seen == nil {
+				t.Fatalf("valid choice limit rejected: %s, %d", size, status)
+			}
+		}
+	}
+}
+
+func TestHostedSettlementUsesReportedInputExactlyOnce(t *testing.T) {
 	imageURL := system1TestImage(t)
-	for _, slug := range []string{"system1models", "system1models-eu"} {
+	for _, slug := range []string{"system1models", "system1models-eu", "decisionmodelsio", "decisionmodelsio-eu", "regolo", "tinfoil"} {
 		for _, fail := range []bool{false, true} {
 			model := slug + "/s1-vision"
+			upstream := "s1-vision"
+			reportedInput := 4444
+			images := `,"images":["` + imageURL + `"]`
+			if slug == "regolo" {
+				model = "cloudflare/clef-flash"
+				upstream = "clef-flash"
+				reportedInput = 140
+				images = ""
+			}
+			if slug == "tinfoil" {
+				model, upstream, reportedInput, images = "tinfoil/decision-small", "decision-small", 307, ""
+			}
 			endpoint := model + "@" + slug + "/prepaid"
 			authorizations, settlements, refunds := 0, 0, 0
 			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -77,10 +114,10 @@ func TestSystem1SettlementUsesReportedInputExactlyOnce(t *testing.T) {
 				switch r.URL.Path {
 				case "/internal/gateway/authorize":
 					authorizations++
-					_, _ = fmt.Fprintf(w, `{"data":{"authorization_id":"a","workspace_id":"w","api_key_hash":"k","model":%q,"endpoint_id":%q,"provider":%q,"upstream_model":"s1-vision","usage_type":"Credits","limit_usage_type":"Credits","route_candidates":[]}}`, model, endpoint, slug)
+					_, _ = fmt.Fprintf(w, `{"data":{"authorization_id":"a","workspace_id":"w","api_key_hash":"k","model":%q,"endpoint_id":%q,"provider":%q,"upstream_model":%q,"usage_type":"Credits","limit_usage_type":"Credits","route_candidates":[]}}`, model, endpoint, slug, upstream)
 				case "/internal/gateway/settle":
 					settlements++
-					if body["actual_input_tokens"] != float64(4444) || body["actual_output_tokens"] != float64(0) || body["selected_endpoint"] != endpoint {
+					if body["actual_input_tokens"] != float64(reportedInput) || body["actual_output_tokens"] != float64(0) || body["selected_endpoint"] != endpoint {
 						t.Errorf("incorrect settlement: %#v", body)
 					}
 					_, _ = fmt.Fprint(w, `{"data":{"settled":true,"generation_id":"g","cost_microdollars":20}}`)
@@ -92,11 +129,11 @@ func TestSystem1SettlementUsesReportedInputExactlyOnce(t *testing.T) {
 				}
 			}))
 			probability := 0.9
-			backend := &cancellingDecider{tokens: 4444, answers: map[string]decide.Answer{"q": {Type: decide.TypeBoolean, Probability: &probability}}}
+			backend := &cancellingDecider{tokens: reportedInput, answers: map[string]decide.Answer{"q": {Type: decide.TypeBoolean, Probability: &probability}}}
 			if fail {
 				backend.answers = nil
 			}
-			status, _ := rawDecide(context.Background(), backend, trustedrouter.New(server.URL, "test", server.Client()), `{"model":"`+model+`","state":"PRIVATE-STATE","images":["`+imageURL+`"],"questions":{"q":{"type":"noul","instructions":"Red?"}}}`)
+			status, _ := rawDecide(context.Background(), backend, trustedrouter.New(server.URL, "test", server.Client()), `{"model":"`+model+`","state":"PRIVATE-STATE"`+images+`,"questions":{"q":{"type":"noul","instructions":"Red?"}}}`)
 			server.Close()
 			if authorizations != 1 || settlements+refunds != 1 || (!fail && (status != 200 || settlements != 1)) || (fail && (status != 502 || refunds != 1)) {
 				t.Fatalf("status=%d authorize=%d settle=%d refund=%d", status, authorizations, settlements, refunds)
@@ -107,7 +144,7 @@ func TestSystem1SettlementUsesReportedInputExactlyOnce(t *testing.T) {
 
 func TestSystem1UsesVerifiedHostedPath(t *testing.T) {
 	probability := 0.9
-	for _, model := range []string{"system1models/s1-fast", "system1models-eu/s1-pro", "system1models/s1-future"} {
+	for _, model := range []string{"system1models/s1-fast", "system1models-eu/s1-pro", "system1models/s1-future", "decisionmodelsio/s1-fast", "decisionmodelsio-eu/s1-pro", "decisionmodelsio/s1-future", "cloudflare/clef-flash"} {
 		client := &fakeDecider{answers: map[string]decide.Answer{"q": {Type: decide.TypeBoolean, Probability: &probability}}}
 		status, _ := runDecide(t, client, `{"model":"`+model+`","state":"red","questions":{"q":{"type":"noul","instructions":"Red?"}}}`)
 		if status != 200 || client.seen == nil {

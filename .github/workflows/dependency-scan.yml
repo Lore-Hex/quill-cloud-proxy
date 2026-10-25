@@ -9,6 +9,15 @@ name: Dependency scan
 #    Does not fail: the existing backlog is worked down through those alerts.
 #  * pull_request: diff scan against the base branch; FAILS only when the PR
 #    introduces a vulnerability that main does not already have.
+#
+# --no-call-analysis=go: OSV-Scanner v2 runs govulncheck call analysis on Go
+# modules by default, and govulncheck has to compile the packages to do it. The
+# enclave packages only compile under their cloud build tags (cloud_gcp,
+# cloud_aws, cloud_azure, llm_*), so untagged loading fails ("undefined: Get",
+# "build constraints exclude all Go files") and the whole scan aborted on main and
+# on every PR, reporting nothing. Without call analysis every Go module in
+# go.mod/go.sum is still matched against OSV; findings are not filtered by
+# reachability.
 
 on:
   pull_request:
@@ -34,6 +43,7 @@ jobs:
       fail-on-vuln: false
       scan-args: |-
         --include-git-root
+        --no-call-analysis=go
         -r
         ./
 
@@ -47,5 +57,6 @@ jobs:
     with:
       scan-args: |-
         --include-git-root
+        --no-call-analysis=go
         -r
         ./

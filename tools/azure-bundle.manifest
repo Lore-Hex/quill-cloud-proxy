@@ -17,10 +17,11 @@
 # a new bundle (which regenerates this file and prints a new version), pin the
 # new QUILL_AZURE_BUNDLE_VERSION, and commit this file in the same change.
 #
-# bundle-version: f2d126c744894b7fa48f2f2d89c9a655
+# bundle-version: b9a9040d8e694dd18c6d4899929aaea6
 quill-device-keys
 quill-openrouter-key
 tr-azure-acme-cache-key
+trustedrouter-abliteration-api-key
 trustedrouter-acme-gts-eab
 trustedrouter-advisor-prompt-v1
 trustedrouter-advisor-worker-prompt-v1
@@ -37,6 +38,7 @@ trustedrouter-chutes-api-key
 trustedrouter-cloudflare-workers-ai-api-token
 trustedrouter-cohere-api-key
 trustedrouter-confidential-ai-api-key
+trustedrouter-coralbricks-api-key
 trustedrouter-crusoe-api-key
 trustedrouter-databricks-host
 trustedrouter-databricks-token
@@ -47,6 +49,7 @@ trustedrouter-elevenlabs-api-key
 trustedrouter-engy-api-key
 trustedrouter-exa-api-key
 trustedrouter-fireworks-api-key
+trustedrouter-fortanix-api-key
 trustedrouter-friendli-api-key
 trustedrouter-gemini-api-key
 trustedrouter-gmi-api-key
@@ -61,6 +64,7 @@ trustedrouter-makora-api-key
 trustedrouter-minimax-api-key
 trustedrouter-mistral-api-key
 trustedrouter-morph-api-key
+trustedrouter-muna-api-key
 trustedrouter-near-ai-api-key
 trustedrouter-nebius-api-key
 trustedrouter-neurometric-api-key

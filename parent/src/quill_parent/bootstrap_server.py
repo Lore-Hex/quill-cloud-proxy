@@ -177,6 +177,8 @@ _DIRECT_PROVIDER_KEYS: Final[tuple[tuple[str, str], ...]] = (
     ("elevenlabs", "trustedrouter-elevenlabs-api-key"),
     ("greenference", "trustedrouter-greenference-api-key"),
     ("hixtube", "trustedrouter-hixtube-api-key"),
+    ("muna", "trustedrouter-muna-api-key"),
+    ("abliteration", "trustedrouter-abliteration-api-key"),
     ("coralbricks", "trustedrouter-coralbricks-api-key"),
     ("fortanix", "trustedrouter-fortanix-api-key"),
     ("boundless", "trustedrouter-boundless-api-key"),

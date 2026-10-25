@@ -64,13 +64,18 @@ func TestDNS01RateLimitedPrimaryReachesFallback(t *testing.T) {
 }
 
 func TestConfidentialTLSDoesNotOrderCertificateOnCacheMiss(t *testing.T) {
+	for _, host := range []string{"api.confidential.trustedrouter.com", "api.nytokenexchange.com", "api.confidential.nytokenexchange.com"} {
+		t.Run(host, func(t *testing.T) { testDNS01TLSDoesNotOrderOnCacheMiss(t, host) })
+	}
+}
+
+func testDNS01TLSDoesNotOrderOnCacheMiss(t *testing.T, host string) {
 	var requests atomic.Int32
 	ca := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		requests.Add(1)
 		w.WriteHeader(http.StatusForbidden)
 	}))
 	defer ca.Close()
-	const host = "api.confidential.trustedrouter.com"
 	cache := autocert.DirCache(t.TempDir())
 	srv, err := NewACMEWithCache(host, "", ca.URL, cache, nil)
 	if err != nil {

@@ -345,12 +345,7 @@ func invokeOpenAICompatibleStreamingWithClientOptions(
 	}
 	httpReq.Header.Set("User-Agent", "TrustedRouter/1.0")
 	if normalizeDirectProvider(provider) == "cloudflare-workers-ai" {
-		// Select the operator's Unified Billing/ZDR gateway. Its logging and
-		// caching defaults must never cause customer content to be retained.
-		httpReq.Header.Set("cf-aig-gateway-id", "default")
-		httpReq.Header.Set("cf-aig-collect-log", "false")
-		httpReq.Header.Set("cf-aig-collect-log-payload", "false")
-		httpReq.Header.Set("cf-aig-skip-cache", "true")
+		cloudflareGatewayHeaders(httpReq.Header)
 	}
 	if normalizeDirectProvider(provider) == "wafer" &&
 		(options.waferZDRRequired || legacyWaferModelSupportsZDR(upstreamID)) {
@@ -1924,6 +1919,11 @@ func normalizeDirectProvider(provider string) string {
 	slug = strings.ReplaceAll(slug, " ", "-")
 	slug = strings.ReplaceAll(slug, "_", "-")
 	switch slug {
+	// Public rebrand; keep the deployed credential slots and regional keys stable.
+	case "decisionmodelsio":
+		return "system1models"
+	case "decisionmodelsio-eu":
+		return "system1models-eu"
 	case "google", "google-ai", "gemini":
 		return "gemini"
 	case "google-ai-studio", "ai-studio":

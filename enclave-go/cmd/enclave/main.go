@@ -45,6 +45,7 @@ import (
 	"github.com/Lore-Hex/quill-cloud-proxy/enclave-go/internal/llm"
 	"github.com/Lore-Hex/quill-cloud-proxy/enclave-go/internal/privatemode"
 	"github.com/Lore-Hex/quill-cloud-proxy/enclave-go/internal/requesttiming"
+	"github.com/Lore-Hex/quill-cloud-proxy/enclave-go/internal/settleoutbox"
 	"github.com/Lore-Hex/quill-cloud-proxy/enclave-go/internal/shadowobserve"
 	"github.com/Lore-Hex/quill-cloud-proxy/enclave-go/internal/speech"
 	"github.com/Lore-Hex/quill-cloud-proxy/enclave-go/internal/transcription"
@@ -510,6 +511,11 @@ func main() {
 		}
 	}
 	stageDConfig := stageDConfigFromEnv()
+	// Before any boot registration starts: every registration path sends it.
+	// The outbox is resolved (not started) here so the declaration says
+	// exactly whether this boot will park terminals.
+	settleOutboxPlan := prepareSettleOutbox(settleOutboxBucket(), settleOutboxStore)
+	declareStageDBootCapabilities(trGateway, stageDConfig, settleOutboxPlan.Configured())
 	fmt.Fprintf(os.Stderr, "spend_lease.local_admission_flag enabled=%t\n", boot.SpendLeaseLocalAdmission)
 	fmt.Fprintf(os.Stderr, "enclave.stage_d_flags usage_heartbeat=%t terminate_at_cap=%t heartbeat_budget_ms=%d settle_before_terminal_ms=%d\n",
 		stageDConfig.usageHeartbeat, stageDConfig.terminateAtCap, stageDConfig.heartbeatBudget.Milliseconds(), stageDConfig.settleBeforeTerminal.Milliseconds())
@@ -530,6 +536,20 @@ func main() {
 		if !stageDConfig.usageHeartbeat {
 			trGateway.StartStageDBootRegistration(ctx, receiptSigner, currentSpendLeaseEvidence)
 		}
+	}
+	// After the registration paths above have chosen this boot's key, so
+	// parked terminals carry a replay signature the control plane can tie
+	// to a registered boot (none when this boot registers nowhere), and
+	// before serving starts, so no retry can be lost unparked. Off unless
+	// QUILL_SETTLE_OUTBOX_BUCKET is set.
+	var settleOutbox *settleoutbox.Writer
+	if trGateway.Enabled() {
+		settleOutbox = startSettleOutbox(settlementContext, settleOutboxPlan, trGateway.RegisteredBootSigner())
+		settlementRetries.SetOutbox(settleOutbox)
+		// The sweeper replays what any boot in the pool parked. Off unless
+		// QUILL_SETTLE_OUTBOX_SWEEP=on as well; it stops with the retry
+		// queue's context and never runs on a request path.
+		startSettleOutboxSweeper(settlementContext, settleOutboxPlan, settleOutboxSweepEnabled(), trGateway)
 	}
 	if err := initializeSpeculation(ctx, trGateway, speculationMode); err != nil {
 		fmt.Fprintln(os.Stderr, err)
@@ -560,10 +580,17 @@ func main() {
 	if trGateway.Enabled() {
 		flushStarted := time.Now()
 		flushContext, stopFlush := context.WithTimeout(context.Background(), 3*time.Second)
-		if flushErr := settlementRetries.WaitForIdle(flushContext); flushErr != nil {
-			fmt.Fprintf(os.Stderr, "enclave.shutdown_settlement_pending queued=%d err=%q\n", len(settlementRetries.jobs), flushErr.Error())
-		}
+		settlementRetries.Flush(flushContext)
 		stopFlush()
+		if settleOutbox != nil {
+			// Its own budget: the retry flush above has spent its 3 s when
+			// it parked anything.
+			outboxContext, stopOutbox := context.WithTimeout(context.Background(), 5*time.Second)
+			if flushErr := settleOutbox.Flush(outboxContext); flushErr != nil {
+				fmt.Fprintf(os.Stderr, "enclave.shutdown_settle_outbox_pending err=%q\n", flushErr.Error())
+			}
+			stopOutbox()
+		}
 		startupHarness.RecordShutdownWait(flushStarted, time.Now())
 	}
 	if err != nil {
@@ -1754,6 +1781,8 @@ func serveResponsesNonStreaming(
 		RouteType:         "responses",
 		SelectedModel:     selectedModel,
 		SelectedEndpoint:  selectedEndpoint,
+		RouteFallbacks:    selectedRoute.FallbackCount(),
+		RouteFailures:     selectedRoute.Failures(),
 		User:              req.User,
 		SessionID:         req.SessionID,
 		Trace:             req.Trace,
@@ -1860,6 +1889,8 @@ func serveChatNonStreaming(
 		RouteType:         "chat.completions",
 		SelectedModel:     selectedModel,
 		SelectedEndpoint:  selectedEndpoint,
+		RouteFallbacks:    selectedRoute.FallbackCount(),
+		RouteFailures:     selectedRoute.Failures(),
 		User:              req.User,
 		SessionID:         req.SessionID,
 		Trace:             req.Trace,
@@ -2075,6 +2106,8 @@ func serveStreaming(
 			Streamed: true, RouteType: routeType,
 			SelectedModel:    selectedRoute.Model(req.Model, authorization),
 			SelectedEndpoint: selectedRoute.Endpoint("", authorization),
+			RouteFallbacks:   selectedRoute.FallbackCount(),
+			RouteFailures:    selectedRoute.Failures(),
 			User:             req.User, SessionID: req.SessionID, Trace: req.Trace, Metadata: req.Metadata,
 			ServiceTier: requestedServiceTierForSettlement(req),
 		}
@@ -2089,6 +2122,7 @@ func serveStreaming(
 				reportedCost = costForRetry(reportedSettlement(settlement, authorization, usage, settleErr))
 			}
 			settlementRetries.Enqueue(settlementRetryJob{
+				cause:     settleErr,
 				trGateway: trGateway, authorization: authorization, usage: usage,
 				reportedCost: reportedCost,
 				requestLogID: requestLogID, clientContext: trustedrouter.ClientContextFromContext(ctx),
@@ -2150,6 +2184,7 @@ func serveStreaming(
 					}
 					fmt.Fprintf(os.Stderr, "enclave.stream_settle_failed request_log_id=%q request_id=%q model=%q route_type=%q err=%v\n", requestLogID, requestID, req.Model, routeType, settleErr)
 					settlementRetries.Enqueue(settlementRetryJob{
+						cause:     settleErr,
 						trGateway: trGateway, authorization: authorization, usage: usage,
 						reportedCost: costForRetry(reportedSettlement(settlement, authorization, usage, settleErr)),
 						requestLogID: requestLogID, clientContext: trustedrouter.ClientContextFromContext(ctx),
@@ -2355,6 +2390,7 @@ func serveStreaming(
 				}
 				if refundErr != nil {
 					settlementRetries.Enqueue(settlementRetryJob{
+						cause:     refundErr,
 						trGateway: trGateway, authorization: refundAuthorization, requestLogID: requestLogID,
 						clientContext: trustedrouter.ClientContextFromContext(ctx), kind: "refund",
 						refundStatus: status, refundType: failureReason(err), refundElapsed: time.Since(requestStarted).Seconds(), refundMetadata: req.Metadata,
@@ -2549,6 +2585,8 @@ func serveMessages(
 			RouteType:        "messages",
 			SelectedModel:    selectedModel,
 			SelectedEndpoint: selectedEndpoint,
+			RouteFallbacks:   selectedRoute.FallbackCount(),
+			RouteFailures:    selectedRoute.Failures(),
 			Metadata:         req.Metadata,
 		}
 		applyUsageAttribution(&usage, req)
@@ -2625,6 +2663,8 @@ func serveMessages(
 			RouteType:         "messages",
 			SelectedModel:     selectedRoute.Model(req.Model, authorization),
 			SelectedEndpoint:  selectedRoute.Endpoint("", authorization),
+			RouteFallbacks:    selectedRoute.FallbackCount(),
+			RouteFailures:     selectedRoute.Failures(),
 			Metadata:          req.Metadata,
 		}
 		applyUsageAttribution(&usage, req)
@@ -2634,6 +2674,7 @@ func serveMessages(
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "enclave.messages_stream_settle_failed request_log_id=%q request_id=%q model=%q err=%v\n", requestLogID, messageID, req.Model, err)
 			settlementRetries.Enqueue(settlementRetryJob{
+				cause:     err,
 				trGateway: trGateway, authorization: authorization, usage: usage,
 				reportedCost: costForRetry(reportedSettlement(settlement, authorization, usage, err)),
 				requestLogID: requestLogID, clientContext: trustedrouter.ClientContextFromContext(ctx),
