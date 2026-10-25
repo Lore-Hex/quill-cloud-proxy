@@ -40,12 +40,16 @@ func stageDConfigFromEnv() stageDConfig {
 
 // declareStageDBootCapabilities makes every boot registration declare usage
 // heartbeats exactly when this boot sends them (stageDStreamEligible gates
-// the heartbeats on the same flag) and the settle outbox exactly when this
-// boot parks terminals (settleOutboxPlan.Configured). The control plane's
-// Stage D rule reads the first once stage_d_require_heartbeat_declaration is
-// on; it stores the second as declares_settle_outbox (E4 R2).
+// the heartbeats on the same flag), the settle outbox exactly when this
+// boot parks terminals (settleOutboxPlan.Configured), and the idempotency
+// key-source mark always: this build marks every authorize whose key it
+// minted, with no knob. The control plane's Stage D rule reads the first
+// once stage_d_require_heartbeat_declaration is on; it stores the others as
+// declares_settle_outbox and declares_idempotency_key_source (E4 R2).
 func declareStageDBootCapabilities(gateway *trustedrouter.Client, config stageDConfig, settleOutbox bool) {
-	gateway.DeclareBootCapabilities(trustedrouter.BootCapabilities{UsageHeartbeat: config.usageHeartbeat, SettleOutbox: settleOutbox})
+	gateway.DeclareBootCapabilities(trustedrouter.BootCapabilities{
+		UsageHeartbeat: config.usageHeartbeat, IdempotencyKeySource: true, SettleOutbox: settleOutbox,
+	})
 }
 
 func stageDFlagEnabled(name string) bool {

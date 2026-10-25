@@ -46,7 +46,7 @@ func TestStageCWireCopiesPublicStream(t *testing.T) {
 		req := stageCFixtureRequest()
 		req.Stream = stream
 		c := &Client{region: "us-central1"}
-		ordinary := chatAuthorizeBody(c, stageCFixtureLookupHash, req.IdempotencyKey, req, "responses")
+		ordinary := chatAuthorizeBody(c, stageCFixtureLookupHash, req.IdempotencyKey, false, req, "responses")
 		body := admissionAuthorizeBody(c, stageCFixtureLookupHash, ordinary, &spendlease.Admission{Receipt: "receipt"})
 		if got, exists := body["stream"]; !exists || got != stream {
 			t.Fatalf("public stream=%t serialized as %v (present=%t)", stream, got, exists)
@@ -134,7 +134,7 @@ func TestStageCWireMissBeforeCapacityOrSigning(t *testing.T) {
 					if string(body["invocation_nonce"]) != `"00112233445566778899aabbccddeeff"` {
 						t.Fatal("ordinary nonce lost")
 					}
-					expected, err := json.Marshal(chatAuthorizeBody(c, stageCFixtureLookupHash, req.IdempotencyKey, req, route))
+					expected, err := json.Marshal(chatAuthorizeBody(c, stageCFixtureLookupHash, req.IdempotencyKey, false, req, route))
 					if err != nil {
 						t.Fatal(err)
 					}
