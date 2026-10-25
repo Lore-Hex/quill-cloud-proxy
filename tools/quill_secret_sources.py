@@ -23,12 +23,19 @@ specific statement, and a rotation that lands in one place should not be shadowe
 by a stale value in the other.
 
 Values are returned to the caller and never logged. Callers print names.
+The CLI creates output with mode 0600, regardless of the caller's umask.
+Existing outputs must already be caller-owned, mode-0600 regular files with
+one link (including the wrappers' mktemp files). Symlinks and unsafe existing
+outputs are refused without truncation or permission changes. Use an output
+directory you trust; this does not isolate secrets from processes with your UID.
 """
 
 from __future__ import annotations
 
 import json
+import os
 import re
+import stat
 import sys
 from pathlib import Path
 
@@ -269,6 +276,30 @@ def resolve(
     return values, missing, provenance
 
 
+def write_private_output(path: Path, values: dict[str, str]) -> None:
+    """Admit the opened inode before truncation; never follow an output link."""
+    flags = os.O_WRONLY | os.O_NOFOLLOW | os.O_NONBLOCK | os.O_CLOEXEC
+    try:
+        fd = os.open(path, flags | os.O_CREAT | os.O_EXCL, 0o600)
+        created = True
+    except FileExistsError:
+        fd = os.open(path, flags)
+        created = False
+    with os.fdopen(fd, "w", encoding="utf-8") as output:
+        info = os.fstat(output.fileno())
+        if (not stat.S_ISREG(info.st_mode) or info.st_uid != os.geteuid()
+                or info.st_nlink != 1):
+            raise ValueError("unsafe output inode")
+        if created:
+            # Creation is private even with umask 000; also handle a umask that
+            # removes owner bits. Only this exclusively created inode is chmodded.
+            os.fchmod(output.fileno(), 0o600)
+        elif stat.S_IMODE(info.st_mode) != 0o600:
+            raise ValueError("existing output must have mode 0600")
+        output.truncate(0)
+        json.dump(values, output)
+
+
 def main() -> int:
     if len(sys.argv) < 3:
         print("usage: quill_secret_sources.py NEEDED_JSON OUT_JSON "
@@ -281,7 +312,12 @@ def main() -> int:
     values, missing, provenance = resolve(
         needed, keys_file=keys_file, secrets_dir=secrets_dir
     )
-    json.dump(values, open(sys.argv[2], "w"))
+    try:
+        write_private_output(Path(sys.argv[2]), values)
+    except (OSError, ValueError):
+        print("cannot write private output: require an owned mode-0600 regular file or a new path",
+              file=sys.stderr)
+        return 1
 
     from collections import Counter
     counts = Counter(provenance.values())
