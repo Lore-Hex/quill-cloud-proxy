@@ -50,17 +50,35 @@ The store is on for the GCP fleet: `tools/deploy-gcp-mig.sh` defaults
    `QUILL_SETTLE_OUTBOX_BUCKET=` (empty); the script then leaves the entry
    out.
 
-The deploy script never sets `QUILL_SETTLE_OUTBOX_SWEEP`; a test pins that.
-The sweeper is a separate step, in this order:
+## Enabling the sweeper (last step)
 
-1. A serving image whose label carries `QUILL_SETTLE_OUTBOX_SWEEP`
-   (`Dockerfile.enclave.gcp.multi` and `Dockerfile.enclave.gcp.anthropic`):
-   a release built after the label PR. Earlier images do not have it.
-2. Router R3 deployed on the plane the sweeper replays to (hard rule above).
-3. Only then the tee-env `QUILL_SETTLE_OUTBOX_SWEEP=on` on the instance
-   templates. The tee-env alone is not enough.
+`tools/deploy-gcp-mig.sh` defaults `QUILL_SETTLE_OUTBOX_SWEEP` to `on` (the
+no-colon form, like the bucket) and appends
+`|tee-env-QUILL_SETTLE_OUTBOX_SWEEP=on` right after the bucket entry on every
+instance template. This is the last E4 step. Do not merge it until all of
+these hold:
 
-## What to expect in the logs while the sweeper is off
+1. `infra/gcp/settle-outbox` is applied: bucket, both roles (writer and
+   sweeper), and the metric and alert with a notification channel.
+2. The store PR (#599) is merged and its rollout is complete: every boot logs
+   `enclave.settle_outbox_started`.
+3. The label PR (#600) is merged and the SERVING image carries
+   `QUILL_SETTLE_OUTBOX_SWEEP` in `allow_env_override`
+   (`Dockerfile.enclave.gcp.multi` and `Dockerfile.enclave.gcp.anthropic`).
+   Confidential Space refuses a launch whose tee-env name the label omits.
+4. Router R3 (quill-router #2048, a75ed9ffa) is deployed on the plane the
+   enclaves settle against (hard rule above). GCP: done 2026-10-25 01:03Z.
+5. A reviewer has re-checked the change.
+
+Merging rolls the fleet. Evidence per boot (`tools/dx/enclave-logs.sh`):
+`settle_outbox.sweep ...` counter lines, no
+`enclave.settle_outbox_sweeper_disabled`, and `dead=` and `quarantined=` at 0.
+
+Rollback: export `QUILL_SETTLE_OUTBOX_SWEEP=` (empty) and redeploy; the script
+then leaves the entry out. Clearing the bucket alone is not enough to stay
+launchable on a pre-label image: clear both variables.
+
+## What to expect in the logs while the sweeper is off (sweep unset)
 
 With no bucket, each boot logs `enclave.settle_outbox_disabled reason=no_bucket`
 (or `reason=<error> bucket=<name>` if the store could not be built). With the

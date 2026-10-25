@@ -44,8 +44,8 @@ def test_gcp_multi_launch_policy_allows_deployed_env_overrides() -> None:
 def test_settle_outbox_env_names_are_in_every_gcp_launch_policy_label() -> None:
     # Confidential Space refuses to launch a workload whose tee-env name is
     # not in the image label, so the sweep name must be allowed before the
-    # sweeper can ever be enabled. (That the deploy script does not set it is
-    # pinned by test_settle_outbox_store_is_on_and_sweeper_is_off.)
+    # sweeper can be enabled. (That the deploy script sets it, and where, is
+    # pinned by test_settle_outbox_store_and_sweeper_are_on.)
     for suffix in ("gcp.multi", "gcp.anthropic"):
         dockerfile = REPO_ROOT / "enclave-go" / f"Dockerfile.enclave.{suffix}"
         label_match = re.search(
@@ -58,11 +58,11 @@ def test_settle_outbox_env_names_are_in_every_gcp_launch_policy_label() -> None:
         assert "QUILL_SETTLE_OUTBOX_SWEEP" in allowed_envs, suffix
 
 
-def test_settle_outbox_store_is_on_and_sweeper_is_off() -> None:
-    """The GCP fleet parks undeliverable settles (store on); nothing replays them yet.
+def test_settle_outbox_store_and_sweeper_are_on() -> None:
+    """The GCP fleet parks undeliverable settles (store) and replays them (sweeper).
 
-    The sweeper must stay off until quill-router R3 is deployed
-    (docs/runbooks/settle-outbox.md). The bucket name has one source, the
+    The sweeper is the last E4 step; its gates are in
+    docs/runbooks/settle-outbox.md. The bucket name has one source, the
     default in the deploy script, matching infra/gcp/settle-outbox/main.tf.
     """
     deploy = (REPO_ROOT / "tools" / "deploy-gcp-mig.sh").read_text()
@@ -75,6 +75,7 @@ def test_settle_outbox_store_is_on_and_sweeper_is_off() -> None:
         assert label_match is not None
         allowed_envs = set(label_match.group(1).split(","))
         assert "QUILL_SETTLE_OUTBOX_BUCKET" in allowed_envs
+        assert "QUILL_SETTLE_OUTBOX_SWEEP" in allowed_envs
 
     assert (
         'QUILL_SETTLE_OUTBOX_BUCKET="${QUILL_SETTLE_OUTBOX_BUCKET-quill-cloud-proxy-settle-outbox}"'
@@ -87,8 +88,18 @@ def test_settle_outbox_store_is_on_and_sweeper_is_off() -> None:
         'SETTLE_OUTBOX_TEE_ENV="|tee-env-QUILL_SETTLE_OUTBOX_BUCKET=${QUILL_SETTLE_OUTBOX_BUCKET}"'
         in deploy
     )
-    assert "${TLS_RESUMPTION_TEE_ENV}${SETTLE_OUTBOX_TEE_ENV}|tee-image-reference=" in deploy
-    assert "tee-env-QUILL_SETTLE_OUTBOX_SWEEP" not in deploy
+    assert 'QUILL_SETTLE_OUTBOX_SWEEP="${QUILL_SETTLE_OUTBOX_SWEEP-on}"' in deploy
+    assert 'SETTLE_OUTBOX_SWEEP_TEE_ENV=""' in deploy
+    assert 'if [ -n "${QUILL_SETTLE_OUTBOX_SWEEP}" ]; then' in deploy
+    assert (
+        'SETTLE_OUTBOX_SWEEP_TEE_ENV="|tee-env-QUILL_SETTLE_OUTBOX_SWEEP=${QUILL_SETTLE_OUTBOX_SWEEP}"'
+        in deploy
+    )
+    assert (
+        "${TLS_RESUMPTION_TEE_ENV}${SETTLE_OUTBOX_TEE_ENV}"
+        "${SETTLE_OUTBOX_SWEEP_TEE_ENV}|tee-image-reference=" in deploy
+    )
+    assert deploy.count("tee-env-QUILL_SETTLE_OUTBOX_SWEEP=") == 1
 
 
 def test_batch_resource_provisioning_is_attestation_and_retention_scoped() -> None:
