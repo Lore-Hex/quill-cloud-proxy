@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/Lore-Hex/quill-cloud-proxy/enclave-go/internal/spendlease"
+	qtypes "github.com/Lore-Hex/quill-cloud-proxy/enclave-go/internal/types"
 )
 
 const (
@@ -111,15 +112,42 @@ func defaultAuthorizeRetryPolicy() retryPolicy {
 	}
 }
 
-func authorizationIdempotencyKey(candidate string) (string, error) {
+// idempotencyKeySourceGateway is the authorize body's idempotency_key_source
+// (quill-router GatewayAuthorizeRequest, E4 R1) for a key this enclave
+// minted. The enclave asserts only what it knows: a key it was handed (the
+// caller's Idempotency-Key, or an internal derivation such as a fusion
+// sub-request) carries no mark and the router classifies it as legacy,
+// today's treatment. The router excludes the field from its idempotency
+// fingerprint, so marking a key never changes a replay.
+const idempotencyKeySourceGateway = "gateway"
+
+// authorizationIdempotencyKey returns the candidate the caller supplied, or a
+// freshly minted key (minted=true) when the candidate is empty.
+func authorizationIdempotencyKey(candidate string) (key string, minted bool, err error) {
 	if candidate = strings.TrimSpace(candidate); candidate != "" {
-		return candidate, nil
+		return candidate, false, nil
 	}
 	var random [16]byte
 	if _, err := rand.Read(random[:]); err != nil {
-		return "", fmt.Errorf("trustedrouter: generate authorization idempotency key: %w", err)
+		return "", false, fmt.Errorf("trustedrouter: generate authorization idempotency key: %w", err)
 	}
-	return "tr-gateway-" + hex.EncodeToString(random[:]), nil
+	return "tr-gateway-" + hex.EncodeToString(random[:]), true, nil
+}
+
+// gatewayMintedIdempotencyKey is whether key, now in use for req, was minted
+// by this enclave: either just now, or earlier by Stage C, which writes its
+// minted key back onto the request before it can fall back to the ordinary
+// authorize (req.MintedIdempotencyKey, read only while it still equals key).
+func gatewayMintedIdempotencyKey(req *qtypes.OpenAIChatRequest, key string, minted bool) bool {
+	return minted || (req != nil && key != "" && req.MintedIdempotencyKey == key)
+}
+
+// markIdempotencyKeySource adds idempotency_key_source=gateway to an
+// authorize body whose key this enclave minted, and nothing otherwise.
+func markIdempotencyKeySource(body map[string]any, minted bool) {
+	if minted {
+		body["idempotency_key_source"] = idempotencyKeySourceGateway
+	}
 }
 
 func (c *Client) postJSONWithRetry(
