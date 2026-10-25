@@ -205,6 +205,19 @@ func makeChutesVerificationRequest(
 	debug bool,
 	evidenceCounts ...int,
 ) (*chutesVerificationRequest, *chutesMeasurement) {
+	return makeChutesVerificationRequestMutatingSignedBody(t, now, nonce, e2ePubkey, mrtd, rtmrs, debug, nil, evidenceCounts...)
+}
+
+func makeChutesVerificationRequestMutatingSignedBody(
+	t *testing.T,
+	now time.Time,
+	nonce, e2ePubkey string,
+	mrtd []byte,
+	rtmrs [][]byte,
+	debug bool,
+	mutate func(map[string]any),
+	evidenceCounts ...int,
+) (*chutesVerificationRequest, *chutesMeasurement) {
 	t.Helper()
 	rsaKey, err := rsa.GenerateKey(rand.Reader, 2048)
 	if err != nil {
@@ -232,12 +245,21 @@ func makeChutesVerificationRequest(
 	signed.Evidence.TDXQuote = base64.StdEncoding.EncodeToString(quote)
 	signed.Evidence.NVTrustEvidence = string(gpuJSON)
 	signedBody, _ := json.Marshal(signed)
+	if mutate != nil {
+		var payload map[string]any
+		if err := json.Unmarshal(signedBody, &payload); err != nil {
+			t.Fatal(err)
+		}
+		mutate(payload)
+		signedBody, _ = json.Marshal(payload)
+	}
 	digest := sha256.Sum256(signedBody)
 	signature, err := rsa.SignPKCS1v15(rand.Reader, rsaKey, crypto.SHA256, digest[:])
 	if err != nil {
 		t.Fatal(err)
 	}
 	evidence, _ := json.Marshal(chutesEvidence{
+		Quote:        signed.Evidence.TDXQuote,
 		InstanceID:   "instance-1",
 		Certificate:  base64.StdEncoding.EncodeToString(certDER),
 		Signature:    base64.StdEncoding.EncodeToString(signature),
@@ -254,6 +276,53 @@ func makeChutesVerificationRequest(
 		ChuteID: "chute-1", Instance: "instance-1", Nonce: nonce,
 		E2EPubkey: e2ePubkey, Evidence: evidence,
 	}, measurement
+}
+
+func TestChutesVerifierSignedQuoteFieldCompatibility(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		mutate  func(map[string]any)
+		wantErr bool
+	}{
+		{"legacy", func(map[string]any) {}, false},
+		{"generic quote", func(p map[string]any) {
+			e := p["evidence"].(map[string]any)
+			e["quote"] = e["tdx_quote"]
+			delete(e, "tdx_quote")
+		}, false},
+		{"identical aliases", func(p map[string]any) { e := p["evidence"].(map[string]any); e["quote"] = e["tdx_quote"] }, false},
+		{"conflicting aliases", func(p map[string]any) { p["evidence"].(map[string]any)["quote"] = "different" }, true},
+		{"missing signed quote", func(p map[string]any) { delete(p["evidence"].(map[string]any), "tdx_quote") }, true},
+		{"malformed generic quote", func(p map[string]any) {
+			e := p["evidence"].(map[string]any)
+			delete(e, "tdx_quote")
+			e["quote"] = "not-base64"
+		}, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			now := time.Unix(1_800_000_000, 0)
+			nonce := strings.Repeat("ab", 32)
+			key := base64.StdEncoding.EncodeToString(bytes.Repeat([]byte{7}, 1184))
+			mrtd := bytes.Repeat([]byte{1}, 48)
+			rtmrs := [][]byte{bytes.Repeat([]byte{2}, 48), bytes.Repeat([]byte{3}, 48), bytes.Repeat([]byte{4}, 48), bytes.Repeat([]byte{5}, 48)}
+			req, measurement := makeChutesVerificationRequestMutatingSignedBody(t, now, nonce, key, mrtd, rtmrs, false, tc.mutate)
+			binding := sha256.Sum256([]byte(nonce + key))
+			nras := newNRASTestServer(t, now, hex.EncodeToString(binding[:]), true)
+			defer nras.server.Close()
+			verifyCalls := 0
+			verifier := &chutesVerifier{
+				measurements: []chutesMeasurement{*measurement}, nras: nras.verifier(), now: func() time.Time { return now },
+				verifyTDX: func([]byte) error { verifyCalls++; return nil },
+			}
+			_, err := verifier.verify(context.Background(), req)
+			if (err != nil) != tc.wantErr {
+				t.Fatalf("error=%v, want error=%v", err, tc.wantErr)
+			}
+			if !tc.wantErr && verifyCalls != 1 {
+				t.Fatalf("TDX verification calls=%d, want 1", verifyCalls)
+			}
+		})
+	}
 }
 
 func TestChutesVerifierAcceptsOnlyFullyBoundEvidence(t *testing.T) {
@@ -417,19 +486,29 @@ func TestChutesVerifierRejectsMutatedBindingsAndProofs(t *testing.T) {
 			request.Evidence, _ = json.Marshal(evidence)
 		},
 	} {
-		t.Run(name, func(t *testing.T) {
-			request, measurement := makeChutesVerificationRequest(t, now, nonce, e2ePubkey, mrtd, rtmrs, false)
-			mutate(request)
-			verifier := &chutesVerifier{
-				measurements: []chutesMeasurement{*measurement},
-				nras:         newNRASVerifier(),
-				now:          func() time.Time { return now },
-				verifyTDX:    func([]byte) error { return nil },
-			}
-			if _, err := verifier.verify(context.Background(), request); err == nil {
-				t.Fatal("mutated evidence was accepted")
-			}
-		})
+		for _, generic := range []bool{false, true} {
+			t.Run(fmt.Sprintf("%s/generic=%t", name, generic), func(t *testing.T) {
+				var mutateSigned func(map[string]any)
+				if generic {
+					mutateSigned = func(p map[string]any) {
+						e := p["evidence"].(map[string]any)
+						e["quote"] = e["tdx_quote"]
+						delete(e, "tdx_quote")
+					}
+				}
+				request, measurement := makeChutesVerificationRequestMutatingSignedBody(t, now, nonce, e2ePubkey, mrtd, rtmrs, false, mutateSigned)
+				mutate(request)
+				verifier := &chutesVerifier{
+					measurements: []chutesMeasurement{*measurement},
+					nras:         newNRASVerifier(),
+					now:          func() time.Time { return now },
+					verifyTDX:    func([]byte) error { return nil },
+				}
+				if _, err := verifier.verify(context.Background(), request); err == nil {
+					t.Fatal("mutated evidence was accepted")
+				}
+			})
+		}
 	}
 }
 
@@ -652,6 +731,52 @@ func TestPinnedChutesQwenAndKimiProfilesRequireAllRegisters(t *testing.T) {
 			}
 			if measurement.Version != "1.4.1" || measurement.Name != test.name ||
 				measurement.GPUCount != 8 || len(measurement.ExpectedGPUs) != 1 || measurement.ExpectedGPUs[0] != test.gpu {
+				t.Fatalf("unexpected profile: %+v", measurement)
+			}
+			for index, register := range append([][]byte{body.MrTd}, body.Rtmrs...) {
+				register[0] ^= 0xff
+				_, err := verifier.matchMeasurement(body)
+				register[0] ^= 0xff
+				if err == nil {
+					t.Fatalf("tampered register %d was accepted", index)
+				}
+			}
+		})
+	}
+}
+
+func TestPinnedChutesQwen397NodeZeroProfilesRequireAllRegisters(t *testing.T) {
+	verifier, err := newChutesVerifier()
+	if err != nil {
+		t.Fatal(err)
+	}
+	decode := func(value string) []byte {
+		t.Helper()
+		decoded, err := hex.DecodeString(value)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return decoded
+	}
+	for _, tc := range []struct{ version, rtmr2, rtmr3 string }{
+		{"1.4.1", "DA23F73E0FDDEB8128F706ECFBECBCF8CEE34AF7E4907D8FBC85E9B216ACEE27BF6CC3655EAF4D33CAB76ADEA79FA153", "D9DC4C6079FB12A21AD2AA8E329D8BFA61AAA13D3FFD10A93A2C4E82F0E35EFBF28F5CF3BED0C0C1B517A7C327A25226"},
+		{"1.5.0", "E1DE99043052F3E1AB5A4463D3310B5680E851631ADF10E071B15CBD8B4D664EA435B0EC33E7F18E908DDA60734056F7", "9617BE835BEAC8C62093A9DB424F015F3E12651235D0101C112729E7225B7A70836A184DEE0B45F28CD190F1871AFE6E"},
+	} {
+		t.Run(tc.version, func(t *testing.T) {
+			body := &tdxpb.TDQuoteBody{
+				MrTd: decode("261CE538B435E2D0E85FC97E254BC99154C507B7A8E13D59B69F8532384F1D0BFAADFDDF3FCCC6E0A411203840BBEE8D"),
+				Rtmrs: [][]byte{
+					decode("052183AD6CCA5AD4AEF7E31DC3F6C47BE2BA90C288A55420BF432301374F1BD9932EA7D6B5DA999C4FECF578C4B0A21A"),
+					decode("D3A862FF47357F374FC72C7F02A480A13790D1805E24AAA8DE1F03994256625CE0F593AE35EA8F0C24D09F7DF36CB0ED"),
+					decode(tc.rtmr2), decode(tc.rtmr3),
+				},
+			}
+			measurement, err := verifier.matchMeasurement(body)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if measurement.Version != tc.version || measurement.Name != "8xh200 [10.2.1, numa-188c-1128g-nvsw-node0]" ||
+				measurement.GPUCount != 8 || len(measurement.ExpectedGPUs) != 1 || measurement.ExpectedGPUs[0] != "h200" {
 				t.Fatalf("unexpected profile: %+v", measurement)
 			}
 			for index, register := range append([][]byte{body.MrTd}, body.Rtmrs...) {
