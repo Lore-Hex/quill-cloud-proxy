@@ -397,6 +397,12 @@ type OpenAIChatRequest struct {
 	Response         *ResponseRequestMeta `json:"-"`
 	ResponseModel    string               `json:"-"`
 	IdempotencyKey   string               `json:"-"`
+	// MintedIdempotencyKey is the authorize idempotency key the enclave
+	// minted for this request because the caller sent none (the
+	// tr-gateway-<32 hex> form). It is read only while it still equals
+	// IdempotencyKey: a copy that replaces the key (a fusion sub-request, a
+	// decide retry) is no longer gateway-minted and carries no mark.
+	MintedIdempotencyKey string `json:"-"`
 	// RequestFingerprint is an enclave-generated, keyed digest used to bind
 	// asynchronous idempotency keys to content without exposing that content.
 	RequestFingerprint string                  `json:"-"`

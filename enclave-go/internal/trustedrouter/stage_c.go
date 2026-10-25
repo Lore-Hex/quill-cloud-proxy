@@ -85,7 +85,7 @@ func (c *Client) PrepareSpendLeaseAdmission(
 	if !eligible {
 		return nil, nil
 	}
-	idempotencyKey, err := authorizationIdempotencyKey(req.IdempotencyKey)
+	idempotencyKey, minted, err := authorizationIdempotencyKey(req.IdempotencyKey)
 	if err != nil {
 		return nil, err
 	}
@@ -95,6 +95,12 @@ func (c *Client) PrepareSpendLeaseAdmission(
 		return nil, idempotencyReplayConflict()
 	}
 	req.IdempotencyKey = idempotencyKey
+	if minted {
+		// The ordinary authorize this call may fall back to reuses the key
+		// and must still mark it as gateway-minted.
+		req.MintedIdempotencyKey = idempotencyKey
+	}
+	minted = gatewayMintedIdempotencyKey(req, idempotencyKey, minted)
 	lookupHash := requestLookupHash(ctx, bearer)
 	estimateRequest := spendLeaseRequestForChat(c.region, routeType, req)
 	// Keep admission catalog normalization out of the shared Stage A builder.
@@ -125,7 +131,7 @@ func (c *Client) PrepareSpendLeaseAdmission(
 		return nil, nil
 	}
 	body, err := json.Marshal(admissionAuthorizeBody(c, lookupHash,
-		chatAuthorizeBody(c, lookupHash, idempotencyKey, req, routeType), admission))
+		chatAuthorizeBody(c, lookupHash, idempotencyKey, minted, req, routeType), admission))
 	if err != nil {
 		admission.Release()
 		return nil, err

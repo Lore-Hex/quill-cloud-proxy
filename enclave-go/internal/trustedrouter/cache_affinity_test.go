@@ -44,7 +44,7 @@ func TestCacheAffinityIsTenantScopedAndOpeningConversationStable(t *testing.T) {
 
 func TestCacheAffinityWireContainsNoOpeningContentAndIsNotPersisted(t *testing.T) {
 	r := &qtypes.OpenAIChatRequest{Model: "test", PromptCacheKey: "private-cache-key"}
-	body := chatAuthorizeBody(&Client{}, "tenant", "idem", r, "chat.completions")
+	body := chatAuthorizeBody(&Client{}, "tenant", "idem", false, r, "chat.completions")
 	encoded, _ := json.Marshal(body)
 	if _, ok := body["cache_affinity_key"]; !ok || strings.Contains(string(encoded), "private-cache-key") {
 		t.Fatalf("unsafe metadata: %s", encoded)
@@ -58,7 +58,7 @@ func TestCacheAffinityWireContainsNoOpeningContentAndIsNotPersisted(t *testing.T
 
 func TestPerformancePreferencesPreservedAndCannotUseLocalLease(t *testing.T) {
 	r := &qtypes.OpenAIChatRequest{Model: "test", Stream: true, Provider: &qtypes.ProviderRouting{Usage: "credits", PreferredMaxLatency: 2.0, PreferredMinThroughput: map[string]any{"p90": 30.0}}}
-	body := chatAuthorizeBody(&Client{}, "tenant", "idem", r, "chat.completions")
+	body := chatAuthorizeBody(&Client{}, "tenant", "idem", false, r, "chat.completions")
 	encoded, _ := json.Marshal(body)
 	if !strings.Contains(string(encoded), `"preferred_max_latency":2`) || !strings.Contains(string(encoded), `"preferred_min_throughput":{"p90":30}`) {
 		t.Fatal("routing preferences disappeared")

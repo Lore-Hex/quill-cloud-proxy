@@ -843,6 +843,7 @@ allowlist:
   - {address: api.elevenlabs.io,                port: 443}
   - {address: eastus2.tts.speech.microsoft.com,  port: 443}
   - {address: llm.eu.greenference.com,          port: 443}
+  - {address: api.hixtube.com,                  port: 443}
   - {address: inference.muna.ai,                  port: 443}
   - {address: api.abliteration.ai,                port: 443}
   - {address: inference.coralbricks.ai,        port: 443}
@@ -1007,6 +1008,7 @@ write_vsock_unit 8087 api.regolo.ai
 write_vsock_unit 8103 api.lyceum.technology
 write_vsock_unit 8116 bedrock-mantle.us-east-1.api.aws
 write_vsock_unit 8108 llm.eu.greenference.com
+write_vsock_unit 8117 api.hixtube.com
 write_vsock_unit 8130 inference.muna.ai
 write_vsock_unit 8131 api.abliteration.ai
 write_vsock_unit 8115 inference.coralbricks.ai

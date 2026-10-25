@@ -121,6 +121,7 @@ LYCEUM_SECRET="${LYCEUM_SECRET:-trustedrouter-lyceum-api-key}"
 BEDROCK_SECRET="${BEDROCK_SECRET:-trustedrouter-bedrock-api-key}"
 ELEVENLABS_SECRET="${ELEVENLABS_SECRET:-trustedrouter-elevenlabs-api-key}"
 GREENFERENCE_SECRET="${GREENFERENCE_SECRET:-trustedrouter-greenference-api-key}"
+HIXTUBE_SECRET="${HIXTUBE_SECRET:-trustedrouter-hixtube-api-key}"
 MUNA_SECRET="${MUNA_SECRET:-trustedrouter-muna-api-key}"
 ABLITERATION_SECRET="${ABLITERATION_SECRET:-trustedrouter-abliteration-api-key}"
 CORALBRICKS_SECRET="${CORALBRICKS_SECRET:-trustedrouter-coralbricks-api-key}"
@@ -302,6 +303,7 @@ for secret in \
   "$BEDROCK_SECRET" \
   "$ELEVENLABS_SECRET" \
   "$GREENFERENCE_SECRET" \
+  "$HIXTUBE_SECRET" \
   "$MUNA_SECRET" \
   "$ABLITERATION_SECRET" \
   "$CORALBRICKS_SECRET" \
