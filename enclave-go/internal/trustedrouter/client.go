@@ -836,7 +836,10 @@ func (c *Client) Authorize(ctx context.Context, bearer string, req *qtypes.OpenA
 	return c.AuthorizeWithRoute(ctx, bearer, req, "chat.completions")
 }
 
-func chatAuthorizeBody(c *Client, lookupHash, idempotencyKey string, req *qtypes.OpenAIChatRequest, routeType string) map[string]any {
+// chatAuthorizeBody builds the ordinary authorize body. minted says whether
+// this enclave minted idempotencyKey (gatewayMintedIdempotencyKey); only then
+// does the body carry idempotency_key_source.
+func chatAuthorizeBody(c *Client, lookupHash, idempotencyKey string, minted bool, req *qtypes.OpenAIChatRequest, routeType string) map[string]any {
 	body := map[string]any{
 		"api_key_lookup_hash":    lookupHash,
 		"model":                  req.Model,
@@ -848,6 +851,7 @@ func chatAuthorizeBody(c *Client, lookupHash, idempotencyKey string, req *qtypes
 		"idempotency_key":        idempotencyKey,
 		"stream":                 req.Stream,
 	}
+	markIdempotencyKeySource(body, minted)
 	if req.RequestFingerprint != "" {
 		body["request_fingerprint"] = req.RequestFingerprint
 	}
@@ -990,7 +994,7 @@ func (c *Client) AuthorizeWithRoute(ctx context.Context, bearer string, req *qty
 			return nil, err
 		}
 	}
-	idempotencyKey, err := authorizationIdempotencyKey(req.IdempotencyKey)
+	idempotencyKey, minted, err := authorizationIdempotencyKey(req.IdempotencyKey)
 	if err != nil {
 		return nil, err
 	}
@@ -998,7 +1002,7 @@ func (c *Client) AuthorizeWithRoute(ctx context.Context, bearer string, req *qty
 	if err != nil {
 		return nil, err
 	}
-	body := chatAuthorizeBody(c, lookupHash, idempotencyKey, req, routeType)
+	body := chatAuthorizeBody(c, lookupHash, idempotencyKey, gatewayMintedIdempotencyKey(req, idempotencyKey, minted), req, routeType)
 	if c.asyncNegotiate && asyncCohort(routeType) && len(c.asyncTicketKeys) > 0 {
 		ctx = context.WithValue(ctx, asyncModeKey{}, "async-v1")
 	}
@@ -1107,7 +1111,7 @@ func (c *Client) AuthorizeEmbeddingsWithRoute(
 	if strings.TrimSpace(routeType) == "" {
 		routeType = "embeddings"
 	}
-	idempotencyKey, err := authorizationIdempotencyKey(req.IdempotencyKey)
+	idempotencyKey, minted, err := authorizationIdempotencyKey(req.IdempotencyKey)
 	if err != nil {
 		return nil, err
 	}
@@ -1124,6 +1128,7 @@ func (c *Client) AuthorizeEmbeddingsWithRoute(
 		"route_type":             routeType,
 		"idempotency_key":        idempotencyKey,
 	}
+	markIdempotencyKeySource(body, minted)
 	if req.Provider != nil {
 		body["provider"] = req.Provider
 	}

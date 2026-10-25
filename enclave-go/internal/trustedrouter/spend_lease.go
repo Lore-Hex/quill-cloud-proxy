@@ -43,6 +43,11 @@ type BootCapabilities struct {
 	// open (`stream_open_heartbeat`) is a separate declaration this enclave
 	// does not make: its first heartbeat waits for the provider to answer.
 	UsageHeartbeat bool
+	// IdempotencyKeySource is true when this boot marks every authorize whose
+	// idempotency key it minted with idempotency_key_source=gateway (E4 E1;
+	// the control plane stores it as declares_idempotency_key_source, E4 R2,
+	// and classifies a gateway mark from an undeclared boot as legacy).
+	IdempotencyKeySource bool
 	// SettleOutbox is true when this boot parks a settle or refund it could
 	// not deliver as a durable object for a later replay (E4 E3; the control
 	// plane stores it as declares_settle_outbox, E4 R2). Declared only when
@@ -54,15 +59,18 @@ type BootCapabilities struct {
 // true are sent, and with none the whole object is omitted, so a boot that
 // declares nothing posts exactly the pre-capabilities registration body.
 type bootRegistrationCapabilities struct {
-	UsageHeartbeat bool `json:"usage_heartbeat,omitempty"`
-	SettleOutbox   bool `json:"settle_outbox,omitempty"`
+	UsageHeartbeat       bool `json:"usage_heartbeat,omitempty"`
+	IdempotencyKeySource bool `json:"idempotency_key_source,omitempty"`
+	SettleOutbox         bool `json:"settle_outbox,omitempty"`
 }
 
 func (c BootCapabilities) wire() *bootRegistrationCapabilities {
-	if !c.UsageHeartbeat && !c.SettleOutbox {
+	if !c.UsageHeartbeat && !c.IdempotencyKeySource && !c.SettleOutbox {
 		return nil
 	}
-	return &bootRegistrationCapabilities{UsageHeartbeat: c.UsageHeartbeat, SettleOutbox: c.SettleOutbox}
+	return &bootRegistrationCapabilities{
+		UsageHeartbeat: c.UsageHeartbeat, IdempotencyKeySource: c.IdempotencyKeySource, SettleOutbox: c.SettleOutbox,
+	}
 }
 
 // RegisteredBootSigner is the boot key that also signs this boot's authorize
@@ -406,7 +414,7 @@ func admissionAuthorizeBody(c *Client, lookupHash string, ordinary map[string]an
 		}
 		body["provider"] = canonicalProvider
 	}
-	for _, field := range []string{"allow_fallbacks", "requested_parameters", "service_tier"} {
+	for _, field := range []string{"allow_fallbacks", "requested_parameters", "service_tier", "idempotency_key_source"} {
 		if value, ok := ordinary[field]; ok {
 			body[field] = value
 		}

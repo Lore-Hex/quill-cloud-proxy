@@ -36,7 +36,7 @@ func (c *Client) LookupVideoReplay(ctx context.Context, bearer, model, idempoten
 	if err != nil {
 		return nil, err
 	}
-	body := chatAuthorizeBody(c, lookupHash, idempotencyKey, req, "videos")
+	body := chatAuthorizeBody(c, lookupHash, idempotencyKey, false, req, "videos")
 	const path = "/internal/gateway/video/replay-lookup"
 	var unavailable error
 	for endpoint := range c.baseURLs {
