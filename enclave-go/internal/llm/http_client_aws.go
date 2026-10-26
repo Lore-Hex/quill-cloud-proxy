@@ -75,7 +75,7 @@ var awsProviderTunnels = []vsockhttp.Tunnel{
 	{Host: "api.tokenfactory.nebius.com", CID: 3, Port: 8023},
 	{Host: "api.minimax.io", CID: 3, Port: 8024},
 	// Legacy directBaseURL adapters are covered by TestAWSLegacyProviderHostsHaveTunnels.
-	{Host: "api.voyageai.com", CID: 3, Port: 8117},
+	{Host: "api.voyageai.com", CID: 3, Port: 8132},
 	{Host: "api.xiaomimimo.com", CID: 3, Port: 8118},
 	{Host: "api.telnyx.com", CID: 3, Port: 8119},
 	{Host: "inference.do-ai.run", CID: 3, Port: 8120},

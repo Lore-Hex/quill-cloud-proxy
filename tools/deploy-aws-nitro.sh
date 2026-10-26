@@ -1020,7 +1020,7 @@ write_vsock_unit 8073 inference.api.nscale.com
 write_vsock_unit 8087 api.regolo.ai
 write_vsock_unit 8103 api.lyceum.technology
 write_vsock_unit 8116 bedrock-mantle.us-east-1.api.aws
-write_vsock_unit 8117 api.voyageai.com
+write_vsock_unit 8132 api.voyageai.com
 write_vsock_unit 8118 api.xiaomimimo.com
 write_vsock_unit 8119 api.telnyx.com
 write_vsock_unit 8120 inference.do-ai.run
