@@ -78,7 +78,7 @@ func PreparePayload(g VerifiedGrant, certificates []AdapterCertificate, req Pars
 		return PreparedPayload{}, r
 	}
 	// This route needs randomly resolved cache isolation, outside the pure seam.
-	if route["provider"] == "privatemode" {
+	if route["provider"] == "privatemode" || route["provider"] == "hixtube" {
 		return PreparedPayload{}, ReasonRoute
 	}
 	cap, ok := explicitCap(req.Body["max_tokens"])

@@ -148,15 +148,19 @@ func preparePrivatemodeWire(req *qtypes.OpenAIChatRequest, body *qtypes.Anthropi
 }
 
 func isolatePrivatemodeCache(wire *openAICompatibleRequest, scope string) error {
+	return isolateProviderCache(wire, "privatemode", scope)
+}
+
+func isolateProviderCache(wire *openAICompatibleRequest, provider, scope string) error {
 	// Scope is generated from the authorized workspace, never client input.
 	// Without a scope, use an independent salt so no two requests share a cache.
 	if scope = strings.TrimSpace(scope); scope != "" {
-		digest := sha256.Sum256([]byte("privatemode-cache-v1\x00" + scope))
+		digest := sha256.Sum256([]byte(provider + "-cache-v1\x00" + scope))
 		wire.CacheSalt = hex.EncodeToString(digest[:])
 	} else {
 		var salt [32]byte
 		if _, err := rand.Read(salt[:]); err != nil {
-			return errors.New("llm/privatemode: cannot isolate prompt cache")
+			return errors.New("llm/" + provider + ": cannot isolate prompt cache")
 		}
 		wire.CacheSalt = hex.EncodeToString(salt[:])
 	}
