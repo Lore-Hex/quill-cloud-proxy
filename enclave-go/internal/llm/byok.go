@@ -308,11 +308,17 @@ func invokeOpenAICompatibleStreamingWithClientOptions(
 	if strings.TrimSpace(upstreamID) == "" {
 		return fmt.Errorf("llm/%s: missing authorized upstream model", provider)
 	}
-	// Privatemode resolves its random cache salt outside pure preparation.
+	// Resolve random cache isolation outside pure preparation.
 	var privateWire *openAICompatibleRequest
 	if normalizeDirectProvider(provider) == "privatemode" {
 		privateWire = &openAICompatibleRequest{Model: upstreamID}
 		if err := preparePrivatemodeWire(req, body, privateWire, options.providerCacheScope); err != nil {
+			return err
+		}
+	}
+	if hixtubeCacheEnabled(provider, upstreamID) {
+		privateWire = &openAICompatibleRequest{}
+		if err := isolateProviderCache(privateWire, "hixtube", options.providerCacheScope); err != nil {
 			return err
 		}
 	}

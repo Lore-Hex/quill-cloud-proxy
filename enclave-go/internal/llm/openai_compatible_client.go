@@ -30,11 +30,18 @@ func newOpenAICompatible(provider string, apiKey string) *openAICompatibleClient
 
 func newOpenAICompatibleAt(provider string, baseURL string, apiKey string) *openAICompatibleClient {
 	provider = normalizeDirectProvider(provider)
+	httpc := defaultHTTPClient()
+	if provider == "hixtube" {
+		// Keep the cloud's TLS/egress transport. Full-output requests can take
+		// longer than ten minutes, but a stalled stream must still fail promptly.
+		httpc.Timeout = hixtubeCompletionTimeout
+		httpc.Transport = &progressDeadlineTransport{base: httpc.Transport, timeout: hixtubeProgressTimeout}
+	}
 	return &openAICompatibleClient{
 		provider: provider,
 		baseURL:  strings.TrimRight(baseURL, "/"),
 		apiKey:   strings.TrimSpace(apiKey),
-		httpc:    defaultHTTPClient(),
+		httpc:    httpc,
 	}
 }
 

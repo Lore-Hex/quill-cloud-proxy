@@ -38,3 +38,20 @@ changes. Ordinary inference through a pinned test certificate has passed, but
 public DNS/CA trust, conformance and production settlement remain activation
 gates. Keep this integration held until those gates are satisfied. Future
 confidential hardware requires a separately reviewed verifier.
+
+## Long-Context Profile
+
+Hixtube's direct client permits at most 60 minutes per request while requiring
+upstream progress within 30 seconds, including response headers and first byte.
+Caller cancellation still wins. The wrapper retains the original cloud-specific
+TLS transport, including AWS's restricted tunnel. Other providers keep their
+existing deadlines.
+
+For the selected abliterated DeepSeek checkpoint, the gateway supplies an opaque,
+provider-separated workspace cache salt. Requests without an authorized scope
+receive a fresh random salt. The earlier Qwen pilot receives no new cache field.
+No cached-token discount is implied: pricing must come from the live catalog.
+
+The 1,048,576-context/393,216-output profile requires Catalog v2.1's explicit long
+completion declaration and a fresh public conformance check before publication.
+This code is not evidence that the long profile is live or confidential.
