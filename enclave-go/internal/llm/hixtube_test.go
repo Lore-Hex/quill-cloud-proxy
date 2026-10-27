@@ -13,6 +13,21 @@ import (
 	qtypes "github.com/Lore-Hex/quill-cloud-proxy/enclave-go/internal/types"
 )
 
+func TestHixtubeCacheIsolation(t *testing.T) {
+	first, same, other, absent, again, private := openAICompatibleRequest{}, openAICompatibleRequest{}, openAICompatibleRequest{}, openAICompatibleRequest{}, openAICompatibleRequest{}, openAICompatibleRequest{}
+	for wire, scope := range map[*openAICompatibleRequest]string{&first: "workspace-one", &same: " workspace-one ", &other: "workspace-two", &absent: "", &again: ""} {
+		if err := isolateProviderCache(wire, "hixtube", scope); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := isolatePrivatemodeCache(&private, "workspace-one"); err != nil {
+		t.Fatal(err)
+	}
+	if len(first.CacheSalt) != 64 || first.CacheSalt != same.CacheSalt || first.CacheSalt == other.CacheSalt || absent.CacheSalt == again.CacheSalt || first.CacheSalt == private.CacheSalt {
+		t.Fatal("cache scope must be stable only within one provider/workspace")
+	}
+}
+
 func TestHixtubePrepaidUsesPinnedHostAndPreservesUsage(t *testing.T) {
 	clients := newBootstrapDirectClients(map[string]string{"hixtube": "operator-test-key"})
 	if clients["hixtube"] == nil {
@@ -28,8 +43,11 @@ func TestHixtubePrepaidUsesPinnedHostAndPreservesUsage(t *testing.T) {
 		if err := json.NewDecoder(r.Body).Decode(&wire); err != nil {
 			t.Fatal(err)
 		}
-		if wire.Model != "qwen/qwen3-0.6b" || !wire.Stream || wire.StreamOptions == nil || !wire.StreamOptions.IncludeUsage {
+		if wire.Model != "dealignai/deepseek-v4.1-flash-1017-uncensored-fp8" || !wire.Stream || wire.StreamOptions == nil || !wire.StreamOptions.IncludeUsage {
 			t.Fatal("model or streaming usage request changed")
+		}
+		if len(wire.CacheSalt) != 64 || strings.Contains(wire.CacheSalt, "workspace") {
+			t.Fatal("trusted cache isolation missing from upstream wire")
 		}
 		stream := "data: {\"choices\":[{\"delta\":{\"content\":\"PONG\"},\"finish_reason\":\"stop\"}]}\n\n" +
 			"data: {\"choices\":[],\"usage\":{\"prompt_tokens\":24,\"completion_tokens\":2,\"total_tokens\":26}}\n\n" +
@@ -38,9 +56,9 @@ func TestHixtubePrepaidUsesPinnedHostAndPreservesUsage(t *testing.T) {
 	})}
 	var out bytes.Buffer
 	multi := &multiClient{direct: clients}
-	err := multi.InvokeStreaming(t.Context(), &qtypes.OpenAIChatRequest{Model: "qwen/qwen3-0.6b"},
+	err := multi.InvokeStreaming(t.Context(), &qtypes.OpenAIChatRequest{Model: "dealignai/deepseek-v4.1-flash-1017-uncensored-fp8"},
 		&qtypes.AnthropicMessagesRequest{MaxTokens: 64, Messages: []qtypes.AnthropicMessage{{Role: "user", Content: "PONG"}}},
-		&out, InvokeOptions{Provider: "hixtube", UpstreamModel: "qwen/qwen3-0.6b"})
+		&out, InvokeOptions{Provider: "hixtube", UpstreamModel: "dealignai/deepseek-v4.1-flash-1017-uncensored-fp8", ProviderCacheScope: "synthetic-workspace"})
 	if err != nil || calls != 1 {
 		t.Fatalf("calls=%d error=%v", calls, err)
 	}

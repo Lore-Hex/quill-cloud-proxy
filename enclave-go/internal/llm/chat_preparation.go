@@ -74,6 +74,11 @@ func PrepareChatRequest(provider, upstreamModel string, req *qtypes.OpenAIChatRe
 	if normalizeDirectProvider(provider) == "tinfoil" {
 		reqBody.UserCacheSecret = strings.TrimSpace(options.ProviderCacheScope)
 	}
+	if normalizeDirectProvider(provider) == "hixtube" && upstreamID == "dealignai/deepseek-v4.1-flash-1017-uncensored-fp8" {
+		if err := isolateProviderCache(&reqBody, "hixtube", options.ProviderCacheScope); err != nil {
+			return PreparedChatRequest{}, err
+		}
+	}
 	if normalizeDirectProvider(provider) == "privatemode" {
 		if options.privateWire == nil {
 			return PreparedChatRequest{}, fmt.Errorf("llm/privatemode: unresolved cache isolation")
