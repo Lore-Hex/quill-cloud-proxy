@@ -2,6 +2,7 @@ package llm
 
 import (
 	"context"
+	"errors"
 	"io"
 	"net/http"
 	"time"
@@ -21,15 +22,17 @@ type progressDeadlineTransport struct {
 }
 
 func (t *progressDeadlineTransport) RoundTrip(req *http.Request) (*http.Response, error) {
-	ctx, cancel := context.WithCancel(req.Context())
-	timer := time.AfterFunc(t.timeout, cancel)
+	ctx, cancel := context.WithCancelCause(req.Context())
+	timer := time.AfterFunc(t.timeout, func() { cancel(context.DeadlineExceeded) })
 	response, err := t.base.RoundTrip(req.Clone(ctx))
 	if err != nil || response == nil || response.Body == nil {
+		err = progressDeadlineError(req.Context(), ctx, err)
 		timer.Stop()
-		cancel()
+		cancel(nil)
 		return response, err
 	}
-	response.Body = &progressDeadlineBody{ReadCloser: response.Body, timer: timer, cancel: cancel, timeout: t.timeout}
+	timer.Reset(t.timeout)
+	response.Body = &progressDeadlineBody{ReadCloser: response.Body, timer: timer, cancel: cancel, timeout: t.timeout, parent: req.Context(), ctx: ctx}
 	return response, nil
 }
 
@@ -42,8 +45,10 @@ func (t *progressDeadlineTransport) CloseIdleConnections() {
 type progressDeadlineBody struct {
 	io.ReadCloser
 	timer   *time.Timer
-	cancel  context.CancelFunc
+	cancel  context.CancelCauseFunc
 	timeout time.Duration
+	parent  context.Context
+	ctx     context.Context
 }
 
 func (b *progressDeadlineBody) Read(p []byte) (int, error) {
@@ -52,14 +57,22 @@ func (b *progressDeadlineBody) Read(p []byte) (int, error) {
 		b.timer.Reset(b.timeout)
 	}
 	if err != nil {
+		err = progressDeadlineError(b.parent, b.ctx, err)
 		b.timer.Stop()
-		b.cancel()
+		b.cancel(nil)
 	}
 	return n, err
 }
 
 func (b *progressDeadlineBody) Close() error {
 	b.timer.Stop()
-	b.cancel()
+	b.cancel(nil)
 	return b.ReadCloser.Close()
+}
+
+func progressDeadlineError(parent, child context.Context, err error) error {
+	if err != nil && parent.Err() == nil && errors.Is(context.Cause(child), context.DeadlineExceeded) {
+		return context.DeadlineExceeded
+	}
+	return err
 }

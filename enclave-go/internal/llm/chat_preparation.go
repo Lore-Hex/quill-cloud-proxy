@@ -10,7 +10,7 @@ import (
 )
 
 // ChatPreparationOptions contains already resolved, trusted adapter inputs.
-// Secrets, image fetching and Privatemode random cache isolation stay at dispatch.
+// Secrets, image fetching and random cache isolation stay at dispatch.
 type ChatPreparationOptions struct {
 	ProviderCacheScope string
 	privateWire        *openAICompatibleRequest
@@ -74,10 +74,11 @@ func PrepareChatRequest(provider, upstreamModel string, req *qtypes.OpenAIChatRe
 	if normalizeDirectProvider(provider) == "tinfoil" {
 		reqBody.UserCacheSecret = strings.TrimSpace(options.ProviderCacheScope)
 	}
-	if normalizeDirectProvider(provider) == "hixtube" && upstreamID == "dealignai/deepseek-v4.1-flash-1017-uncensored-fp8" {
-		if err := isolateProviderCache(&reqBody, "hixtube", options.ProviderCacheScope); err != nil {
-			return PreparedChatRequest{}, err
+	if hixtubeCacheEnabled(provider, upstreamID) {
+		if options.privateWire == nil || options.privateWire.CacheSalt == "" {
+			return PreparedChatRequest{}, fmt.Errorf("llm/hixtube: unresolved cache isolation")
 		}
+		reqBody.CacheSalt = options.privateWire.CacheSalt
 	}
 	if normalizeDirectProvider(provider) == "privatemode" {
 		if options.privateWire == nil {
@@ -108,4 +109,8 @@ func PrepareChatRequest(provider, upstreamModel string, req *qtypes.OpenAIChatRe
 		return PreparedChatRequest{}, fmt.Errorf("llm/%s: marshal body: %w", provider, err)
 	}
 	return PreparedChatRequest{bodyBytes, path, decisionCompletion, nativeResponses}, nil
+}
+
+func hixtubeCacheEnabled(provider, model string) bool {
+	return normalizeDirectProvider(provider) == "hixtube" && model == "dealignai/deepseek-v4.1-flash-1017-uncensored-fp8"
 }

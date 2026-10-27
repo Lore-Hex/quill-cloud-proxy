@@ -2,6 +2,8 @@ package llm
 
 import (
 	"context"
+	"crypto/x509"
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -48,7 +50,7 @@ func TestProgressDeadlineStopsStalls(t *testing.T) {
 				_, err = io.ReadAll(response.Body)
 				_ = response.Body.Close()
 			}
-			if err == nil || time.Since(start) >= 2*time.Second {
+			if !errors.Is(err, context.DeadlineExceeded) || time.Since(start) >= 2*time.Second {
 				t.Fatalf("stall did not fail promptly: %v", err)
 			}
 		})
@@ -85,11 +87,75 @@ func TestProgressDeadlineAllowsProgressAndCallerCancellation(t *testing.T) {
 		body, err := io.ReadAll(response.Body)
 		_ = response.Body.Close()
 		cancel()
-		if cancelEarly && err == nil {
+		if cancelEarly && !errors.Is(err, context.Canceled) {
 			t.Fatal("caller cancellation was ignored")
 		}
 		if !cancelEarly && (err != nil || string(body) != "xxxxxxxxxx") {
 			t.Fatalf("active stream cut short: %d bytes, %v", len(body), err)
 		}
+	}
+}
+
+func TestProgressDeadlineRestartsAfterHeaders(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		time.Sleep(160 * time.Millisecond)
+		w.WriteHeader(http.StatusOK)
+		w.(http.Flusher).Flush()
+		time.Sleep(160 * time.Millisecond)
+		_, _ = w.Write([]byte("ok"))
+	}))
+	defer server.Close()
+	client := server.Client()
+	client.Transport = &progressDeadlineTransport{base: client.Transport, timeout: 250 * time.Millisecond}
+	response, err := client.Get(server.URL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer response.Body.Close()
+	body, err := io.ReadAll(response.Body)
+	if err != nil || string(body) != "ok" {
+		t.Fatalf("headers did not reset progress deadline: %q, %v", body, err)
+	}
+}
+
+func TestProgressDeadlinePreservesTLSVerification(t *testing.T) {
+	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		t.Error("untrusted TLS must fail before the handler")
+	}))
+	defer server.Close()
+	transport := http.DefaultTransport.(*http.Transport).Clone()
+	defer transport.CloseIdleConnections()
+	client := &http.Client{Transport: &progressDeadlineTransport{base: transport, timeout: time.Second}}
+	_, err := client.Get(server.URL)
+	var unknown x509.UnknownAuthorityError
+	if !errors.As(err, &unknown) {
+		t.Fatalf("expected original TLS verification failure: %v", err)
+	}
+}
+
+func TestProgressCannotExtendTotalDeadline(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		for {
+			_, _ = w.Write([]byte("x"))
+			w.(http.Flusher).Flush()
+			select {
+			case <-r.Context().Done():
+				return
+			case <-time.After(20 * time.Millisecond):
+			}
+		}
+	}))
+	defer server.Close()
+	client := server.Client()
+	client.Timeout = 200 * time.Millisecond
+	client.Transport = &progressDeadlineTransport{base: client.Transport, timeout: time.Second}
+	response, err := client.Get(server.URL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer response.Body.Close()
+	_, err = io.ReadAll(response.Body)
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("total deadline lost: %v", err)
 	}
 }

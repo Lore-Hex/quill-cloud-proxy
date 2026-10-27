@@ -205,14 +205,14 @@ func TestPayloadAdapterFailures(t *testing.T) {
 			}
 		})
 	}
-	for _, private := range []bool{false, true} {
+	for _, private := range []string{"", "privatemode", "hixtube"} {
 		c := eligibleCase(t)
 		h := newHarness(t)
 		claims, _ := h.real.Claims()
 		route := m(claims["route"])
 		want := ReasonInputBound
-		if private {
-			route["provider"] = "privatemode"
+		if private != "" {
+			route["provider"] = private
 			want = ReasonRoute
 		} else {
 			route["input_bound"] = int64(175)
