@@ -138,12 +138,14 @@ var DevProviders = []string{
 // The three sub-half-second entries after trev, each measured four times
 // (8 tickets a run, every output valid):
 //
-//   - Mercury 2 (mev-1.0) on Inception with reasoning OFF: 275-310 ms median,
-//     the cheapest of the fast ones, 28/29 on every run (it over-rates the
-//     urgency of one ticket; at "low" effort it is 29/29 in ~600 ms, which a
-//     caller can ask for). It was first REJECTED for "3 of 8 outputs cut
-//     short". That was this table's mistake, not the model's: Mercury reasons
-//     by default, and with no effort set the reasoning ate the token budget.
+//   - Mercury 3 (mev-1.0 since 2026-10-27) on Inception with reasoning OFF:
+//     370 ms median, 476 ms worst, 8/8 valid and 29/29. Inception retires
+//     Mercury 2 on 2026-11-15, its only host, so the name moved (as gemmev's
+//     did). At "low" effort Mercury 3 reasons past the token budget and 7 of 8
+//     outputs carry no JSON, so the name keeps reasoning off. Mercury 2 was
+//     275-310 ms and 28/29; it was first REJECTED for "3 of 8 outputs cut
+//     short", which was this table's mistake: Mercury reasons by default, and
+//     with no effort set the reasoning ate the token budget.
 //   - GLM 5.2 Fast (zev-1.0) on Fireworks 340-468 ms, Baseten 616 ms: 29/29,
 //     and about four times trev's price per decision.
 //   - Llama 3.3 70B (lev-1.0) on SambaNova 371-450 ms with the tightest tail
@@ -173,7 +175,7 @@ var (
 	deepSeekFlash   = NativeModel{Providers: DevProviders, Temperature: &zeroTemperature, Format: FormatPrompt}
 	gptOSS20B       = NativeModel{Providers: []string{"deepinfra"}, ReasoningEffort: "low", Temperature: &zeroTemperature, Format: FormatSchema}
 	gemma426BA4B    = NativeModel{Providers: []string{"nextbit", "wandb", "io-net"}, Temperature: &zeroTemperature, Format: FormatPrompt}
-	mercury2        = NativeModel{Providers: []string{"inception"}, ReasoningEffort: "none", Temperature: &zeroTemperature, Format: FormatPrompt}
+	mercury3        = NativeModel{Providers: []string{"inception"}, ReasoningEffort: "none", Temperature: &zeroTemperature, Format: FormatPrompt}
 	glm52Fast       = NativeModel{Providers: []string{"fireworks", "baseten"}, ReasoningEffort: "none", Temperature: &zeroTemperature, Format: FormatPrompt}
 	llama33         = NativeModel{Providers: []string{"sambanova", "parasail", "together"}, Temperature: &zeroTemperature, Format: FormatPrompt}
 )
@@ -184,7 +186,7 @@ var NativeModels = map[string]NativeModel{
 	DevModelID: deepSeekFlash, "deepseek/deepseek-v4.1-flash": deepSeekFlash,
 	OevModelID: gptOSS20B, "openai/gpt-oss-20b": gptOSS20B,
 	GemmevModelID: gemma426BA4B, "google/gemma-4-26b-a4b-it": gemma426BA4B,
-	MevModelID: mercury2, "inception/mercury-2": mercury2,
+	MevModelID: mercury3, "inception/mercury-3": mercury3,
 	ZevModelID: glm52Fast, "z-ai/glm-5.2-fast": glm52Fast,
 	LevModelID: llama33, "meta-llama/llama-3.3-70b-instruct": llama33,
 }

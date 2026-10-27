@@ -86,10 +86,10 @@ var liveUpstream = map[string]string{
 	decide.DevModelID:                   "deepseek-ai/DeepSeek-V4.1-Flash",
 	decide.OevModelID:                   "openai/gpt-oss-20b",
 	decide.GemmevModelID:                "gemma4:26b-a4b",
-	"inception/mercury-2":               "mercury-2",
+	"inception/mercury-3":               "mercury-3",
 	"z-ai/glm-5.2-fast":                 "accounts/fireworks/routers/glm-5p2-fast",
 	"meta-llama/llama-3.3-70b-instruct": "Meta-Llama-3.3-70B-Instruct",
-	decide.MevModelID:                   "mercury-2",
+	decide.MevModelID:                   "mercury-3",
 	decide.ZevModelID:                   "accounts/fireworks/routers/glm-5p2-fast",
 	decide.LevModelID:                   "Meta-Llama-3.3-70B-Instruct",
 }
