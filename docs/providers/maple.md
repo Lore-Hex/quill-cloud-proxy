@@ -45,7 +45,10 @@ Only `probe` uses the account key and paid inference: one discovery, one JSON
 and one SSE synthetic PONG request, each capped at 1,024 output tokens. Inference
 send budget is exactly one per request: no automatic replay after uncertain
 delivery. The client checks exact model identity, PONG content, normal finish,
-integer token counts, cached-token bounds and streaming usage. It drains SSE
+integer token counts, cached-token bounds and streaming usage. Cumulative
+streaming counts may begin at zero; they must be monotonic, are never added
+together, and require a nonzero terminal usage snapshot for the PONG probe.
+It drains SSE
 through encrypted EOF even after `[DONE]`, so a missing authenticated terminal
 record cannot be mistaken for success. Responses have time/size bounds.
 
@@ -66,8 +69,18 @@ Local qualification against the production backend:
   network errors are not accepted as a passing negative test.
 - Encrypted `GET /v1/models` with a deliberate invalid key returned logical
   HTTP 401, not a transport failure.
-- No valid account credential was available; model discovery with entitlement,
-  JSON/SSE inference, cached usage and account-debit reconciliation remain untested.
+- The operator subsequently supplied `MAPLE_API_KEY` in the keyfile. It was
+  loaded only into the test process environment, not printed or provisioned to clouds.
+- Authenticated encrypted discovery returned 13 models including the requested
+  uncensored ID. JSON and SSE PONG probes passed with exact model identity and
+  integer usage. One completed run measured 1,036 ms for JSON (39 input/16 output)
+  and 699 ms for SSE (39 input/4 output, first delta 699 ms). These are individual
+  short-request observations, not a latency or incremental-delivery benchmark.
+- The first stream probe exposed an overly strict test-client assumption that
+  every usage snapshot was final and nonzero. Maple sends cumulative snapshots;
+  the client now validates monotonic counters and final usage with a regression test.
+- Both completed responses reported zero cached input. Cache-hit behavior,
+  account-debit reconciliation and the complimentary grant remain unverified.
 - Local Claude CLI Opus review was attempted but OAuth refresh failed. No private
   Claude API key was substituted and no successful review is claimed.
 
@@ -85,8 +98,8 @@ data discrepancy or use a reviewed compatible dependency update before merge.
 
 ## Remaining release requirements
 
-1. Create/confirm the dedicated account and non-renewing complimentary Pro grant.
-   `MAPLE_API_KEY` was absent during initial onboarding. Confirm reseller terms
+1. Confirm the dedicated account identity and non-renewing complimentary Pro grant.
+   The operator's key now passes the live discovery/inference probes. Confirm reseller terms
    and strict API content-retention terms; the public terms alone do not establish them.
 2. Reproduce the front enclave PCR0 from approved source. Review its enforced
    downstream i02 worker release, GPU verification and model identity. Validate

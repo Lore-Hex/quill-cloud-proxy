@@ -34,7 +34,7 @@ fn usage(value: &Value) -> Check<Usage> {
     let total = value["total_tokens"]
         .as_u64()
         .ok_or("invalid_total_tokens")?;
-    if input.checked_add(output) != Some(total) || input == 0 || output == 0 {
+    if input.checked_add(output) != Some(total) {
         return Err("invalid_usage_totals");
     }
     let cached = match value.get("prompt_tokens_details") {
@@ -53,6 +53,13 @@ fn usage(value: &Value) -> Check<Usage> {
         output,
         cached,
     })
+}
+
+fn complete_usage(value: Usage) -> Check<Usage> {
+    if value.input == 0 || value.output == 0 {
+        return Err("missing_final_token_usage");
+    }
+    Ok(value)
 }
 
 fn output_summary(kind: &str, usage: &Usage, elapsed: u128, first_delta: Option<u128>) {
@@ -146,7 +153,7 @@ fn validate_completion(value: &Value) -> Check<Usage> {
     if choice["finish_reason"].as_str() != Some("stop") {
         return Err("incomplete_answer");
     }
-    usage(&value["usage"])
+    complete_usage(usage(&value["usage"])?)
 }
 
 fn pong(value: &str) -> bool {
@@ -162,6 +169,7 @@ struct StreamChecks {
     content: bool,
     finish: bool,
     done: bool,
+    terminal_usage: bool,
     usage: Option<Usage>,
     answer: String,
 }
@@ -213,10 +221,15 @@ impl StreamChecks {
             }
         }
         if let Some(value) = value.get("usage").filter(|value| !value.is_null()) {
-            if self.usage.is_some() {
-                return Err("duplicate_stream_usage");
+            let observed = usage(value)?;
+            if self.usage.as_ref().is_some_and(|previous| {
+                observed.input < previous.input || observed.output < previous.output
+            }) {
+                return Err("regressing_stream_usage");
             }
-            self.usage = Some(usage(value)?);
+            // Maple may send cumulative usage on each chunk; never sum snapshots.
+            self.usage = Some(observed);
+            self.terminal_usage = self.finish;
         }
         Ok(got_delta)
     }
@@ -225,7 +238,10 @@ impl StreamChecks {
         if !self.done || !self.finish || !self.content || !self.seen_model || !pong(&self.answer) {
             return Err("incomplete_stream");
         }
-        self.usage.ok_or("missing_stream_usage")
+        if !self.terminal_usage {
+            return Err("missing_terminal_stream_usage");
+        }
+        complete_usage(self.usage.ok_or("missing_stream_usage")?)
     }
 }
 
@@ -501,6 +517,61 @@ mod tests {
             .accept(r#"{"model":"stock","choices":[]}"#)
             .is_err());
         assert!(StreamChecks::default().finish().is_err());
+    }
+
+    #[test]
+    fn cumulative_usage_is_not_summed_and_requires_a_terminal_snapshot() {
+        let mut stream = StreamChecks::default();
+        for output in [0, 1, 2] {
+            stream
+                .accept(
+                    &json!({"model":MODEL,"choices":[],"usage":{
+                        "prompt_tokens":10,"completion_tokens":output,"total_tokens":10+output
+                    }})
+                    .to_string(),
+                )
+                .unwrap();
+        }
+        stream
+            .accept(
+                &json!({"model":MODEL,"choices":[{
+            "delta":{"content":"PONG"},"finish_reason":"stop"
+        }],"usage":sample_usage()})
+                .to_string(),
+            )
+            .unwrap();
+        stream.accept("[DONE]").unwrap();
+        assert_eq!(stream.finish().unwrap(), usage(&sample_usage()).unwrap());
+
+        let mut stream = finished_stream();
+        let mut lower = sample_usage();
+        lower["completion_tokens"] = json!(1);
+        lower["total_tokens"] = json!(11);
+        assert_eq!(
+            stream.accept(&json!({"choices":[],"usage":lower}).to_string()),
+            Err("regressing_stream_usage")
+        );
+
+        let mut stream = StreamChecks::default();
+        stream
+            .accept(&json!({"model":MODEL,"choices":[],"usage":sample_usage()}).to_string())
+            .unwrap();
+        stream
+            .accept(
+                &json!({"model":MODEL,"choices":[{
+                    "delta":{"content":"PONG"},"finish_reason":"stop"
+                }]})
+                .to_string(),
+            )
+            .unwrap();
+        stream.accept("[DONE]").unwrap();
+        assert_eq!(stream.finish(), Err("missing_terminal_stream_usage"));
+        assert!(complete_usage(
+            usage(&json!({"prompt_tokens":10,
+            "completion_tokens":0,"total_tokens":10}))
+            .unwrap()
+        )
+        .is_err());
     }
 
     #[test]
