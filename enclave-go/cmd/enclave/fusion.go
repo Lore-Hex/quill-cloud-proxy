@@ -593,6 +593,7 @@ func fusionBuiltInPrompts(codeModel bool) (string, string) {
 }
 
 type fusionCallResult struct {
+	ExcludeReasoning bool
 	Result           adapter.StreamResult
 	Model            string
 	Provider         string
@@ -1351,7 +1352,7 @@ func serveFusionNonStreaming(
 			requestID,
 			responseModel,
 			selected.Result.Text,
-			adapter.JoinThinking(selected.Result.Thinking),
+			adapter.VisibleThinking(req, selected.Result.Thinking),
 			selected.Result.ToolCalls,
 			totalIn,
 			totalOut,
@@ -1397,7 +1398,7 @@ func serveFusionNonStreaming(
 		requestID,
 		responseModel,
 		final.Result.Text,
-		adapter.JoinThinking(final.Result.Thinking),
+		adapter.VisibleThinking(req, final.Result.Thinking),
 		final.Result.ToolCalls,
 		totalIn,
 		totalOut,
@@ -1445,6 +1446,9 @@ func serveFusionStreaming(
 	})
 	observer := func(stage string, index int, model string) adapter.StreamObserver {
 		return func(delta adapter.StreamDelta) {
+			if req.ExcludeReasoning && (delta.Type == "thinking_delta" || delta.Type == "signature_delta") {
+				return
+			}
 			event := map[string]any{
 				"event":      stage + "." + delta.Type,
 				"stage":      stage,
@@ -2012,6 +2016,7 @@ func runAuthorizedFusionCallAttempt(
 	authorization fusionCallAuthorization,
 ) (call fusionCallResult, callErr error) {
 	authz, options, requestStarted := authorization.authz, authorization.options, authorization.started
+	defer func() { call.ExcludeReasoning = req.ExcludeReasoning }()
 	if len(options) > 0 && options[0].Model != "" {
 		req.Model = options[0].Model
 	}
@@ -2320,6 +2325,9 @@ func serveFusionFinalStreamingObserved(
 				if baseObserver != nil {
 					baseObserver(adapter.StreamDelta{Type: "thinking_delta", Text: text})
 				}
+				if req.ExcludeReasoning {
+					return
+				}
 				_ = writeFusionStreamDelta(streamW, requestID, responseModel, created, map[string]any{
 					"reasoning_content": text,
 					"thinking":          text,
@@ -2339,6 +2347,9 @@ func serveFusionFinalStreamingObserved(
 				}
 				if baseObserver != nil {
 					baseObserver(delta)
+				}
+				if req.ExcludeReasoning {
+					return
 				}
 				_ = writeFusionStreamDelta(streamW, requestID, responseModel, created, map[string]any{
 					"reasoning_content": delta.Text,
@@ -2466,7 +2477,7 @@ func serveFusionFinalStreamingAttempt(
 	defer chunkW.Close()
 	statsW := newStreamStatsWriter(chunkW)
 	reader := io.MultiReader(bytes.NewReader(first[:n]), pr)
-	result, err := adapter.TransformStreamCaptureWithOptions(reader, statsW, responseID, req.Model, chatIncludeUsage(req))
+	result, err := adapter.TransformStreamCaptureControlled(reader, statsW, responseID, req.Model, chatIncludeUsage(req), nil, nil, adapter.WithReasoningVisibility(nil, req.ExcludeReasoning))
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "enclave.transform_stream_failed model=%q err=%v\n", req.Model, errorClass(err))
 		refundFusionCallAfter(ctx, trGateway, authorization, 502, "provider_error", time.Since(requestStarted).Seconds(), req.Metadata)
@@ -3042,14 +3053,14 @@ func fusionCallDetails(item fusionCallResult) map[string]any {
 		detail["overthinking_route_type"] = item.Rescue.RouteType
 		detail["overthinking_model"] = item.Rescue.Model
 		detail["aborted_thinking_tokens"] = item.Rescue.ThinkingTokens
-		if text := strings.TrimSpace(item.Rescue.Thinking); text != "" {
+		if text := strings.TrimSpace(item.Rescue.Thinking); text != "" && !item.ExcludeReasoning {
 			detail["aborted_thinking"] = text
 		}
 	}
-	if raw := strings.TrimSpace(item.RawText); raw != "" && raw != strings.TrimSpace(item.Result.Text) {
+	if raw := strings.TrimSpace(item.RawText); raw != "" && raw != strings.TrimSpace(item.Result.Text) && !item.ExcludeReasoning {
 		detail["raw_output"] = raw
 	}
-	if len(item.Result.Thinking) > 0 {
+	if len(item.Result.Thinking) > 0 && !item.ExcludeReasoning {
 		thinking := make([]map[string]any, 0, len(item.Result.Thinking))
 		for _, block := range item.Result.Thinking {
 			entry := map[string]any{"text": block.Text}

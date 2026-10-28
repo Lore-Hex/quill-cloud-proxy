@@ -396,6 +396,7 @@ type OpenAIChatRequest struct {
 	Depth            *int                 `json:"depth,omitempty"`
 	Response         *ResponseRequestMeta `json:"-"`
 	ResponseModel    string               `json:"-"`
+	ExcludeReasoning bool                 `json:"-"` // Output-only; retain internal thinking and usage.
 	IdempotencyKey   string               `json:"-"`
 	// MintedIdempotencyKey is the authorize idempotency key the enclave
 	// minted for this request because the caller sent none (the

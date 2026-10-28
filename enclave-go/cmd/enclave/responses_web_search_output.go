@@ -357,7 +357,7 @@ func (emitter *responsesWebSearchEmitter) startReasoning() error {
 }
 
 func (emitter *responsesWebSearchEmitter) emitReasoning(text string) error {
-	if text == "" {
+	if text == "" || (emitter.req != nil && emitter.req.ExcludeReasoning) {
 		return nil
 	}
 	if err := emitter.startReasoning(); err != nil {

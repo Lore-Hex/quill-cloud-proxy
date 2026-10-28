@@ -66,7 +66,7 @@ func maybeServeChatWebSearch(
 			return true
 		}
 		logResponsesWebSearchEnd(requestLogID, started, outcome, nil)
-		serveChatWebSearchJSON(conn, requestID, requestedModel, outcome)
+		serveChatWebSearchJSON(conn, requestID, requestedModel, outcome, req)
 		return true
 	}
 
@@ -99,6 +99,7 @@ func serveChatWebSearchJSON(
 	requestID string,
 	model string,
 	outcome responsesWebSearchOutcome,
+	req *types.OpenAIChatRequest,
 ) {
 	text, _ := ensureWebSearchCitations(outcome.Final.Result.Text, outcome.WebCalls, nil)
 	citations, searchResults := chatWebSearchProvenance(outcome)
@@ -109,7 +110,7 @@ func serveChatWebSearchJSON(
 		requestID,
 		model,
 		text,
-		adapter.JoinThinking(outcome.Final.Result.Thinking),
+		adapter.VisibleThinking(req, outcome.Final.Result.Thinking),
 		visibleWebSearchToolCalls(outcome.Final.Result.ToolCalls),
 		outcome.InputTokens,
 		outcome.OutputTokens,
@@ -220,6 +221,9 @@ func (emitter *chatWebSearchEmitter) Observe(delta adapter.StreamDelta) {
 		emitter.text.WriteString(delta.Text)
 		emitter.writeErr = writeFusionStreamDelta(emitter.w, emitter.requestID, emitter.model, emitter.created, map[string]any{"content": delta.Text}, "")
 	case "thinking_delta":
+		if emitter.req != nil && emitter.req.ExcludeReasoning {
+			return
+		}
 		emitter.writeErr = writeFusionStreamDelta(emitter.w, emitter.requestID, emitter.model, emitter.created, map[string]any{
 			"reasoning": delta.Text, "reasoning_content": delta.Text,
 		}, "")
