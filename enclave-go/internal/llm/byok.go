@@ -1290,6 +1290,17 @@ func directModelID(provider, model, upstreamModel string) string {
 	}
 	model = stripOpenRouterModelVariant(model)
 	upstreamModel = stripOpenRouterModelVariant(strings.TrimSpace(upstreamModel))
+	if provider == "phala" && model == "z-ai/glm-5.2" && upstreamModel != "" {
+		// The current catalog authorizes the author-prefixed route. Do not
+		// replace it with the historical confidential alias: route-specific
+		// pricing and privacy were authorized for this exact upstream ID.
+		switch upstreamModel {
+		case "z-ai/glm-5.2", "phala/glm-5.2":
+			return upstreamModel
+		default:
+			return ""
+		}
+	}
 	if _, exactCatalogIDRequired := directproviders.Lookup(provider); exactCatalogIDRequired && upstreamModel == "" {
 		return ""
 	}
