@@ -125,8 +125,9 @@ type startupLocalAttempt struct {
 	result string
 }
 type startupAdmission struct {
-	ready   bool
-	harness *ShadowV2StartupHarness
+	ready         bool
+	unprovisioned bool
+	harness       *ShadowV2StartupHarness
 }
 
 var enclaveOptedAdmission atomic.Pointer[startupAdmission]
@@ -192,9 +193,20 @@ func StartShadowV2Startup(ctx context.Context, start time.Time, fd *os.File, pre
 		shadowOn, negotiateOn = shadowFlag(boot), asyncFlag(boot)
 	}
 	h.pins = map[string]string{"TR_ASYNC_SETTLE_SHADOW": startupPin(shadowOn), "TR_ASYNC_SETTLE_NEGOTIATE": startupPin(negotiateOn)}
-	if h.pins["TR_ASYNC_SETTLE_SHADOW"] == "on" {
-		enclaveOptedAdmission.Store(&startupAdmission{harness: h})
+	if !shadowOn {
+		close(h.done)
+		h.emitter.close()
+		if fd != nil {
+			_ = fd.Close()
+		}
+		return h
 	}
+	// Freeze the mode at installation. Whitespace and unusable configured paths
+	// retain the strict latch; only an absent or exactly empty setting opts out
+	// of certification readiness, never of the ordinary retention checks.
+	manifestPath := os.Getenv("TR_SHADOW_V2_STARTUP_MANIFEST")
+	unprovisioned := manifestPath == ""
+	enclaveOptedAdmission.Store(&startupAdmission{unprovisioned: unprovisioned, harness: h})
 	h.retainReady = func(_ context.Context, raw []byte) (string, error) {
 		h.mu.Lock()
 		defer h.mu.Unlock()
@@ -219,12 +231,21 @@ func StartShadowV2Startup(ctx context.Context, start time.Time, fd *os.File, pre
 	}
 	h.load = func() (startupManifest, []byte, error) {
 		var m startupManifest
-		raw, err := readStartupJSON(os.Getenv("TR_SHADOW_V2_STARTUP_MANIFEST"), 262144, &m)
+		raw, err := readStartupJSON(manifestPath, 262144, &m)
 		return m, raw, err
 	}
 	configureStartupInputs(h)
 	h.launch(func() {
 		defer close(h.done)
+		if unprovisioned {
+			// Operational comparisons are useful without a certifying boot ledger.
+			// This one diagnostic cannot stand in for any readiness acknowledgement.
+			h.emitter.emitUnprovisioned(h.boot, h.start.UnixMicro())
+			if fd != nil {
+				_ = fd.Close()
+			}
+			return
+		}
 		runCtx, cancel := context.WithTimeout(ctx, 45*time.Second)
 		defer cancel()
 		descriptorCtx, stop := context.WithTimeout(runCtx, 3*time.Second)
@@ -260,7 +281,7 @@ func (h *ShadowV2StartupHarness) launch(run func()) {
 func (h *ShadowV2StartupHarness) recoverStartup() {
 	if recover() != nil {
 		if state := enclaveOptedAdmission.Load(); state != nil && state.harness == h {
-			enclaveOptedAdmission.CompareAndSwap(state, &startupAdmission{harness: h})
+			enclaveOptedAdmission.CompareAndSwap(state, &startupAdmission{unprovisioned: state.unprovisioned, harness: h})
 		}
 	}
 }
@@ -467,7 +488,7 @@ func EnclaveOptedAdmission() bool {
 	if state == nil {
 		return true
 	}
-	return state.ready
+	return state.ready || state.unprovisioned
 }
 
 // Called by the request entry before retention, after the response identifies

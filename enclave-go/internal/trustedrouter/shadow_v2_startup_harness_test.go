@@ -249,7 +249,7 @@ func TestStartupAdmission(t *testing.T) {
 	h, _, _, _ := startupFixture(t)
 	for _, on := range []bool{false, true} {
 		for _, ready := range []bool{false, true} {
-			enclaveOptedAdmission.Store(&startupAdmission{ready, h})
+			enclaveOptedAdmission.Store(&startupAdmission{ready: ready, harness: h})
 			c := &Client{asyncShadow: on}
 			a := v2Authorization(t, shadowV2Variants(t, "authorize_compared")[0])
 			start := c.recordStartupAdmissionStart(a, "chat.completions")

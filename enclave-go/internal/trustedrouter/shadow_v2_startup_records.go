@@ -304,6 +304,30 @@ func (e *startupEmitter) emit(record any) ([]byte, bool) {
 		e.dropped.Add(1)
 		return nil, false
 	}
+	return e.emitLine(raw)
+}
+
+// This diagnostic shares the bounded stdout channel, but is deliberately not
+// a record in the frozen certification inventory. Its unknown kind blocks a
+// certification reader; no correlation, check, receipt or ready fact is invented.
+func (e *startupEmitter) emitUnprovisioned(boot string, atUS int64) {
+	if !startupID.MatchString(boot) || atUS < 0 {
+		e.dropped.Add(1)
+		return
+	}
+	raw, err := canonicalShadow(struct {
+		Kind string `json:"kind"`
+		Boot string `json:"boot"`
+		AtUS int64  `json:"at_us"`
+	}{"a3_startup_unprovisioned", boot, atUS})
+	if err != nil || len(raw) > 1024 {
+		e.dropped.Add(1)
+		return
+	}
+	e.emitLine(raw)
+}
+
+func (e *startupEmitter) emitLine(raw []byte) ([]byte, bool) {
 	item := startupLine{raw, make(chan bool, 1)}
 	select {
 	case e.queue <- item:

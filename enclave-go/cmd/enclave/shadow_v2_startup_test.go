@@ -45,6 +45,7 @@ func TestStartupRealServingHandoff(t *testing.T) {
 	}
 
 	t.Setenv("TR_ASYNC_SETTLE_SHADOW", "on")
+	t.Setenv("TR_SHADOW_V2_STARTUP_MANIFEST", "configured-test-input")
 	r, w, err := os.Pipe()
 	if err != nil {
 		t.Fatal(err)
