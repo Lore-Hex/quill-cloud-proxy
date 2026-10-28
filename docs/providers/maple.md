@@ -1,8 +1,14 @@
 # Maple pilot qualification
 
-**Not deployed or customer-routable.** This change adds a qualification client,
-not a serving adapter. The paired control-plane provider remains internal-only,
+**Not deployed or customer-routable.** This change adds a qualification client
+and a candidate one-shot encrypted adapter, not serving-image integration.
+The paired control-plane provider remains internal-only,
 with Credits, BYOK, ZDR and confidential/E2EE eligibility all disabled.
+
+The operator explicitly requested **Confidential**, confirmed resale permission
+and zero API prompt/response retention on 2026-10-28. Policy confirmation is not
+an attestation result. Do not activate a weaker plaintext or ZDR-only route to
+work around the remaining confidential-path gates.
 
 The requested model is `deepseek-v4-1-flash-1017-uncensored`. Keep it separate
 from stock DeepSeek. At the supplied source commit it routes only to Maple's
@@ -39,10 +45,13 @@ cargo run --locked --manifest-path tools/maple-pilot/Cargo.toml -- reject-pin
 cargo run --locked --manifest-path tools/maple-pilot/Cargo.toml -- reject-key
 # Supply MAPLE_API_KEY from the operator secret loader, never as a command argument.
 cargo run --locked --manifest-path tools/maple-pilot/Cargo.toml -- probe
+cargo run --locked --manifest-path tools/maple-pilot/Cargo.toml -- cache
 ```
 
-Only `probe` uses the account key and paid inference: one discovery, one JSON
-and one SSE synthetic PONG request, each capped at 1,024 output tokens. Inference
+`probe` uses the account key and paid inference: one discovery, one JSON
+and one SSE synthetic PONG request, each capped at 1,024 output tokens. `cache`
+adds three bounded synthetic requests: cold, warm and a separate cache namespace.
+Inference
 send budget is exactly one per request: no automatic replay after uncertain
 delivery. The client checks exact model identity, PONG content, normal finish,
 integer token counts, cached-token bounds and streaming usage. Cumulative
@@ -79,10 +88,62 @@ Local qualification against the production backend:
 - The first stream probe exposed an overly strict test-client assumption that
   every usage snapshot was final and nonzero. Maple sends cumulative snapshots;
   the client now validates monotonic counters and final usage with a regression test.
-- Both completed responses reported zero cached input. Cache-hit behavior,
-  account-debit reconciliation and the complimentary grant remain unverified.
+- A fresh cache qualification sent 12,369 input tokens per call: cold cached 0,
+  warm cached 12,288, a new independent namespace cached 0. Output counts were
+  10/19/22. This verifies SDK namespace isolation locally, not production
+  workspace isolation or account-debit reconciliation.
+- The signed-in dashboard confirms the dedicated TrustedRouter key and an
+  active Pro plan expiring November 28, 2026, with zero purchased extra credits.
+  It does not expose per-request debits or the remaining included allowance.
+  No subscription, purchase, or key changes were made.
 - Local Claude CLI Opus review was attempted but OAuth refresh failed. No private
   Claude API key was substituted and no successful review is claimed.
+
+## Dedicated worker qualification
+
+The exact deployed front source pins i02 to
+[`MaplePrivacyLabs/inference-deepseek-uncensored`](https://github.com/MaplePrivacyLabs/inference-deepseek-uncensored/tree/76a8e5fdaa7dbade1640025829ba0bfeae7a3495),
+tag `v0.1.0-rc.1+b300`, digest
+`1d92cd06f7b47179bf81612f6a41fdb0a329253affef1803f0cdeb5175cc80c4`.
+A fresh nonce-bound worker report passed the pinned vendor verifier
+[`f0fef79eec6a5a2c8592cf8aff4b90ab556acfbc`](https://github.com/MaplePrivacyLabs/tinfoil-rs/tree/f0fef79eec6a5a2c8592cf8aff4b90ab556acfbc).
+Wrong nonce, wrong measurement and tampered CPU signature were rejected.
+Attested `/health` succeeded before and after negative checks rejecting
+plaintext HTTP, a different port and a wrong TLS key pin. No account credential
+was sent to the worker. Its unauthenticated `/v1/models` returns 401; this is
+not a successful catalog probe and must not be represented as one.
+
+The measured worker config uses CVM v0.14.13, an immutable container digest,
+and dm-verity verified weights at
+`dealignai/DeepSeek-V4.1-Flash-1017-UNCENSORED-FP8@c19ca5ca4eaeb79d29fdf08aea8327da95b1116a`.
+Source review of [CVM v0.14.13](https://github.com/tinfoilsh/cvmimage/tree/c3b4860d72e78baf61140778b92986b102716b87)
+found that the measured config hash is checked before use; GPU appraisal runs
+before serving and failures leave the GPU not ready. Model volumes are mounted
+read-only through dm-verity. The Rust client binds device evidence into the
+CPU report but delegates NVIDIA appraisal to this measured boot implementation.
+Do not describe it as a separate NVIDIA signature verification by TR's client.
+
+## Candidate serving protocol
+
+`maple-transport` accepts one bounded JSON envelope on stdin: the managed API
+key, a base64 32-byte cache root from the authorized workspace, and an OpenAI
+chat body. It permits only the exact uncensored model with streaming enabled;
+TR can aggregate that stream for non-streaming public requests. Backend and
+PCR0 are compiled constants, not environment or request overrides. Caller cache
+fields are removed and usage is mandatory. An SDK send budget of one forbids
+automatic inference replay.
+
+Output is one JSON status line followed by canonical SSE. The relay validates
+model identity, integer cumulative token/cache counts and frame/response limits.
+It withholds `[DONE]` until the SDK reports authenticated encrypted EOF.
+Malformed/truncated streams and upstream error events never emit success.
+Errors are fixed vocabulary; no tracing subscriber is installed.
+
+One live synthetic adapter call passed with 36 input / 4 output tokens, cached
+input 0 and authenticated completion (1,456 ms, not a latency benchmark).
+The helper is **not yet embedded in any cloud image or wired to the gateway**.
+Process isolation, authorized workspace derivation, bounded concurrency and AWS
+TLS-only vsock egress remain serving-integration requirements.
 
 ## Dependency-scan blocker
 
@@ -98,12 +159,13 @@ data discrepancy or use a reviewed compatible dependency update before merge.
 
 ## Remaining release requirements
 
-1. Confirm the dedicated account identity and non-renewing complimentary Pro grant.
-   The operator's key now passes the live discovery/inference probes. Confirm reseller terms
-   and strict API content-retention terms; the public terms alone do not establish them.
+1. Record the remaining included allowance and confirm no automatic renewal;
+   account identity, Pro expiry, reseller permission and API content-retention
+   confirmation have been obtained. The operator key passes live probes.
 2. Reproduce the front enclave PCR0 from approved source. Review its enforced
-   downstream i02 worker release, GPU verification and model identity. Validate
-   changed-pin and wrong-key rejection, then real encrypted inference.
+   downstream i02 worker release, GPU verification and model identity review and
+   local positive/negative encrypted probes are recorded above. Independent
+   front reproduction remains in progress, not yet an approved result.
 3. Embed the SDK or hardened proxy **inside** the measured image. The standalone
    upstream proxy has a process-wide cache root; add TR workspace isolation.
    Preserve sandboxed process supervision, immutable pins and redacted failures.

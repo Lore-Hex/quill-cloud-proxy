@@ -2193,6 +2193,7 @@ dependencies = [
  "maple-sdk",
  "serde_json",
  "tokio",
+ "zeroize",
 ]
 
 [[package]]

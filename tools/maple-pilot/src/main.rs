@@ -7,12 +7,8 @@ use maple_sdk::{client::InferenceSendBudget, OpenSecretClient, Pcr0TrustPolicy};
 use serde_json::{json, Value};
 use std::{env, process::ExitCode, time::Instant};
 use tokio::time::{timeout, Duration};
+use trustedrouter_maple_pilot::{BACKEND, MODEL, PCR0};
 
-const BACKEND: &str = "https://enclave.trymaple.ai";
-const MODEL: &str = "deepseek-v4-1-flash-1017-uncensored";
-// Latest entry in the production history at the pinned source revision.
-// Candidate only: acceptance is not proof of source/image reproducibility.
-const PCR0: &str = "ada74c7aa10cbde75f83d7ec674cc4fc4a4cf9cc555e367189fbec332dffa985c6082ae4647fd50242a590bf9cd1d3f0";
 const BAD_PCR0: &str = "bda74c7aa10cbde75f83d7ec674cc4fc4a4cf9cc555e367189fbec332dffa985c6082ae4647fd50242a590bf9cd1d3f0";
 const LIMIT: usize = 4 * 1024 * 1024;
 type Check<T> = Result<T, &'static str>;
@@ -322,6 +318,50 @@ async fn read_stream(
     Ok((checks.finish()?, first_delta))
 }
 
+fn cache_probe_payload(marker: &str) -> Value {
+    json!({
+        "model": MODEL,
+        "messages": [{"role":"user", "content":format!(
+            "Qualification run {marker}. Ignore the synthetic padding below and reply only PONG.\n{}\nReply only PONG.",
+            "Synthetic cache-isolation padding. ".repeat(2048)
+        )}],
+        "max_tokens":1024,
+        "stream":false
+    })
+}
+
+async fn probe_cache(client: &OpenSecretClient, key: &str) -> Check<()> {
+    // Same root represents one workspace. A second fresh client has an independent
+    // root even with the same provider account, as required for TR tenant isolation.
+    let marker = maple_sdk::client::TransportV2CacheNamespaceRoot::generate()
+        .map_err(|_| "cache_probe_randomness_failed")?
+        .to_base64();
+    let payload = Bytes::from(cache_probe_payload(&marker).to_string());
+    let isolated = OpenSecretClient::new_with_api_key_and_pcr0_trust_policy(
+        BACKEND,
+        key.to_owned(),
+        Pcr0TrustPolicy::from_static_allowlist([PCR0]).map_err(|_| "invalid_static_policy")?,
+    )
+    .map_err(|_| "client_configuration_failed")?;
+    let mut results = Vec::new();
+    for (label, active) in [("cold", client), ("warm", client), ("isolated", &isolated)] {
+        let started = Instant::now();
+        let response = send(active, "POST", "/v1/chat/completions", payload.clone()).await?;
+        let result = validate_completion(&collect(response).await?)?;
+        output_summary(label, &result, started.elapsed().as_millis(), None);
+        results.push(result);
+    }
+    if results[0].cached != 0 || results[1].cached == 0 || results[2].cached != 0 {
+        return Err("workspace_cache_isolation_not_proven");
+    }
+    println!(
+        "{}",
+        json!({"check":"workspace_cache_isolation", "ok":true,
+        "billing_reconciled":false})
+    );
+    Ok(())
+}
+
 async fn run(mode: &str) -> Check<()> {
     if mode == "reject-pin" {
         // A failing network or broken deployment must not pass a negative test.
@@ -392,7 +432,14 @@ async fn run(mode: &str) -> Check<()> {
         .ok()
         .filter(|key| !key.trim().is_empty())
         .ok_or("maple_api_key_missing")?;
-    client.set_api_key(key).map_err(|_| "invalid_api_key")?;
+    client
+        .set_api_key(key.clone())
+        .map_err(|_| "invalid_api_key")?;
+    if mode == "cache" {
+        return timeout(Duration::from_secs(600), probe_cache(&client, &key))
+            .await
+            .map_err(|_| "probe_timeout")?;
+    }
     timeout(Duration::from_secs(600), probe(&client))
         .await
         .map_err(|_| "probe_timeout")?
@@ -404,10 +451,10 @@ async fn main() -> ExitCode {
     if args.len() != 1
         || !matches!(
             args[0].as_str(),
-            "attest" | "reject-pin" | "reject-key" | "probe"
+            "attest" | "reject-pin" | "reject-key" | "probe" | "cache"
         )
     {
-        eprintln!("usage: trustedrouter-maple-pilot attest|reject-pin|reject-key|probe");
+        eprintln!("usage: trustedrouter-maple-pilot attest|reject-pin|reject-key|probe|cache");
         return ExitCode::FAILURE;
     }
     match run(&args[0]).await {
@@ -423,6 +470,21 @@ async fn main() -> ExitCode {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn cache_probe_is_bounded_and_cannot_select_a_different_model() {
+        let payload = cache_probe_payload("synthetic-marker");
+        assert_eq!(payload["model"], MODEL);
+        assert_eq!(payload["max_tokens"], 1024);
+        assert_eq!(payload["stream"], false);
+        assert_eq!(payload["messages"].as_array().unwrap().len(), 1);
+        let content = payload["messages"][0]["content"].as_str().unwrap();
+        assert!(content.starts_with("Qualification run synthetic-marker."));
+        assert!(content.ends_with("Reply only PONG."));
+        assert!(content.len() < 100_000);
+        assert!(payload.get("cache_salt").is_none());
+        assert!(payload.get("user_cache_secret").is_none());
+    }
 
     fn sample_usage() -> Value {
         json!({"prompt_tokens":10,"completion_tokens":2,"total_tokens":12,
