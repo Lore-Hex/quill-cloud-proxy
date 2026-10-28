@@ -271,7 +271,7 @@ func ResponsesToChat(req *types.OpenAIResponsesRequest) (*types.OpenAIChatReques
 	if maxTokens == nil {
 		maxTokens = req.MaxTokens
 	}
-	return &types.OpenAIChatRequest{
+	chat := &types.OpenAIChatRequest{
 		Model:               req.Model,
 		Models:              req.Models,
 		Messages:            messages,
@@ -321,7 +321,11 @@ func ResponsesToChat(req *types.OpenAIResponsesRequest) (*types.OpenAIChatReques
 			Store:                false,
 			WebSearch:            webSearch,
 		},
-	}, nil
+	}
+	reasoning, _ := req.Reasoning.(map[string]any)
+	exclude, _ := reasoning["exclude"].(bool)
+	ConfigureReasoningVisibility(chat, exclude)
+	return chat, nil
 }
 
 func responsesRequestedParameters(
@@ -349,7 +353,10 @@ func responsesRequestedParameters(
 		requested["max_tokens"] = struct{}{}
 	}
 	if req.Reasoning != nil {
-		requested["reasoning"] = struct{}{}
+		encoded, _ := json.Marshal(req.Reasoning)
+		if !reasoningVisibilityOnly(encoded) {
+			requested["reasoning"] = struct{}{}
+		}
 	}
 	if len(responseFormat) > 0 {
 		requested["response_format"] = struct{}{}
@@ -1018,6 +1025,9 @@ func TransformResponsesStreamControlled(
 		})
 	}
 	startReasoning := func() error {
+		if control != nil && control.ExcludeReasoning {
+			return nil
+		}
 		if reasoningStarted {
 			return nil
 		}
@@ -1359,6 +1369,9 @@ func TransformResponsesStreamControlled(
 						tb.Text += slice
 					}
 					reasoningCaptured.WriteString(slice)
+					if control != nil && control.ExcludeReasoning {
+						return nil
+					}
 					return writeResponseEventSeq(w, &seq, "response.reasoning_text.delta", map[string]any{
 						"type": "response.reasoning_text.delta", "item_id": reasoningID,
 						"output_index": reasoningOutputIndex, "content_index": 0, "delta": slice,
@@ -2041,7 +2054,8 @@ func validateReasoningConfig(value json.RawMessage) error {
 	if err := json.Unmarshal(value, &parsed); err != nil {
 		return &AdapterError{Status: 400, Message: "reasoning must be an object", Context: "reasoning"}
 	}
-	return nil
+	_, err := validateReasoningVisibility(map[string]json.RawMessage{"reasoning": value})
+	return err
 }
 
 func chatResponseFormatFromResponsesText(textConfig map[string]any) (map[string]any, error) {

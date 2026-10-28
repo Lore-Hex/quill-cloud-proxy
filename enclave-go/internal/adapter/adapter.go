@@ -768,6 +768,7 @@ const MaxMeterChunkTokens = MAX_METER_CHUNK_TOKENS
 // BeforeTerminal owns the final protocol event and may synchronously settle
 // before calling Emit.
 type StreamControl struct {
+	ExcludeReasoning bool
 	// AfterTerminal emits optional settlement metadata after the final provider frame.
 	AfterTerminal func(StreamResult) (map[string]any, error)
 	// Opt-in: existing Responses callers retain their original usage payload.
@@ -1115,6 +1116,9 @@ func TransformStreamCaptureControlled(
 					}
 					if tb := thinkingByIndex[blockIndex]; tb != nil {
 						tb.Text += slice
+					}
+					if control != nil && control.ExcludeReasoning {
+						return nil
 					}
 					return writeChunk(w, requestID, model, created, map[string]any{
 						"reasoning": slice, "reasoning_content": slice, "thinking": slice,
