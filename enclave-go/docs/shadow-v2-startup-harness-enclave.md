@@ -10,7 +10,7 @@ missing, so this round does not make a live opted boot ready.
 `EnclaveOptedAdmission` is bound in `retainShadowV2`, after the v2 policy marker
 is parsed and before either retention variant. The existing caller invokes this
 only when its shadow flag is on. Only chat.completions and responses are gated.
-Before readiness, the hook takes the existing `(false, true)` non-retention
+On a configured boot before readiness, the hook takes the existing `(false, true)` non-retention
 outcome. After readiness, existing v2 processing continues. The decision is one
 atomic pointer read. The request entry samples the time before calling retention
 and records the result from the completed retention decision. Its preallocated
@@ -18,18 +18,34 @@ and records the result from the completed retention decision. Its preallocated
 drops and counts immediately. No clock, lock or append runs inside the hook. There is no added request error or wire field.
 With shadow off the existing caller returns before this hook.
 
-The coordinator also runs with shadow off. A completed marker record uses the
-actual `off` value, never an anticipated rollout state. Other missing inputs
-remain missing in the dormant stage too. Non-cohort traffic is unchanged.
+With shadow off, startup installs no admission state and emits no records.
+Non-cohort traffic is unchanged.
 
 ## Configuration and release manifest
 
 `TR_SHADOW_V2_STARTUP_MANIFEST` names a regular local file of at most 262144
 bytes. It must contain exactly one canonical JSON object: sorted object keys,
 compact UTF-8 JSON, integer times, no trailing newline, duplicate or extra keys.
-This is a reviewed release input, installed before startup. Its absence or an
-invalid file leaves criteria missing. This runtime does not produce review
+This is a reviewed release input, installed before startup. A nonempty setting, including whitespace or an invalid file, keeps the strict
+latch and leaves missing criteria unresolved. This runtime does not produce review
 approval or infer it from a filename.
+
+BEFORE: every shadow-on boot installed a closed latch, even when no manifest was
+provisioned. AFTER: an unset or exactly empty setting at installation permits
+operational shadow comparisons through the existing retention checks, matching
+the router's unprovisioned mode. The decision and configured path are captured
+once; later environment changes cannot unlock a configured boot. Unprovisioned
+boots never run certification checks or emit/retain a ready acknowledgement.
+
+The bounded startup stdout channel emits exactly one content-free diagnostic,
+`{"kind":"a3_startup_unprovisioned","boot":<boot>,"at_us":<process start>}`.
+This is intentionally outside the frozen five-kind certification inventory, not
+an invented failed check with fabricated config/trial coordinates. The existing
+collector treats it as `missing_record_classification`; if diagnostics are
+filtered out, the missing correlation/checks/ready ledger still block certification.
+The diagnostic creates no router header or envelope field. Output failures use
+the existing bounded queue/drop accounting. The 256-attempt buffer and overflow
+counter remain bounded for the lifetime of an unprovisioned boot.
 
 The exact top-level fields are:
 
@@ -276,5 +292,5 @@ from the embedded literal. Outside kinds and results cannot enter output.
 Common remaining seams are `LauncherLaunchDescriptor`, `BootClockQualification`,
 `EnclaveOriginalRetention`, `EnclaveReadyRetention`, `ReceiptPageRetention` and
 `EnclaveShutdownStages`, as described above. None is filled by a passed unit test.
-The installed live adapters still lack required inputs and leave opted readiness
-unavailable. This package does not create native observations or complete a rollout.
+The installed live adapters still lack required certification inputs. Configured
+boots remain latched; unprovisioned boots can compare but cannot certify. This package does not create native observations or complete a rollout.

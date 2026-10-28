@@ -34,6 +34,7 @@ func startupOrdinaryRequest(t *testing.T) {
 
 func startupInstallInputs(t *testing.T, port string, crash bool, release <-chan struct{}) time.Time {
 	t.Helper()
+	t.Setenv("TR_SHADOW_V2_STARTUP_MANIFEST", "configured-test-input")
 	fixture, d, m, writer := startupFixture(t)
 	old := configureStartupInputs
 	t.Cleanup(func() { configureStartupInputs = old })
