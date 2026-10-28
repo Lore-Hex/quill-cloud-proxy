@@ -24,6 +24,14 @@ Remote-history trust is disabled. This is a qualification pin, not an approval
 of the live source/image binding or of the downstream GPU/model. A mismatch is
 a stop condition; do not replace it with whichever measurement the server sends.
 
+Maple's [measurement approval commit](https://github.com/MaplePrivacyLabs/Maple/commit/942efea0bfcbb7523d320186404dcb4cd8f27c0a)
+attributes this PCR0 to backend source
+`7957ce78ad8eee7a173a9d877ff6e320876894c8` and EIF SHA-256
+`9702de6b825bb024d843fb840bf1c638ca7443bbd6ba49f93d14f6e6dfc60e23`,
+published by [release run 40226283053](https://github.com/MaplePrivacyLabs/Maple/actions/runs/40226283053).
+The run reports success at that source commit. This is vendor-published build
+provenance, not an independently reproduced EIF or a verified artifact signature.
+
 ```sh
 cargo test --locked --manifest-path tools/maple-pilot/Cargo.toml
 cargo run --locked --manifest-path tools/maple-pilot/Cargo.toml -- attest
@@ -62,6 +70,18 @@ Local qualification against the production backend:
   JSON/SSE inference, cached usage and account-debit reconciliation remain untested.
 - Local Claude CLI Opus review was attempted but OAuth refresh failed. No private
   Claude API key was substituted and no successful review is claimed.
+
+## Dependency-scan blocker
+
+The initial CI scan flags `block-buffer 0.10.4` under
+[GHSA-qwgh-2vcv-g2f7](https://github.com/RustCrypto/utils/security/advisories/GHSA-qwgh-2vcv-g2f7).
+The primary advisory lists the affected range as `>=0.11.0,<0.12.1`, whereas
+the scanner's advisory data includes earlier versions. The SDK's SHA-2/HKDF
+dependencies require the 0.10 line. Inspection of 0.10.4 shows a separate
+`pos: u8` field, not the inline cursor targeted by the advisory; the other
+resolved version, 0.12.1, is patched. This appears to be a version-range false
+positive, but no suppression or scan bypass has been added. Resolve the advisory
+data discrepancy or use a reviewed compatible dependency update before merge.
 
 ## Remaining release requirements
 
