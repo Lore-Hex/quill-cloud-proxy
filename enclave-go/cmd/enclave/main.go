@@ -1574,6 +1574,7 @@ func parseChatRequest(body []byte) (*types.OpenAIChatRequest, error) {
 		return nil, err
 	}
 	types.RecoverToolCallNames(req.Messages)
+	adapter.ConfigureReasoningVisibility(&req, validation.ExcludeReasoning)
 	if err := adapter.ConfigureChatWebSearch(&req); err != nil {
 		return nil, err
 	}
@@ -1870,7 +1871,7 @@ func serveChatNonStreaming(
 	responseModel := authorizationResponseModel(req.Model, authorization)
 	var body bytes.Buffer
 	if err := adapter.WriteChatCompletionResponseWithProviderMetadata(
-		&body, requestID, responseModel, result.Text, adapter.JoinThinking(result.Thinking),
+		&body, requestID, responseModel, result.Text, adapter.VisibleThinking(req, result.Thinking),
 		result.ToolCalls, inputTokens, outputTokens, result.Usage, time.Now().Unix(),
 		result.FinishReason, result.Citations, result.SearchResults, result.Decision,
 	); err != nil {
@@ -2343,6 +2344,7 @@ func serveStreaming(
 		}
 	}
 	stageDControl = withInferenceLocation(stageDControl, authorization, selectedRoute)
+	stageDControl = adapter.WithReasoningVisibility(stageDControl, req.ExcludeReasoning)
 	if routeType == "responses" {
 		if stageDControl != nil {
 			stageDControl.ExposeResponsesUsage = true

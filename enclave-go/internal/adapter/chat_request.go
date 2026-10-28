@@ -12,6 +12,7 @@ import (
 type ChatRequestValidation struct {
 	RequestedParameters []string
 	IncludeUsage        bool
+	ExcludeReasoning    bool
 }
 
 var chatRequestFields = map[string]struct{}{
@@ -27,7 +28,7 @@ var chatRequestFields = map[string]struct{}{
 	"temperature": {}, "tool_choice": {}, "tools": {}, "top_a": {}, "top_k": {},
 	"top_logprobs": {}, "top_p": {}, "trace": {}, "user": {}, "web_search_options": {},
 	// TrustedRouter compatibility/extensions already supported by the gateway.
-	"allow_fallbacks": {}, "depth": {}, "max_output_tokens": {}, "n": {}, "store": {}, "tags": {}, "usage": {},
+	"allow_fallbacks": {}, "depth": {}, "include_reasoning": {}, "max_output_tokens": {}, "n": {}, "store": {}, "tags": {}, "usage": {},
 }
 
 var unsupportedChatFields = map[string]struct{}{
@@ -93,6 +94,10 @@ var endpointCapabilityFields = map[string]string{
 // explicit. Unknown fields are 400s; known fields that this release cannot
 // honor are stable 501s. Nothing accepted here may silently disappear.
 func ValidateChatRequestFields(raw map[string]json.RawMessage) (ChatRequestValidation, error) {
+	excludeReasoning, err := validateReasoningVisibility(raw)
+	if err != nil {
+		return ChatRequestValidation{}, err
+	}
 	if err := rejectPromptCacheRetention(raw["prompt_cache_retention"]); err != nil {
 		return ChatRequestValidation{}, err
 	}
@@ -108,6 +113,9 @@ func ValidateChatRequestFields(raw map[string]json.RawMessage) (ChatRequestValid
 			return ChatRequestValidation{}, unsupportedRequestParameter(key)
 		}
 		if capability, ok := endpointCapabilityFields[key]; ok {
+			if key == "reasoning" && reasoningVisibilityOnly(value) {
+				continue
+			}
 			requested[capability] = struct{}{}
 		}
 	}
@@ -151,7 +159,7 @@ func ValidateChatRequestFields(raw map[string]json.RawMessage) (ChatRequestValid
 		parameters = append(parameters, parameter)
 	}
 	sort.Strings(parameters)
-	return ChatRequestValidation{RequestedParameters: parameters, IncludeUsage: includeUsage}, nil
+	return ChatRequestValidation{RequestedParameters: parameters, IncludeUsage: includeUsage, ExcludeReasoning: excludeReasoning}, nil
 }
 
 func validateChatStreamOptions(value json.RawMessage) error {

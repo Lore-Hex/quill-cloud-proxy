@@ -796,7 +796,7 @@ func serveAdvisorNonStreaming(
 		requestID,
 		responseModel,
 		final.Result.Text,
-		adapter.JoinThinking(final.Result.Thinking),
+		adapter.VisibleThinking(req, final.Result.Thinking),
 		final.Result.ToolCalls,
 		totalIn,
 		totalOut,
@@ -868,6 +868,9 @@ func serveAdvisorStreaming(
 		})
 		observer = func(stage string, index int, model string) adapter.StreamObserver {
 			return func(delta adapter.StreamDelta) {
+				if req.ExcludeReasoning && (delta.Type == "thinking_delta" || delta.Type == "signature_delta") {
+					return
+				}
 				event := map[string]any{
 					"event":      stage + "." + delta.Type,
 					"stage":      stage,
@@ -1214,6 +1217,9 @@ func runAdvisorAdvice(
 		return "", nil
 	}
 	emitter := newAdvisorStreamEmitter(streamW, requestID, req.Model, streamCreated)
+	if emitter != nil {
+		emitter.excludeReasoning = req.ExcludeReasoning
+	}
 	results := make([]advisorAdviceModelResult, len(config.AdvisorModels))
 	var wg sync.WaitGroup
 	for i, advisorModel := range config.AdvisorModels {
@@ -1299,11 +1305,12 @@ type advisorAdviceText struct {
 }
 
 type advisorStreamEmitter struct {
-	mu        sync.Mutex
-	w         io.Writer
-	requestID string
-	model     string
-	created   int64
+	excludeReasoning bool
+	mu               sync.Mutex
+	w                io.Writer
+	requestID        string
+	model            string
+	created          int64
 }
 
 func newAdvisorStreamEmitter(w io.Writer, requestID string, model string, created int64) *advisorStreamEmitter {
@@ -1327,6 +1334,9 @@ func (e *advisorStreamEmitter) Observer(stage string, index int, model string) a
 		return nil
 	}
 	return func(delta adapter.StreamDelta) {
+		if e.excludeReasoning && (delta.Type == "thinking_delta" || delta.Type == "signature_delta") {
+			return
+		}
 		event := map[string]any{
 			"event":      stage + "." + delta.Type,
 			"stage":      stage,
