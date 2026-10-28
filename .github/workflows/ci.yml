@@ -7,6 +7,22 @@ on:
     branches: [main]
 
 jobs:
+  maple-pilot:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v7
+      - name: Install pinned Rust toolchain
+        run: rustup toolchain install 1.94.1 --profile minimal --component clippy --component rustfmt
+      - name: Check pilot client (no credentials or live requests)
+        working-directory: tools/maple-pilot
+        run: |
+          cargo +1.94.1 fmt --check
+          cargo +1.94.1 clippy --locked --all-targets -- -D warnings
+          cargo +1.94.1 test --locked
+
   privatemode-client:
     runs-on: ubuntu-latest
     timeout-minutes: 15
