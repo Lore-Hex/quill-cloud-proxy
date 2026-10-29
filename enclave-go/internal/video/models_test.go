@@ -16,6 +16,7 @@ func TestVideoModelsIncludeLaunchAndExpansionSet(t *testing.T) {
 		"openai/sora-2":               false,
 		"openai/sora-2-pro":           false,
 		"runway/gen-4.5":              false,
+		"kling/v4":                    false,
 		"kling/v3-pro":                false,
 		"kling/o3-pro":                false,
 		"alibaba/wan-2.7":             false,
@@ -61,6 +62,7 @@ func TestResolveExpandedModelsUsesExactDirectProviderIDs(t *testing.T) {
 		{model: "openai/sora-2", want: "sora-2-text-to-video"},
 		{model: "openai/sora-2-pro", want: "sora-2-pro-text-to-video"},
 		{model: "runway/gen-4.5", want: "runway-gen4-5-text"},
+		{model: "kling/v4", want: "kling_4"},
 		{model: "kling/v3-pro", want: "kling-v3-pro-text-to-video"},
 		{model: "kling/o3-pro", want: "kling-o3-pro-text-to-video"},
 		{model: "alibaba/wan-2.7", want: "wan-2-7-text-to-video"},
@@ -92,6 +94,7 @@ func TestResolveExpandedModelsUsesExactImageProviderIDs(t *testing.T) {
 		{model: "openai/sora-2", want: "sora-2-image-to-video"},
 		{model: "openai/sora-2-pro", want: "sora-2-pro-image-to-video"},
 		{model: "runway/gen-4.5", want: "runway-gen4-5"},
+		{model: "kling/v4", want: "kling_4"},
 		{model: "kling/v3-pro", want: "kling-v3-pro-image-to-video"},
 		{model: "kling/o3-pro", want: "kling-o3-pro-image-to-video"},
 		{model: "alibaba/wan-2.7", want: "wan-2-7-image-to-video"},
@@ -311,7 +314,7 @@ func TestModelsJSONIsTruthfulAboutProviderPrivacy(t *testing.T) {
 	if err := json.Unmarshal(body, &payload); err != nil {
 		t.Fatal(err)
 	}
-	if len(payload.Data) != 22 {
+	if len(payload.Data) != 23 {
 		t.Fatalf("model count = %d", len(payload.Data))
 	}
 	for _, row := range payload.Data {
