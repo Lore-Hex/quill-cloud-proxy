@@ -31,10 +31,11 @@ import (
 // up-front so connection pools and any cached state warm up at boot.
 func New(boot *qtypes.BootstrapData) Client {
 	return &multiClient{
-		direct:    newBootstrapDirectClients(boot.ProviderAPIKeys),
-		anthropic: newAnthropic(boot),
-		vertex:    newVertex(boot),
-		openai:    newOpenAICompatible("openai", boot.OpenAIAPIKey),
+		bedrockRuntime: newBedrockRuntime(boot.ProviderAPIKeys["amazon-bedrock"]),
+		direct:         newBootstrapDirectClients(boot.ProviderAPIKeys),
+		anthropic:      newAnthropic(boot),
+		vertex:         newVertex(boot),
+		openai:         newOpenAICompatible("openai", boot.OpenAIAPIKey),
 		openRouterExclusive: newOpenAICompatible(
 			"openrouter-exclusive",
 			boot.OpenRouterAPIKey,
@@ -106,6 +107,7 @@ func New(boot *qtypes.BootstrapData) Client {
 }
 
 type multiClient struct {
+	bedrockRuntime      *bedrockRuntimeClient
 	direct              map[string]*openAICompatibleClient
 	anthropic           *anthropicClient
 	vertex              *gcpClient
@@ -171,6 +173,9 @@ func (m *multiClient) InvokeStreaming(
 ) error {
 	option := firstOptions(options)
 	provider := normalizeDirectProvider(option.Provider)
+	if provider == "amazon-bedrock" && strings.HasPrefix(option.UpstreamModel, "us.anthropic.") {
+		return m.bedrockRuntime.InvokeStreaming(ctx, req, body, out, options...)
+	}
 	if provider == "scaledown" || provider == "privatemode" || provider == "maple" {
 		client := m.direct[provider]
 		if client == nil {
