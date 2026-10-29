@@ -205,7 +205,7 @@ func directProviderForModel(modelID string) string {
 		return "alibaba"
 	case "lightricks/ltx-2.3", "lightricks/ltx-2.3-fast":
 		return "ltx"
-	case "runway/gen-4.5":
+	case "runway/gen-4.5", "kling/v4":
 		return "runway"
 	case "openai/sora-2", "openai/sora-2-pro":
 		return "openai"

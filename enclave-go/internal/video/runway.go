@@ -35,6 +35,13 @@ func (c *RunwayClient) ID() string    { return "runway" }
 func (c *RunwayClient) Enabled() bool { return c != nil && c.apiKey != "" }
 
 func (c *RunwayClient) Supports(request *ResolvedRequest) bool {
+	if request != nil && request.Model.ID == "kling/v4" {
+		_, validRatio := runwayKling4Ratio(request)
+		return validRatio && request.DurationSeconds >= 3 && request.DurationSeconds <= 30 &&
+			request.GenerateAudio && request.NegativePrompt == "" && request.Seed == nil &&
+			(request.LastFrame == "" || request.FirstFrame != "") &&
+			len(request.ReferenceImages) == 0 && request.AudioReference == "" && request.VideoReference == ""
+	}
 	return request != nil && request.Model.ID == "runway/gen-4.5" &&
 		request.NegativePrompt == "" && request.Seed == nil && request.LastFrame == "" &&
 		len(request.ReferenceImages) == 0 && request.AudioReference == "" && request.VideoReference == ""
@@ -43,6 +50,18 @@ func (c *RunwayClient) Supports(request *ResolvedRequest) bool {
 func (c *RunwayClient) QuoteResolved(_ context.Context, request *ResolvedRequest) (int, error) {
 	if !c.Supports(request) {
 		return 0, fmt.Errorf("runway video provider does not support this request")
+	}
+	if request.Model.ID == "kling/v4" {
+		// Standard list rates, not the launch promotion expiring November 30.
+		// Freeze this content-free quote before sending any input upstream.
+		rate := 157_000
+		if strings.EqualFold(request.Resolution, "1080p") {
+			rate = 235_000
+		}
+		// Kling 4 tasks round UP to whole Runway credits ($0.01), before
+		// the TR fee. Per-second multiplication alone would underquote.
+		upstream := ((rate*request.DurationSeconds + 9_999) / 10_000) * 10_000
+		return staticCustomerQuote(upstream, 1, 0)
 	}
 	// Runway Gen-4.5 is 12 credits/s and API credits cost $0.01 each.
 	return staticCustomerQuote(120_000, request.DurationSeconds, 0)
@@ -53,13 +72,25 @@ func (c *RunwayClient) QueueResolved(ctx context.Context, request *ResolvedReque
 		return nil, fmt.Errorf("runway video provider does not support this request")
 	}
 	mode := "text_to_video"
+	providerModel := "gen4.5"
 	payload := map[string]any{
-		"model": "gen4.5", "promptText": request.Prompt,
+		"model": providerModel, "promptText": request.Prompt,
 		"ratio": runwayRatio(request.AspectRatio), "duration": request.DurationSeconds,
 	}
 	if request.FirstFrame != "" {
 		mode = "image_to_video"
 		payload["promptImage"] = request.FirstFrame
+	}
+	if request.Model.ID == "kling/v4" {
+		providerModel = "kling_4"
+		payload["model"] = providerModel
+		payload["ratio"], _ = runwayKling4Ratio(request)
+		if request.LastFrame != "" {
+			payload["promptImage"] = []map[string]string{
+				{"uri": request.FirstFrame, "position": "first"},
+				{"uri": request.LastFrame, "position": "last"},
+			}
+		}
 	}
 	resp, err := c.request(ctx, http.MethodPost, "/v1/"+mode, payload)
 	if err != nil {
@@ -75,7 +106,28 @@ func (c *RunwayClient) QueueResolved(ctx context.Context, request *ResolvedReque
 	if err := json.NewDecoder(io.LimitReader(resp.Body, 128*1024)).Decode(&body); err != nil || strings.TrimSpace(body.ID) == "" {
 		return nil, fmt.Errorf("runway video queue: invalid response")
 	}
-	return &QueueResult{ProviderModel: "gen4.5", QueueID: body.ID}, nil
+	return &QueueResult{ProviderModel: providerModel, QueueID: body.ID}, nil
+}
+
+func runwayKling4Ratio(request *ResolvedRequest) (string, bool) {
+	resolution := strings.ToLower(request.Resolution)
+	if resolution != "720p" && resolution != "1080p" {
+		return "", false
+	}
+	if request.FirstFrame != "" {
+		return "auto_" + resolution, true
+	}
+	ratios := map[string][2]string{
+		"16:9": {"1280:720", "1920:1080"},
+		"9:16": {"720:1280", "1080:1920"},
+		"1:1":  {"940:940", "1440:1440"},
+		"21:9": {"1460:624", "2200:940"},
+	}
+	pair, ok := ratios[request.AspectRatio]
+	if resolution == "1080p" {
+		return pair[1], ok
+	}
+	return pair[0], ok
 }
 
 func runwayRatio(aspect string) string {
