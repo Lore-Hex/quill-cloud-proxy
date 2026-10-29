@@ -66,8 +66,20 @@ and a preflight derivation that proves its build directory is `/build`.
 No Maple/FlakeHub output cache is enabled. Its complete user initramfs now
 matches the published artifact byte-for-byte at SHA-256
 `dd6edd1895a87f425025f4ce4ff0f037a1ef4534ba3ea9b5a32979c6bef28234`.
-Kernel and final EIF comparison are still in progress; this is not yet a
-claim of full-image reproduction.
+The enforced-sandbox build completed on 2026-10-29. Its full 233,941,161-byte
+EIF matches the published artifact byte-for-byte: SHA-256
+`9702de6b825bb024d843fb840bf1c638ca7443bbd6ba49f93d14f6e6dfc60e23`.
+PCR0 matches the approved pin above; PCR1 is
+`a91689e37a54303051f68263010f397ddfa92d66e17df7a03a6777c33ff1e4fc12b69bbbe786894d43dcba1cf6d60aaa`
+and PCR2 is
+`a48fbff25a1920a7e982aa421cdfd94dd189e2c024b075048ad3f0b93b0fd67b82187d8c26d6e75e35772e742de05ed6`.
+The independent kernel also matches at SHA-256
+`06d3b4c1a7b3b0a9253a50c0baea3bc4ba0f791deb2e24abfdb752a1f3022740`.
+The vendor's outer packaging script stopped after exporting the valid image and
+measurements because the test container lacked `jq`; independent JSON parsing,
+EIF structural/CRC validation and whole-file SHA-256 comparison verified the
+exported artifacts. This is a successful image reproduction, not a successful
+exit of that packaging wrapper. Neither result implies a TR production rollout.
 
 ```sh
 sh enclave-go/maple-transport/prepare-sdk.sh
@@ -240,7 +252,8 @@ real helper's authenticated terminal frame and successful exit. Full race-enable
 Go suites pass for `cloud_gcp,llm_multi`, `cloud_aws,llm_multi` and
 `cloud_azure,llm_multi`; 12 AWS parent bootstrap tests and the secret-source,
 Azure bundle and vsock-map checks pass. These results do not assert production
-deployment or resolve the independent EIF discrepancy.
+deployment. The independent EIF discrepancy is resolved by the enforced-sandbox
+reproduction above.
 
 ## Dependency-scan repair
 
@@ -265,10 +278,10 @@ and live encrypted regression results still govern promotion of this candidate.
    confirmation have been obtained. The operator key passes live probes. The
    unavailable remaining-allowance export is not an operator-approval blocker;
    do not purchase credits, renew a subscription or change payment settings.
-2. Reproduce the front enclave PCR0 from approved source. Review its enforced
-   downstream i02 worker release, GPU verification and model identity review and
-   local positive/negative encrypted probes are recorded above. Independent
-   front reproduction completed with the discrepancy above, not an approved result.
+2. Independent reproduction of the approved front enclave is complete, including
+   exact EIF bytes and all three PCRs. The enforced downstream i02 worker release,
+   GPU verification and model identity review and local positive/negative
+   encrypted probes are recorded above. Preserve these immutable release pins.
 3. Qualify all measured image builds and AWS TLS/vsock egress. The helper,
    explicit child entrypoint, dispatcher and deployment templates are wired;
    verify workspace isolation and process supervision in each exact release image.
