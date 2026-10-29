@@ -123,6 +123,33 @@ read-only through dm-verity. The Rust client binds device evidence into the
 CPU report but delegates NVIDIA appraisal to this measured boot implementation.
 Do not describe it as a separate NVIDIA signature verification by TR's client.
 
+## Bundled proxy source comparison
+
+The front image also contains a checked-in `continuum-proxy` executable.
+`flake.nix` copies it rather than compiling it, and `entrypoint.sh` starts it
+in the enclave. Reproducing the EIF alone therefore does not establish the
+source of every executable in that image.
+
+The pinned public submodule is
+[`4b72dcbbd58940835b5ba32502c1e247721b9584`](https://github.com/edgelesssys/privatemode-public/tree/4b72dcbbd58940835b5ba32502c1e247721b9584).
+Two independent local `nix build --no-update-lock-file .#privatemode-proxy.bin`
+runs produced the same SHA-256:
+`0d6e3df6333045d61a7bfeaea480304ed2aae22b4d847deab2e543d0f8124790`.
+The checked-in executable is
+`e87aaefe7dfcddd46446d7a41874ed422aeee9ccdc2f75d4c69c22dbd36157ec`.
+Both are static Linux ARM64 builds using Go 1.26.4 with identical reported
+dependency versions and build settings. The raw hashes **do not match**.
+
+ELF section comparison found identical executable `.text` (SHA-256
+`bf1fc8ab424b10de8f5be57bd8f18909fd8e4cc5211218ec99c7fd72d3e3337d`),
+runtime tables, build information and initialized data at the same addresses.
+Differences in `.rodata` are limited to three Nix store hashes for
+`tzdata-2026b`, `mailcap-2.1.54` and `iana-etc-20251215`; their path suffixes
+are unchanged. The shipped binary also has Go/GNU build IDs and different
+symbol stripping. This narrows the discrepancy to build metadata and data-file
+paths in the inspected sections; it is not a byte-for-byte binary reproduction
+or a replacement for completing the full front-image comparison.
+
 ## Candidate serving protocol
 
 `maple-transport` accepts one bounded JSON envelope on stdin: the managed API
@@ -142,8 +169,30 @@ Errors are fixed vocabulary; no tracing subscriber is installed.
 One live synthetic adapter call passed with 36 input / 4 output tokens, cached
 input 0 and authenticated completion (1,456 ms, not a latency benchmark).
 The helper is **not yet embedded in any cloud image or wired to the gateway**.
-Process isolation, authorized workspace derivation, bounded concurrency and AWS
-TLS-only vsock egress remain serving-integration requirements.
+The candidate Go supervisor in `enclave-go/internal/maple` now adds:
+
+- Credentials and request bodies over bounded stdin pipes, no command-line
+  secrets or inherited provider environment; redacted subprocess failures.
+- An explicit child-launch flag, dropped per-request UID/GID (65200-65231),
+  cleared supplementary groups, no privilege gains and disabled core dumps.
+  Ordinary startup never probes or closes inherited descriptors.
+- At most 32 live children, a ten-minute request bound, cancellation/reaping and
+  release of capacity only after the child exits. No automatic replay.
+- Domain-separated cache roots from the server-authorized workspace scope;
+  missing scopes use fresh independent roots.
+- A second terminal gate withholding `[DONE]` until the authenticated helper
+  stream ends and its process exits successfully.
+- An AWS CONNECT tunnel allowing only `enclave.trymaple.ai:443`, forwarding
+  opaque TLS through parent vsock port 8136. The deployment templates do not
+  install this tunnel yet; ports 8132-8135 are reserved by the separate Bedrock
+  Runtime work. No parent-host decryption is implemented.
+
+The candidate LLM adapter remains unregistered. It rejects BYOK, unpinned model
+IDs and unsupported service tiers; preserves total input, cached subset and
+output usage; and rejects missing finish/usage/terminal frames. Focused race
+tests, the full LLM regression suite, and the AWS-tagged supervisor tests in a
+network-isolated Linux container pass. These are local tests, not production
+qualification of the helper's privilege drop or a live AWS vsock path.
 
 ## Dependency-scan blocker
 
@@ -166,10 +215,10 @@ data discrepancy or use a reviewed compatible dependency update before merge.
    downstream i02 worker release, GPU verification and model identity review and
    local positive/negative encrypted probes are recorded above. Independent
    front reproduction remains in progress, not yet an approved result.
-3. Embed the SDK or hardened proxy **inside** the measured image. The standalone
-   upstream proxy has a process-wide cache root; add TR workspace isolation.
-   Preserve sandboxed process supervision, immutable pins and redacted failures.
-   AWS needs an allowlisted TLS/vsock path for the SDK, not host-side decryption.
+3. Embed the SDK helper **inside** the measured images, wire the explicit child
+   entrypoint and registered adapter, and install/qualify AWS TLS/vsock egress.
+   Qualify the candidate workspace isolation and process supervision in those
+   exact images. Preserve immutable pins and redacted failures.
 4. Reconcile actual Maple credit debits, including failed/partial responses and
    cached tokens. Published rates are USD 0.65/0.13/1.45 per million uncached
    input/cached input/output tokens; the offer adds whole-credit rounding and a
