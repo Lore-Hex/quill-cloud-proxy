@@ -72,11 +72,17 @@ class EncodeEC2UserDataTests(unittest.TestCase):
     def test_host_ca_security_update_precedes_bootstrap_network_clients(self) -> None:
         script = DEPLOY_SCRIPT.read_text()
         template = script.split("  user_data=$(cat <<EOS\n", 1)[1].split("\nEOS\n)", 1)[0]
-        update = "dnf update -y ca-certificates --releasever=2023.12.20261028"
+        update = "dnf update -y ca-certificates awscli-2 --releasever=2023.12.20261028"
         self.assertEqual(template.count(update), 1)
         self.assertLess(template.index("set -euxo pipefail"), template.index(update))
         self.assertLess(template.index(update), template.index("dnf install -y"))
         self.assertNotIn(update + " ||", template)
+        bundle = "/etc/pki/tls/certs/ca-bundle.crt"
+        self.assertIn(f"export AWS_CA_BUNDLE={bundle}", template)
+        self.assertIn(f"\naws configure set ca_bundle {bundle}\n", template)
+        self.assertIn(f"sudo -Hu ec2-user aws configure set ca_bundle {bundle}", template)
+        self.assertLess(template.index(update), template.index("export AWS_CA_BUNDLE="))
+        self.assertLess(template.index("aws configure set ca_bundle"), template.index("aws ecr get-login-password"))
 
     def test_cli_emits_one_base64_value_and_round_trips(self) -> None:
         payload = b"#!/bin/bash\necho ready\n" * 1_000

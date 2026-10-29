@@ -727,7 +727,12 @@ exec > >(tee -a /var/log/quill-bootstrap.log) 2>&1
 
 # Patch the host trust store even when the launch template still pins an older
 # AL2023 AMI. ALAS2023-2026-3337 removes the compromised CA trust paths.
-dnf update -y ca-certificates --releasever=2023.12.20261028
+dnf update -y ca-certificates awscli-2 --releasever=2023.12.20261028
+# The packaged AWS CLI has an independent CA bundle, even in 2.38.0.
+# Use the patched system bundle for bootstrap and later operator commands.
+export AWS_CA_BUNDLE=/etc/pki/tls/certs/ca-bundle.crt
+aws configure set ca_bundle /etc/pki/tls/certs/ca-bundle.crt
+sudo -Hu ec2-user aws configure set ca_bundle /etc/pki/tls/certs/ca-bundle.crt
 
 # 1. Nitro Enclaves CLI + Docker
 dnf install -y aws-nitro-enclaves-cli aws-nitro-enclaves-cli-devel docker
