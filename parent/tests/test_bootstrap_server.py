@@ -353,6 +353,7 @@ def test_build_payload_iterates_all_known_providers() -> None:
         "boundless",
         "zro",
         "privatemode",
+        "maple",
         "nextbit",
         "nextbit-eu",
         "aion-labs",

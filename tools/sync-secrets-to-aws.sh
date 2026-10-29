@@ -186,6 +186,7 @@ SECRETS=(
   trustedrouter-system1models-global-api-key
   trustedrouter-system1models-eu-api-key
   trustedrouter-privatemode-api-key
+  trustedrouter-maple-api-key
   trustedrouter-confidential-ai-api-key
   trustedrouter-scaledown-api-key
   trustedrouter-perplexity-api-key

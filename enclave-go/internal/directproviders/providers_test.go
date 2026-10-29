@@ -13,8 +13,8 @@ func TestSpecsAreValidAndImmutable(t *testing.T) {
 		t.Fatal(err)
 	}
 	all := All()
-	if len(all) != 51 {
-		t.Fatalf("provider specs = %d, want 51", len(all))
+	if len(all) != 52 {
+		t.Fatalf("provider specs = %d, want 52", len(all))
 	}
 	original := all[0]
 	all[0].Provider = "mutated"
@@ -119,6 +119,7 @@ func TestCloudConfigurationsCoverEverySpec(t *testing.T) {
 	dockerPolicy := read("../../Dockerfile.enclave.gcp.multi")
 	awsClient := read("../llm/http_client_aws.go")
 	awsClient += read("../privatemode/network_aws.go")
+	awsClient += read("../maple/network_aws.go")
 	awsDeploy := read("../../../tools/deploy-aws-nitro.sh")
 
 	parentBlock := regexp.MustCompile(`(?s)_DIRECT_PROVIDER_KEYS:.*?= \((.*?)\)\n\n`).FindStringSubmatch(awsParent)

@@ -294,6 +294,9 @@ func invokeOpenAICompatibleStreamingWithClientOptions(
 	upstreamModel string,
 	options openAICompatibleInvocationOptions,
 ) error {
+	if normalizeDirectProvider(provider) == "maple" {
+		return fmt.Errorf("llm/maple: ordinary HTTP transport is forbidden")
+	}
 	if strings.TrimSpace(apiKey) == "" {
 		return fmt.Errorf("llm/%s: missing api key", provider)
 	}

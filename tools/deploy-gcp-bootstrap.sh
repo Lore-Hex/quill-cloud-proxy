@@ -131,6 +131,7 @@ ZRO_SECRET="${ZRO_SECRET:-trustedrouter-zro-api-key}"
 SYSTEM1MODELS_GLOBAL_SECRET="${SYSTEM1MODELS_GLOBAL_SECRET:-trustedrouter-system1models-global-api-key}"
 SYSTEM1MODELS_EU_SECRET="${SYSTEM1MODELS_EU_SECRET:-trustedrouter-system1models-eu-api-key}"
 PRIVATEMODE_SECRET="${PRIVATEMODE_SECRET:-trustedrouter-privatemode-api-key}"
+MAPLE_SECRET="${MAPLE_SECRET:-trustedrouter-maple-api-key}"
 CONFIDENTIAL_AI_SECRET="${CONFIDENTIAL_AI_SECRET:-trustedrouter-confidential-ai-api-key}"
 SCALEDOWN_SECRET="${SCALEDOWN_SECRET:-trustedrouter-scaledown-api-key}"
 PERPLEXITY_SECRET="${PERPLEXITY_SECRET:-trustedrouter-perplexity-api-key}"
@@ -313,6 +314,7 @@ for secret in \
   "$SYSTEM1MODELS_GLOBAL_SECRET" \
   "$SYSTEM1MODELS_EU_SECRET" \
   "$PRIVATEMODE_SECRET" \
+  "$MAPLE_SECRET" \
   "$CONFIDENTIAL_AI_SECRET" \
   "$SCALEDOWN_SECRET" \
   "$PERPLEXITY_SECRET" \

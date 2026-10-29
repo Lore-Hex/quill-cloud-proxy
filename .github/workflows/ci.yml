@@ -17,11 +17,15 @@ jobs:
       - name: Install pinned Rust toolchain
         run: rustup toolchain install 1.94.1 --profile minimal --component clippy --component rustfmt
       - name: Check pilot client (no credentials or live requests)
-        working-directory: tools/maple-pilot
+        working-directory: enclave-go/maple-transport
         run: |
-          cargo +1.94.1 fmt --check
+          sh prepare-sdk.sh
+          cargo +1.94.1 fmt --check -p trustedrouter-maple-pilot
           cargo +1.94.1 clippy --locked --all-targets -- -D warnings
-          cargo +1.94.1 test --locked
+          cargo +1.94.1 test --locked --workspace --lib --bins
+      - name: Build static encrypted helper for the measured image
+        working-directory: enclave-go
+        run: docker build --platform linux/amd64 --target maple -f Dockerfile.enclave.gcp.multi .
 
   privatemode-client:
     runs-on: ubuntu-latest

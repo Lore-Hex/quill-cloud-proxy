@@ -50,6 +50,9 @@ func (c *openAICompatibleClient) InvokeEmbedding(
 	if option.Provider != "" {
 		provider = normalizeDirectProvider(option.Provider)
 	}
+	if c.provider == "maple" || provider == "maple" {
+		return nil, fmt.Errorf("llm/maple: embeddings are unsupported")
+	}
 	if c.provider == "privatemode" || provider == "privatemode" {
 		if c.provider != "privatemode" || provider != "privatemode" || option.ProviderAPIKey != "" {
 			return nil, fmt.Errorf("llm/privatemode: provider override or BYOK is unsupported")
@@ -92,6 +95,9 @@ func invokeOpenAICompatibleEmbeddings(
 	req *qtypes.EmbeddingRequest,
 	upstreamModel string,
 ) (*qtypes.EmbeddingResponse, error) {
+	if normalizeDirectProvider(provider) == "maple" {
+		return nil, fmt.Errorf("llm/maple: ordinary HTTP transport is forbidden")
+	}
 	if strings.TrimSpace(apiKey) == "" {
 		return nil, fmt.Errorf("llm/%s: missing api key", provider)
 	}

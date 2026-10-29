@@ -1,7 +1,8 @@
 # Maple pilot qualification
 
-**Not deployed or customer-routable.** This change adds a qualification client
-and a candidate one-shot encrypted adapter, not serving-image integration.
+**Not deployed or customer-routable.** This change adds a qualification client,
+one-shot encrypted adapter, measured-image build stages, dispatch and cloud-local
+secret coordinates. No cloud image, secret bundle or public catalog is activated.
 The paired control-plane provider remains internal-only,
 with Credits, BYOK, ZDR and confidential/E2EE eligibility all disabled.
 
@@ -16,8 +17,12 @@ dedicated i02 worker; stock DeepSeek can also route to shared Tinfoil.
 
 ## Qualification client
 
-`tools/maple-pilot` source-pins Maple's Rust SDK at
-`c668d817dceec5c2e7390de7c68a581c88ea2eea` and locks its dependencies. It uses
+`enclave-go/maple-transport` source-pins Maple's Rust SDK at
+`c668d817dceec5c2e7390de7c68a581c88ea2eea` and locks its dependencies. The
+`prepare-sdk.sh` step verifies the full source archive SHA-256 before extracting
+the SDK and applying `sdk-dependencies.patch`: only HKDF 0.12 to 0.13 and SHA-2
+0.10 to 0.11 change. Transport, attestation and cryptographic protocol source is
+unchanged. It uses
 the vendor's Transport V2 implementation, including Nitro certificate/COSE
 verification, fresh challenge and client/server key binding, directional
 encryption, ordered frames and authenticated finality. No custom crypto or
@@ -35,17 +40,32 @@ attributes this PCR0 to backend source
 `7957ce78ad8eee7a173a9d877ff6e320876894c8` and EIF SHA-256
 `9702de6b825bb024d843fb840bf1c638ca7443bbd6ba49f93d14f6e6dfc60e23`,
 published by [release run 40226283053](https://github.com/MaplePrivacyLabs/Maple/actions/runs/40226283053).
-The run reports success at that source commit. This is vendor-published build
-provenance, not an independently reproduced EIF or a verified artifact signature.
+The downloaded EIF's GitHub/Sigstore attestation now verifies with both the exact
+source digest and the expected release workflow identity constrained. This
+authenticates the published artifact provenance, not an independent source rebuild.
+
+An independent ARM64 Linux Nix build at the exact source and locked inputs
+completed successfully, but produced PCR0
+`8ce7b06eee78c7b067cf8657c72f826ebe5ef3a80d4f341e55e9449d795b4d88e9cbc4ecf5fef5243a670b9118724329`
+and EIF SHA-256
+`1f6ea511e63a211cf247190af75df27208e11a68a685a1ca2b1a49b3d89da242`.
+PCR1 and PCR2 differ too. Both evaluations select the same Nix output path
+`/nix/store/x4p7gxc5jmagz41l5pxgd699ni7m0z72-opensecret-eif-prod`;
+the vendor workflow restored it from FlakeHub while the independent run built it.
+The independent container used upstream Nix rather than the vendor's pinned
+Determinate Nix 3.23.3, so this is a reproducibility discrepancy requiring
+investigation, not proof of a malicious image. Do not substitute the new PCR0
+for the live pin or claim independent reproduction passed.
 
 ```sh
-cargo test --locked --manifest-path tools/maple-pilot/Cargo.toml
-cargo run --locked --manifest-path tools/maple-pilot/Cargo.toml -- attest
-cargo run --locked --manifest-path tools/maple-pilot/Cargo.toml -- reject-pin
-cargo run --locked --manifest-path tools/maple-pilot/Cargo.toml -- reject-key
+sh enclave-go/maple-transport/prepare-sdk.sh
+cargo test --locked --manifest-path enclave-go/maple-transport/Cargo.toml
+cargo run --locked --manifest-path enclave-go/maple-transport/Cargo.toml -- attest
+cargo run --locked --manifest-path enclave-go/maple-transport/Cargo.toml -- reject-pin
+cargo run --locked --manifest-path enclave-go/maple-transport/Cargo.toml -- reject-key
 # Supply MAPLE_API_KEY from the operator secret loader, never as a command argument.
-cargo run --locked --manifest-path tools/maple-pilot/Cargo.toml -- probe
-cargo run --locked --manifest-path tools/maple-pilot/Cargo.toml -- cache
+cargo run --locked --manifest-path enclave-go/maple-transport/Cargo.toml -- probe
+cargo run --locked --manifest-path enclave-go/maple-transport/Cargo.toml -- cache
 ```
 
 `probe` uses the account key and paid inference: one discovery, one JSON
@@ -168,8 +188,10 @@ Errors are fixed vocabulary; no tracing subscriber is installed.
 
 One live synthetic adapter call passed with 36 input / 4 output tokens, cached
 input 0 and authenticated completion (1,456 ms, not a latency benchmark).
-The helper is **not yet embedded in any cloud image or wired to the gateway**.
-The candidate Go supervisor in `enclave-go/internal/maple` now adds:
+All three multi-provider image recipes now source-build the static helper with
+a locked dependency graph, and dispatch enters it before BYOK or generic HTTP.
+These images are **not deployed**. The Go supervisor in `enclave-go/internal/maple`
+adds:
 
 - Credentials and request bodies over bounded stdin pipes, no command-line
   secrets or inherited provider environment; redacted subprocess failures.
@@ -183,18 +205,32 @@ The candidate Go supervisor in `enclave-go/internal/maple` now adds:
 - A second terminal gate withholding `[DONE]` until the authenticated helper
   stream ends and its process exits successfully.
 - An AWS CONNECT tunnel allowing only `enclave.trymaple.ai:443`, forwarding
-  opaque TLS through parent vsock port 8136. The deployment templates do not
-  install this tunnel yet; ports 8132-8135 are reserved by the separate Bedrock
+  opaque TLS through parent vsock port 8136. The deployment template includes
+  this tunnel; ports 8132-8135 are reserved by the separate Bedrock
   Runtime work. No parent-host decryption is implemented.
 
-The candidate LLM adapter remains unregistered. It rejects BYOK, unpinned model
-IDs and unsupported service tiers; preserves total input, cached subset and
+The registered LLM adapter rejects BYOK, unpinned model
+IDs, unsupported service tiers, embeddings and decision requests. Generic chat
+and embedding helpers also reject Maple before any network request, including
+provider overrides; resolving an ordinary HTTP client is forbidden. It preserves total input, cached subset and
 output usage; and rejects missing finish/usage/terminal frames. Focused race
 tests, the full LLM regression suite, and the AWS-tagged supervisor tests in a
-network-isolated Linux container pass. These are local tests, not production
-qualification of the helper's privilege drop or a live AWS vsock path.
+network-isolated Linux container pass. A separate read-only scratch-image harness
+with the actual launcher and static helper passed a live authenticated 401 using
+a deliberately fake credential, with all capabilities dropped except SETUID and
+SETGID and no privilege gains. This exercises the real per-request privilege drop
+and attestation path, but is not a production rollout or a live AWS vsock test.
 
-## Dependency-scan blocker
+The same isolated Linux harness then completed one credentialed synthetic PONG
+with 36 input and 4 output tokens in 1.50 seconds. Its API key arrived only on
+stdin, the request used a fresh cache namespace, and completion required the
+real helper's authenticated terminal frame and successful exit. Full race-enabled
+Go suites pass for `cloud_gcp,llm_multi`, `cloud_aws,llm_multi` and
+`cloud_azure,llm_multi`; 12 AWS parent bootstrap tests and the secret-source,
+Azure bundle and vsock-map checks pass. These results do not assert production
+deployment or resolve the independent EIF discrepancy.
+
+## Dependency-scan repair
 
 The initial CI scan flags `block-buffer 0.10.4` under
 [GHSA-qwgh-2vcv-g2f7](https://github.com/RustCrypto/utils/security/advisories/GHSA-qwgh-2vcv-g2f7).
@@ -202,27 +238,36 @@ The primary advisory lists the affected range as `>=0.11.0,<0.12.1`, whereas
 the scanner's advisory data includes earlier versions. The SDK's SHA-2/HKDF
 dependencies require the 0.10 line. Inspection of 0.10.4 shows a separate
 `pos: u8` field, not the inline cursor targeted by the advisory; the other
-resolved version, 0.12.1, is patched. This appears to be a version-range false
-positive, but no suppression or scan bypass has been added. Resolve the advisory
-data discrepancy or use a reviewed compatible dependency update before merge.
+resolved version, 0.12.1, is patched. No suppression or scan bypass has been added.
+The candidate instead applies a two-line dependency-only patch to the exact SDK
+source, selecting HKDF 0.13 and SHA-2 0.11, removing block-buffer 0.10 entirely.
+The isolated upgraded SDK passed 122 unit tests, including backend key/record
+vectors and tampered-attestation rejection; one upstream integration test remains
+ignored because it requires the vendor's disposable backend. The workspace uses
+one lockfile and runs SDK library tests alongside the TR relay tests. Required CI
+and live encrypted regression results still govern promotion of this candidate.
 
 ## Remaining release requirements
 
-1. Record the remaining included allowance and confirm no automatic renewal;
-   account identity, Pro expiry, reseller permission and API content-retention
-   confirmation have been obtained. The operator key passes live probes.
+1. Account identity, Pro expiry, reseller permission and API content-retention
+   confirmation have been obtained. The operator key passes live probes. The
+   unavailable remaining-allowance export is not an operator-approval blocker;
+   do not purchase credits, renew a subscription or change payment settings.
 2. Reproduce the front enclave PCR0 from approved source. Review its enforced
    downstream i02 worker release, GPU verification and model identity review and
    local positive/negative encrypted probes are recorded above. Independent
-   front reproduction remains in progress, not yet an approved result.
-3. Embed the SDK helper **inside** the measured images, wire the explicit child
-   entrypoint and registered adapter, and install/qualify AWS TLS/vsock egress.
-   Qualify the candidate workspace isolation and process supervision in those
-   exact images. Preserve immutable pins and redacted failures.
-4. Reconcile actual Maple credit debits, including failed/partial responses and
-   cached tokens. Published rates are USD 0.65/0.13/1.45 per million uncached
-   input/cached input/output tokens; the offer adds whole-credit rounding and a
-   USD 0.001 minimum. The exact rounding rule still needs confirmation.
+   front reproduction completed with the discrepancy above, not an approved result.
+3. Qualify all measured image builds and AWS TLS/vsock egress. The helper,
+   explicit child entrypoint, dispatcher and deployment templates are wired;
+   verify workspace isolation and process supervision in each exact release image.
+   Preserve immutable pins and redacted failures.
+4. Bill actual reported token usage at published rates: USD 0.65/0.13/1.45 per
+   million uncached input/cached input/output tokens. On October 28 the operator
+   instructed shipping without waiting for a debit export. Do not invent a
+   rounding fee or USD 0.001 minimum on customer requests. The earlier pilot
+   offer mentioned those provider debit rules, but the public rate page does not;
+   provider-debit reconciliation remains unverified, not a user-input gate.
+   Preserve normal billing-oracle, partial/error settlement and cache tests.
 5. Run all cloud build/test variants and the normal coordinated rollout with
    region-by-region health/attestation/inference checks. Provision cloud-local
    secrets without replacing unrelated entries. Keep a healthy holdback cloud.

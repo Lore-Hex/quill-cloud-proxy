@@ -43,6 +43,7 @@ import (
 	"github.com/Lore-Hex/quill-cloud-proxy/enclave-go/internal/entropy"
 	"github.com/Lore-Hex/quill-cloud-proxy/enclave-go/internal/imagegen"
 	"github.com/Lore-Hex/quill-cloud-proxy/enclave-go/internal/llm"
+	"github.com/Lore-Hex/quill-cloud-proxy/enclave-go/internal/maple"
 	"github.com/Lore-Hex/quill-cloud-proxy/enclave-go/internal/privatemode"
 	"github.com/Lore-Hex/quill-cloud-proxy/enclave-go/internal/requesttiming"
 	"github.com/Lore-Hex/quill-cloud-proxy/enclave-go/internal/settleoutbox"
@@ -175,6 +176,9 @@ var responseWriteTimeout = 30 * time.Second
 var errBodyTooLarge = errors.New("request body too large")
 
 func main() {
+	if maple.HelperEntrypoint() {
+		return
+	}
 	startupAt := time.Now()
 	speculationMode, modeErr := shadowobserve.ParseMode(os.Getenv("QUILL_SPECULATIVE_PROVIDER_MODE"))
 	if modeErr != nil {

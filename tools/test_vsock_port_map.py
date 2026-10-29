@@ -38,6 +38,7 @@ GO_TUNNEL_FILES = [
     ROOT / "enclave-go" / "internal" / "trustedrouter" / "http_client_aws.go",
     ROOT / "enclave-go" / "sidecar" / "vsock_transport.go",
     ROOT / "enclave-go" / "internal" / "privatemode" / "network_aws.go",
+    ROOT / "enclave-go" / "internal" / "maple" / "network_aws.go",
 ]
 
 failures: list[str] = []

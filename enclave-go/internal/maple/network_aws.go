@@ -15,7 +15,11 @@ import (
 
 // Port 8136 is dedicated to enclave.trymaple.ai:443 on the parent. Both TLS
 // and Transport V2 terminate in the measured helper, never on the AWS host.
-const mapleVSockPort = 8136
+var mapleTunnel = struct {
+	Host string
+	CID  uint32
+	Port uint32
+}{Host: "enclave.trymaple.ai", CID: 3, Port: 8136}
 
 func platformEnvironment(ctx context.Context) ([]string, func(), error) {
 	if err := enableLoopback(); err != nil {
@@ -26,7 +30,7 @@ func platformEnvironment(ctx context.Context) ([]string, func(), error) {
 		return nil, nil, err
 	}
 	server := &http.Server{ReadHeaderTimeout: 5 * time.Second, MaxHeaderBytes: 4096,
-		Handler: tunnelHandler(ctx, func() (net.Conn, error) { return vsock.Dial(3, mapleVSockPort, nil) })}
+		Handler: tunnelHandler(ctx, func() (net.Conn, error) { return vsock.Dial(mapleTunnel.CID, mapleTunnel.Port, nil) })}
 	go func() { _ = server.Serve(listener) }()
 	return []string{"SSL_CERT_FILE=/etc/ssl/certs/ca-certificates.crt", "HTTPS_PROXY=http://" + listener.Addr().String()},
 		func() { _ = server.Close() }, nil

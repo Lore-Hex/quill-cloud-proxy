@@ -14,8 +14,8 @@ import (
 
 type mapleStart func(context.Context, string, string, []byte) (int, io.ReadCloser, error)
 
-// This candidate is intentionally not registered in multiClient until every
-// serving image contains the measured helper and its cloud egress is qualified.
+// Maple never reaches the ordinary HTTP adapter, including on verification
+// failure. Public catalog activation is separately gated on qualified images.
 func invokeMaple(ctx context.Context, key string, req *qtypes.OpenAIChatRequest,
 	body *qtypes.AnthropicMessagesRequest, out io.Writer, option InvokeOptions) error {
 	return invokeMapleWith(ctx, key, req, body, out, option, maple.Start)

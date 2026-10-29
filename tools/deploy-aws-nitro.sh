@@ -852,6 +852,7 @@ allowlist:
   - {address: zro.moonmath.ai,                  port: 443}
   - {address: api.system1models.ai,              port: 443}
   - {address: api.privatemode.ai,              port: 443}
+  - {address: enclave.trymaple.ai,             port: 443}
   - {address: kdsintf.amd.com,                 port: 443}
   - {address: certificates.trustedservices.intel.com, port: 443}
   - {address: api.confidential.ai,             port: 443}
@@ -1019,6 +1020,7 @@ write_vsock_unit 8112 zro.moonmath.ai
 write_vsock_unit 8110 eastus2.tts.speech.microsoft.com
 write_vsock_unit 8104 api.system1models.ai
 write_vsock_unit 8100 api.privatemode.ai
+write_vsock_unit 8136 enclave.trymaple.ai
 write_vsock_unit 8101 kdsintf.amd.com
 write_vsock_unit 8102 certificates.trustedservices.intel.com
 write_vsock_unit 8085 api.confidential.ai

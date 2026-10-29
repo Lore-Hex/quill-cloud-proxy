@@ -25,6 +25,12 @@ ADD --checksum=sha256:1ce54898001c959449be0109a0afc0e9f4d4d206b566ac2013418895a9
 COPY third_party/privatemode ./third_party/privatemode
 RUN bash third_party/privatemode/build.sh /tmp/privatemode-source.tar.gz /out/privatemode-proxy
 
+FROM rust:1.94.1-alpine@sha256:77237dd363a0b127bb5ef532c2d64c0deb380b738e43a9c4bdac73398d6d0a08 AS maple
+RUN apk add --no-cache build-base curl patch
+WORKDIR /src
+COPY maple-transport ./
+RUN sh build.sh
+
 FROM --platform=$BUILDPLATFORM golang:1.26.10-bookworm@sha256:ee3901c61e423732605a51f1b8157c849ec01194ea0a274213b5202b2c11e7bf AS builder
 
 # ca-certificates: Go's crypto/tls reads /etc/ssl/certs/ca-certificates.crt at
@@ -83,6 +89,8 @@ RUN cd sidecar && go mod download \
 RUN mkdir -p /out/rootfs/tmp && chmod 1777 /out/rootfs/tmp
 
 FROM scratch
+COPY --from=maple /out/maple-transport /maple-transport
+COPY --from=maple /src/MAPLE-LICENSE /licenses/maple-MIT.txt
 ENV TR_ASYNC_SETTLE_SHADOW=on
 ENV TR_ASYNC_SETTLE_NEGOTIATE=off
 # TR_ASYNC_SETTLE_TICKET_PUBLIC_KEYS: JSON {"kid":"issuer~base64url_key"}; empty disables negotiation.

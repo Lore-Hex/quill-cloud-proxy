@@ -66,6 +66,9 @@ func tinfoilHTTPClientGetter() (*http.Client, error) {
 }
 
 func (c *openAICompatibleClient) resolveHTTPClient() (*http.Client, error) {
+	if c.provider == "maple" {
+		return nil, fmt.Errorf("llm/maple: ordinary HTTP transport is forbidden")
+	}
 	if c.httpcGetter != nil {
 		return c.httpcGetter()
 	}
@@ -79,6 +82,9 @@ func (c *openAICompatibleClient) InvokeStreaming(
 	out io.Writer,
 	options ...InvokeOptions,
 ) error {
+	if c.provider == "maple" {
+		return invokeMaple(ctx, c.apiKey, req, body, out, firstOptions(options))
+	}
 	if c.provider == "privatemode" {
 		return c.invokePrivatemode(ctx, req, body, out, firstOptions(options))
 	}

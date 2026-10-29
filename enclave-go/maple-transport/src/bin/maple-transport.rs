@@ -1,6 +1,6 @@
 //! One-shot adapter protocol: a bounded JSON request on stdin, a status line
 //! then canonical SSE on stdout. No credentials in arguments or diagnostics.
-//! This binary is not yet installed in the serving images.
+//! Runs inside the measured serving image, never on an untrusted parent host.
 use bytes::Bytes;
 use futures::StreamExt;
 use http::Request;

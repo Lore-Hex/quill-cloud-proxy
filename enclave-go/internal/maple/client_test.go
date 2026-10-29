@@ -41,7 +41,9 @@ func TestWorkspaceCacheIsolation(t *testing.T) {
 	if a != rootOf(t, "authorized-a") || a == rootOf(t, "authorized-b") {
 		t.Fatal("workspace roots are not stable and isolated")
 	}
-	if rootOf(t, "") == rootOf(t, "") {
+	firstAnonymousRoot := rootOf(t, "")
+	secondAnonymousRoot := rootOf(t, "")
+	if firstAnonymousRoot == secondAnonymousRoot {
 		t.Fatal("anonymous requests share a root")
 	}
 }
