@@ -27,6 +27,13 @@ request with 18 input and 5 output tokens, request ID
 exact US profiles, the three regional retention reads and their scoped invoke
 resources; no global-profile permission was added. Mantle retention is unchanged.
 
+On October 29, all five profiles also passed paid synthetic streaming through
+this exact Go adapter, including fresh policy checks in all three regions,
+integer cumulative usage, an assembled PONG answer, `end_turn`, and clean SDK
+EOF before terminal success. Individual calls took 1.31-2.95 seconds; these are
+short correctness probes, not performance benchmarks. The opt-in test is
+`TestBedrockRuntimeLiveQualifiedProfiles`; ordinary CI skips it without a key.
+
 The candidate checks all three regional Runtime retention settings before
 every inference, with no cached positive result. Unknown/missing/error policies
 fail closed. It accepts no BYOK override, unknown model/profile pair, nonstandard
