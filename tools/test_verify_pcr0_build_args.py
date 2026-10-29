@@ -44,15 +44,18 @@ class VerifyPcr0BuildArgs(unittest.TestCase):
         self.assertRegex(dockerfile, r"(?m)^FROM --platform=\$BUILDPLATFORM golang:[^\s]+ AS builder$")
         self.assertIn("ARG TARGETARCH=amd64", dockerfile)
         self.assertIn("ENV CGO_ENABLED=0 GOOS=linux GOARCH=${TARGETARCH}", dockerfile)
-        # Both source-build stages run natively and cross-compile; the final
+        # Go stages run natively and cross-compile; the musl Rust helper uses
+        # the target platform (native or emulated). The final
         # runtime must retain Docker's requested target architecture.
         stages = [line for line in dockerfile.splitlines() if line.startswith("FROM ")]
-        self.assertEqual(len(stages), 3)
+        self.assertEqual(len(stages), 4)
         self.assertRegex(stages[0], r"^FROM --platform=\$BUILDPLATFORM golang:[^\s]+ AS privatemode$")
-        self.assertRegex(stages[1], r"^FROM --platform=\$BUILDPLATFORM golang:[^\s]+ AS builder$")
+        self.assertRegex(stages[1], r"^FROM rust:1\.94\.1-alpine@sha256:[0-9a-f]{64} AS maple$")
+        self.assertRegex(stages[2], r"^FROM --platform=\$BUILDPLATFORM golang:[^\s]+ AS builder$")
         self.assertEqual(dockerfile.count("ARG TARGETARCH=amd64"), 2)
         self.assertEqual(dockerfile.count("ENV CGO_ENABLED=0 GOOS=linux GOARCH=${TARGETARCH}"), 2)
-        self.assertEqual(stages[2], "FROM scratch")
+        self.assertEqual(stages[3], "FROM scratch")
+        self.assertIn("COPY --from=maple /out/maple-transport /maple-transport", dockerfile)
 
     def test_azure_source_build_uses_acr_compatible_syntax_and_verifies_archive(self) -> None:
         dockerfile = (REPO_ROOT / "enclave-go/Dockerfile.enclave.azure.multi").read_text()

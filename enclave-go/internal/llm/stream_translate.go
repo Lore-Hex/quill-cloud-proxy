@@ -122,8 +122,8 @@ func translateOpenAIStreamToAnthropicForProvider(r io.Reader, w io.Writer, provi
 			return err
 		}
 		if err := json.Unmarshal([]byte(payload), &chunk); err != nil {
-			if provider == "privatemode" {
-				return fmt.Errorf("llm/privatemode: malformed encrypted response chunk")
+			if provider == "privatemode" || provider == "maple" {
+				return fmt.Errorf("llm/%s: malformed encrypted response chunk", provider)
 			}
 			if provider == "tencent" {
 				return &upstreamHTTPError{status: http.StatusBadGateway, body: "Tencent TokenHub returned a malformed stream chunk"}
@@ -233,8 +233,8 @@ func translateOpenAIStreamToAnthropicForProvider(r io.Reader, w io.Writer, provi
 	if err := scanner.Err(); err != nil {
 		return fmt.Errorf("llm/openai-stream: scan: %w", err)
 	}
-	if provider == "privatemode" && (!sawDone || !sawFinish || usage == nil || usage.PromptTokens <= 0 || usage.CompletionTokens < 0) {
-		return fmt.Errorf("llm/privatemode: incomplete encrypted stream or missing billable usage")
+	if (provider == "privatemode" || provider == "maple") && (!sawDone || !sawFinish || usage == nil || usage.PromptTokens <= 0 || usage.CompletionTokens < 0) {
+		return fmt.Errorf("llm/%s: incomplete encrypted stream or missing billable usage", provider)
 	}
 	if provider == "tencent" && (!sawDone || !sawFinish || usage == nil || usage.PromptTokens <= 0 || usage.CompletionTokens < 0) {
 		return &upstreamHTTPError{status: http.StatusBadGateway, body: "Tencent TokenHub stream is incomplete or missing billable usage"}

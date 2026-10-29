@@ -11,6 +11,9 @@ venv/
 dist/
 build/
 
+# Rust helper build output, including the former qualification-client location.
+**/target/
+
 # uv
 .python-version
 

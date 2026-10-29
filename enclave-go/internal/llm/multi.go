@@ -176,7 +176,7 @@ func (m *multiClient) InvokeStreaming(
 	if provider == "amazon-bedrock" && strings.HasPrefix(option.UpstreamModel, "us.anthropic.") {
 		return m.bedrockRuntime.InvokeStreaming(ctx, req, body, out, options...)
 	}
-	if provider == "scaledown" || provider == "privatemode" {
+	if provider == "scaledown" || provider == "privatemode" || provider == "maple" {
 		client := m.direct[provider]
 		if client == nil {
 			return fmt.Errorf("llm/%s: missing provider credentials", provider)

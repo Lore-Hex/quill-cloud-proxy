@@ -186,6 +186,7 @@ _DIRECT_PROVIDER_KEYS: Final[tuple[tuple[str, str], ...]] = (
     ("system1models", "trustedrouter-system1models-global-api-key"),
     ("system1models-eu", "trustedrouter-system1models-eu-api-key"),
     ("privatemode", "trustedrouter-privatemode-api-key"),
+    ("maple", "trustedrouter-maple-api-key"),
     ("nextbit", "trustedrouter-nextbit-api-key"),
     ("nextbit-eu", "trustedrouter-nextbit-eu-api-key"),
     ("aion-labs", "trustedrouter-aion-labs-api-key"),

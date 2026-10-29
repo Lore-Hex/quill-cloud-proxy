@@ -31,6 +31,8 @@ var specs = [...]Spec{
 	{Provider: "system1models-eu", BaseURL: "https://api.system1models.ai/v1", SecretEnv: "QUILL_SYSTEM1MODELS_EU_SECRET", SecretName: "trustedrouter-system1models-eu-api-key", SecretLabel: "System1 EU key"},
 	// Secret registry only: inference is intercepted by the pinned E2EE adapter.
 	{Provider: "privatemode", BaseURL: "https://api.privatemode.ai/v1", SecretEnv: "QUILL_PRIVATEMODE_SECRET", SecretName: "trustedrouter-privatemode-api-key", SecretLabel: "Privatemode key"},
+	// Secret registry only: never send ordinary HTTP to this encrypted backend.
+	{Provider: "maple", BaseURL: "https://enclave.trymaple.ai/v1", SecretEnv: "QUILL_MAPLE_SECRET", SecretName: "trustedrouter-maple-api-key", SecretLabel: "Maple key"},
 	// Polyphemus uses /modelSelect only, never a Telluvian generation route.
 	{Provider: "telluvian", BaseURL: "https://api.telluvian.ai/v1", SecretEnv: "QUILL_TELLUVIAN_SECRET", SecretName: "trustedrouter-telluvian-api-key", SecretLabel: "Telluvian selector key"},
 	{Provider: "nextbit", BaseURL: "https://api.nextbit256.com/v1", SecretEnv: "QUILL_NEXTBIT_SECRET", SecretName: "trustedrouter-nextbit-api-key", SecretLabel: "nextbit key"},

@@ -1,0 +1,20 @@
+--- a/Cargo.toml
++++ b/Cargo.toml
+@@ -31,7 +31,7 @@
+ aes-gcm = "0.10"
+ chacha20poly1305 = "0.10"
+ x25519-dalek = { version = "2.0", features = ["static_secrets", "zeroize"] }
+-hkdf = "0.12"
++hkdf = "0.13"
+ p256 = { version = "0.14", default-features = false, features = ["ecdh", "pkcs8", "getrandom", "std"] }
+ # Enforce the RUSTSEC-2026-0387 fix for downstream builds without this lockfile.
+ crypto-bigint = { version = "0.7.6", default-features = false }
+@@ -39,7 +39,7 @@
+ # X25519 retains its existing RNG traits independently of P-256's newer API.
+ rand_core = { version = "0.6.4", features = ["getrandom"] }
+-sha2 = "0.10"
++sha2 = "0.11"
+ base64 = "0.22"
+ ring = "0.17"  # For certificate validation
+ hex = "0.4"  # For debug output
+ subtle = "2.6"

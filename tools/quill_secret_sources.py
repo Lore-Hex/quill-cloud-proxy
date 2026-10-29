@@ -134,6 +134,7 @@ PROVIDER_KEY_ALIASES: dict[str, str] = {
     "SYSTEM1MODELS_GLOBAL_API_KEY": "trustedrouter-system1models-global-api-key",
     "SYSTEM1MODELS_EU_API_KEY": "trustedrouter-system1models-eu-api-key",
     "PRIVATEMODE_API_KEY": "trustedrouter-privatemode-api-key",
+    "MAPLE_API_KEY": "trustedrouter-maple-api-key",
     "CONFIDENTIAL_AI_API_KEY": "trustedrouter-confidential-ai-api-key",
     "SCALEDOWN_API_KEY": "trustedrouter-scaledown-api-key",
     "PERPLEXITY_API_KEY": "trustedrouter-perplexity-api-key",
