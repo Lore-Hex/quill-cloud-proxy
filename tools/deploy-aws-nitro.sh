@@ -725,6 +725,10 @@ phase_compute() {
 set -euxo pipefail
 exec > >(tee -a /var/log/quill-bootstrap.log) 2>&1
 
+# Patch the host trust store even when the launch template still pins an older
+# AL2023 AMI. ALAS2023-2026-3337 removes the compromised CA trust paths.
+dnf update -y ca-certificates --releasever=2023.12.20261028
+
 # 1. Nitro Enclaves CLI + Docker
 dnf install -y aws-nitro-enclaves-cli aws-nitro-enclaves-cli-devel docker
 usermod -aG ne ec2-user
