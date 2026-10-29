@@ -133,4 +133,29 @@ func TestKling4DirectOnlyAndContentFreeQuote(t *testing.T) {
 	if strings.Contains(string(encoded), "PRIVATE") {
 		t.Fatal("quote leaked prompt")
 	}
+	body, err := ModelsJSON(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var public struct {
+		Data []struct {
+			ID            string `json:"id"`
+			TrustedRouter struct {
+				AudioMode string   `json:"audio_mode"`
+				Providers []string `json:"provider_routes"`
+			} `json:"trustedrouter"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal(body, &public); err != nil {
+		t.Fatal(err)
+	}
+	for _, row := range public.Data {
+		if row.ID == "kling/v4" {
+			if row.TrustedRouter.AudioMode != "always" || strings.Join(row.TrustedRouter.Providers, ",") != "runway" {
+				t.Fatalf("unqualified route or audio toggle advertised: %#v", row)
+			}
+			return
+		}
+	}
+	t.Fatal("Kling 4.0 missing from video catalog")
 }

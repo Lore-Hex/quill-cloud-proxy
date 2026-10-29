@@ -249,7 +249,7 @@ var models = map[string]Model{
 		Description:     "Kling 4.0 text and first/last-frame image video generation with native audio.",
 		DefaultDuration: 5, DefaultResolution: "720p", DefaultAspectRatio: "16:9",
 		TextProviderModel: "kling_4", ImageProviderModel: "kling_4",
-		SupportsAudio: true, AudioAlwaysOn: true, SupportsImage: true,
+		AudioAlwaysOn: true, SupportsImage: true,
 		PromptCharacterLimit: 26_000, MinimumDuration: 3, MaximumDuration: 30,
 		AllowedResolutions:    []string{"720p", "1080p"},
 		AllowedAspectRatios:   []string{"16:9", "9:16", "1:1", "21:9"},
