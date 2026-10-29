@@ -296,10 +296,15 @@ and live encrypted regression results still govern promotion of this candidate.
 5. Run all cloud build/test variants and the normal coordinated rollout with
    region-by-region health/attestation/inference checks. Provision cloud-local
    secrets without replacing unrelated entries. Keep a healthy holdback cloud.
-   Azure's existing bundle `f397b1b83b324c11abf12a561296c02e` has 83 logical
-   entries and does not contain Maple. Its manifest must remain unchanged until
-   a new bundle is actually sealed/uploaded. `QUILL_MAPLE_SECRET` defaults empty;
-   opt in only with the verified superset bundle and its measured version pin.
+   Azure bundle `8df3ba4381d74315b2d1c696e63e839d` was sealed/uploaded on
+   October 29, preserving all 83 names from `f397b1b83b324c11abf12a561296c02e`
+   and adding only Maple (84 total). No serving container has switched to it.
+   For the Maple rollout pin
+   `QUILL_AZURE_BUNDLE_VERSION=8df3ba4381d74315b2d1c696e63e839d` and set
+   `QUILL_MAPLE_SECRET=trustedrouter-maple-api-key`. Keep Hixtube, Privatemode,
+   Telluvian and both System1 optional-secret settings; a dry run without
+   Hixtube would omit an existing entry. Recheck for a newer bundle before use.
+   `QUILL_MAPLE_SECRET` still defaults empty until this explicit measured opt-in.
 6. Only after those gates, activate the control-plane model and qualified badges.
 
 References: [proxy](https://maple.ai/docs/proxy),
