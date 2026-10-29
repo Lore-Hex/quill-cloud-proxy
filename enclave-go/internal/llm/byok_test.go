@@ -703,7 +703,7 @@ func TestPerProviderNativeMaps(t *testing.T) {
 		// pass-through tier the key isn't entitled to.
 		{"phala", "openai/gpt-oss-120b", "phala/gpt-oss-120b"},
 		{"phala", "z-ai/glm-5", "phala/glm-5"},
-		{"phala", "z-ai/glm-5.2", "phala/glm-5.2"},
+		{"phala", "z-ai/glm-5.2", "z-ai/glm-5.2"},
 		{"phala", "deepseek/deepseek-v3.2", "phala/deepseek-v3.2"},
 		{"phala", "moonshotai/kimi-k2.6", "phala/kimi-k2.6"},
 		{"phala", "moonshotai/kimi-k3", "moonshotai/kimi-k3"},
@@ -853,6 +853,59 @@ func TestDirectModelIDUsesNewlyDiscoveredAuthorizedUpstreamID(t *testing.T) {
 func TestDirectModelIDRejectsUnmappedPhalaPassThrough(t *testing.T) {
 	if got := directModelID("phala", "openai/gpt-5.5", "openai/gpt-5.5"); got != "" {
 		t.Fatalf("directModelID(phala pass-through) = %q, want fail-closed empty id", got)
+	}
+}
+
+func TestPhalaGLM52PreservesReviewedAuthorizedRoute(t *testing.T) {
+	cases := []struct {
+		name, upstream, want string
+	}{
+		{"current_catalog", "z-ai/glm-5.2", "z-ai/glm-5.2"},
+		{"confidential_alias", "phala/glm-5.2", "phala/glm-5.2"},
+		{"legacy_without_authorized_id", "", "phala/glm-5.2"},
+		{"unreviewed_alias", "phala/glm-5.2-new", ""},
+		{"different_model", "z-ai/glm-5.3", ""},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := directModelID("phala", "z-ai/glm-5.2", tc.upstream)
+			if got != tc.want {
+				t.Fatalf("authorized upstream %q resolved to %q, want %q", tc.upstream, got, tc.want)
+			}
+			for _, responses := range []bool{false, true} {
+				maxTokens := 32
+				req := &qtypes.OpenAIChatRequest{Model: "z-ai/glm-5.2", MaxTokens: &maxTokens,
+					Messages: []qtypes.OpenAIChatMessage{{Role: "user", Content: "Reply PONG"}}}
+				if responses {
+					var err error
+					req, err = adapter.ResponsesToChat(&qtypes.OpenAIResponsesRequest{Model: req.Model, Input: "Reply PONG"})
+					if err != nil {
+						t.Fatal(err)
+					}
+				}
+				body, err := adapter.ToAnthropic(req, req.Model)
+				if err != nil {
+					t.Fatal(err)
+				}
+				prepared, err := PrepareChatRequest("phala", tc.upstream, req, body, []ChatMessage{{Role: "user", Content: "Reply PONG"}}, ChatPreparationOptions{})
+				if tc.want == "" {
+					if err == nil {
+						t.Fatal("unreviewed upstream reached wire preparation")
+					}
+					continue
+				}
+				if err != nil {
+					t.Fatal(err)
+				}
+				var wire openAICompatibleRequest
+				if err := json.Unmarshal(prepared.Bytes, &wire); err != nil {
+					t.Fatal(err)
+				}
+				if wire.Model != tc.want || prepared.Path != "/chat/completions" {
+					t.Fatalf("responses=%t wire model=%q path=%q", responses, wire.Model, prepared.Path)
+				}
+			}
+		})
 	}
 }
 
