@@ -57,6 +57,18 @@ Determinate Nix 3.23.3, so this is a reproducibility discrepancy requiring
 investigation, not proof of a malicious image. Do not substitute the new PCR0
 for the live pin or claim independent reproduction passed.
 
+The discrepancy was subsequently traced to Nix silently falling back to an
+unsandboxed build when Docker refused its nested `/proc` mount. Checking only
+`sandbox=true` was insufficient: `sandbox-fallback=true` embedded temporary
+build paths instead of the vendor's `/build`. The new isolated builder uses
+the exact pinned Determinate version, `sandbox=true`, `sandbox-fallback=false`,
+and a preflight derivation that proves its build directory is `/build`.
+No Maple/FlakeHub output cache is enabled. Its complete user initramfs now
+matches the published artifact byte-for-byte at SHA-256
+`dd6edd1895a87f425025f4ce4ff0f037a1ef4534ba3ea9b5a32979c6bef28234`.
+Kernel and final EIF comparison are still in progress; this is not yet a
+claim of full-image reproduction.
+
 ```sh
 sh enclave-go/maple-transport/prepare-sdk.sh
 cargo test --locked --manifest-path enclave-go/maple-transport/Cargo.toml
@@ -271,6 +283,10 @@ and live encrypted regression results still govern promotion of this candidate.
 5. Run all cloud build/test variants and the normal coordinated rollout with
    region-by-region health/attestation/inference checks. Provision cloud-local
    secrets without replacing unrelated entries. Keep a healthy holdback cloud.
+   Azure's existing bundle `f397b1b83b324c11abf12a561296c02e` has 83 logical
+   entries and does not contain Maple. Its manifest must remain unchanged until
+   a new bundle is actually sealed/uploaded. `QUILL_MAPLE_SECRET` defaults empty;
+   opt in only with the verified superset bundle and its measured version pin.
 6. Only after those gates, activate the control-plane model and qualified badges.
 
 References: [proxy](https://maple.ai/docs/proxy),
