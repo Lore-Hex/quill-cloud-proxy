@@ -4,10 +4,10 @@ version = "0.1.0"
 description = "Quill Cloud — code that runs on the EC2 host outside the enclave."
 requires-python = ">=3.11"
 dependencies = [
-  "certifi>=2026.10.19",
+  "certifi>=2026.10.23",
   "fastapi>=0.115",
   "uvicorn[standard]>=0.32",
-  "boto3>=1.36",          # DynamoDB UpdateItem, S3 GetObject for sealed blob
+  "boto3>=1.43.117",      # AWS trust-bundle fix: security bulletin 2026-150-AWS
   "structlog>=26.1.0",
   "pydantic>=2.9",
   "pydantic-settings>=2.6",
