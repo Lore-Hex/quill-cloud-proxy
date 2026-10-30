@@ -111,6 +111,14 @@ session keys or cache roots. The wrong-key check uses a deliberate fake key and
 does not test the real account's entitlement. Positive front attestation alone
 is not end-to-end qualification.
 
+Customer chat JSON and streaming route metadata derive `gateway_region` from
+the gateway's local bootstrap region, not the control plane's accounting
+`region`. Cross-cloud gateways can authorize against the GCP control plane;
+its region is not evidence of the gateway's location. Unknown origins are
+omitted, private-route masking remains in force, and neither this field nor a
+regional gateway establishes the downstream GPU's location. Accounting fields,
+settlement bytes, prices and admission rules are unchanged.
+
 ## Initial evidence (2026-10-28)
 
 Local qualification against the production backend:

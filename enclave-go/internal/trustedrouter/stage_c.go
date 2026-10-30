@@ -184,7 +184,7 @@ func localAuthorization(admission *spendlease.Admission, request spendlease.Esti
 		WorkspaceID: claims.WorkspaceID, APIKeyHash: claims.KeyHash,
 		Model: first.Model, UpstreamModel: first.UpstreamModel, EndpointID: first.EndpointID,
 		Provider: first.Provider, ProviderName: first.ProviderName, UsageType: first.UsageType,
-		Region: request.Region, RequestedModel: request.Model,
+		Region: request.Region, GatewayRegion: request.Region, RequestedModel: request.Model,
 		LimitUsageType: "Credits", WaferZDRRequired: first.WaferZDRRequired,
 		RouteCandidates: candidates, RouteType: request.RouteType,
 	}, true
