@@ -86,12 +86,13 @@ func TestPublicGatewayRegionIsNotProviderServingRegion(t *testing.T) {
 		for _, region := range []string{"europe-west4", ""} {
 			auth, _ := locationFixture()
 			tracker := newSelectedRouteTracker()
-			auth.Region = region
+			auth.Region = "accounting-region"
+			auth.GatewayRegion = region
 			// The winning provider differs from the initial route. Its declared
 			// geography is still not a per-request serving-location receipt.
 			tracker.Select(llm.InvokeOptions{Model: "model", Provider: "scaleway", EndpointID: "scaleway-credits"})
 			body, err := annotateSettledResponseMetadata([]byte(shape), auth,
-				&trustedrouter.SettleResult{Model: "model", Provider: "scaleway", Region: region, CostMicrodollars: 9},
+				&trustedrouter.SettleResult{Model: "model", Provider: "scaleway", Region: "accounting-region", CostMicrodollars: 9},
 				tracker, nil, adapter.StreamResult{}, true)
 			if err != nil {
 				t.Fatal(err)

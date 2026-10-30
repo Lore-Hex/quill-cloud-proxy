@@ -21,6 +21,7 @@ func TestOpenRouterRoutingMetadataDescribesSelectedFallbackWithoutSensitiveField
 		EndpointID:     "openai-endpoint",
 		UsageType:      "Credits",
 		Region:         "us-central1",
+		GatewayRegion:  "us-central1",
 		RouteCandidates: []trustedrouter.RouteCandidate{
 			{EndpointID: "anthropic-endpoint", Model: "anthropic/claude-sonnet", Provider: "anthropic", ProviderName: "Anthropic"},
 			{EndpointID: "openai-endpoint", Model: "openai/gpt-4o-mini", Provider: "openai", ProviderName: "OpenAI"},
@@ -61,6 +62,7 @@ func TestOpenRouterRoutingMetadataMasksCustomModelAndUnattemptedTopology(t *test
 		EndpointID:     "private-anthropic-endpoint",
 		UsageType:      "BYOK",
 		Region:         "us-central1",
+		GatewayRegion:  "us-central1",
 		CustomModel:    &trustedrouter.CustomModel{ID: "custom/legal-review"},
 		RouteCandidates: []trustedrouter.RouteCandidate{
 			{EndpointID: "private-anthropic-endpoint", Model: "anthropic/claude-opus-4.8", Provider: "anthropic"},
@@ -123,6 +125,7 @@ func TestPrivateProxyResponseMetadataMasksBackingRoute(t *testing.T) {
 		EndpointID:         endpoint,
 		UsageType:          "Credits",
 		Region:             "us-central1",
+		GatewayRegion:      "us-central1",
 	}
 	tracker := newSelectedRouteTracker()
 	option := llm.InvokeOptions{Model: backing, Provider: provider, EndpointID: endpoint}
@@ -199,7 +202,7 @@ func TestAnnotateSettlementOnlyUsageAddsIntegerCostWithoutContent(t *testing.T) 
 		Model:            "anthropic/claude-sonnet",
 		Provider:         "anthropic",
 		Region:           "us-central1",
-	}, nil)
+	}, &trustedrouter.Authorization{GatewayRegion: "us-central1"})
 	if err != nil {
 		t.Fatalf("annotateSettlementOnlyUsage: %v", err)
 	}
@@ -253,8 +256,8 @@ func TestSettlementOnlyGatewayRegionCannotBeSpoofedOrLeakPrivateRoute(t *testing
 		for _, region := range []string{"europe-west4", ""} {
 			body, err := annotateSettlementOnlyUsage(
 				[]byte(`{"usage":{"provider_usage":{"region":"upstream-region","gateway_region":"upstream-gateway"}}}`),
-				&trustedrouter.SettleResult{Region: region},
-				&trustedrouter.Authorization{HidePublicMetadata: hidden},
+				&trustedrouter.SettleResult{Region: "accounting-region"},
+				&trustedrouter.Authorization{HidePublicMetadata: hidden, GatewayRegion: region},
 			)
 			if err != nil {
 				t.Fatal(err)
@@ -276,5 +279,55 @@ func TestSettlementOnlyGatewayRegionCannotBeSpoofedOrLeakPrivateRoute(t *testing
 				t.Fatalf("authoritative gateway region missing: %s", body)
 			}
 		}
+	}
+}
+
+func TestCrossCloudGatewayRegionMetadataDoesNotUseAccountingLocation(t *testing.T) {
+	for _, region := range []string{"eu-west-1", "eu-west-3", "uaenorth", "australiaeast", "europe-west4", ""} {
+		for _, hidden := range []bool{false, true} {
+			auth := &trustedrouter.Authorization{
+				Model: "test/model", Provider: "maple", UsageType: "Credits",
+				Region: "us-central1", GatewayRegion: region, HidePublicMetadata: hidden,
+			}
+			settled := &trustedrouter.SettleResult{
+				Model: "test/model", Provider: "maple", UsageType: "Credits",
+				Region: "us-central1", CostMicrodollars: 17,
+			}
+			body, err := annotateSettledResponseMetadata(
+				[]byte(`{"usage":{"prompt_tokens":11,"completion_tokens":3,"provider_usage":{"gateway_region":"forged-upstream"}}}`),
+				auth, settled, newSelectedRouteTracker(), nil, adapter.StreamResult{}, true,
+			)
+			if err != nil {
+				t.Fatal(err)
+			}
+			var payload map[string]any
+			if err := json.Unmarshal(body, &payload); err != nil {
+				t.Fatal(err)
+			}
+			usage := payload["usage"].(map[string]any)
+			if usage["cost_microdollars"] != float64(17) || usage["prompt_tokens"] != float64(11) || usage["completion_tokens"] != float64(3) {
+				t.Fatalf("accounting changed: %s", body)
+			}
+			for _, metadata := range []map[string]any{
+				usage["provider_usage"].(map[string]any),
+				payload["openrouter_metadata"].(map[string]any),
+				openRouterRoutingMetadata(auth, newSelectedRouteTracker()),
+			} {
+				value, exists := metadata["gateway_region"]
+				if hidden || region == "" {
+					if exists {
+						t.Fatalf("unknown/private gateway exposed: %#v", metadata)
+					}
+				} else if value != region {
+					t.Fatalf("gateway region = %v, want %q", value, region)
+				}
+			}
+			if auth.Region != "us-central1" || settled.Region != "us-central1" || settled.CostMicrodollars != 17 {
+				t.Fatal("metadata changed authoritative accounting")
+			}
+		}
+	}
+	if _, exists := openRouterRoutingMetadata(nil, newSelectedRouteTracker())["gateway_region"]; exists {
+		t.Fatal("missing authorization inferred a gateway region")
 	}
 }

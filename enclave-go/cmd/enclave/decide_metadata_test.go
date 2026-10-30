@@ -103,7 +103,7 @@ func TestBatchDecideRoutingAgreesWithProviderUsage(t *testing.T) {
 		ctx := context.WithValue(context.Background(), batchExecutionContextKey{}, true)
 		writeDecideResponse(ctx, &out, decideResponse{Model: decide.TrevModelID},
 			&trustedrouter.SettleResult{Model: "private-model", Provider: "siliconflow", Region: "us-central1", CostMicrodollars: 123},
-			&trustedrouter.Authorization{HidePublicMetadata: hidden, ResponseModel: decide.TrevModelID},
+			&trustedrouter.Authorization{HidePublicMetadata: hidden, ResponseModel: decide.TrevModelID, GatewayRegion: "us-central1"},
 			decideRoutingMetadata{Served: llm.InvokeOptions{EndpointID: "private-endpoint"}})
 		_, body, _ := strings.Cut(out.String(), "\r\n\r\n")
 		var payload map[string]any

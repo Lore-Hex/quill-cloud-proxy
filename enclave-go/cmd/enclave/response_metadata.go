@@ -122,10 +122,9 @@ func annotateSettledResponseMetadata(
 		if settlement.UsageType != "" {
 			routeUsage["usage_type"] = settlement.UsageType
 		}
-		if settlement.Region != "" && !hidesPublicRouteMetadata(authorization) {
-			// Settlement records the gateway's region, not the upstream GPU location.
-			routeUsage["gateway_region"] = settlement.Region
-		}
+	}
+	if region := publicGatewayRegion(authorization); region != "" {
+		routeUsage["gateway_region"] = region
 	}
 	routeUsage = pruneEmptyProviderUsage(routeUsage)
 	annotateInferenceLocation(usage, authorization, selectedEndpoint, selectedProvider, selectedModel)
@@ -193,8 +192,8 @@ func annotateSettlementOnlyUsage(
 	if selectedProvider != "" {
 		providerUsage["selected_provider"] = selectedProvider
 	}
-	if settlement.Region != "" && !hidesPublicRouteMetadata(authorization) {
-		providerUsage["gateway_region"] = settlement.Region
+	if region := publicGatewayRegion(authorization); region != "" {
+		providerUsage["gateway_region"] = region
 	}
 	providerUsage["contains_prompt_or_completion"] = false
 	usage["provider_usage"] = providerUsage
@@ -213,19 +212,25 @@ func annotateBatchSettlementOnlyUsage(
 	return annotateSettlementOnlyUsage(body, settlement, authorization)
 }
 
+func publicGatewayRegion(authorization *trustedrouter.Authorization) string {
+	if authorization == nil || hidesPublicRouteMetadata(authorization) {
+		return ""
+	}
+	return authorization.GatewayRegion
+}
+
 func openRouterRoutingMetadata(
 	authorization *trustedrouter.Authorization,
 	selectedRoute *selectedRouteTracker,
 ) map[string]any {
 	requested := ""
-	region := ""
+	region := publicGatewayRegion(authorization)
 	usageType := ""
 	if authorization != nil {
 		requested = authorization.RequestedModel
 		if requested == "" {
 			requested = authorization.Model
 		}
-		region = authorization.Region
 		usageType = authorization.UsageType
 	}
 	selectedModel := ""
@@ -319,7 +324,9 @@ func openRouterRoutingMetadata(
 		},
 	}
 	if privateModelID == "" {
-		metadata["gateway_region"] = region
+		if region != "" {
+			metadata["gateway_region"] = region
+		}
 		metadata["is_byok"] = strings.EqualFold(usageType, "BYOK")
 	}
 	return metadata

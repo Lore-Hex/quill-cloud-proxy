@@ -152,9 +152,11 @@ func TestEmbeddingsReportOnlyKnownSettledCostAndPreserveResponse(t *testing.T) {
 					}
 					wantUsage := map[string]any{"prompt_tokens": float64(7), "total_tokens": float64(7)}
 					if batch {
+						// This test client has no bootstrap region. Settlement's
+						// accounting region must not become gateway provenance.
 						wantUsage["provider_usage"] = map[string]any{
 							"usage_type": "Credits", "selected_model": model, "selected_provider": "openai",
-							"gateway_region": "test-region", "contains_prompt_or_completion": false,
+							"contains_prompt_or_completion": false,
 						}
 					} else if !bytes.Contains(body, []byte(`"embedding":`+vector)) {
 						t.Error("interactive embedding encoding or precision changed")

@@ -180,9 +180,15 @@ func TestStageCReserveUsesPinnedReceiptBodyAndReturnsBoundMarker(t *testing.T) {
 	if err != nil || plan == nil || plan.Local == nil || len(plan.Local.RouteCandidates) != 1 {
 		t.Fatalf("plan=%#v err=%v", plan, err)
 	}
+	if plan.Local.GatewayRegion != client.region {
+		t.Fatalf("local gateway region = %q, want %q", plan.Local.GatewayRegion, client.region)
+	}
 	resolved, marked, err := client.ReserveSpendLeaseAdmission(ctx, plan, req)
 	if err != nil || !marked || resolved.AuthorizationID != "gwa-stage-c-fixture" || resolved.SpendLeaseRemainingMicro == nil {
 		t.Fatalf("resolved=%#v marked=%t err=%v", resolved, marked, err)
+	}
+	if resolved.GatewayRegion != client.region {
+		t.Fatalf("reserved gateway region = %q, want %q", resolved.GatewayRegion, client.region)
 	}
 	if *resolved.SpendLeaseRemainingMicro >= claims.CapMicro {
 		t.Fatalf("ledger remaining did not decrease: %d", *resolved.SpendLeaseRemainingMicro)

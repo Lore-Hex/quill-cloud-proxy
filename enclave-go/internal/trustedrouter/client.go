@@ -667,6 +667,9 @@ type Authorization struct {
 	// or refund must return to the same authority that created the hold.
 	ControlPlaneEndpoint    int  `json:"-"`
 	ControlPlaneEndpointSet bool `json:"-"`
+	// GatewayRegion is enclave-local provenance, never supplied by the control
+	// plane. Region remains the unchanged accounting/routing protocol field.
+	GatewayRegion string `json:"-"`
 }
 
 func (a *Authorization) pinControlPlaneEndpoint(endpoint int) {

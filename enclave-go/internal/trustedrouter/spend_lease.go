@@ -371,6 +371,7 @@ func (c *Client) authorizeAtDecodeSeamWithAdmission(
 		}
 		decoded.Data.SpendLease = nil // never retain or accidentally log token material
 	}
+	decoded.Data.GatewayRegion = c.region
 	return &decoded.Data, controlPlaneEndpoint, nil
 }
 
