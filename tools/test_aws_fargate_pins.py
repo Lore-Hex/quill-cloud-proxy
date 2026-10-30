@@ -2,9 +2,9 @@
 
 import copy
 import json
-from pathlib import Path
 import subprocess
 import unittest
+from pathlib import Path
 from unittest import mock
 
 import aws_fargate_pins as pins
@@ -85,6 +85,52 @@ class ServingEvidenceTests(unittest.TestCase):
 
     def test_healthy_running_tasks_and_targets(self):
         self.assertEqual(self.check(fixture())["pin"], OLD)
+
+    def test_optional_circuit_breaker_fields_preserved_in_snapshot(self):
+        data = fixture()
+        protection = data["describe-services"]["services"][0]["deploymentConfiguration"]
+        protection["deploymentCircuitBreaker"].update(
+            resetOnHealthyTask=True,
+            thresholdConfiguration={"type": "BOUNDED_PERCENT", "value": 50},
+        )
+        before = copy.deepcopy(data)
+        result = self.check(data)
+        self.assertEqual(result["deploymentConfiguration"], protection)
+        self.assertEqual(result["pin"], OLD)
+        self.assertEqual(data, before)
+
+    def test_circuit_breaker_requires_explicit_enabled_rollback(self):
+        for name in ("enable", "rollback"):
+            for value in (False, None, 0, 1, "true"):
+                with self.subTest(name=name, value=value):
+                    data = fixture()
+                    breaker = data["describe-services"]["services"][0][
+                        "deploymentConfiguration"
+                    ]["deploymentCircuitBreaker"]
+                    breaker[name] = value
+                    breaker["resetOnHealthyTask"] = True
+                    with self.assertRaisesRegex(ValueError, "protections"):
+                        self.check(data)
+            data = fixture()
+            del data["describe-services"]["services"][0]["deploymentConfiguration"][
+                "deploymentCircuitBreaker"
+            ][name]
+            with self.subTest(missing=name), self.assertRaisesRegex(ValueError, "protections"):
+                self.check(data)
+
+    def test_malformed_circuit_breaker_and_unsafe_capacity_fail_closed(self):
+        for value in (None, [], "enabled", {}):
+            data = fixture()
+            data["describe-services"]["services"][0]["deploymentConfiguration"][
+                "deploymentCircuitBreaker"
+            ] = value
+            with self.subTest(breaker=value), self.assertRaisesRegex(ValueError, "protections"):
+                self.check(data)
+        for name, value in (("minimumHealthyPercent", 99), ("maximumPercent", 199)):
+            data = fixture()
+            data["describe-services"]["services"][0]["deploymentConfiguration"][name] = value
+            with self.subTest(capacity=name), self.assertRaisesRegex(ValueError, "protections"):
+                self.check(data)
 
     def test_unreadable_missing_or_unhealthy_evidence_fails_closed(self):
         variants = []

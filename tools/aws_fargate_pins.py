@@ -88,11 +88,15 @@ def service_snapshot(region: str, cluster: str, service: str) -> dict:
         "ECS service has an incomplete deployment",
     )
     protection = current["deploymentConfiguration"]
+    breaker = protection.get("deploymentCircuitBreaker")
+    # ECS also returns optional threshold/reset fields; require the protections,
+    # not an exact response shape. Preserve the full configuration below.
     require(
         protection["minimumHealthyPercent"] == 100
         and protection["maximumPercent"] >= 200
-        and protection["deploymentCircuitBreaker"]
-        == {"enable": True, "rollback": True},
+        and isinstance(breaker, dict)
+        and breaker.get("enable") is True
+        and breaker.get("rollback") is True,
         "ECS deployment protections are not enabled",
     )
     return {
