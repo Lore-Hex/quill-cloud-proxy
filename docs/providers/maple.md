@@ -1,5 +1,73 @@
 # Maple pilot qualification
 
+## Front measurement update (2026-10-31)
+
+The source now pins only PCR0
+`6eac0f156a3732f05a83de99cef6e429c8b67a43b4cea9af27b419bc3e979b4d6494e9625baff8a22327d60be235851a`.
+The old `ada74c7a...` measurement is not an additional allowed measurement.
+This source change is **not production rollout or paid-inference acceptance**;
+all ordinary source CI, measured-image, signed trust, cloud rollout and final
+production gates still apply. The sections below preserve the earlier pilot
+and reproduction history rather than describing the new rollout's state.
+
+Maple's [approval commit](https://github.com/MaplePrivacyLabs/Maple/commit/665be3441841f8e53cc2350ce800a17a7810e557)
+binds the new measurement to source
+`55f02f0bbd584f40b0e1fea9936551f7e5e6b31c` and EIF SHA-256
+`88c4e9c3a72f470bdacddc9d7c1e167d4cb52636fad37f1e0480bb0889c57c7f`.
+The artifact from [release run 41151904767](https://github.com/MaplePrivacyLabs/Maple/actions/runs/41151904767)
+passed GitHub/Sigstore provenance verification constrained to that exact source,
+`refs/heads/master`, GitHub's OIDC issuer, and
+`MaplePrivacyLabs/Maple/.github/workflows/opensecret-eif-release.yml@refs/heads/master`.
+
+An independent ARM64 Linux build of that clean source and locked inputs then
+completed the unchanged vendor packaging script successfully. It used the
+vendor-pinned Determinate Nix 3.23.3 (Nix 2.35.3), `sandbox=true`,
+`sandbox-fallback=false`, and an actual derivation proving the `/build`
+directory. Only `cache.nixos.org` was enabled; no Maple/FlakeHub output cache
+was used. The full 234,229,623-byte EIF and `pcr.json` are byte-for-byte identical
+to the published artifact. Independent EIF v4 structure and CRC validation
+passed. PCR1 is
+`a91689e37a54303051f68263010f397ddfa92d66e17df7a03a6777c33ff1e4fc12b69bbbe786894d43dcba1cf6d60aaa`;
+PCR2 is
+`4218ec0efecc0c90635cbecb8e40e8dc5e7893d5dc10dd70476a6b4f925db54604dc15cfdddc24b8604ca227b59e2851`.
+The build's Rust checks passed 1,078 tests, with 54 ignored database/live tests;
+this is not a claim those ignored integrations passed. An earlier local attempt
+stopped at isolation preflight and produced no qualifying artifact. Restoring
+the previously used container filesystem setup fixed that preflight without
+disabling the Nix sandbox or allowing fallback.
+
+The scoped source comparison from `7957ce78...` to `55f02f0b...` found no blocking
+change in the managed stateless chat path: Transport V2 implementation, API-key
+authentication, provider routing, workspace cache ownership, the dedicated i02
+attestation policy, and its worker/weights pins are unchanged. The shared SSE
+refactor adds frame and queue bounds for internal Responses helpers; ordinary
+chat retains its existing settings, usage accounting and no-ambiguous-replay
+rules. The new internal-account gate is Dev-only and remains behind authentication.
+The Nitro Enclaves SDK C update to 0.4.6 incorporates the previously applied
+entropy and cleanup fixes. Responses compaction is a separate JWT-protected
+route; its user-scoped encrypted checkpoint boundaries were inspected, not
+claimed as a complete audit of that new subsystem or its live database.
+
+At 17:21 UTC, the previous gateway source's first final Maple request returned
+HTTP 502 and testing stopped without replay. A separate no-credential,
+no-inference handshake using the old pin returned the SDK's combined
+attestation/PCR-policy rejection. This motivated the independently sourced
+review above; it does not prove the precise cause of the paid request's 502.
+No live measurement was copied into the allowlist, and no plaintext fallback,
+remote-history trust, secret, SDK protocol, or deployment gate was changed.
+
+At 17:43 UTC, the unchanged qualification client with the reviewed new pin
+passed a live front handshake (409 ms in that observation), then its deliberate
+wrong-pin check passed after a successful positive control. These checks used
+no credentials and sent no inference. The client's metadata still conservatively
+reports `end_to_end_qualified=false` and `source_reproduction_verified=false`:
+the handshake does not itself perform the independent build described above.
+Pinned Rust 1.94.1 formatting and Clippy passed; the SDK/helper workspace checks
+passed 142 tests with one live test ignored. Deployment and fresh paid acceptance
+remain separate requirements.
+
+## Original pilot scope (2026-10-28)
+
 **Not deployed or customer-routable.** This change adds a qualification client,
 one-shot encrypted adapter, measured-image build stages, dispatch and cloud-local
 secret coordinates. No cloud image, secret bundle or public catalog is activated.
@@ -28,10 +96,10 @@ verification, fresh challenge and client/server key binding, directional
 encryption, ordered frames and authenticated finality. No custom crypto or
 bearer-only HTTP fallback is implemented here.
 
-The client accepts only candidate PCR0
+The original pilot client accepted only candidate PCR0
 `ada74c7aa10cbde75f83d7ec674cc4fc4a4cf9cc555e367189fbec332dffa985c6082ae4647fd50242a590bf9cd1d3f0`,
 the latest production-history entry in that immutable source snapshot.
-Remote-history trust is disabled. This is a qualification pin, not an approval
+Remote-history trust is disabled. That was a qualification pin, not an approval
 of the live source/image binding or of the downstream GPU/model. A mismatch is
 a stop condition; do not replace it with whichever measurement the server sends.
 
