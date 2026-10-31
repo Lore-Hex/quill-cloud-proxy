@@ -39,3 +39,24 @@ diff -ru --exclude=PATCH.md \
   "$(go env GOMODCACHE)/github.com/tinfoilsh/tinfoil-go/verifier@v0.12.0" \
   enclave-go/third_party/tinfoil-verifier
 ```
+
+## Dependency security updates
+
+`go.mod` and `go.sum` also differ from upstream. The October 2026 security
+maintenance pins `golang.org/x/net` to v0.62.0, `sigstore-go` to v1.2.1,
+`rekor` to v1.5.2, `timestamp-authority/v2` to v2.1.2, and `in-toto-golang` to
+v0.11.0. The updated graph no longer requires the legacy MongoDB driver.
+The embedding sidecar
+selects the same security fixes. These updates do not broaden our trusted
+identities, measurements, TLS policy, or verification fallback behavior.
+
+The upstream `in-toto-golang` replacement was a v0.9.0 fork whose only source
+changes added WebAssembly build support. We remove that replacement so this
+Linux sidecar and standalone verifier tests use the patched official module.
+Go ignores dependency-level replacements when building the embedding sidecar,
+so its production dependency was already the official module, not that fork.
+The separate upstream logger replacement is unchanged.
+
+Advisories: GO-2026-6866, GO-2026-6162, GO-2026-5952, GO-2026-5778,
+GO-2026-5763, GO-2026-5851, GO-2026-5547, and GO-2026-5327.
+Advisory presence alone does not establish exploitability of our call paths.
