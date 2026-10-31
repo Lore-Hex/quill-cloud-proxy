@@ -31,17 +31,18 @@ class RolloutSafetyTests(unittest.TestCase):
         self.assertIn("roles/secretmanager.secretAccessor", roles)
 
     def test_async_settlement_rollout_pins_and_keyring_allowlist(self) -> None:
-        # Public verification material only (runbook step 2). Installing it does not
-        # enable negotiation: TR_ASYNC_SETTLE_NEGOTIATE stays off until step 8.
+        # Step 8 enables negotiation only for the four GCP pilot-serving regions,
+        # after router gates are verified. AWS/Azure keep their pre-pilot pins;
+        # the shared public verification material remains unchanged.
         keyring = ASYNC_SETTLE_KEYRING
         aws = (ROOT / "enclave-go/Dockerfile.enclave").read_text()
         self.assertIn("ENV TR_ASYNC_SETTLE_NEGOTIATE=off", aws)
         self.assertIn("ENV TR_ASYNC_SETTLE_SHADOW=on", aws)
         self.assertIn("ENV TR_ASYNC_SETTLE_TICKET_PUBLIC_KEYS='" + keyring + "'\n", aws)
         gcp = (ROOT / "tools/deploy-gcp-mig.sh").read_text()
-        self.assertIn("tee-env-TR_ASYNC_SETTLE_NEGOTIATE=off|tee-env-TR_ASYNC_SETTLE_TICKET_PUBLIC_KEYS="
+        self.assertIn("tee-env-TR_ASYNC_SETTLE_NEGOTIATE=on|tee-env-TR_ASYNC_SETTLE_TICKET_PUBLIC_KEYS="
                       + keyring.replace('"', '\\"') + "|", gcp)
-        self.assertIn("tee-env-TR_ASYNC_SETTLE_SHADOW=on|", gcp)
+        self.assertIn("tee-env-TR_ASYNC_SETTLE_SHADOW=off|", gcp)
         azure = (ROOT / "tools/deploy-azure-aci.sh").read_text()
         self.assertIn('"TR_ASYNC_SETTLE_SHADOW": "on"', azure)
         self.assertIn('"TR_ASYNC_SETTLE_NEGOTIATE": "off"', azure)
@@ -60,6 +61,7 @@ class RolloutSafetyTests(unittest.TestCase):
             policy = next(line for line in docker.splitlines() if "tee.launch_policy.allow_env_override" in line)
             self.assertIn("TR_ASYNC_SETTLE_TICKET_PUBLIC_KEYS", policy)
             self.assertIn("TR_ASYNC_SETTLE_SHADOW", policy)
+            self.assertIn("TR_ASYNC_SETTLE_NEGOTIATE", policy)
 
     def test_async_settlement_keyring_is_one_canonical_ed25519_key(self) -> None:
         parsed = json.loads(ASYNC_SETTLE_KEYRING)
