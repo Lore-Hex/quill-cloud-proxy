@@ -1,6 +1,7 @@
 {
   "accepted_pcr0s": [
-    "1f4c83e8fc8ae118cf96a3292d6bba19266390119d8a6b95ab8e77ab6921b8048dcae0adc66044fdb38471bee07abea0"
+    "1f4c83e8fc8ae118cf96a3292d6bba19266390119d8a6b95ab8e77ab6921b8048dcae0adc66044fdb38471bee07abea0",
+    "ccc95ab8c807a6ff09b6f054ad9dc7fcdc3c0dd8cdc4552ce0f35e3ebd2fc8fadfd0cea83abd63651ec2a96002320087"
   ],
   "api_base_url": "https://api-aws.trustedrouter.com/v1",
   "attestation_format": "cose-sign1-nitro-attestation-document",
@@ -11,15 +12,15 @@
     "control_plane_prompt_access": false,
     "prompt_output_storage": false
   },
-  "image_digest": "sha256:8279baec21c8b05f0bce8f18ef53745ce7087d467f5b05da10cfa443940086a5",
-  "measurement_provenance": "Both regional ECR copies match the immutable image built from clean merged faaa7586. Isolated Paris LT35 and Dublin LT44 candidates passed known EIF CRC/config/digest/measurement checks, strict AWS Nitro root and intended instance/slot verification, and wrong-PCR rejection before real encrypted inference. Both regional rolling refreshes completed with unchanged healthy-capacity, checkpoint, warmup and bake protections. All four current serving instances passed fresh exact-PCR0, nonce, certificate/SPKI, TLS-exporter and same-socket verification before narrowing. Public regional Maple JSON/SSE and cold/warm cached-token billing passed with exact gateway regions, managed-only/no fallback and Confidential floor; all five Bedrock Runtime Claude models passed JSON/SSE with ZDR floor in both regions. Both Fargate consumers are healthy with only the new PCR0, preserving their control-plane release and all other settings. Source-to-image provenance is operator-asserted, not an independently reproduced AWS build claim.",
+  "image_digest": "sha256:f78f5430a8f1a815cceabbdba848226384d9841b38bec0b019bc0893202289a7",
+  "measurement_provenance": "Transition only. Both regional ECR copies match the immutable linux/amd64 image built from clean merged 2a24e43e after its full CI and dependency scan passed. The isolated Paris LT36 candidate passed EIF CRC, exact image/config and running nondebug measurement checks, followed by strict AWS Nitro root, intended instance/slot, certificate/SPKI, TLS-exporter and same-socket verification with wrong-PCR rejection. Both Fargate consumers verified healthy with old+new PCR0 while preserving their control-plane release and all other settings. The serving gateway fleets remain on the previous measurement; candidate inference and regional refreshes are not yet qualified. Source-to-image provenance is operator-asserted, not an independently reproduced AWS build claim. The independently reproduced Maple front measurement pinned inside this image is separate from this AWS gateway measurement.",
   "measurement_type": "nitro-pcr0-sha384",
-  "observed_module_id": "i-02b4e8f3f184345ba-enc01a18c5379080ecc",
-  "pcr0": "1f4c83e8fc8ae118cf96a3292d6bba19266390119d8a6b95ab8e77ab6921b8048dcae0adc66044fdb38471bee07abea0",
+  "observed_module_id": "i-03e4b840b20f69cfa-enc01a19333f40bda81",
+  "pcr0": "ccc95ab8c807a6ff09b6f054ad9dc7fcdc3c0dd8cdc4552ce0f35e3ebd2fc8fadfd0cea83abd63651ec2a96002320087",
   "platform": "aws-nitro-enclaves",
-  "release_state": "current",
+  "release_state": "rolling",
   "reproduce": "tools/verify-pcr0.sh",
-  "source_commit": "faaa7586888fd9308e88e21355ebf47144aedfff",
+  "source_commit": "2a24e43e0a650cedad958e03cbf2172df33ed2c1",
   "source_commit_provenance": "operator-asserted",
   "source_repo": "https://github.com/Lore-Hex/quill-cloud-proxy",
   "tls": {
