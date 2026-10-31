@@ -90,6 +90,9 @@ jobs:
         # actually compiles in.
         run: go test -race -tags '${{ matrix.tags }}' ./...
 
+      - name: Check reachable Go vulnerabilities (${{ matrix.tags }})
+        run: go run golang.org/x/vuln/cmd/govulncheck@v1.9.0 -tags '${{ matrix.tags }}' ./...
+
   attest-sidecar:
     runs-on: ubuntu-latest
     defaults:
@@ -111,6 +114,8 @@ jobs:
         run: go vet -tags '${{ matrix.tags }}' ./...
       - name: Test (${{ matrix.tags }})
         run: go test -race -tags '${{ matrix.tags }}' ./...
+      - name: Check reachable Go vulnerabilities (${{ matrix.tags }})
+        run: go run golang.org/x/vuln/cmd/govulncheck@v1.9.0 -tags '${{ matrix.tags }}' ./...
 
   parent:
     runs-on: ubuntu-latest
