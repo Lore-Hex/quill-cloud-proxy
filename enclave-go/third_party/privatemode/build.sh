@@ -15,6 +15,11 @@ git apply "$root/control-plane-limits.patch"
 cp "$root/httpapi_limits_test.go.txt" internal/oss/httpapi/tr_limits_test.go
 cp "$root/secretmanager_limits_test.go.txt" internal/oss/secretmanager/tr_limits_test.go
 export GOTOOLCHAIN=local CGO_ENABLED=0
+# The pinned upstream source predates GO-2026-6866. Keep the security override
+# explicit and checksum-verified without changing the reviewed source archive.
+go mod edit -require=golang.org/x/net@v0.62.0
+cat "$root/security-go.sum" >> go.sum
+go mod download golang.org/x/net
 # Tests run on the builder architecture; production output uses the caller's target.
 target_os=${GOOS:-linux}
 target_arch=${GOARCH:-amd64}
