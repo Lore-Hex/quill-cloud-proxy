@@ -1,14 +1,16 @@
 {
   "accepted_image_digests": [
-    "sha256:b0f90e7c519ee6c83082e2cc56be2087d9a88ee59b4da5b88b4ecf935f83aa8b"
+    "sha256:b0f90e7c519ee6c83082e2cc56be2087d9a88ee59b4da5b88b4ecf935f83aa8b",
+    "sha256:d0a697c9af0041686802cc515cd16f91717eb5c3a4db9ff288f7dee0089e2fbf"
   ],
   "accepted_image_references": [
-    "us-central1-docker.pkg.dev/quill-cloud-proxy/quill/enclave-multi:gcp-release-a4776f47"
+    "us-central1-docker.pkg.dev/quill-cloud-proxy/quill/enclave-multi:gcp-release-a4776f47",
+    "us-central1-docker.pkg.dev/quill-cloud-proxy/quill/enclave-multi:gcp-release-8e9bb4f6"
   ],
   "api_base_url": "https://api.trustedrouter.com/v1",
   "attestation_audience": "quill-cloud",
   "attestation_issuer": "https://confidentialcomputing.googleapis.com",
-  "commit": "a4776f47",
+  "commit": "8e9bb4f6",
   "compliance": {
     "hipaa_readiness": "https://trustedrouter.com/legal/hipaa-readiness",
     "hipaa_status": "readiness_documentation_prepared_baa_required_for_phi",
@@ -24,8 +26,8 @@
     "control_plane_prompt_access": false,
     "prompt_output_storage": false
   },
-  "image_digest": "sha256:b0f90e7c519ee6c83082e2cc56be2087d9a88ee59b4da5b88b4ecf935f83aa8b",
-  "image_reference": "us-central1-docker.pkg.dev/quill-cloud-proxy/quill/enclave-multi:gcp-release-a4776f47",
+  "image_digest": "sha256:d0a697c9af0041686802cc515cd16f91717eb5c3a4db9ff288f7dee0089e2fbf",
+  "image_reference": "us-central1-docker.pkg.dev/quill-cloud-proxy/quill/enclave-multi:gcp-release-8e9bb4f6",
   "platform": "gcp-confidential-space",
   "receipts": {
     "accepted_specs": [
@@ -43,9 +45,9 @@
     "key_log": "https://trustedrouter.com/.well-known/inference-receipt-keys",
     "spec": "inference-receipt/1"
   },
-  "release_state": "current",
+  "release_state": "rolling",
   "released_by": "github-actions:deploy-enclave-gcp",
-  "source_commit": "a4776f47",
+  "source_commit": "8e9bb4f6",
   "source_repo": "https://github.com/Lore-Hex/quill-cloud-proxy",
   "source_repositories": {
     "attested_gateway": "https://github.com/Lore-Hex/quill-cloud-proxy",
