@@ -1,7 +1,6 @@
 {
   "accepted_pcr0s": [
-    "5f1638d8793ec0ca9d1e9c26b76aba35063b4748e3ec765d83b7efd02f8e3dc7a1f3312f11a21d997cf4062951ed730b",
-    "ccc95ab8c807a6ff09b6f054ad9dc7fcdc3c0dd8cdc4552ce0f35e3ebd2fc8fadfd0cea83abd63651ec2a96002320087"
+    "5f1638d8793ec0ca9d1e9c26b76aba35063b4748e3ec765d83b7efd02f8e3dc7a1f3312f11a21d997cf4062951ed730b"
   ],
   "api_base_url": "https://api-aws.trustedrouter.com/v1",
   "attestation_format": "cose-sign1-nitro-attestation-document",
@@ -12,24 +11,16 @@
     "control_plane_prompt_access": false,
     "prompt_output_storage": false
   },
-  "image_digest": "sha256:f78f5430a8f1a815cceabbdba848226384d9841b38bec0b019bc0893202289a7",
+  "image_digest": "sha256:70b2d4d68ec8193fd559c38d723d1335d377870ea84f2ca73cda88054eba8b7d",
   "measurement_provenance": "All four serving instances in eu-west-3 and eu-west-1 were individually verified against this approved PCR0 after both regional refreshes completed. The image digest identifies the known immutable linux/amd64 build from source_commit; source-to-image provenance is operator-asserted, not independent AWS image reproduction. The independently reproduced Maple front measurement embedded in this build is separate from the AWS gateway measurement.",
   "measurement_type": "nitro-pcr0-sha384",
-  "observed_module_id": "i-0696e34cde5f4fa28-enc01a193a407053e5a",
-  "pcr0": "ccc95ab8c807a6ff09b6f054ad9dc7fcdc3c0dd8cdc4552ce0f35e3ebd2fc8fadfd0cea83abd63651ec2a96002320087",
+  "observed_module_id": "i-0ee8b06da665db4c2-enc01a194c78f3c0cc1",
+  "pcr0": "5f1638d8793ec0ca9d1e9c26b76aba35063b4748e3ec765d83b7efd02f8e3dc7a1f3312f11a21d997cf4062951ed730b",
   "platform": "aws-nitro-enclaves",
-  "release_state": "rolling",
+  "release_state": "current",
   "reproduce": "tools/verify-pcr0.sh",
-  "source_commit": "2a24e43e0a650cedad958e03cbf2172df33ed2c1",
+  "source_commit": "2931ed400d06308ed5bfdbe8fe263a1e8e420a6f",
   "source_commit_provenance": "operator-asserted",
-  "transition_target": {
-    "source_commit": "2931ed400d06308ed5bfdbe8fe263a1e8e420a6f",
-    "image_digest": "sha256:70b2d4d68ec8193fd559c38d723d1335d377870ea84f2ca73cda88054eba8b7d",
-    "pcr0": "5f1638d8793ec0ca9d1e9c26b76aba35063b4748e3ec765d83b7efd02f8e3dc7a1f3312f11a21d997cf4062951ed730b",
-    "source_commit_provenance": "operator-asserted",
-    "state": "isolated-candidate",
-    "observed_module_id": "i-0e460466fd515fc2b-enc01a1948e79e76fc4"
-  },
   "source_repo": "https://github.com/Lore-Hex/quill-cloud-proxy",
   "tls": {
     "certificate_binding": "user_data[0:32]=SHA-256 of the served certificate (DER), user_data[64:96]=TLS exporter channel binding",
