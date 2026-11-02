@@ -257,6 +257,13 @@ func TestWriteErrorSources(t *testing.T) {
 			},
 			source: "provider",
 		},
+		{
+			name: "OpenAI router default",
+			write: func(buf *bytes.Buffer) {
+				writeOpenAIError(buf, 429, "router rate limit", "rate_limit_error", "rate_limit_exceeded", "")
+			},
+			source: "router",
+		},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
