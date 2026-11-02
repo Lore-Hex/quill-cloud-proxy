@@ -141,7 +141,7 @@ func startProcessWithManifest(ctx context.Context, expectedManifest []byte) (*ht
 				continue
 			}
 			cleanup = false
-			fmt.Fprintf(os.Stderr, "privatemode.proxy_listening version=v1.60.0 manifest=%x\n", sha256.Sum256(expectedManifest))
+			fmt.Fprintf(os.Stderr, "privatemode.proxy_listening version=v1.61.0 manifest=%x\n", sha256.Sum256(expectedManifest))
 			return client, done, nil
 		}
 	}

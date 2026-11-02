@@ -1,12 +1,12 @@
 # Privatemode client build
 
-Build only the MIT-licensed client from `privatemode-public` release v1.60.0,
-commit `317d813671769c16238b8e93245e5e2e06060a92`. The Dockerfiles pin both
+Build only the MIT-licensed client from `privatemode-public` release v1.61.0,
+commit `1d35fd8496b6fbd88d95e201f292a19ea7f6e5b3`. The Dockerfiles pin both
 the source archive SHA-256 and the Go 1.26.10 builder image. Go module
 checksums remain enabled. The runtime includes the upstream MIT notice.
 
-The vendor's v1.60.0 binary uses Go 1.26.8. We build the same client with the
-patched toolchain instead of importing that binary. `control-plane-limits.patch`
+We build the client with the patched toolchain instead of importing the vendor
+binary. `control-plane-limits.patch`
 adds a 4 MiB response limit and a 30 second deadline to attestation/key-exchange
 HTTP calls, plus a two minute deadline around secret refresh. These limits do
 not apply to inference streams. The tests beside the patch are copied into
