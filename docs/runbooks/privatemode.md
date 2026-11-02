@@ -144,6 +144,13 @@ plaintext provider to work around a failed verification or unavailable cloud.
 
 ## Pin Updates
 
+### 2026-11-01 v1.61 Deployment Drift
+
+[The v1.61 review](privatemode-v161-review-2026-11-01.md) records the new
+immutable deployment, independent policy/image reproduction, privacy review,
+and encrypted positive/negative tests. Strict GPU OCSP and exact manifest
+matching remain enabled. Regional rollout evidence must be verified separately.
+
 ### 2026-10-22 v1.60 Deployment Drift
 
 The repair and its release evidence are tracked in
