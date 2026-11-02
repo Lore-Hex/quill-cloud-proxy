@@ -22,7 +22,7 @@
 # Build only the MIT client from pinned source, with our bounded control-plane patch.
 # ACR's dependency scanner requires legacy-compatible Dockerfile syntax.
 # Both stages are native amd64; build.sh verifies the archive before extraction.
-FROM golang:1.26.10-bookworm@sha256:ee3901c61e423732605a51f1b8157c849ec01194ea0a274213b5202b2c11e7bf AS privatemode
+FROM golang:1.27.3-bookworm@sha256:d9b6a1beb9474adc2a1ce842573639b44b2a0dd49b6669f51d3821baf9ec37c9 AS privatemode
 ENV CGO_ENABLED=0 GOOS=linux GOARCH=amd64
 WORKDIR /src
 RUN curl --fail --show-error --silent --location --retry 3 --max-time 300 \
@@ -37,7 +37,7 @@ WORKDIR /src
 COPY maple-transport ./
 RUN sh build.sh
 
-FROM golang:1.26.10-bookworm@sha256:ee3901c61e423732605a51f1b8157c849ec01194ea0a274213b5202b2c11e7bf AS builder
+FROM golang:1.27.3-bookworm@sha256:d9b6a1beb9474adc2a1ce842573639b44b2a0dd49b6669f51d3821baf9ec37c9 AS builder
 
 RUN apt-get update \
     && apt-get install -y --no-install-recommends ca-certificates \
