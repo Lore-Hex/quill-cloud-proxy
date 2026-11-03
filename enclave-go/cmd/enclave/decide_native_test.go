@@ -566,11 +566,16 @@ func hostedControlPlane(t *testing.T, log *controlPlaneLog) *httptest.Server {
 
 func runHostedDecide(t *testing.T, backend llm.Client, log *controlPlaneLog) (int, map[string]any) {
 	t.Helper()
+	return runHostedDecideAs(t, backend, log, "typesafe-ai/jev")
+}
+
+func runHostedDecideAs(t *testing.T, backend llm.Client, log *controlPlaneLog, model string) (int, map[string]any) {
+	t.Helper()
 	controlPlane := hostedControlPlane(t, log)
 	gateway := trustedrouter.New(controlPlane.URL, "internal-token", controlPlane.Client())
-	body := fmt.Sprintf(`{"model":"typesafe-ai/jev","state":%q,"questions":{
+	body := fmt.Sprintf(`{"model":%q,"state":%q,"questions":{
 	  "refund":{"type":"boolean","instructions":"Is a refund requested?"},
-	  "route":{"type":"choice","instructions":"Route it.","criteria":{"billing":"charges","shipping":"delivery"}}}}`, privateState)
+	  "route":{"type":"choice","instructions":"Route it.","criteria":{"billing":"charges","shipping":"delivery"}}}}`, model, privateState)
 	var out bytes.Buffer
 	serveDecide(context.Background(), &out, backend, []byte(body), gateway, true, "sk-tr-test-bearer", nil, "idem-h", requestAttributionHeaders{}, "log-h")
 	raw := out.String()
@@ -774,4 +779,22 @@ func joinedStrings(value any) string {
 		parts = append(parts, text)
 	}
 	return strings.Join(parts, ",")
+}
+
+func TestHostedDecideAnswersOpenRoutersJevNameAsJev(t *testing.T) {
+	backend := &hostScriptedDecider{answers: hostedAnswers()}
+	log := &controlPlaneLog{}
+	status, payload := runHostedDecideAs(t, backend, log, "typesafe/jev-1.13")
+	if status != 200 {
+		t.Fatalf("status %d: %v", status, payload)
+	}
+	if payload["model"] != "typesafe-ai/jev" {
+		t.Fatalf("answered as %v", payload["model"])
+	}
+	if len(log.authorize) != 1 || log.authorize[0]["model"] != "typesafe-ai/jev" {
+		t.Fatalf("authorized as %v", log.authorize)
+	}
+	if strings.Join(backend.called, ",") != "typesafe" || len(log.settle) != 1 {
+		t.Fatalf("hosts %v, settlements %d: the alias must take the hosted path", backend.called, len(log.settle))
+	}
 }

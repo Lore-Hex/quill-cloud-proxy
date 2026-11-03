@@ -48,6 +48,22 @@ var HostedModels = map[string]bool{
 	"tinfoil/decision-large":         true,
 }
 
+// ModelAliases are other routers' names for a hosted decision model. The
+// gateway answers them as the TrustedRouter id, so authorization, billing and
+// the response all name that id. quill-router's DECIDE_MODEL_ALIASES mirrors
+// this table to answer gateways built before an entry.
+var ModelAliases = map[string]string{
+	"typesafe/jev-1.13": "typesafe-ai/jev", // OpenRouter's Decisions API
+}
+
+// CanonicalModel returns the TrustedRouter id for a decide request's model.
+func CanonicalModel(model string) string {
+	if canonical, ok := ModelAliases[model]; ok {
+		return canonical
+	}
+	return model
+}
+
 func IsTinfoilModel(model string) bool {
 	return strings.HasPrefix(model, "tinfoil/") && HostedModels[model]
 }
