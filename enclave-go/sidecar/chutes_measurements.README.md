@@ -2,14 +2,57 @@
 
 `chutes_measurements.json` contains the release-pinned snapshot fetched from
 `https://api.chutes.ai/servers/tee/measurements` on 2026-08-15, plus the eight
-live-verified 1.4.1 profiles described below.
+live-verified 1.4.1 profiles and the single reviewed 1.5.0 profile described below.
 
-SHA-256: `56b56d62fb942da670160de52d79e8854b98109f5bfb4abf85d8bbb4ec3c20ac`
+SHA-256: `447bf6b9e74a6fbc818998852ccbc80cbff6f6d479a1b839e4064469e72f273c`
 
 The verifier accepts only an exact MRTD and runtime RTMR0 through RTMR3 match
 from this file. A Chutes measurement change therefore fails closed until the
 new public snapshot is reviewed, tested, committed, and deployed in a newly
 attested TrustedRouter image.
+
+## November 3, 2026 Kimi K3 investigation
+
+The only advertised Kimi K3 TEE instance returned its CPU quote in signed
+`evidence.quote`, while older instances still returned signed
+`evidence.tdx_quote`. The release verifier understood only the latter and
+rejected the request before any prompt was sent. Supporting both signed names
+exposed a second, independent gate: this instance runs a new 1.5.0 workload.
+
+Only the live-verified `8xb300 [10.2.1, flat-252c-1944g]` 1.5.0 profile is
+added here. MRTD, RTMR0, and RTMR1 match that hardware profile's prior release;
+RTMR2 and RTMR3 changed. All five measurements must still match exactly.
+The downloaded public reference-manifest SHA-256 was
+`d675fbfd6ace09f02e2145f4737964ea49bca41ce5211c12204436a517fbdf73`.
+No other 1.5.0 profile is accepted, and the older reviewed profiles are retained.
+
+Reviewed immutable upstream source at the `v1.5.0` release commit
+`a526aef429e96f07a8971483736c4c000dcbf07a`:
+
+- [Attestation response and quote format](https://github.com/chutesai/sek8s/blob/a526aef429e96f07a8971483736c4c000dcbf07a/src/sek8s/sek8s/services/attestation.py)
+- [Signed evidence proxy](https://github.com/chutesai/sek8s/blob/a526aef429e96f07a8971483736c4c000dcbf07a/src/attestation-proxy/attestation_proxy/service.py)
+- [Measured root-filesystem verification](https://github.com/chutesai/sek8s/blob/a526aef429e96f07a8971483736c4c000dcbf07a/ansible/guest/roles/rootfs-measure/files/rootfs-verify)
+- [Release changelog](https://github.com/chutesai/sek8s/blob/a526aef429e96f07a8971483736c4c000dcbf07a/changelogs/vm/CHANGELOG.md)
+
+The generic quote name does not add SEV-SNP support to TrustedRouter. The
+verified bytes must still be a non-debug Intel TDX v4 quote with current
+collateral, a trusted workload, and the correct fresh nonce, ML-KEM key, and
+certificate-key bindings. Conflicting signed aliases are rejected, and the
+unsigned outer `quote` field is never used as a substitute.
+
+The new-format and exact-measurement regression tests failed on the old code.
+The repaired sidecar suite passes with the race detector, including rejection
+of tampered signatures, wrong keys/nonces, debug mode, unpinned measurements,
+outdated TCB, non-TDX quotes, failed NVIDIA evidence, and mutation of each of
+the five measurement registers. Real Intel and NVIDIA verification passed.
+`TestLiveChutesE2EEAttestedPong` passed against `moonshotai/Kimi-K3-TEE` in
+11.67 seconds using the local sidecar with these embedded pins and no candidate
+override. The canary sent only a synthetic PONG request.
+
+This is verification against provider-published reference measurements, not an
+independent rebuild of the guest image. The local canary is not evidence of a
+production rollout. Merging and deploying this new workload pin requires the
+operator's explicit approval of this exact reviewed update.
 
 ## October 8, 2026 pool-wide investigation
 

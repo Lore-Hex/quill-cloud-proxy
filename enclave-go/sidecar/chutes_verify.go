@@ -68,6 +68,7 @@ type signedChutesEvidence struct {
 	Nonce    string `json:"nonce"`
 	Evidence struct {
 		TDXQuote        string `json:"tdx_quote"`
+		Quote           string `json:"quote"`
 		NVTrustEvidence string `json:"nvtrust_evidence"`
 	} `json:"evidence"`
 }
@@ -216,7 +217,16 @@ func (v *chutesVerifier) verify(ctx context.Context, request *chutesVerification
 	if signed.Nonce != request.Nonce {
 		return nil, errors.New("signed Chutes evidence nonce mismatch")
 	}
-	quote, err := base64.StdEncoding.DecodeString(signed.Evidence.TDXQuote)
+	// Chutes deploys both signed schemas. Never use the unsigned wrapper's
+	// quote, and reject ambiguity rather than choosing between signed quotes.
+	encodedQuote := signed.Evidence.TDXQuote
+	if signed.Evidence.Quote != "" {
+		if encodedQuote != "" && encodedQuote != signed.Evidence.Quote {
+			return nil, errors.New("conflicting signed Intel TDX quotes")
+		}
+		encodedQuote = signed.Evidence.Quote
+	}
+	quote, err := base64.StdEncoding.DecodeString(encodedQuote)
 	if err != nil || len(quote) == 0 {
 		return nil, errors.New("invalid signed Intel TDX quote")
 	}
