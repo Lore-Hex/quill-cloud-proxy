@@ -1577,6 +1577,9 @@ func parseChatRequest(body []byte) (*types.OpenAIChatRequest, error) {
 	if err := json.Unmarshal(body, &req); err != nil {
 		return nil, err
 	}
+	if validation.RepetitionPenaltyAlias != nil {
+		req.RepetitionPenalty = validation.RepetitionPenaltyAlias
+	}
 	types.RecoverToolCallNames(req.Messages)
 	adapter.ConfigureReasoningVisibility(&req, validation.ExcludeReasoning)
 	if err := adapter.ConfigureChatWebSearch(&req); err != nil {
