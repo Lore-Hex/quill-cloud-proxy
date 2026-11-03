@@ -29,3 +29,22 @@ func TestNYTETitleOutranksTheOtherTitlesInAnyOrder(t *testing.T) {
 		t.Fatalf("without X-NYTE-Title: App = %q, err = %v", attribution.App, err)
 	}
 }
+
+func TestAnEmptyTitleNeverHidesTheNextOne(t *testing.T) {
+	for _, tc := range []struct{ headers, want string }{
+		{"X-NYTE-Title: \r\nX-OpenRouter-Title: O\r\nX-Title: L\r\n", "O"},
+		{"X-OpenRouter-Title: O\r\nX-NYTE-Title: \r\n", "O"},
+		{"X-Title: L\r\nX-OpenRouter-Title: \r\n", "L"},
+		{"X-OpenRouter-Title: \r\nX-Title: L\r\n", "L"},
+		{"X-NYTE-Title: \r\n", ""},
+	} {
+		raw := "POST /v1/chat/completions HTTP/1.1\r\n" + tc.headers + "Content-Length: 2\r\n\r\n{}"
+		_, _, _, _, attribution, _, err := readRequest(bufio.NewReader(strings.NewReader(raw)))
+		if err != nil {
+			t.Fatalf("%q: readRequest: %v", tc.headers, err)
+		}
+		if attribution.App != tc.want {
+			t.Fatalf("%q: App = %q, want %q", tc.headers, attribution.App, tc.want)
+		}
+	}
+}

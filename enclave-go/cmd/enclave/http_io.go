@@ -308,9 +308,6 @@ type requestAttributionHeaders struct {
 	InferenceReceipt   string
 	httpVersion        string
 	connectionClose    bool
-	// nyteTitle: X-NYTE-Title named the app, which outranks the OpenRouter
-	// and legacy titles whatever order the fields arrive in.
-	nyteTitle bool
 	// acceptEncoding is the combined Accept-Encoding field. Only the public
 	// catalog routes read it, to choose a gzip response; it is never
 	// forwarded to the control plane or a provider.
@@ -356,6 +353,10 @@ func readRequestWithTiming(
 	hostSeen := false
 	transferEncodingSeen := false
 	headerCount := 0
+	// The app's public name: the first non-empty of X-NYTE-Title,
+	// X-OpenRouter-Title and X-Title, resolved after every field is read so
+	// neither header order nor an empty field changes which one wins.
+	var nyteTitle, openRouterTitle, legacyTitle string
 	for {
 		lineBytes, err := readBoundedHTTPLine(br)
 		if err != nil {
@@ -417,16 +418,11 @@ func readRequestWithTiming(
 		case "http-referer":
 			attribution.HTTPReferer = v
 		case "x-nyte-title":
-			attribution.App = v
-			attribution.nyteTitle = true
+			nyteTitle = v
 		case "x-openrouter-title":
-			if !attribution.nyteTitle {
-				attribution.App = v
-			}
+			openRouterTitle = v
 		case "x-title":
-			if attribution.App == "" {
-				attribution.App = v
-			}
+			legacyTitle = v
 		case "x-openrouter-categories":
 			attribution.AppCategories = splitAttributionCategories(v)
 		case "x-openrouter-metadata", "x-openrouter-experimental-metadata":
@@ -495,6 +491,12 @@ func readRequestWithTiming(
 			contentLength = parsed
 		case "transfer-encoding":
 			transferEncodingSeen = true
+		}
+	}
+	for _, title := range []string{nyteTitle, openRouterTitle, legacyTitle} {
+		if title != "" {
+			attribution.App = title
+			break
 		}
 	}
 	// Never choose between Content-Length and Transfer-Encoding. Different
