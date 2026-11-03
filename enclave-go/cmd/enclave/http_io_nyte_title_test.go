@@ -37,6 +37,8 @@ func TestAnEmptyTitleNeverHidesTheNextOne(t *testing.T) {
 		{"X-Title: L\r\nX-OpenRouter-Title: \r\n", "L"},
 		{"X-OpenRouter-Title: \r\nX-Title: L\r\n", "L"},
 		{"X-NYTE-Title: \r\n", ""},
+		{"X-Title: L\r\nX-Title: \r\n", "L"},
+		{"X-NYTE-Title: N\r\nX-NYTE-Title: \r\nX-OpenRouter-Title: O\r\n", "N"},
 	} {
 		raw := "POST /v1/chat/completions HTTP/1.1\r\n" + tc.headers + "Content-Length: 2\r\n\r\n{}"
 		_, _, _, _, attribution, _, err := readRequest(bufio.NewReader(strings.NewReader(raw)))

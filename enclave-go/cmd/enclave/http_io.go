@@ -418,11 +418,17 @@ func readRequestWithTiming(
 		case "http-referer":
 			attribution.HTTPReferer = v
 		case "x-nyte-title":
-			nyteTitle = v
+			if v != "" {
+				nyteTitle = v
+			}
 		case "x-openrouter-title":
-			openRouterTitle = v
+			if v != "" {
+				openRouterTitle = v
+			}
 		case "x-title":
-			legacyTitle = v
+			if v != "" {
+				legacyTitle = v
+			}
 		case "x-openrouter-categories":
 			attribution.AppCategories = splitAttributionCategories(v)
 		case "x-openrouter-metadata", "x-openrouter-experimental-metadata":
