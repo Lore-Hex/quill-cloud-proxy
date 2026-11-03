@@ -172,14 +172,14 @@ func ValidateChatRequestFields(raw map[string]json.RawMessage) (ChatRequestValid
 // control. Normalize only this known alias; never ignore unknown parameters.
 func validateRepeatPenaltyAlias(raw map[string]json.RawMessage) (*float64, error) {
 	value := raw["repeat_penalty"]
-	if !presentNonNull(value) {
+	if len(value) == 0 || strings.TrimSpace(string(value)) == "null" {
 		return nil, nil
 	}
 	var penalty float64
 	if err := json.Unmarshal(value, &penalty); err != nil || penalty <= 0 {
 		return nil, &AdapterError{Status: 400, Message: "repeat_penalty must be a positive finite number", Context: "repeat_penalty"}
 	}
-	if canonical := raw["repetition_penalty"]; presentNonNull(canonical) {
+	if canonical := raw["repetition_penalty"]; len(canonical) != 0 && strings.TrimSpace(string(canonical)) != "null" {
 		var other float64
 		if err := json.Unmarshal(canonical, &other); err != nil || other != penalty {
 			return nil, &AdapterError{Status: 400, Message: "repeat_penalty and repetition_penalty must agree", Context: "repeat_penalty"}
