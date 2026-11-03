@@ -10,9 +10,10 @@ import (
 // ChatRequestValidation is enclave-owned routing metadata derived from the
 // exact request shape. It is not serialized to an upstream model provider.
 type ChatRequestValidation struct {
-	RequestedParameters []string
-	IncludeUsage        bool
-	ExcludeReasoning    bool
+	RequestedParameters    []string
+	IncludeUsage           bool
+	ExcludeReasoning       bool
+	RepetitionPenaltyAlias *float64
 }
 
 var chatRequestFields = map[string]struct{}{
@@ -28,7 +29,7 @@ var chatRequestFields = map[string]struct{}{
 	"temperature": {}, "tool_choice": {}, "tools": {}, "top_a": {}, "top_k": {},
 	"top_logprobs": {}, "top_p": {}, "trace": {}, "user": {}, "web_search_options": {},
 	// TrustedRouter compatibility/extensions already supported by the gateway.
-	"allow_fallbacks": {}, "depth": {}, "include_reasoning": {}, "max_output_tokens": {}, "n": {}, "store": {}, "tags": {}, "usage": {},
+	"allow_fallbacks": {}, "depth": {}, "include_reasoning": {}, "max_output_tokens": {}, "n": {}, "repeat_penalty": {}, "store": {}, "tags": {}, "usage": {},
 }
 
 var unsupportedChatFields = map[string]struct{}{
@@ -77,6 +78,7 @@ var endpointCapabilityFields = map[string]string{
 	"reasoning":             "reasoning",
 	"reasoning_effort":      "reasoning",
 	"repetition_penalty":    "repetition_penalty",
+	"repeat_penalty":        "repetition_penalty",
 	"response_format":       "response_format",
 	"seed":                  "seed",
 	"service_tier":          "service_tier",
@@ -94,6 +96,10 @@ var endpointCapabilityFields = map[string]string{
 // explicit. Unknown fields are 400s; known fields that this release cannot
 // honor are stable 501s. Nothing accepted here may silently disappear.
 func ValidateChatRequestFields(raw map[string]json.RawMessage) (ChatRequestValidation, error) {
+	repeatPenalty, err := validateRepeatPenaltyAlias(raw)
+	if err != nil {
+		return ChatRequestValidation{}, err
+	}
 	excludeReasoning, err := validateReasoningVisibility(raw)
 	if err != nil {
 		return ChatRequestValidation{}, err
@@ -159,7 +165,27 @@ func ValidateChatRequestFields(raw map[string]json.RawMessage) (ChatRequestValid
 		parameters = append(parameters, parameter)
 	}
 	sort.Strings(parameters)
-	return ChatRequestValidation{RequestedParameters: parameters, IncludeUsage: includeUsage, ExcludeReasoning: excludeReasoning}, nil
+	return ChatRequestValidation{RequestedParameters: parameters, IncludeUsage: includeUsage, ExcludeReasoning: excludeReasoning, RepetitionPenaltyAlias: repeatPenalty}, nil
+}
+
+// llama.cpp-style clients use repeat_penalty for the same multiplicative
+// control. Normalize only this known alias; never ignore unknown parameters.
+func validateRepeatPenaltyAlias(raw map[string]json.RawMessage) (*float64, error) {
+	value := raw["repeat_penalty"]
+	if len(value) == 0 || strings.TrimSpace(string(value)) == "null" {
+		return nil, nil
+	}
+	var penalty float64
+	if err := json.Unmarshal(value, &penalty); err != nil || penalty <= 0 {
+		return nil, &AdapterError{Status: 400, Message: "repeat_penalty must be a positive finite number", Context: "repeat_penalty"}
+	}
+	if canonical := raw["repetition_penalty"]; len(canonical) != 0 && strings.TrimSpace(string(canonical)) != "null" {
+		var other float64
+		if err := json.Unmarshal(canonical, &other); err != nil || other != penalty {
+			return nil, &AdapterError{Status: 400, Message: "repeat_penalty and repetition_penalty must agree", Context: "repeat_penalty"}
+		}
+	}
+	return &penalty, nil
 }
 
 func validateChatStreamOptions(value json.RawMessage) error {
