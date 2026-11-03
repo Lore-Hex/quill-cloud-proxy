@@ -1,11 +1,91 @@
 # Maple pilot qualification
 
-## Front measurement update (2026-10-31)
+## Front measurement update (2026-11-01)
 
 The source now pins only PCR0
+`9d6ec6dbcdbb282aa80f48e39a497284f5b3d86a06b6a2ac401b14a43eb6632b3255d2fe82417c13109209f3b7b72bdb`.
+The previous `6eac0f15...` and original `ada74c7a...` measurements are not
+additional allowed measurements. This source change is **not production rollout
+or paid-inference acceptance**; all ordinary source CI, measured-image, signed
+trust, cloud rollout and final production gates still apply.
+
+From about 23:00 UTC on 2026-11-01, every GCP gateway's Maple attempt failed
+fast before inference with a generic error, on VMs that had succeeded earlier
+that day. Maple had approved a new production measurement at 22:37 UTC, so the
+`6eac0f15...` pin was correctly refusing the new front enclave. This motivated
+the review below; it does not prove the precise cause of each failed request.
+No live measurement was copied into the allowlist.
+
+Maple's [approval commit](https://github.com/MaplePrivacyLabs/Maple/commit/ae650d6e76e909a64606e7ab383c77414c51e5ae)
+(PR #1421, a direct child of the source commit on `master`) binds the new
+measurement to source `0e7dbc0bd4aac03db1e64cb8c733480d527fb450` and EIF SHA-256
+`895a58e45c5eefd00561a372fedb615357ae7c159f83f0596925538a7f1ef1c0`.
+Its new `pcrProdHistory.json` entry's signature verifies over that PCR0 with
+OpenSecret's P-384 history key pinned in the vendored SDK; the same signature
+fails over the previous PCR0, and the previous entry's signature still verifies.
+The artifacts from release runs
+[41357568942](https://github.com/MaplePrivacyLabs/Maple/actions/runs/41357568942)
+and [41357392934](https://github.com/MaplePrivacyLabs/Maple/actions/runs/41357392934)
+are identical. Their `image.eif` and `pcr.json` passed GitHub/Sigstore provenance
+verification constrained to that exact source, `refs/heads/master`, GitHub's
+OIDC issuer, and
+`MaplePrivacyLabs/Maple/.github/workflows/opensecret-eif-release.yml@refs/heads/master`.
+As for the previous release, the attesting build ran on a self-hosted
+(Blacksmith ARM) runner, so `--deny-self-hosted-runners` does not pass; the
+independent build below is what removes reliance on that runner.
+
+An independent ARM64 Linux build of that clean source, its locked inputs and
+its pinned `privatemode-public` submodule (`4b72dcbb...`) then completed the
+unchanged vendor packaging script successfully. It used the vendor-pinned
+Determinate Nix 3.23.3 (Nix 2.35.3), `sandbox=true`, `sandbox-fallback=false`,
+and an actual derivation proving the `/build` directory. Only `cache.nixos.org`
+was enabled; no Maple/FlakeHub output cache was used. The full 234,339,943-byte
+EIF, `pcr.json`, `SHA256SUMS` and `handoff.json` are byte-for-byte identical to
+the published artifact. Independent EIF v4 structure and CRC validation passed.
+PCR1 is unchanged at
+`a91689e37a54303051f68263010f397ddfa92d66e17df7a03a6777c33ff1e4fc12b69bbbe786894d43dcba1cf6d60aaa`;
+PCR2 is
+`bb1e353c9a8f753c40f8c709bb463de646320218d49c6d038aac69eda4df228e78fcd480ef8246d830d09cc99e6065ba`.
+The build's Rust checks passed 1,092 tests, with 55 ignored database/live tests;
+this is not a claim those ignored integrations passed. As on 2026-10-31, the
+first attempt stopped at the sandbox preflight under Docker's masked `/proc`;
+the same unmasked container setup fixed it without disabling the Nix sandbox or
+allowing fallback.
+
+The scoped source comparison from `55f02f0b...` to `0e7dbc0b...` (44 commits)
+found no blocking change in the managed stateless chat path. Transport V2,
+API-key and OpenAI-compatible authentication, chat completions, provider
+routing and caches, workspace cache ownership, the dedicated i02 attestation
+policy and its worker/weights pins, `main.rs`, the Cargo lockfile, Nix flake
+inputs, the SDK and the i02 entrypoint/planning sources are unchanged. Every
+changed enclave Rust file belongs to the Responses/Conversations compaction
+feature, including one `db.rs` accessor for it. Responses compaction now streams after
+durable acceptance, with content-free progress events, and the Responses system
+prompt points Maple self-questions at maple.ai. A new
+`GET /v1/conversations/:id/compactions` route returns user-scoped marker
+metadata only. It sits behind the existing JWT layer, and its SQL binds every
+caller value; only a validated `asc`/`desc` enum selects the fragments. These
+JWT-protected routes were inspected, not claimed as a complete audit of that
+subsystem or its live database. The remaining changes are Maple agent and
+research app, update-publisher, download-tracking and CI code outside the EIF,
+plus approval files and docs.
+
+At 06:34 UTC on 2026-11-02, the unchanged qualification client with the reviewed
+new pin passed a live front handshake (430 ms in that observation). Its
+deliberate wrong-pin check then passed after a successful positive control.
+These checks used no credentials and sent no inference. The client's metadata
+still conservatively reports `end_to_end_qualified=false` and
+`source_reproduction_verified=false`: the handshake does not itself perform the
+independent build described above. Pinned Rust 1.94.1 formatting and Clippy
+passed; the SDK/helper workspace checks passed 142 tests with one live test
+ignored. Deployment and fresh paid acceptance remain separate requirements.
+
+## Front measurement update (2026-10-31)
+
+That update pinned only PCR0
 `6eac0f156a3732f05a83de99cef6e429c8b67a43b4cea9af27b419bc3e979b4d6494e9625baff8a22327d60be235851a`.
-The old `ada74c7a...` measurement is not an additional allowed measurement.
-This source change is **not production rollout or paid-inference acceptance**;
+The old `ada74c7a...` measurement was not an additional allowed measurement.
+That source change was **not production rollout or paid-inference acceptance**;
 all ordinary source CI, measured-image, signed trust, cloud rollout and final
 production gates still apply. The sections below preserve the earlier pilot
 and reproduction history rather than describing the new rollout's state.
