@@ -293,6 +293,9 @@ func serveDecide(
 		writeOpenAIError(conn, 400, "model is required", "invalid_request_error", "bad_request", "model")
 		return
 	}
+	// Before anything reads the model: an alias must take the hosted path and
+	// be authorized, billed and answered under the TrustedRouter id.
+	req.Model = decide.CanonicalModel(req.Model)
 	if req.Stream {
 		writeOpenAIError(conn, 400, "decision models do not stream", "invalid_request_error", "bad_request", "stream")
 		return

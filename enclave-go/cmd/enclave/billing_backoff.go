@@ -66,7 +66,7 @@ func writeBillingBackoff(w io.Writer, route string, rejection trustedrouter.Bill
 // billingBackoffHeaderGroups audits readRequestWithHeadersRead,
 // applyAttributionHeaders, chatAuthorizeBody, AuthorizeWithRoute and
 // parseClientContext for validation and authorization inputs:
-//   - Attribution: HTTP-Referer, X-OpenRouter-Title / X-Title (parsed precedence),
+//   - Attribution: HTTP-Referer, X-NYTE-Title / X-OpenRouter-Title / X-Title (parsed precedence),
 //     X-OpenRouter-Categories (parsed ordered list), X-Session-ID, and
 //     X-OpenRouter-Metadata / X-OpenRouter-Experimental-Metadata (parsed flag).
 //     User, trace and body session_id are body-only inputs, already body-hashed.

@@ -353,6 +353,10 @@ func readRequestWithTiming(
 	hostSeen := false
 	transferEncodingSeen := false
 	headerCount := 0
+	// The app's public name: the first non-empty of X-NYTE-Title,
+	// X-OpenRouter-Title and X-Title, resolved after every field is read so
+	// neither header order nor an empty field changes which one wins.
+	var nyteTitle, openRouterTitle, legacyTitle string
 	for {
 		lineBytes, err := readBoundedHTTPLine(br)
 		if err != nil {
@@ -413,11 +417,17 @@ func readRequestWithTiming(
 			attribution.SessionID = v
 		case "http-referer":
 			attribution.HTTPReferer = v
+		case "x-nyte-title":
+			if v != "" {
+				nyteTitle = v
+			}
 		case "x-openrouter-title":
-			attribution.App = v
+			if v != "" {
+				openRouterTitle = v
+			}
 		case "x-title":
-			if attribution.App == "" {
-				attribution.App = v
+			if v != "" {
+				legacyTitle = v
 			}
 		case "x-openrouter-categories":
 			attribution.AppCategories = splitAttributionCategories(v)
@@ -487,6 +497,12 @@ func readRequestWithTiming(
 			contentLength = parsed
 		case "transfer-encoding":
 			transferEncodingSeen = true
+		}
+	}
+	for _, title := range []string{nyteTitle, openRouterTitle, legacyTitle} {
+		if title != "" {
+			attribution.App = title
+			break
 		}
 	}
 	// Never choose between Content-Length and Transfer-Encoding. Different
