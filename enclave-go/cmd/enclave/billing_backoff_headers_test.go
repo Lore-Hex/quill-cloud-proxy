@@ -61,6 +61,7 @@ func TestBillingHeaderAttribution(t *testing.T) {
 		{"HTTP-Referer", "https://one.example", "https://two.example", "not-a-url"},
 		{"X-Title", "one", "two", strings.Repeat("x", 121)},
 		{"X-OpenRouter-Title", "one", "two", strings.Repeat("x", 121)},
+		{"X-NYTE-Title", "one", "two", strings.Repeat("x", 121)},
 		{"X-OpenRouter-Categories", "coding", "writing", "INVALID!"},
 		{"X-Session-ID", "one", "two", strings.Repeat("x", 257)},
 	} {

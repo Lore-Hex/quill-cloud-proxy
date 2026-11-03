@@ -308,6 +308,9 @@ type requestAttributionHeaders struct {
 	InferenceReceipt   string
 	httpVersion        string
 	connectionClose    bool
+	// nyteTitle: X-NYTE-Title named the app, which outranks the OpenRouter
+	// and legacy titles whatever order the fields arrive in.
+	nyteTitle bool
 	// acceptEncoding is the combined Accept-Encoding field. Only the public
 	// catalog routes read it, to choose a gzip response; it is never
 	// forwarded to the control plane or a provider.
@@ -413,8 +416,13 @@ func readRequestWithTiming(
 			attribution.SessionID = v
 		case "http-referer":
 			attribution.HTTPReferer = v
-		case "x-openrouter-title":
+		case "x-nyte-title":
 			attribution.App = v
+			attribution.nyteTitle = true
+		case "x-openrouter-title":
+			if !attribution.nyteTitle {
+				attribution.App = v
+			}
 		case "x-title":
 			if attribution.App == "" {
 				attribution.App = v
