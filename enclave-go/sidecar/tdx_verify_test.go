@@ -1,6 +1,28 @@
 package main
 
-import "testing"
+import (
+	"net/http"
+	"testing"
+	"time"
+)
+
+func TestIntelCollateralTransportPreservesVerificationPolicy(t *testing.T) {
+	opts := newTDXVerificationOptions()
+	if !opts.GetCollateral || !opts.CheckRevocations {
+		t.Fatal("Intel collateral and revocation verification must remain mandatory")
+	}
+	client := opts.Getter.(*intelCollateralGetter).client
+	transport := client.Transport.(*http.Transport)
+	if client.Timeout != 20*time.Second || transport.TLSHandshakeTimeout != 10*time.Second {
+		t.Fatal("Intel collateral time limits changed")
+	}
+	if transport.Proxy != nil || (transport.TLSClientConfig != nil && transport.TLSClientConfig.InsecureSkipVerify) {
+		t.Fatal("Intel collateral must retain authenticated end-to-end TLS")
+	}
+	if client.CheckRedirect == nil || client.CheckRedirect(&http.Request{}, nil) == nil {
+		t.Fatal("Intel collateral redirects must remain forbidden")
+	}
+}
 
 func TestValidateIntelCollateralURL(t *testing.T) {
 	t.Parallel()
