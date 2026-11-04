@@ -1,6 +1,7 @@
 {
   "accepted_pcr0s": [
-    "0afd806aaac56e7e82b4f38bb8cfa87aa6c948eb759bb88cce2c0cf65916af52a697690853806e6d9a81559678d6c4db"
+    "0afd806aaac56e7e82b4f38bb8cfa87aa6c948eb759bb88cce2c0cf65916af52a697690853806e6d9a81559678d6c4db",
+    "0958bbc119a816971f0b0e14a0d18d9bc5878c1256140d08aa3ededa513a5568055c6a1eaf68ffcb5b06c55c963aa418"
   ],
   "api_base_url": "https://api-aws.trustedrouter.com/v1",
   "attestation_format": "cose-sign1-nitro-attestation-document",
@@ -17,7 +18,7 @@
   "observed_module_id": "i-09216ccc7511b41ff-enc01a1a7e0cb1aebf9",
   "pcr0": "0afd806aaac56e7e82b4f38bb8cfa87aa6c948eb759bb88cce2c0cf65916af52a697690853806e6d9a81559678d6c4db",
   "platform": "aws-nitro-enclaves",
-  "release_state": "current",
+  "release_state": "rolling",
   "reproduce": "tools/verify-pcr0.sh",
   "source_commit": "4328438fd11183b751d5bbf1ae9a4b116e4f1766",
   "source_commit_provenance": "operator-asserted",
@@ -26,6 +27,14 @@
     "certificate_binding": "user_data[0:32]=SHA-256 of the served certificate (DER), user_data[64:96]=TLS exporter channel binding",
     "hostname": "api-aws.trustedrouter.com",
     "mode": "acme-inside-nitro-enclave"
+  },
+  "transition_target": {
+    "image_digest": "sha256:e9aa8a3bc363d788e21c78f036ca61cb13bcc5be9896093959e769dcfb9814e4",
+    "observed_module_id": "i-0e0f4e90383238952-enc01a1a81c47f7e2f0",
+    "pcr0": "0958bbc119a816971f0b0e14a0d18d9bc5878c1256140d08aa3ededa513a5568055c6a1eaf68ffcb5b06c55c963aa418",
+    "source_commit": "3cf28d2b123a151320ac6d71441fe13d1af0134a",
+    "source_commit_provenance": "operator-asserted",
+    "state": "isolated-candidate"
   },
   "transparency": {
     "bundle": "aws-release.json.bundle",
