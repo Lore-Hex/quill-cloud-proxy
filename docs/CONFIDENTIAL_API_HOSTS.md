@@ -15,9 +15,10 @@ alone nor the `e2e` model alias substitutes for that request field.
 - Every internal chat authorization checks the inherited context constraint,
   then uses the existing control-plane endpoint privacy filter. No new billing
   or routing algorithm is introduced. Missing child policy fails before a hold.
-- Local spend-lease admission is disabled for this origin. User-hosted custom
-  endpoints are rejected, including when returned by custom-model resolution;
-  hidden-prompt wrappers around eligible catalog routes remain supported.
+- Local spend-lease admission is disabled for this origin. Custom prompt-wrapper
+  models and user-hosted endpoints are retired on every origin. Their namespaces
+  are rejected before authorization, and any legacy custom-model authorization
+  returned by an older control plane is rejected and refunded.
 - Hosted web search cannot send confidential prompts to the search provider.
 - Health, attestation, receipt identity and catalog metadata remain readable.
 - The original request bytes, not any normalized payload, are receipt-hashed.

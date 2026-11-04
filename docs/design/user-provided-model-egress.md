@@ -1,5 +1,10 @@
 # User-provided model egress
 
+> Historical design only. Retired November 3, 2026: owner endpoint dispatch,
+> credential decryption and custom prompt injection have been removed from the
+> enclave. The model namespaces and legacy authorization contracts fail closed
+> on every cloud. The former behavior is retained below for audit history.
+
 Requests for `trustedrouter/user-*` user-provided models enter through the same
 attested gateway as other inference requests, but their owner endpoint is
 outside TrustedRouter's attested boundary. The enclave resolves the model and
