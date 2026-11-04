@@ -16,7 +16,7 @@ func controlPlaneRouteMessage(path string) string {
 	switch root {
 	case "keys":
 		subject = "Key management"
-	case "credits", "activity", "workspaces", "organization", "billing", "byok", "custom-models", "broadcast", "auth", "signup", "generation":
+	case "credits", "activity", "workspaces", "organization", "billing", "byok", "broadcast", "auth", "signup", "generation":
 	default:
 		return ""
 	}

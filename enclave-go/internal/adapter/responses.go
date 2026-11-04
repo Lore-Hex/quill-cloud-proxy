@@ -234,7 +234,7 @@ func ResponsesToChat(req *types.OpenAIResponsesRequest) (*types.OpenAIChatReques
 		return nil, err
 	}
 	if strings.TrimSpace(req.Model) == "" {
-		return nil, &AdapterError{Status: 400, Message: "model is required"}
+		return nil, &AdapterError{Status: 400, Message: "model is required", Context: "model"}
 	}
 	responseFormat, err := chatResponseFormatFromResponsesText(req.Text)
 	if err != nil {
@@ -265,7 +265,7 @@ func ResponsesToChat(req *types.OpenAIResponsesRequest) (*types.OpenAIChatReques
 	}
 	messages = append(messages, inputMessages...)
 	if len(messages) == 0 {
-		return nil, &AdapterError{Status: 400, Message: "input must contain text"}
+		return nil, &AdapterError{Status: 400, Message: "input must contain text", Context: "input"}
 	}
 	maxTokens := req.MaxOutputTokens
 	if maxTokens == nil {
@@ -385,7 +385,7 @@ func responseInputMessages(input any) ([]types.OpenAIChatMessage, error) {
 	switch value := input.(type) {
 	case string:
 		if strings.TrimSpace(value) == "" {
-			return nil, &AdapterError{Status: 400, Message: "input must contain text"}
+			return nil, &AdapterError{Status: 400, Message: "input must contain text", Context: "input"}
 		}
 		return []types.OpenAIChatMessage{{Role: "user", Content: value}}, nil
 	case []any:
@@ -407,7 +407,7 @@ func responseInputMessages(input any) ([]types.OpenAIChatMessage, error) {
 			}
 		}
 		if len(value) > 0 && len(out) == 0 {
-			return nil, &AdapterError{Status: 400, Message: "input must contain text"}
+			return nil, &AdapterError{Status: 400, Message: "input must contain text", Context: "input"}
 		}
 		return out, nil
 	case map[string]any:
@@ -416,11 +416,11 @@ func responseInputMessages(input any) ([]types.OpenAIChatMessage, error) {
 			return nil, err
 		}
 		if drop {
-			return nil, &AdapterError{Status: 400, Message: "input must contain text"}
+			return nil, &AdapterError{Status: 400, Message: "input must contain text", Context: "input"}
 		}
 		return []types.OpenAIChatMessage{message}, nil
 	default:
-		return nil, &AdapterError{Status: 400, Message: "input must be text or text messages"}
+		return nil, &AdapterError{Status: 400, Message: "input must be text or text messages", Context: "input"}
 	}
 }
 
@@ -471,17 +471,20 @@ func responseInputMessage(item any, index int) (message types.OpenAIChatMessage,
 		role = "system"
 	}
 	if role != "system" && role != "user" && role != "assistant" {
-		return types.OpenAIChatMessage{}, false, &AdapterError{Status: 400, Message: "unsupported input role"}
+		return types.OpenAIChatMessage{}, false, &AdapterError{Status: 400, Message: "unsupported input role", Context: fmt.Sprintf("input[%d].role", index)}
 	}
 	content, err := responseContent(m)
 	if err != nil {
+		if rejected, ok := err.(*AdapterError); ok && rejected.Context == "" {
+			rejected.Context = fmt.Sprintf("input[%d].content", index)
+		}
 		return types.OpenAIChatMessage{}, false, err
 	}
 	if types.ContentEmpty(content) {
 		if role == "assistant" && responseEmptyTextParts(m["content"]) {
 			return types.OpenAIChatMessage{}, true, nil
 		}
-		return types.OpenAIChatMessage{}, false, &AdapterError{Status: 400, Message: "input item must contain text or image"}
+		return types.OpenAIChatMessage{}, false, &AdapterError{Status: 400, Message: "input item must contain text or image", Context: fmt.Sprintf("input[%d].content", index)}
 	}
 	return types.OpenAIChatMessage{Role: role, Content: content}, false, nil
 }

@@ -19,7 +19,7 @@ func TestServeOneControlPlaneDiscovery(t *testing.T) {
 		{"confidential host", "api.confidential.trustedrouter.com", ""},
 		{"confidential SNI", "api.trustedrouter.com", "api.confidential.trustedrouter.com"},
 	} {
-		for _, root := range []string{"keys", "credits", "activity", "workspaces", "organization", "billing", "byok", "custom-models", "broadcast", "auth", "signup", "generation"} {
+		for _, root := range []string{"keys", "credits", "activity", "workspaces", "organization", "billing", "byok", "broadcast", "auth", "signup", "generation"} {
 			for _, target := range []struct{ method, suffix string }{
 				{"GET", ""},
 				{"POST", "/"},

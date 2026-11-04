@@ -32,7 +32,7 @@ func TestBatchNativeHandlePersistsOnlySettlementAndAttributionFields(t *testing.
 		BroadcastDestinations: []trustedrouter.BroadcastDestination{{
 			Endpoint: "https://broadcast-sensitive.example",
 		}},
-		CustomModel: &trustedrouter.CustomModel{HiddenPrompt: "hidden-prompt-sensitive"},
+		CustomModel: &trustedrouter.CustomModel{ID: "hidden-prompt-sensitive"},
 	}
 	encoded, err := encodeBatchNativeHandle(
 		authorization,

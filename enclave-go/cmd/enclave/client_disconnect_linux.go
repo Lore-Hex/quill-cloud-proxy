@@ -14,13 +14,13 @@ import (
 	"golang.org/x/sys/unix"
 )
 
-// userModelClientDisconnect watches the peer socket without consuming bytes.
+// clientDisconnect watches the peer socket without consuming bytes.
 // Buffered callers cannot receive SSE keepalives, so a write-only disconnect
 // signal is the only way to cancel an owner request before its budget expires.
 // MSG_PEEK preserves a pipelined next request on the enclave's keep-alive
 // connection; POLLRDHUP supplies the actual cancellation signal.
-func userModelClientDisconnect(ctx context.Context, writer io.Writer) <-chan struct{} {
-	conn, ok := userModelSyscallConn(writer)
+func clientDisconnect(ctx context.Context, writer io.Writer) <-chan struct{} {
+	conn, ok := clientSyscallConn(writer)
 	if !ok {
 		return nil
 	}
@@ -83,7 +83,7 @@ func userModelClientDisconnect(ctx context.Context, writer io.Writer) <-chan str
 	return disconnected
 }
 
-func userModelSyscallConn(writer io.Writer) (syscall.Conn, bool) {
+func clientSyscallConn(writer io.Writer) (syscall.Conn, bool) {
 	current := writer
 	for range 8 {
 		switch conn := current.(type) {

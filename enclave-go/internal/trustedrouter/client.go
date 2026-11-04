@@ -696,27 +696,9 @@ type KeyIdentity struct {
 }
 
 type CustomModel struct {
-	ID                      string                             `json:"id"`
-	Name                    string                             `json:"name"`
-	Kind                    string                             `json:"kind"`
-	BaseModelID             string                             `json:"base_model_id"`
-	HiddenPrompt            string                             `json:"hidden_prompt"`
-	UserModelKind           string                             `json:"user_model_kind"`
-	OwnerWorkspaceID        string                             `json:"owner_workspace_id"`
-	OwnerUserID             string                             `json:"owner_user_id"`
-	EndpointURL             string                             `json:"endpoint_url"`
-	UpstreamModelID         string                             `json:"upstream_model_id"`
-	Revision                int                                `json:"revision"`
-	SupportsStreaming       bool                               `json:"supports_streaming"`
-	SecretNamespace         string                             `json:"secret_namespace"`
-	EndpointEncryptedSecret *byokcache.EncryptedSecretEnvelope `json:"endpoint_encrypted_secret"`
-	EndpointSecretPurpose   string                             `json:"endpoint_secret_purpose"`
-	SigningEncryptedSecret  *byokcache.EncryptedSecretEnvelope `json:"signing_encrypted_secret"`
-	SigningSecretPurpose    string                             `json:"signing_secret_purpose"`
-	ConnectTimeoutSeconds   int                                `json:"connect_timeout_seconds"`
-	FirstByteTimeoutSeconds int                                `json:"first_byte_timeout_seconds"`
-	IdleTimeoutSeconds      int                                `json:"idle_timeout_seconds"`
-	TotalTimeoutSeconds     int                                `json:"total_timeout_seconds"`
+	// Only recognize the legacy contract to reject it. Owner URLs, prompts,
+	// credentials and execution settings are deliberately not decoded.
+	ID string `json:"id"`
 }
 
 type RouteCandidate struct {
@@ -965,33 +947,10 @@ func (c *Client) ValidateKeyInfo(ctx context.Context, bearer string, routeType s
 	return &decoded.Data, nil
 }
 
-func (c *Client) ResolveCustomModel(ctx context.Context, bearer string, model string, routeType string) (*Authorization, error) {
-	lookupHash, err := c.beforeCredentialCheck(ctx, bearer)
-	if err != nil {
-		return nil, err
-	}
-	body := map[string]any{
-		"api_key_lookup_hash": lookupHash,
-		"model":               model,
-	}
-	if routeType != "" {
-		body["route_type"] = routeType
-	}
-	var decoded struct {
-		Data Authorization `json:"data"`
-	}
-	if err := c.postJSON(ctx, "/internal/gateway/resolve-custom-model", body, &decoded); err != nil {
-		c.afterCredentialCheck(ctx, lookupHash, err)
-		return nil, err
-	}
-	c.afterCredentialCheck(ctx, lookupHash, nil)
-	if err := validateConfidentialAuthorization(ctx, &decoded.Data); err != nil {
-		return nil, err
-	}
-	return &decoded.Data, nil
-}
-
 func (c *Client) AuthorizeWithRoute(ctx context.Context, bearer string, req *qtypes.OpenAIChatRequest, routeType string) (*Authorization, error) {
+	if err := rejectRetiredModels(req.Model, req.Models); err != nil {
+		return nil, err
+	}
 	if ConfidentialOnly(ctx) {
 		if err := ValidateConfidentialRouting(req.Provider); err != nil {
 			return nil, err
@@ -1103,6 +1062,9 @@ func (c *Client) AuthorizeEmbeddingsWithRoute(
 	inputTokens int,
 	routeType string,
 ) (*Authorization, error) {
+	if err := rejectRetiredModels(req.Model, nil); err != nil {
+		return nil, err
+	}
 	if ConfidentialOnly(ctx) {
 		if err := ValidateConfidentialRouting(req.Provider); err != nil {
 			return nil, err
