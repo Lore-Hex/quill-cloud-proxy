@@ -122,6 +122,10 @@ class TestDeployNamesOnlyProvisionedSecrets(unittest.TestCase):
         self.assertIn('QUILL_MAPLE_SECRET="${QUILL_MAPLE_SECRET:-}"', self.deploy_text)
         self.assertNotIn("QUILL_MAPLE_SECRET", self.demanded)
 
+    def test_negbeta_is_opt_in_until_an_actual_bundle_is_sealed(self) -> None:
+        self.assertIn('QUILL_NEGBETA_SECRET="${QUILL_NEGBETA_SECRET:-}"', self.deploy_text)
+        self.assertNotIn("QUILL_NEGBETA_SECRET", self.demanded)
+
     def test_tencent_is_provisioned_in_the_pinned_bundle(self) -> None:
         name = "trustedrouter-tencent-tokenhub-api-key"
         self.assertEqual(self.demanded["QUILL_TENCENT_SECRET"], name)

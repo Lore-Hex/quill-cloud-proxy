@@ -347,6 +347,7 @@ def test_build_payload_iterates_all_known_providers() -> None:
         "greenference",
         "hixtube",
         "muna",
+        "negbeta",
         "abliteration",
         "coralbricks",
         "fortanix",
@@ -393,6 +394,9 @@ def test_build_payload_iterates_all_known_providers() -> None:
     }
     actual_direct = {provider for provider, _suffix in bootstrap_server._DIRECT_PROVIDER_KEYS}
     assert actual_direct == expected_direct
+    assert (
+        dict(bootstrap_server._DIRECT_PROVIDER_KEYS)["negbeta"] == "trustedrouter-negbeta-api-key"
+    )
 
 
 def test_aws_sync_manifest_contains_every_bootstrap_provider_secret() -> None:

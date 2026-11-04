@@ -858,6 +858,7 @@ allowlist:
   - {address: llm.eu.greenference.com,          port: 443}
   - {address: api.hixtube.com,                  port: 443}
   - {address: inference.muna.ai,                  port: 443}
+  - {address: inference.negbeta.com,              port: 443}
   - {address: api.abliteration.ai,                port: 443}
   - {address: inference.coralbricks.ai,        port: 443}
   - {address: ctf.armet.ai,                    port: 443}
@@ -1028,6 +1029,7 @@ write_vsock_unit 8135 bedrock.us-west-2.amazonaws.com
 write_vsock_unit 8108 llm.eu.greenference.com
 write_vsock_unit 8117 api.hixtube.com
 write_vsock_unit 8130 inference.muna.ai
+write_vsock_unit 8137 inference.negbeta.com
 write_vsock_unit 8131 api.abliteration.ai
 write_vsock_unit 8115 inference.coralbricks.ai
 write_vsock_unit 8113 ctf.armet.ai
