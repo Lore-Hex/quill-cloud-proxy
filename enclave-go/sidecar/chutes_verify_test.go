@@ -206,6 +206,20 @@ func makeChutesVerificationRequest(
 	evidenceCounts ...int,
 ) (*chutesVerificationRequest, *chutesMeasurement) {
 	t.Helper()
+	return makeChutesVerificationRequestWithSignedMutation(t, now, nonce, e2ePubkey, mrtd, rtmrs, debug, nil, evidenceCounts...)
+}
+
+func makeChutesVerificationRequestWithSignedMutation(
+	t *testing.T,
+	now time.Time,
+	nonce, e2ePubkey string,
+	mrtd []byte,
+	rtmrs [][]byte,
+	debug bool,
+	mutate func(map[string]any),
+	evidenceCounts ...int,
+) (*chutesVerificationRequest, *chutesMeasurement) {
+	t.Helper()
 	rsaKey, err := rsa.GenerateKey(rand.Reader, 2048)
 	if err != nil {
 		t.Fatal(err)
@@ -232,6 +246,14 @@ func makeChutesVerificationRequest(
 	signed.Evidence.TDXQuote = base64.StdEncoding.EncodeToString(quote)
 	signed.Evidence.NVTrustEvidence = string(gpuJSON)
 	signedBody, _ := json.Marshal(signed)
+	if mutate != nil {
+		var object map[string]any
+		if err := json.Unmarshal(signedBody, &object); err != nil {
+			t.Fatal(err)
+		}
+		mutate(object["evidence"].(map[string]any))
+		signedBody, _ = json.Marshal(object)
+	}
 	digest := sha256.Sum256(signedBody)
 	signature, err := rsa.SignPKCS1v15(rand.Reader, rsaKey, crypto.SHA256, digest[:])
 	if err != nil {
@@ -254,6 +276,58 @@ func makeChutesVerificationRequest(
 		ChuteID: "chute-1", Instance: "instance-1", Nonce: nonce,
 		E2EPubkey: e2ePubkey, Evidence: evidence,
 	}, measurement
+}
+
+func TestChutesVerifierSignedQuoteFormats(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		mutate  func(map[string]any)
+		wantErr string
+	}{
+		{"legacy tdx_quote", nil, ""},
+		{"Kimi K3 signed quote", func(e map[string]any) { e["quote"] = e["tdx_quote"]; delete(e, "tdx_quote") }, ""},
+		{"matching signed aliases", func(e map[string]any) { e["quote"] = e["tdx_quote"] }, ""},
+		{"conflicting signed aliases", func(e map[string]any) { e["quote"] = "different" }, "conflicting signed Intel TDX quotes"},
+		{"malformed new quote", func(e map[string]any) { delete(e, "tdx_quote"); e["quote"] = "!not-base64" }, "invalid signed Intel TDX quote"},
+		{"missing signed quote", func(e map[string]any) { delete(e, "tdx_quote") }, "invalid signed Intel TDX quote"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			now := time.Unix(1_800_000_000, 0)
+			nonce := strings.Repeat("ab", 32)
+			pubkey := base64.StdEncoding.EncodeToString(bytes.Repeat([]byte{7}, 1184))
+			mrtd := bytes.Repeat([]byte{1}, 48)
+			rtmrs := [][]byte{bytes.Repeat([]byte{2}, 48), bytes.Repeat([]byte{3}, 48), bytes.Repeat([]byte{4}, 48), bytes.Repeat([]byte{5}, 48)}
+			request, measurement := makeChutesVerificationRequestWithSignedMutation(t, now, nonce, pubkey, mrtd, rtmrs, false, tc.mutate)
+			// A valid-looking unsigned wrapper quote must never repair signed evidence.
+			var outer chutesEvidence
+			if err := json.Unmarshal(request.Evidence, &outer); err != nil {
+				t.Fatal(err)
+			}
+			outer.Quote = base64.StdEncoding.EncodeToString(makeTestQuote(t, mrtd, rtmrs, make([]byte, 64), false))
+			request.Evidence, _ = json.Marshal(outer)
+			binding := sha256.Sum256([]byte(nonce + pubkey))
+			nras := newNRASTestServer(t, now, hex.EncodeToString(binding[:]), true)
+			defer nras.server.Close()
+			verifyCalls := 0
+			verifier := &chutesVerifier{measurements: []chutesMeasurement{*measurement}, nras: nras.verifier(), now: func() time.Time { return now }, verifyTDX: func([]byte) error { verifyCalls++; return nil }}
+			_, err := verifier.verify(context.Background(), request)
+			if tc.wantErr == "" {
+				if err != nil {
+					t.Fatal(err)
+				}
+				if verifyCalls != 1 {
+					t.Fatalf("Intel verifier called %d times", verifyCalls)
+				}
+			} else {
+				if err == nil || !strings.Contains(err.Error(), tc.wantErr) {
+					t.Fatalf("error = %v, want %q", err, tc.wantErr)
+				}
+				if verifyCalls != 0 {
+					t.Fatal("invalid signed evidence reached Intel verifier")
+				}
+			}
+		})
+	}
 }
 
 func TestChutesVerifierAcceptsOnlyFullyBoundEvidence(t *testing.T) {
@@ -385,6 +459,52 @@ func TestChutesVerifierRejectsDebugUnpinnedAndOutdatedTDX(t *testing.T) {
 			t.Fatalf("outdated quote error = %v", err)
 		}
 	})
+}
+
+func TestChutesVerifierSignedQuoteAliasPreservesSecurityChecks(t *testing.T) {
+	now := time.Unix(1_800_000_000, 0)
+	nonce := strings.Repeat("ab", 32)
+	e2ePubkey := base64.StdEncoding.EncodeToString(bytes.Repeat([]byte{8}, 1184))
+	mrtd := bytes.Repeat([]byte{1}, 48)
+	rtmrs := [][]byte{bytes.Repeat([]byte{2}, 48), bytes.Repeat([]byte{3}, 48), bytes.Repeat([]byte{4}, 48), bytes.Repeat([]byte{5}, 48)}
+	for _, failure := range []string{"debug", "unpinned", "outdated TCB", "nonce", "key", "signature", "GPU failure", "non-TDX quote"} {
+		t.Run(failure, func(t *testing.T) {
+			request, measurement := makeChutesVerificationRequestWithSignedMutation(t, now, nonce, e2ePubkey, mrtd, rtmrs, failure == "debug", func(evidence map[string]any) {
+				evidence["quote"] = evidence["tdx_quote"]
+				delete(evidence, "tdx_quote")
+				if failure == "non-TDX quote" {
+					evidence["quote"] = base64.StdEncoding.EncodeToString(bytes.Repeat([]byte{0}, 1184))
+				}
+			})
+			binding := sha256.Sum256([]byte(nonce + e2ePubkey))
+			nras := newNRASTestServer(t, now, hex.EncodeToString(binding[:]), failure != "GPU failure")
+			defer nras.server.Close()
+			verifier := &chutesVerifier{
+				measurements: []chutesMeasurement{*measurement}, nras: nras.verifier(),
+				now: func() time.Time { return now }, verifyTDX: func([]byte) error { return nil },
+			}
+			switch failure {
+			case "unpinned":
+				verifier.measurements[0].MRTD = strings.Repeat("00", 48)
+			case "outdated TCB":
+				verifier.verifyTDX = func([]byte) error { return fmt.Errorf("TCB Status is not UpToDate") }
+			case "nonce":
+				request.Nonce = strings.Repeat("ac", 32)
+			case "key":
+				request.E2EPubkey = base64.StdEncoding.EncodeToString(bytes.Repeat([]byte{9}, 1184))
+			case "signature":
+				var evidence chutesEvidence
+				if err := json.Unmarshal(request.Evidence, &evidence); err != nil {
+					t.Fatal(err)
+				}
+				evidence.Signature = base64.StdEncoding.EncodeToString(bytes.Repeat([]byte{0}, 256))
+				request.Evidence, _ = json.Marshal(evidence)
+			}
+			if _, err := verifier.verify(context.Background(), request); err == nil {
+				t.Fatal("signed quote alias bypassed a security check")
+			}
+		})
+	}
 }
 
 func TestChutesVerifierRejectsMutatedBindingsAndProofs(t *testing.T) {
@@ -569,6 +689,51 @@ func TestPinnedChutesGLM52ProfileRequiresAllRegisters(t *testing.T) {
 		register[0] ^= 0xff
 		if err == nil {
 			t.Fatalf("tampered register %d was accepted", index)
+		}
+	}
+}
+
+func TestPinnedChutesKimiK3Version150RequiresAllRegisters(t *testing.T) {
+	verifier, err := newChutesVerifier()
+	if err != nil {
+		t.Fatal(err)
+	}
+	decode := func(value string) []byte {
+		t.Helper()
+		decoded, err := hex.DecodeString(value)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return decoded
+	}
+	body := &tdxpb.TDQuoteBody{
+		MrTd: decode("261CE538B435E2D0E85FC97E254BC99154C507B7A8E13D59B69F8532384F1D0BFAADFDDF3FCCC6E0A411203840BBEE8D"),
+		Rtmrs: [][]byte{
+			decode("FC71A5A8EDCB1F6D307D59E62CE257365DF0F233AE2334691F99D2136832D911F8BE975B92F88036DB8A4906574519C4"),
+			decode("D3A862FF47357F374FC72C7F02A480A13790D1805E24AAA8DE1F03994256625CE0F593AE35EA8F0C24D09F7DF36CB0ED"),
+			decode("E1DE99043052F3E1AB5A4463D3310B5680E851631ADF10E071B15CBD8B4D664EA435B0EC33E7F18E908DDA60734056F7"),
+			decode("9617BE835BEAC8C62093A9DB424F015F3E12651235D0101C112729E7225B7A70836A184DEE0B45F28CD190F1871AFE6E"),
+		},
+	}
+	measurement, err := verifier.matchMeasurement(body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if measurement.Version != "1.5.0" || measurement.Name != "8xb300 [10.2.1, flat-252c-1944g]" ||
+		measurement.GPUCount != 8 || len(measurement.ExpectedGPUs) != 1 || measurement.ExpectedGPUs[0] != "b300" {
+		t.Fatalf("unexpected Kimi K3 profile: %+v", measurement)
+	}
+	for index, register := range append([][]byte{body.MrTd}, body.Rtmrs...) {
+		register[0] ^= 0xff
+		_, err := verifier.matchMeasurement(body)
+		register[0] ^= 0xff
+		if err == nil {
+			t.Fatalf("tampered register %d was accepted", index)
+		}
+	}
+	for _, pinned := range verifier.measurements {
+		if pinned.Version == "1.5.0" && pinned.Name != measurement.Name {
+			t.Fatalf("unreviewed 1.5.0 profile was added: %s", pinned.Name)
 		}
 	}
 }
