@@ -332,30 +332,6 @@ func Fingerprint(workspaceID string, provider string, envelope EncryptedSecretEn
 	return "byokcache:v1:" + hex.EncodeToString(digest.Sum(nil))
 }
 
-func userModelFingerprint(ownerWorkspaceID, purpose string, envelope EncryptedSecretEnvelope) (string, error) {
-	identity, err := aadV2(namespaceUserModel, ownerWorkspaceID, purpose)
-	if err != nil {
-		return "", err
-	}
-	digest := sha256.New()
-	parts := [][]byte{
-		identity,
-		[]byte(envelope.Algorithm),
-		[]byte(envelope.KeyRef),
-		[]byte(envelope.EncryptedDEK),
-		[]byte(envelope.DEKNonce),
-		[]byte(envelope.Ciphertext),
-		[]byte(envelope.Nonce),
-	}
-	var length [8]byte
-	for _, part := range parts {
-		binary.BigEndian.PutUint64(length[:], uint64(len(part)))
-		_, _ = digest.Write(length[:])
-		_, _ = digest.Write(part)
-	}
-	return "byokcache:user-model:v1:" + hex.EncodeToString(digest.Sum(nil)), nil
-}
-
 // aadV2 builds the v2 associated data: length-prefixed, so no choice of
 // component values can produce the same bytes from a different tuple.
 //

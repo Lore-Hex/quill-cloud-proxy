@@ -20,7 +20,7 @@
   "generator": "go test ./internal/byokcache -run 'TestAcceptedFormatsDeclaration|TestProbe' -args -update-accepted-formats",
   "source_sha256": {
     "accepted_formats_test.go": "4826b2abd60f3df4064dc208fab4b9680f8ab9f64b4e893c51ecf996cd908b99",
-    "cache.go": "7aa3f13148e3c16138540a7e26e973121fa61e327207fde5ffb0ac3c1afdb2a2",
+    "cache.go": "25710290d59e6073b783864a78d0c21829f24ecc52b1fa1e1cf8776a23b18653",
     "confidential_space_token.go": "9b7b0f5bdd5a3fbd6cc06b90fb73b062e7b7766dce893d5d59dac8c86210ab6c",
     "confidential_space_token_other.go": "9744c64218561ec6546bac3cc644272beb74205d98d0d712ddd75bdaf4b40057",
     "kms_gcp.go": "e3e806baf051a5a9053fd7c8d1f5fec5913774265baa79469a5b41f40d42ab18",
