@@ -230,6 +230,7 @@ BINDINGS: tuple[Binding, ...] = (
     Binding(("QUILL_GREENFERENCE_SECRET",), "Greenference key", True),
     Binding(("QUILL_HIXTUBE_SECRET",), "Hixtube pilot key", True),
     Binding(("QUILL_MUNA_SECRET",), "Muna key", True),
+    Binding(("QUILL_NEGBETA_SECRET",), "Negbeta key", True),
     Binding(("QUILL_ABLITERATION_SECRET",), "Abliteration key", True),
     Binding(("QUILL_CORALBRICKS_SECRET",), "CoralBricks key", True),
     Binding(("QUILL_FORTANIX_SECRET",), "Fortanix test key", True),

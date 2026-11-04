@@ -178,6 +178,7 @@ SECRETS=(
   trustedrouter-greenference-api-key
   trustedrouter-hixtube-api-key
   trustedrouter-muna-api-key
+  trustedrouter-negbeta-api-key
   trustedrouter-abliteration-api-key
   trustedrouter-coralbricks-api-key
   trustedrouter-fortanix-api-key
