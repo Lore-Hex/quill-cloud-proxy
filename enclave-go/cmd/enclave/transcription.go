@@ -110,7 +110,7 @@ func serveTranscription(ctx context.Context, conn io.Writer, raw []byte, gateway
 	}
 	providerCtx, cancel := context.WithCancel(ctx)
 	defer cancel()
-	closed := cancelUserModelOnDisconnect(providerCtx, cancel, conn)
+	closed := cancelOnClientDisconnect(providerCtx, cancel, conn)
 	auth.RecordShadowInvocation(auth.EndpointID, auth.Provider)
 	result, err := transcriptionProviderGateway.Transcribe(providerCtx, req)
 	if closed.Load() {

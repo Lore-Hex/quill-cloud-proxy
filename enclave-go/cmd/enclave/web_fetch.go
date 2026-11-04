@@ -72,7 +72,7 @@ func serveWebFetch(ctx context.Context, conn io.Writer, raw []byte, gateway *tru
 	}
 	fetchCtx, cancelFetch := context.WithCancel(ctx)
 	defer cancelFetch()
-	clientClosed := cancelUserModelOnDisconnect(fetchCtx, cancelFetch, conn)
+	clientClosed := cancelOnClientDisconnect(fetchCtx, cancelFetch, conn)
 	authorization.RecordShadowInvocation(authorization.EndpointID, authorization.Provider)
 	result, err := webFetchProviderGateway.Fetch(fetchCtx, req)
 	if err != nil || result == nil || strings.TrimSpace(result.Content) == "" {

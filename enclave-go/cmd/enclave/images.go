@@ -226,7 +226,7 @@ func serveImages(
 
 	generationCtx, cancel := context.WithCancel(ctx)
 	defer cancel()
-	clientClosed := cancelUserModelOnDisconnect(generationCtx, cancel, conn)
+	clientClosed := cancelOnClientDisconnect(generationCtx, cancel, conn)
 	pr, pw := io.Pipe()
 	selectedRoute := newSelectedRouteTracker()
 	go invokeProviderStream(generationCtx, br, req, anthropicReq, pw, invokeOptions, true, authorization, selectedRoute, requestLogID, true, false)
@@ -356,7 +356,7 @@ func serveNativeImageAuthorized(
 	}
 	generationCtx, cancel := context.WithCancel(ctx)
 	defer cancel()
-	clientClosed := cancelUserModelOnDisconnect(generationCtx, cancel, conn)
+	clientClosed := cancelOnClientDisconnect(generationCtx, cancel, conn)
 	authorization.RecordShadowInvocation(option.EndpointID, option.Provider)
 	result, err := imageProviderGateway.Generate(
 		generationCtx, nativeRequest, option.ProviderAPIKey, idempotencyKey,

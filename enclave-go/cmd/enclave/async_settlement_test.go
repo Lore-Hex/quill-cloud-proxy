@@ -298,33 +298,16 @@ func TestAsyncFailureTerminalOrder(t *testing.T) {
 }
 
 func TestAsyncResponsesOtherFailureTerminals(t *testing.T) {
-	for _, path := range []string{"custom_model", "hosted_search"} {
-		t.Run(path, func(t *testing.T) {
-			var out bytes.Buffer
-			var err error
-			if path == "custom_model" {
-				err = writeUserModelStreamingError(&out, "responses", "id", "model", &userModelDispatchError{callerStatus: 502, message: "failed", refundType: "provider_error"})
-			} else {
-				emitter := newResponsesWebSearchEmitter(&out, "id", "model", &types.OpenAIChatRequest{})
-				err = emitter.Fail(fmt.Errorf("failed"))
-			}
-			if err != nil {
-				t.Fatal(err)
-			}
-			wire := out.String()
-			if path == "custom_model" {
-				// Legacy custom-model failures end on response.failed without a
-				// [DONE] sentinel. This PR leaves that flag-off path byte-identical;
-				// the missing sentinel is tracked as a separate follow-up.
-				if strings.Count(wire, "event: response.failed\n") != 1 || strings.Contains(wire, "[DONE]") || !strings.HasSuffix(wire, "\n\n") {
-					t.Fatalf("legacy failure terminator changed: %s", wire)
-				}
-			} else if strings.Count(wire, "event: response.failed\n") != 1 || strings.Count(wire, "data: [DONE]") != 1 || !strings.HasSuffix(wire, "data: [DONE]\n\n") {
-				t.Fatalf("failure terminator: %s", wire)
-			}
-			if strings.Contains(wire, "trusted_router.settlement") {
-				t.Fatalf("invented async outcome: %s", wire)
-			}
-		})
+	var out bytes.Buffer
+	emitter := newResponsesWebSearchEmitter(&out, "id", "model", &types.OpenAIChatRequest{})
+	if err := emitter.Fail(fmt.Errorf("failed")); err != nil {
+		t.Fatal(err)
+	}
+	wire := out.String()
+	if strings.Count(wire, "event: response.failed\n") != 1 || strings.Count(wire, "data: [DONE]") != 1 || !strings.HasSuffix(wire, "data: [DONE]\n\n") {
+		t.Fatalf("failure terminator: %s", wire)
+	}
+	if strings.Contains(wire, "trusted_router.settlement") {
+		t.Fatal("invented settlement metadata")
 	}
 }

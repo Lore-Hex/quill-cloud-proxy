@@ -319,7 +319,12 @@ func sourceHashes(t *testing.T) map[string]string {
 
 func TestAcceptedFormatsDeclarationMatchesBehaviour(t *testing.T) {
 	providerAccepted, userModelAccepted := observedAcceptance(t)
-	accepted := acceptedByEveryPath(providerAccepted, userModelAccepted)
+	// The provider path is the sole live reader. The retired family is
+	// independently probed to ensure it accepts no envelopes.
+	accepted := providerAccepted
+	if len(userModelAccepted) != 0 {
+		t.Fatal("retired user-model credentials still decrypt")
+	}
 	if len(accepted) == 0 {
 		t.Fatal("no declared algorithm round-trips; either this build reads nothing or the probe is broken")
 	}
@@ -367,7 +372,7 @@ func TestAcceptedFormatsDeclarationMatchesBehaviour(t *testing.T) {
 		AcceptedProvider:  providerAccepted,
 		AcceptedUserModel: userModelAccepted,
 		RejectedProvider:  []string{retiredV1Format},
-		RejectedUserModel: []string{retiredV1Format},
+		RejectedUserModel: []string{retiredV1Format, AlgorithmV2},
 		RejectedControl:   probeControlAlgorithm,
 		Probe:             declarationProbe,
 		Generator:         declarationGenerator,
@@ -420,12 +425,12 @@ func TestProbeSeesARejectedFormat(t *testing.T) {
 	) {
 		t.Fatal("a correctly sealed v2 envelope must open; the probe is broken")
 	}
-	if !roundTripsUserModel(
+	if roundTripsUserModel(
 		t,
 		AlgorithmV2,
 		writerAAD[AlgorithmV2](namespaceUserModel, probeWorkspace, probePurpose),
 	) {
-		t.Fatal("a correctly sealed V2 user-model envelope must open; the probe is broken")
+		t.Fatal("even a correctly sealed retired user-model envelope must be rejected")
 	}
 }
 

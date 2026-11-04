@@ -523,10 +523,8 @@ func supportsStreamUsageOption(provider, modelID string) bool {
 }
 
 // BuildOpenAICompatibleRequestShape returns the same OpenAI projection used by
-// fixed providers without sending it. User-provided model dispatch uses this
-// for Messages and Responses callers, then applies its smaller owner-body
-// allowlist. Keeping one projection prevents native Anthropic tool_use and
-// tool_result blocks from leaking into an endpoint that expects OpenAI chat.
+// fixed providers without sending it. Compatibility tests use this projection
+// to check Messages and Responses translation without live inference.
 func BuildOpenAICompatibleRequestShape(
 	ctx context.Context,
 	req *qtypes.OpenAIChatRequest,
@@ -538,7 +536,7 @@ func BuildOpenAICompatibleRequestShape(
 	if err != nil {
 		return nil, err
 	}
-	projected := buildOpenAICompatibleRequest("user-model", upstreamModel, req, body, messages)
+	projected := buildOpenAICompatibleRequest("compatibility-test", upstreamModel, req, body, messages)
 	projected.Stream = stream
 	encoded, err := json.Marshal(projected)
 	if err != nil {
