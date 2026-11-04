@@ -5279,12 +5279,6 @@ func TestAdvisorComboPresetsConfigureWorkerAndAdvisorModels(t *testing.T) {
 			workers:  []string{"nvidia/nemotron-3-ultra-550b-a55b"},
 			advisors: []string{"google/gemma-4-31b-it", "openai/gpt-oss-120b", trustedRouterLiberty101MModel, "thinkingmachines/inkling"},
 		},
-		{
-			model:        trustedRouterLiberty40Model,
-			workers:      []string{"nvidia/nemotron-3-ultra-550b-a55b"},
-			advisors:     []string{trustedRouterLiberty101MModel, trustedRouterLiberty10Model, "meta-models/muse-spark-open", "reflection/beam-1.0"},
-			jurisdiction: providerJurisdictionUS,
-		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.model, func(t *testing.T) {
@@ -6405,8 +6399,6 @@ func TestLibertyAdvisorModelsUseTheirPublishedContextLimits(t *testing.T) {
 		"nvidia/nemotron-3-ultra-550b-a55b": 1_048_576,
 		"thinkingmachines/inkling":          262_144,
 		"thinkingmachines/inkling-1m":       1_048_576,
-		"meta-models/muse-spark-open":       1_048_576,
-		"reflection/beam-1.0":               1_048_576,
 		trustedRouterLiberty10Model:         262_144,
 		trustedRouterLiberty101MModel:       1_048_576,
 	}
@@ -6672,12 +6664,10 @@ func TestNamedOrchestrationPresetsReturnNonEmptyThroughLocalGateway(t *testing.T
 		{
 			model: trustedRouterLiberty40Model,
 			componentModels: []string{
-				"thinkingmachines/inkling-1m",
-				"thinkingmachines/inkling",
-				"nvidia/nemotron-3-ultra-550b-a55b",
-				"google/gemma-4-31b-it",
-				"meta-models/muse-spark-open",
+				"nvidia/nemotron-3.5-super-vl",
 				"reflection/beam-1.0",
+				"thinkingmachines/inkling",
+				"meta-models/muse-spark-open",
 			},
 		},
 	}

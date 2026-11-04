@@ -24,6 +24,13 @@ var longContextComboProviders = map[string][]string{
 	"openai/gpt-6-astra":              {"openai"},
 	"anthropic/claude-fable-5.1":      {"anthropic"},
 	"google/gemini-3.8-flash":         {"google-ai-studio", "google-vertex"},
+	// Liberty 4.0 members, US-headquartered hosts only, reviewed 2026-11-04.
+	// Inkling has no US 1M host left (Databricks and Baseten retired it), so
+	// Together's 524,288-token route sets Liberty 4.0's window at 512K.
+	"meta-models/muse-spark-open":  {"baseten"},
+	"reflection/beam-1.0":          {"baseten"},
+	"nvidia/nemotron-3.5-super-vl": {"crusoe"},
+	"thinkingmachines/inkling":     {"together"},
 }
 
 func isLongContextCombo(model string) bool {
@@ -31,7 +38,8 @@ func isLongContextCombo(model string) bool {
 	case trustedRouterPrometheusModel, trustedRouterPrometheus40Model,
 		trustedRouterZeusModel, trustedRouterZeus30Model,
 		trustedRouterPlatoModel, trustedRouterPlato40Model,
-		trustedRouterSocratesModel, trustedRouterSocrates30Model:
+		trustedRouterSocratesModel, trustedRouterSocrates30Model,
+		trustedRouterLiberty40Model:
 		return true
 	default:
 		return false
