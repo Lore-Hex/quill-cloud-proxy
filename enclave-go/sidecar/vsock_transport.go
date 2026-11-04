@@ -72,8 +72,9 @@ var vsockTunnels = map[string]uint32{
 	// Chutes' signed TDX quote is verified with Intel collateral, and its
 	// signed GPU evidence is submitted to NVIDIA Remote Attestation Service.
 	// Both are verification-only paths; no prompt or response bytes use them.
-	"api.trustedservices.intel.com": 8051,
-	"nras.attestation.nvidia.com":   8052,
+	"api.trustedservices.intel.com":          8051,
+	"certificates.trustedservices.intel.com": 8102,
+	"nras.attestation.nvidia.com":            8052,
 }
 
 // unconfiguredHostError is returned instead of attempting a DNS dial, so a
@@ -155,6 +156,14 @@ func newVsockTransport() *http.Transport {
 		MaxIdleConns:          8,
 		IdleConnTimeout:       90 * time.Second,
 	}
+}
+
+func newIntelCollateralTransport() *http.Transport {
+	// A dedicated client must still use Nitro's byte pipe. Direct DNS/TCP is
+	// unavailable inside Nitro, including for Intel collateral verification.
+	transport := newVsockTransport()
+	transport.TLSHandshakeTimeout = 10 * time.Second
+	return transport
 }
 
 // installPlatformTransport makes vsock the process-wide default for the

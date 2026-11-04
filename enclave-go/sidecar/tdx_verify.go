@@ -33,11 +33,8 @@ func newTDXVerificationOptions() *tdxverify.Options {
 	opts.GetCollateral = true
 	opts.CheckRevocations = true
 	opts.Getter = &intelCollateralGetter{client: &http.Client{
-		Timeout: tdxCollateralTimeout,
-		Transport: &http.Transport{
-			Proxy:               nil,
-			TLSHandshakeTimeout: 10 * time.Second,
-		},
+		Timeout:   tdxCollateralTimeout,
+		Transport: newIntelCollateralTransport(),
 		CheckRedirect: func(_ *http.Request, _ []*http.Request) error {
 			return errors.New("Intel collateral redirects are forbidden")
 		},
