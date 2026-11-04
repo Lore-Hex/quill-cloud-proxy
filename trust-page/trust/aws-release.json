@@ -1,6 +1,5 @@
 {
   "accepted_pcr0s": [
-    "f57773ed07c9ba2c75f134be33514055ad65e45c7e817ffa6a09a6e588213ebeefa2264008806a4928d5418aee8d954d",
     "6c3eeb1758b374ad2e7d5c93dfc02f0a4d632d5d8fd7af0384f13a5643c6abccc3700146950ef7e674d8fb5fb1365ff7"
   ],
   "api_base_url": "https://api-aws.trustedrouter.com/v1",
@@ -12,29 +11,21 @@
     "control_plane_prompt_access": false,
     "prompt_output_storage": false
   },
-  "image_digest": "sha256:1987a244235e6dc498c93cab1d80af62d3197add9d7a268de36c3039e44e690e",
+  "image_digest": "sha256:ccb8a1400b1cfd1b0e259d29dd9c7d4e67a3c74a9aa5e9161152103c3854ad0b",
   "measurement_provenance": "All four serving instances in eu-west-3 and eu-west-1 were individually verified against this PCR0 after both regional refreshes completed. The image digest identifies the reviewed immutable build. Source-to-image provenance is operator-asserted, not independent AWS image reproduction.",
   "measurement_type": "nitro-pcr0-sha384",
-  "observed_module_id": "i-0f0cfc837a78bbd6b-enc01a19fb902db7864",
-  "pcr0": "f57773ed07c9ba2c75f134be33514055ad65e45c7e817ffa6a09a6e588213ebeefa2264008806a4928d5418aee8d954d",
+  "observed_module_id": "i-0ed423df7a8c12f64-enc01a1a68aa726b030",
+  "pcr0": "6c3eeb1758b374ad2e7d5c93dfc02f0a4d632d5d8fd7af0384f13a5643c6abccc3700146950ef7e674d8fb5fb1365ff7",
   "platform": "aws-nitro-enclaves",
-  "release_state": "rolling",
+  "release_state": "current",
   "reproduce": "tools/verify-pcr0.sh",
-  "source_commit": "07f3b353773de84c919295ee89df88089fcac6be",
+  "source_commit": "fa7d04418322b9b9db194616f2f95947bb9f7f33",
   "source_commit_provenance": "operator-asserted",
   "source_repo": "https://github.com/Lore-Hex/quill-cloud-proxy",
   "tls": {
     "certificate_binding": "user_data[0:32]=SHA-256 of the served certificate (DER), user_data[64:96]=TLS exporter channel binding",
     "hostname": "api-aws.trustedrouter.com",
     "mode": "acme-inside-nitro-enclave"
-  },
-  "transition_target": {
-    "image_digest": "sha256:ccb8a1400b1cfd1b0e259d29dd9c7d4e67a3c74a9aa5e9161152103c3854ad0b",
-    "observed_module_id": "i-0a7deefe8ce021dca-enc01a1a61bf688384d",
-    "pcr0": "6c3eeb1758b374ad2e7d5c93dfc02f0a4d632d5d8fd7af0384f13a5643c6abccc3700146950ef7e674d8fb5fb1365ff7",
-    "source_commit": "fa7d04418322b9b9db194616f2f95947bb9f7f33",
-    "source_commit_provenance": "operator-asserted",
-    "state": "isolated-candidate"
   },
   "transparency": {
     "bundle": "aws-release.json.bundle",
