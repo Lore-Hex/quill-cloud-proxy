@@ -1,7 +1,6 @@
 {
   "accepted_pcr0s": [
-    "0afd806aaac56e7e82b4f38bb8cfa87aa6c948eb759bb88cce2c0cf65916af52a697690853806e6d9a81559678d6c4db",
-    "6c3eeb1758b374ad2e7d5c93dfc02f0a4d632d5d8fd7af0384f13a5643c6abccc3700146950ef7e674d8fb5fb1365ff7"
+    "0afd806aaac56e7e82b4f38bb8cfa87aa6c948eb759bb88cce2c0cf65916af52a697690853806e6d9a81559678d6c4db"
   ],
   "api_base_url": "https://api-aws.trustedrouter.com/v1",
   "attestation_format": "cose-sign1-nitro-attestation-document",
@@ -13,12 +12,12 @@
     "prompt_output_storage": false
   },
   "image_digest": "sha256:8fb1f469d61fc3e5fa3bf912e6a4d803d689fe62ff506e03302dd975ce9f873f",
-  "measurement_provenance": "The isolated eu-west-3 candidate was verified against the AWS Nitro root with certificate and TLS exporter bindings before this transition. Both serving control-plane pin consumers accept the candidate and outgoing measurements. Serving enclave fleets remain on the outgoing image until signed publication is verified. Source-to-image provenance is operator-asserted, not independent AWS image reproduction.",
+  "measurement_provenance": "All four serving instances across eu-west-3 and eu-west-1 were individually verified against the AWS Nitro root, expected PCR0, module identity, certificate and TLS exporter bindings during the guarded rollout. Each replacement passed 23 retired-model rejection checks. Both regional refreshes completed successfully, every serving member uses the verified release, and both healthy control-plane pin consumers now accept only this measurement. Source-to-image provenance is operator-asserted, not independent AWS image reproduction.",
   "measurement_type": "nitro-pcr0-sha384",
-  "observed_module_id": "i-0e7af2dfdc9aca6f4-enc01a1a76f86475539",
+  "observed_module_id": "i-09216ccc7511b41ff-enc01a1a7e0cb1aebf9",
   "pcr0": "0afd806aaac56e7e82b4f38bb8cfa87aa6c948eb759bb88cce2c0cf65916af52a697690853806e6d9a81559678d6c4db",
   "platform": "aws-nitro-enclaves",
-  "release_state": "rolling",
+  "release_state": "current",
   "reproduce": "tools/verify-pcr0.sh",
   "source_commit": "4328438fd11183b751d5bbf1ae9a4b116e4f1766",
   "source_commit_provenance": "operator-asserted",
