@@ -62,6 +62,38 @@ func TestHybridReasoningNativeWire(t *testing.T) {
 	}
 }
 
+func TestCerebrasNestedReasoningUsesNativeEffort(t *testing.T) {
+	for _, model := range []string{"gpt-oss-120b", "qwen-3.8-27b"} {
+		t.Run(model, func(t *testing.T) {
+			reasoning := map[string]any{"effort": "low"}
+			req := &qtypes.OpenAIChatRequest{Model: model, Reasoning: reasoning}
+			body := &qtypes.AnthropicMessagesRequest{
+				Messages: []qtypes.AnthropicMessage{{Role: "user", Content: "Hello"}},
+				Thinking: map[string]any{"type": "enabled", "budget_tokens": 4096},
+			}
+			calls := 0
+			httpc := &http.Client{Transport: byokRoundTripFunc(func(r *http.Request) (*http.Response, error) {
+				calls++
+				var wire map[string]any
+				if err := json.NewDecoder(r.Body).Decode(&wire); err != nil {
+					t.Fatal(err)
+				}
+				if wire["reasoning_effort"] != "low" || wire["reasoning"] != nil || wire["thinking"] != nil {
+					t.Fatalf("unsupported reasoning wire: effort=%v reasoning=%v thinking=%v", wire["reasoning_effort"], wire["reasoning"], wire["thinking"])
+				}
+				return &http.Response{StatusCode: 200, Header: http.Header{"Content-Type": []string{"text/event-stream"}}, Body: io.NopCloser(strings.NewReader("data: {\"choices\":[{\"delta\":{\"content\":\"Hello\"},\"finish_reason\":\"stop\"}]}\n\ndata: [DONE]\n\n"))}, nil
+			})}
+			err := invokeOpenAICompatibleStreamingWithClientOptions(t.Context(), httpc, "cerebras", "https://provider.test/v1", "test-key", req, body, io.Discard, model, openAICompatibleInvocationOptions{})
+			if err != nil || calls != 1 {
+				t.Fatalf("calls=%d err=%v", calls, err)
+			}
+			if reasoning["effort"] != "low" || len(reasoning) != 1 {
+				t.Fatal("mutated caller reasoning")
+			}
+		})
+	}
+}
+
 func TestHybridReasoningLeavesUnspecifiedAndOtherProvidersAlone(t *testing.T) {
 	for _, provider := range []string{"zai", "deepseek", "kimi", "openai", "together", "azure"} {
 		for _, reasoning := range []any{nil, map[string]any{"effort": "low"}, map[string]any{"enabled": "false"}} {
