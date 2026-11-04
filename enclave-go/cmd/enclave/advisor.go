@@ -51,6 +51,7 @@ const trustedRouterAthenaModel = "trustedrouter/athena"
 const trustedRouterLiberty20Model = "trustedrouter/liberty-2.0"
 const parasailLiberty20Model = "parasail/liberty-2.0"
 const trustedRouterLiberty30Model = "trustedrouter/liberty-3.0"
+const trustedRouterLiberty40Model = "trustedrouter/liberty-4.0"
 const trustedRouterAdvisorTool = "trustedrouter:advisor"
 const advisorAdviceToolName = "_trustedrouter_get_advice"
 
@@ -328,6 +329,15 @@ func advisorPresetForModel(model string) (advisorConfig, bool) {
 			Enabled:       true,
 			WorkerModels:  []string{"nvidia/nemotron-3-ultra-550b-a55b"},
 			AdvisorModels: []string{"google/gemma-4-31b-it", "openai/gpt-oss-120b", trustedRouterLiberty101MModel, "thinkingmachines/inkling"},
+		}, true
+	case trustedRouterLiberty40Model:
+		// Liberty 2.0's graph with Meta's Muse Spark Open and Reflection's Beam
+		// added as advisors, pinned to US-operated providers end to end.
+		return advisorConfig{
+			Enabled:              true,
+			WorkerModels:         []string{"nvidia/nemotron-3-ultra-550b-a55b"},
+			AdvisorModels:        []string{trustedRouterLiberty101MModel, trustedRouterLiberty10Model, "meta-models/muse-spark-open", "reflection/beam-1.0"},
+			ProviderJurisdiction: providerJurisdictionUS,
 		}, true
 	default:
 		return advisorConfig{}, false
@@ -1568,6 +1578,8 @@ func advisorContextLimitTokens(model string) int {
 		trustedRouterLiberty101MModel,
 		"thinkingmachines/inkling-1m",
 		"nvidia/nemotron-3-ultra-550b-a55b",
+		"meta-models/muse-spark-open",
+		"reflection/beam-1.0",
 		"minimax/minimax-m3",
 		fusionKimiK3,
 		"xiaomi/mimo-v2.5-pro",
