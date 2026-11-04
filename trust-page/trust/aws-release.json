@@ -1,5 +1,6 @@
 {
   "accepted_pcr0s": [
+    "0afd806aaac56e7e82b4f38bb8cfa87aa6c948eb759bb88cce2c0cf65916af52a697690853806e6d9a81559678d6c4db",
     "6c3eeb1758b374ad2e7d5c93dfc02f0a4d632d5d8fd7af0384f13a5643c6abccc3700146950ef7e674d8fb5fb1365ff7"
   ],
   "api_base_url": "https://api-aws.trustedrouter.com/v1",
@@ -11,15 +12,15 @@
     "control_plane_prompt_access": false,
     "prompt_output_storage": false
   },
-  "image_digest": "sha256:ccb8a1400b1cfd1b0e259d29dd9c7d4e67a3c74a9aa5e9161152103c3854ad0b",
-  "measurement_provenance": "All four serving instances in eu-west-3 and eu-west-1 were individually verified against this PCR0 after both regional refreshes completed. The image digest identifies the reviewed immutable build. Source-to-image provenance is operator-asserted, not independent AWS image reproduction.",
+  "image_digest": "sha256:8fb1f469d61fc3e5fa3bf912e6a4d803d689fe62ff506e03302dd975ce9f873f",
+  "measurement_provenance": "The isolated eu-west-3 candidate was verified against the AWS Nitro root with certificate and TLS exporter bindings before this transition. Both serving control-plane pin consumers accept the candidate and outgoing measurements. Serving enclave fleets remain on the outgoing image until signed publication is verified. Source-to-image provenance is operator-asserted, not independent AWS image reproduction.",
   "measurement_type": "nitro-pcr0-sha384",
-  "observed_module_id": "i-0ed423df7a8c12f64-enc01a1a68aa726b030",
-  "pcr0": "6c3eeb1758b374ad2e7d5c93dfc02f0a4d632d5d8fd7af0384f13a5643c6abccc3700146950ef7e674d8fb5fb1365ff7",
+  "observed_module_id": "i-0e7af2dfdc9aca6f4-enc01a1a76f86475539",
+  "pcr0": "0afd806aaac56e7e82b4f38bb8cfa87aa6c948eb759bb88cce2c0cf65916af52a697690853806e6d9a81559678d6c4db",
   "platform": "aws-nitro-enclaves",
-  "release_state": "current",
+  "release_state": "rolling",
   "reproduce": "tools/verify-pcr0.sh",
-  "source_commit": "fa7d04418322b9b9db194616f2f95947bb9f7f33",
+  "source_commit": "4328438fd11183b751d5bbf1ae9a4b116e4f1766",
   "source_commit_provenance": "operator-asserted",
   "source_repo": "https://github.com/Lore-Hex/quill-cloud-proxy",
   "tls": {
