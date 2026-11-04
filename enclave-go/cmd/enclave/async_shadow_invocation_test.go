@@ -15,7 +15,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/Lore-Hex/quill-cloud-proxy/enclave-go/internal/byokcache"
 	"github.com/Lore-Hex/quill-cloud-proxy/enclave-go/internal/decide"
 	"github.com/Lore-Hex/quill-cloud-proxy/enclave-go/internal/imagegen"
 	"github.com/Lore-Hex/quill-cloud-proxy/enclave-go/internal/llm"
@@ -256,52 +255,6 @@ func TestShadowV2InvocationSpeech(t *testing.T) {
 
 // User models dispatch the single signed custom-model block. RouteCandidates
 // are not an alternative owner URL and must not redirect the request.
-func TestShadowV2InvocationUserModel(t *testing.T) {
-	for _, fail := range []bool{false, true} {
-		t.Run(fmt.Sprint(fail), func(t *testing.T) {
-			p := invocationProjection(t, "chat.completions", "trustedrouter/user-demo", "custom", "owner-private", false)
-			p["provider"], p["usage_type"], p["endpoint_id"] = "custom", "Credits", "invoked-fallback"
-			dek := bytes.Repeat([]byte{6}, 32)
-			cache := byokcache.New(byokcache.Options{Unwrapper: &userModelTestUnwrapper{dek: dek}})
-			p["custom_model"] = &trustedrouter.CustomModel{
-				ID: "trustedrouter/user-demo", Kind: "user_provided", UserModelKind: "machine", OwnerWorkspaceID: "owner-ws", EndpointURL: "https://example.com/v1", UpstreamModelID: "owner-private",
-				SecretNamespace: userModelSecretNamespace, SigningEncryptedSecret: sealUserModelTestSecret(t, dek, "owner-ws", userModelSigningSecretPurpose, "signing-secret"), SigningSecretPurpose: userModelSigningSecretPurpose,
-				ConnectTimeoutSeconds: 10, FirstByteTimeoutSeconds: 30, IdleTimeoutSeconds: 60, TotalTimeoutSeconds: 300,
-			}
-			gateway, terminals := invocationGateway(t, p)
-			calls := 0
-			old := newUserModelHTTPClient
-			newUserModelHTTPClient = func(string, llm.EgressGuardOptions) (*http.Client, error) {
-				return &http.Client{Transport: shadowV2StreamTransport(func(r *http.Request) (*http.Response, error) {
-					calls++
-					if r.URL.Host != "example.com" {
-						t.Error("candidate redirected owner")
-					}
-					status := 200
-					body := `{"object":"chat.completion","choices":[{"message":{"role":"assistant","content":"answer"},"finish_reason":"stop"}],"usage":{"prompt_tokens":3,"completion_tokens":2}}`
-					if fail {
-						status = 400
-						body = `{"error":"failed"}`
-					}
-					return &http.Response{StatusCode: status, Header: http.Header{"Content-Type": []string{"application/json"}}, Body: io.NopCloser(strings.NewReader(body))}, nil
-				})}, nil
-			}
-			t.Cleanup(func() { newUserModelHTTPClient = old })
-			req := &types.OpenAIChatRequest{Model: "trustedrouter/user-demo", Messages: []types.OpenAIChatMessage{{Role: "user", Content: "hello"}}}
-			a, err := gateway.AuthorizeWithRoute(t.Context(), "key", req, "chat.completions")
-			if err != nil {
-				t.Fatal(err)
-			}
-			var out bytes.Buffer
-			serveUserModel(t.Context(), &out, req, map[string]any{"messages": []any{map[string]any{"role": "user", "content": "hello"}}}, nil, "chat.completions", gateway, a, cache, nil, nil, "review")
-			if calls != 1 {
-				t.Fatalf("calls %d: %s", calls, out.String())
-			}
-			checkInvocationTerminal(t, *terminals, fail, false, "custom")
-		})
-	}
-}
-
 func TestShadowV2InvocationVideo(t *testing.T) {
 	for _, fail := range []bool{false, true} {
 		t.Run(fmt.Sprint(fail), func(t *testing.T) {

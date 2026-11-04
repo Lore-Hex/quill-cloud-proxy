@@ -11,7 +11,7 @@ import (
 func init() {
 	// Non-Linux targets lack the poll/MSG_PEEK primitive used to detect a
 	// buffered caller disappearing without consuming a pipelined next request.
-	log.Printf("user-model client disconnect detection is unavailable on this OS")
+	log.Printf("client disconnect detection is unavailable on this OS")
 }
 
-func userModelClientDisconnect(context.Context, io.Writer) <-chan struct{} { return nil }
+func clientDisconnect(context.Context, io.Writer) <-chan struct{} { return nil }

@@ -256,20 +256,6 @@ func TestResponseWriterFamiliesInjectRequestID(t *testing.T) {
 			wantStatus: http.StatusOK,
 			wantHeader: map[string]string{"Content-Type": "application/cbor"},
 		},
-		{
-			name: "user model raw error writer",
-			write: func(w io.Writer) error {
-				writeUserModelBufferedErrorWithHeaders(w, "chat.completions", &userModelDispatchError{
-					callerStatus: http.StatusBadGateway,
-					message:      "user model failed",
-					refundStatus: http.StatusBadGateway,
-					refundType:   "provider_error",
-				}, map[string]string{shouldRetryHeader: "false"})
-				return nil
-			},
-			wantStatus: http.StatusBadGateway,
-			wantHeader: map[string]string{shouldRetryHeader: "false"},
-		},
 	}
 
 	for _, test := range tests {

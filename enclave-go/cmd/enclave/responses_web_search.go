@@ -680,10 +680,7 @@ func validateResponsesWebSearchAuthorization(authorization *trustedrouter.Author
 	if authorization == nil || authorization.CustomModel == nil {
 		return nil
 	}
-	if isWebSearchRestrictedModel(authorization.CustomModel.BaseModelID) {
-		return webSearchPrivacyError()
-	}
-	return nil
+	return &adapter.AdapterError{Status: 410, Message: retiredModelMessage, Context: "model"}
 }
 
 func preflightResponsesWebSearchPrivacy(
@@ -692,15 +689,8 @@ func preflightResponsesWebSearchPrivacy(
 	trGateway *trustedrouter.Client,
 	bearer string,
 ) error {
-	if req == nil || !isCustomModelID(req.Model) {
-		return nil
-	}
-	authorization, err := trGateway.ResolveCustomModel(ctx, bearer, req.Model, "responses.web_search.preflight")
-	if err != nil {
-		return err
-	}
-	if privacyErr := validateResponsesWebSearchAuthorization(authorization); privacyErr != nil {
-		return privacyErr
+	if retiredModelRequest(req) {
+		return &adapter.AdapterError{Status: 410, Message: retiredModelMessage, Context: "model"}
 	}
 	return nil
 }

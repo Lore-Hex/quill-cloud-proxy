@@ -123,31 +123,15 @@ func (c *Cache) Resolve(
 	return c.resolve(ctx, namespaceProvider, workspaceID, provider, derivedKey, envelope)
 }
 
-// ResolveUserModel opens an owner endpoint credential under the user_model
-// namespace. This family was introduced after AAD v2, so accepting a v1
-// envelope would erase the namespace separation at the trust boundary.
-//
-// The cache key is always derived inside the enclave. The control plane is
-// intentionally not allowed to choose a key that could alias another owner's
-// plaintext secret.
+// ResolveUserModel is a fail-closed tombstone for retired owner credentials.
+// Even a valid previously cached envelope must never be opened or unwrapped.
 func (c *Cache) ResolveUserModel(
 	ctx context.Context,
 	ownerWorkspaceID string,
 	purpose string,
 	envelope EncryptedSecretEnvelope,
 ) (string, bool, error) {
-	cacheKey, err := userModelFingerprint(ownerWorkspaceID, purpose, envelope)
-	if err != nil {
-		return "", false, err
-	}
-	return c.resolve(
-		ctx,
-		namespaceUserModel,
-		ownerWorkspaceID,
-		purpose,
-		cacheKey,
-		envelope,
-	)
+	return "", false, errors.New("byokcache: user-provided models have been retired")
 }
 
 func (c *Cache) resolve(

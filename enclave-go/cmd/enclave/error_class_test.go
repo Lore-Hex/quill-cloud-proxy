@@ -50,7 +50,7 @@ func TestErrorClassKeepsWhatOperatorsReadItFor(t *testing.T) {
 		// The gateway's OWN conditions keep the values they were always logged
 		// under: alerts match on them, and they were never anyone's content.
 		"empty upstream response":       errEmptyUpstreamResponse,
-		"user_model_first_byte_timeout": errUserModelFirstByteTimeout,
+		"user_model_first_byte_timeout": errors.New("user-model first-byte budget exceeded"),
 		"thinking_budget_exceeded":      errFusionOverthinkingBudget,
 		"attestation_required":          errors.New("tinfoil: complete attestation verification required"),
 	} {

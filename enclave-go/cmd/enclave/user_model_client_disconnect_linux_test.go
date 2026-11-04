@@ -38,7 +38,7 @@ func TestUserModelDisconnectWatcherUnwrapsProductionTLSChain(t *testing.T) {
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	disconnected := userModelClientDisconnect(ctx, &responseStatsConn{Conn: serverConn})
+	disconnected := clientDisconnect(ctx, &responseStatsConn{Conn: serverConn})
 	if disconnected == nil {
 		t.Fatal("production tracked TLS chain did not expose its TCP syscall connection")
 	}

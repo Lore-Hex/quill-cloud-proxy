@@ -883,6 +883,10 @@ func serveOneRequest(
 	)
 	// Discovery must work before authentication and confidential-origin policy.
 	// Return an ordinary error, never a cross-host credential-bearing redirect.
+	if retiredModelManagementPath(routePath) {
+		writeError(conn, http.StatusGone, retiredModelMessage)
+		return
+	}
 	if message := controlPlaneRouteMessage(routePath); message != "" {
 		writeError(conn, http.StatusNotFound, message)
 		return
@@ -1121,7 +1125,6 @@ func serveOneRequest(
 	}
 
 	var req types.OpenAIChatRequest
-	var rawUserModelBody map[string]any
 	req.IdempotencyKey = idempotencyKey
 	routeType := "chat.completions"
 	originalInput := any(nil)
@@ -1240,33 +1243,9 @@ func serveOneRequest(
 		return
 	}
 
-	var resolvedCustomModel *trustedrouter.Authorization
-	if isCustomModelID(req.Model) {
-		resolvedCustomModel, err = maybeResolveCustomModelForOrchestration(
-			ctx, &req, trGateway, bearer, routeType,
-		)
-		if err != nil {
-			var aerr *adapter.AdapterError
-			if asAdapterErr(err, &aerr) {
-				writeError(conn, aerr.Status, aerr.Message)
-				return
-			}
-			writeError(conn, statusFromControlPlaneError(err), messageFromControlPlaneError(err, "custom model resolution failed"))
-			return
-		}
-		if isUserProvidedCustomModel(resolvedCustomModel) && !userModelDispatchSupported() {
-			writeUserModelPlaneError(conn, routeType)
-			return
-		}
-		if routeType == "chat.completions" && isUserProvidedCustomModel(resolvedCustomModel) {
-			// Retain only the parsed, in-memory caller shape for this dispatch.
-			// The explicit owner allowlist preserves whether the caller chose
-			// max_tokens vs max_completion_tokens while stripping TR controls.
-			if err := json.Unmarshal(body, &rawUserModelBody); err != nil {
-				writeError(conn, 400, "invalid JSON")
-				return
-			}
-		}
+	if retiredModelRequest(&req) {
+		writeOpenAIError(conn, 410, retiredModelMessage, "invalid_request_error", "model_not_supported", "model")
+		return
 	}
 
 	if req.Model == polyphemusModel {
@@ -1289,12 +1268,12 @@ func serveOneRequest(
 			return
 		}
 	}
-	if routeType == "responses" && !isUserProvidedCustomModel(resolvedCustomModel) && maybeServeResponsesWebSearch(
+	if routeType == "responses" && maybeServeResponsesWebSearch(
 		ctx, conn, &req, br, trGateway, byokSecrets, bearer, requestLogID,
 	) {
 		return
 	}
-	if routeType == "chat.completions" && !isUserProvidedCustomModel(resolvedCustomModel) && maybeServeChatWebSearch(
+	if routeType == "chat.completions" && maybeServeChatWebSearch(
 		ctx, conn, &req, br, trGateway, byokSecrets, bearer, requestLogID,
 	) {
 		return
@@ -1338,19 +1317,6 @@ func serveOneRequest(
 
 	var authorization *trustedrouter.Authorization
 	var invokeOptions []llm.InvokeOptions
-	var userModelAnthropicReq *types.AnthropicMessagesRequest
-	if routeType == "responses" && isUserProvidedCustomModel(resolvedCustomModel) {
-		userModelAnthropicReq, err = adapter.ToAnthropic(&req, "claude-opus-4-7")
-		if err != nil {
-			var aerr *adapter.AdapterError
-			if asAdapterErr(err, &aerr) {
-				writeAdapterOpenAIError(conn, aerr)
-				return
-			}
-			writeOpenAIError(conn, 500, "adapter error", "internal_error", "internal_error", "")
-			return
-		}
-	}
 	requestStarted := time.Now()
 	var spendLeasePlan *trustedrouter.SpendLeaseAdmissionPlan
 	var spendLeaseReserveRequest *types.OpenAIChatRequest
@@ -1365,7 +1331,7 @@ func serveOneRequest(
 			spendLeaseReserveRequest = &reserveRequest
 			authorization = spendLeasePlan.Local
 		} else {
-			ctx = predecideSpeculation(ctx, trGateway, bearer, body, attribution.IdempotencyPresent, routeType, confidential, &req, resolvedCustomModel != nil)
+			ctx = predecideSpeculation(ctx, trGateway, bearer, body, attribution.IdempotencyPresent, routeType, confidential, &req, false)
 			if execution := shadowobserve.FromContext(ctx); execution != nil {
 				defer execution.Finish()
 				statsConn.mu.Lock()
@@ -1407,19 +1373,7 @@ func serveOneRequest(
 			)
 			return
 		}
-		attachResolvedUserModel(authorization, resolvedCustomModel)
 		req.Models = nil
-		if isUserProvidedCustomModel(authorization) {
-			if spendLeasePlan != nil {
-				spendLeasePlan.Cancel()
-			}
-			req.Model = authorization.Model
-			serveUserModel(
-				ctx, conn, &req, rawUserModelBody, userModelAnthropicReq, routeType, trGateway,
-				authorization, byokSecrets, originalInput, nil, requestLogID,
-			)
-			return
-		}
 		invokeOptions, err = invokeOptionsForAuthorization(ctx, byokSecrets, authorization)
 		if err != nil {
 			if spendLeasePlan != nil {
@@ -1436,7 +1390,6 @@ func serveOneRequest(
 			req.Model = authorization.Model
 		}
 	}
-	applyCustomModelPrompt(&req, authorization)
 	anthropicReq, err := adapter.ToAnthropic(&req, "claude-opus-4-7")
 	if err != nil {
 		if spendLeasePlan != nil {
@@ -2493,25 +2446,9 @@ func serveMessages(
 		writeAnthropicError(conn, 400, "invalid messages request")
 		return
 	}
-	var resolvedCustomModel *trustedrouter.Authorization
-	if isCustomModelID(req.Model) {
-		resolvedCustomModel, err = maybeResolveCustomModelForOrchestration(
-			ctx, req, trGateway, bearer, "messages",
-		)
-		if err != nil {
-			writeAnthropicErrorWithSourceHeaders(
-				conn,
-				statusFromControlPlaneError(err),
-				messageFromControlPlaneError(err, "custom model resolution failed"),
-				"router",
-				retryHeadersFromControlPlaneError(err),
-			)
-			return
-		}
-		if isUserProvidedCustomModel(resolvedCustomModel) && !userModelDispatchSupported() {
-			writeUserModelPlaneError(conn, "messages")
-			return
-		}
+	if retiredModelRequest(req) {
+		writeAnthropicError(conn, 410, retiredModelMessage)
+		return
 	}
 
 	requestStarted := time.Now()
@@ -2522,15 +2459,6 @@ func serveMessages(
 		authorization, err = trGateway.AuthorizeWithRoute(ctx, bearer, req, "messages")
 		if err != nil {
 			writeAnthropicGatewayAuthorizationError(conn, err)
-			return
-		}
-		attachResolvedUserModel(authorization, resolvedCustomModel)
-		if isUserProvidedCustomModel(authorization) {
-			req.Model = authorization.Model
-			serveUserModel(
-				ctx, conn, req, nil, anthropicReq, "messages", trGateway, authorization,
-				byokSecrets, native.Messages, &native, requestLogID,
-			)
 			return
 		}
 		invokeOptions, err = invokeOptionsForAuthorization(ctx, byokSecrets, authorization)
@@ -2545,7 +2473,6 @@ func serveMessages(
 			req.Model = authorization.Model
 		}
 	}
-	applyCustomModelPromptToMessages(req, anthropicReq, authorization)
 
 	messageID := newMessageID()
 	if !native.Stream {

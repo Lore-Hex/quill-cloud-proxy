@@ -89,7 +89,7 @@ func serveSpeech(ctx context.Context, conn io.Writer, raw []byte, gateway *trust
 	}
 	generationCtx, cancelGeneration := context.WithCancel(ctx)
 	defer cancelGeneration()
-	clientClosed := cancelUserModelOnDisconnect(generationCtx, cancelGeneration, conn)
+	clientClosed := cancelOnClientDisconnect(generationCtx, cancelGeneration, conn)
 	authorization.RecordShadowInvocation(authorization.EndpointID, authorization.Provider)
 	result, err := speechProviderGateway.Generate(generationCtx, req)
 	if clientClosed.Load() {
