@@ -222,10 +222,10 @@ for site, option, auth, test in [
         f"{auth}.RecordShadowInvocation({option}.EndpointID, {option}.Provider)",
         f"{auth}.RecordShadowInvocation({auth}.EndpointID, {auth}.Provider)",
         "TestShadowV2Invocation" + test))
-# These two sites have no candidate walk. Replacing the source with the
+# Speech has no candidate walk. Replacing the source with the
 # authorized primary is an equivalent mutation (already the production source),
 # so do not misreport a no-op as killed. Prove recording and single-route entry.
-for site, auth, test in [("speech", "authorization", "Speech"), ("user_model", "auth", "UserModel")]:
+for site, auth, test in [("speech", "authorization", "Speech")]:
     live_mutations.append(("live-recorder-omitted-" + site, "cmd/enclave/" + site + ".go",
         f"{auth}.RecordShadowInvocation({auth}.EndpointID, {auth}.Provider)", "",
         "TestShadowV2Invocation" + test))
