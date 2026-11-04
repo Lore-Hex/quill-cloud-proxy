@@ -1,8 +1,8 @@
 # Privatemode client build
 
-Build only the MIT-licensed client from `privatemode-public` release v1.61.0,
-commit `1d35fd8496b6fbd88d95e201f292a19ea7f6e5b3`. The Dockerfiles pin both
-the source archive SHA-256 and the Go 1.26.10 builder image. Go module
+Build only the MIT-licensed client from `privatemode-public` release v1.62.0,
+commit `6b643fcec2145842745d0baf7df1176b5f0e65a5`. The Dockerfiles pin both
+the source archive SHA-256 and the Go 1.27.3 builder image. Go module
 checksums remain enabled. The runtime includes the upstream MIT notice.
 
 We build the client with the patched toolchain instead of importing the vendor

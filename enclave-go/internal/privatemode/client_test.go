@@ -13,7 +13,7 @@ import (
 
 func TestManifestIsPinnedAndImmutable(t *testing.T) {
 	sum := sha256.Sum256(manifest)
-	if hex.EncodeToString(sum[:]) != "cb8fe2f3b8973b8d12f99c3340d4102c642e6be40e26c2a9070e1a630e420bab" {
+	if hex.EncodeToString(sum[:]) != "ac2bb4c5dc2aba45bdff1a7f44b8e9ad2f2b4666c5957f54d9a821ac596dca40" {
 		t.Fatal("manifest changed without a reviewed deployment pin")
 	}
 	var mf struct {
