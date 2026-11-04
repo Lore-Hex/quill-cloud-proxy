@@ -320,7 +320,7 @@ func TestResponsesInputItemsEmptyAssistantText(t *testing.T) {
 			}}})
 			empty, emptyErr := ResponsesToChat(&types.OpenAIResponsesRequest{Model: "m", Instructions: "x", Input: []any{}})
 			if err != nil || chat == nil || !reflect.DeepEqual(chat.Messages, []types.OpenAIChatMessage{{Role: "user", Content: "continue"}}) ||
-				!reflect.DeepEqual(userErr, &AdapterError{Status: 400, Message: "input item must contain text or image"}) ||
+				!reflect.DeepEqual(userErr, &AdapterError{Status: 400, Message: "input item must contain text or image", Context: "input[0].content"}) ||
 				emptyErr != nil || empty == nil || !reflect.DeepEqual(empty.Messages, []types.OpenAIChatMessage{{Role: "system", Content: "x"}}) {
 				t.Errorf("replay = %#v, error = %v; user error = %v; empty array = %#v, error = %v", chat, err, userErr, empty, emptyErr)
 			}
@@ -332,7 +332,7 @@ func TestResponsesInputItemsEmptyAssistantText(t *testing.T) {
 							input = []any{input}
 						}
 						chat, err := ResponsesToChat(&types.OpenAIResponsesRequest{Model: "m", Instructions: instructions, Input: input})
-						if chat != nil || !reflect.DeepEqual(err, &AdapterError{Status: 400, Message: "input must contain text"}) {
+						if chat != nil || !reflect.DeepEqual(err, &AdapterError{Status: 400, Message: "input must contain text", Context: "input"}) {
 							t.Fatalf("chat = %#v, error = %#v, want empty-input 400", chat, err)
 						}
 					})
