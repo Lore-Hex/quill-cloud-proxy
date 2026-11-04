@@ -76,6 +76,10 @@ func TestOnlyLiberty40EnablesFuserFailover(t *testing.T) {
 
 func TestFusionCanTryNextFuser(t *testing.T) {
 	providerErr := errors.New("llm/upstream: http 502: provider error")
+	refunded := &fusionRefundedProviderError{err: providerErr}
+	// A metered partial generation is settled, not refunded, so it comes back
+	// unwrapped; a queued settle comes back as settlementAttemptedError.
+	settleQueued := &settlementAttemptedError{err: errors.New("settle: connection reset by peer")}
 	balanceErr := &trustedrouter.ControlPlaneError{StatusCode: http.StatusPaymentRequired, Type: "insufficient_credits"}
 	unroutable := &fusionModelFallbackError{err: errors.New("model_not_supported")}
 	on := fusionConfig{FuserFailover: true}
@@ -89,10 +93,12 @@ func TestFusionCanTryNextFuser(t *testing.T) {
 		want   bool
 	}{
 		{"unroutable model always falls through", context.Background(), fusionConfig{}, unroutable, true},
-		{"provider error stops without failover", context.Background(), fusionConfig{}, providerErr, false},
-		{"provider error falls through with failover", context.Background(), on, providerErr, true},
+		{"refunded provider error stops without failover", context.Background(), fusionConfig{}, refunded, false},
+		{"refunded provider error falls through with failover", context.Background(), on, refunded, true},
+		{"partially billed provider error stops even with failover", context.Background(), on, providerErr, false},
+		{"queued settle stops even with failover", context.Background(), on, settleQueued, false},
 		{"control-plane refusal stops even with failover", context.Background(), on, balanceErr, false},
-		{"canceled request stops even with failover", canceled, on, providerErr, false},
+		{"canceled request stops even with failover", canceled, on, refunded, false},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -141,43 +147,9 @@ func TestLiberty40FusesWhatReturnedAndFailsOverFusersThroughLocalGateway(t *test
 			trGateway, recorder, closeGateway := newFusionGatewayRecorder(t)
 			defer closeGateway()
 			streamer := &fusionEchoLLM{failModels: tt.failModels}
-			serverConn, client := net.Pipe()
-			defer client.Close()
-			done := make(chan struct{})
-			go func() {
-				defer close(done)
-				serveOne(context.Background(), serverConn, auth.New(nil), streamer, nil, nil, trGateway, nil)
-			}()
-
-			requestBody, err := json.Marshal(map[string]any{
-				"model":      trustedRouterLiberty40Model,
-				"stream":     tt.stream,
-				"messages":   []map[string]any{{"role": "user", "content": "Reply with a short local test answer."}},
-				"max_tokens": 512,
-			})
-			if err != nil {
-				t.Fatalf("encode request: %v", err)
-			}
-			if _, err := fmt.Fprintf(
-				client,
-				"POST /v1/chat/completions HTTP/1.1\r\nAuthorization: Bearer local-liberty-key\r\nContent-Type: application/json\r\nContent-Length: %d\r\n\r\n%s",
-				len(requestBody),
-				requestBody,
-			); err != nil {
-				t.Fatalf("write request: %v", err)
-			}
-			resp, err := http.ReadResponse(bufio.NewReader(client), nil)
-			if err != nil {
-				t.Fatalf("read response: %v", err)
-			}
-			body, err := io.ReadAll(resp.Body)
-			resp.Body.Close()
-			if err != nil {
-				t.Fatalf("read response body: %v", err)
-			}
-			<-done
-			if resp.StatusCode != http.StatusOK {
-				t.Fatalf("status = %d body=%s", resp.StatusCode, body)
+			status, body := postLiberty40(t, trGateway, streamer, tt.stream)
+			if status != http.StatusOK {
+				t.Fatalf("status = %d body=%s", status, body)
 			}
 			if !strings.Contains(string(body), "final answer from "+tt.wantFinal) {
 				t.Fatalf("final answer was not written by %s: %s", tt.wantFinal, body)
@@ -218,4 +190,67 @@ func TestLiberty40FusesWhatReturnedAndFailsOverFusersThroughLocalGateway(t *test
 			}
 		})
 	}
+}
+
+func TestLiberty40StopsTheFuserChainWhenAFuserMayAlreadyBeBilled(t *testing.T) {
+	// Muse Spark answers as judge, but its settle is lost on the wire, so the
+	// gateway queues it for retry: the user will be billed for that answer.
+	// Handing the judge to Beam would bill the same work twice.
+	trGateway, recorder, closeGateway := newFusionGatewayRecorder(t)
+	defer closeGateway()
+	recorder.dropSettleModels = map[string]bool{"meta-models/muse-spark-open": true}
+	streamer := &fusionEchoLLM{}
+	status, body := postLiberty40(t, trGateway, streamer, false)
+	if status == http.StatusOK {
+		t.Fatalf("status = 200, want the chain to stop after the queued settle: %s", body)
+	}
+	streamer.mu.Lock()
+	gotCalls := map[string]int{}
+	for _, call := range streamer.calls {
+		gotCalls[call.Model]++
+	}
+	streamer.mu.Unlock()
+	want := map[string]int{"meta-models/muse-spark-open": 1, "reflection/beam-1.0": 1, "thinkingmachines/inkling": 1, "nvidia/nemotron-3.5-super-vl": 1}
+	if !reflect.DeepEqual(gotCalls, want) {
+		t.Fatalf("calls per model = %#v, want panel plus Muse Spark judge only %#v", gotCalls, want)
+	}
+}
+
+func postLiberty40(t *testing.T, trGateway *trustedrouter.Client, streamer *fusionEchoLLM, stream bool) (int, string) {
+	t.Helper()
+	serverConn, client := net.Pipe()
+	defer client.Close()
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		serveOne(context.Background(), serverConn, auth.New(nil), streamer, nil, nil, trGateway, nil)
+	}()
+	requestBody, err := json.Marshal(map[string]any{
+		"model":      trustedRouterLiberty40Model,
+		"stream":     stream,
+		"messages":   []map[string]any{{"role": "user", "content": "Reply with a short local test answer."}},
+		"max_tokens": 512,
+	})
+	if err != nil {
+		t.Fatalf("encode request: %v", err)
+	}
+	if _, err := fmt.Fprintf(
+		client,
+		"POST /v1/chat/completions HTTP/1.1\r\nAuthorization: Bearer local-liberty-key\r\nContent-Type: application/json\r\nContent-Length: %d\r\n\r\n%s",
+		len(requestBody),
+		requestBody,
+	); err != nil {
+		t.Fatalf("write request: %v", err)
+	}
+	resp, err := http.ReadResponse(bufio.NewReader(client), nil)
+	if err != nil {
+		t.Fatalf("read response: %v", err)
+	}
+	body, err := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if err != nil {
+		t.Fatalf("read response body: %v", err)
+	}
+	<-done
+	return resp.StatusCode, string(body)
 }

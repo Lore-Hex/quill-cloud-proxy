@@ -8694,6 +8694,9 @@ type fusionGatewayRecorder struct {
 	authorize []map[string]any
 	settle    []map[string]any
 	refund    []map[string]any
+	// dropSettleModels drops the connection on these models' settles, so the
+	// gateway queues the settle for retry instead of seeing a response.
+	dropSettleModels map[string]bool
 }
 
 func newFusionGatewayRecorder(t *testing.T) (*trustedrouter.Client, *fusionGatewayRecorder, func()) {
@@ -8743,7 +8746,14 @@ func newFusionGatewayRecorder(t *testing.T) (*trustedrouter.Client, *fusionGatew
 			recorder.mu.Lock()
 			recorder.settle = append(recorder.settle, payload)
 			settleID := len(recorder.settle)
+			drop := recorder.dropSettleModels[model]
 			recorder.mu.Unlock()
+			if drop {
+				if conn, _, err := w.(http.Hijacker).Hijack(); err == nil {
+					_ = conn.Close()
+				}
+				return
+			}
 			costMicrodollars := 1
 			if additional, ok := payload["additional_cost_microdollars"].(float64); ok {
 				costMicrodollars += int(additional)
@@ -8764,6 +8774,11 @@ func newFusionGatewayRecorder(t *testing.T) (*trustedrouter.Client, *fusionGatew
 			recorder.refund = append(recorder.refund, payload)
 			recorder.mu.Unlock()
 			_ = json.NewEncoder(w).Encode(map[string]any{"data": map[string]any{"refunded": true}})
+		case "/internal/gateway/validate":
+			_ = json.NewEncoder(w).Encode(map[string]any{"data": map[string]any{
+				"workspace_id": "ws_1",
+				"api_key_hash": "key_1",
+			}})
 		default:
 			t.Fatalf("unexpected control-plane path %s", r.URL.Path)
 		}

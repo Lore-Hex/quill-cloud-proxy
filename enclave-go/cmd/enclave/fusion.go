@@ -574,8 +574,10 @@ type fusionConfig struct {
 	Preset               string
 	ProviderJurisdiction string
 	// FuserFailover lets the next judge/final model take over after a provider
-	// error, not only after an unroutable model. The failed hold is refunded,
-	// and a streamed answer never switches models once content is committed.
+	// error whose hold was refunded in full, not only after an unroutable model.
+	// A failure that billed anything (metered partial usage, a queued settle)
+	// still stops the chain, and a streamed answer never switches models once
+	// content is committed.
 	FuserFailover bool
 }
 
@@ -671,9 +673,16 @@ func fusionCanTryNextModel(err error) bool {
 	return errors.As(err, &fallbackErr)
 }
 
+// fusionRefundedProviderError marks a provider failure whose hold was refunded
+// in full, so handing the work to another model cannot bill it twice.
+type fusionRefundedProviderError struct{ err error }
+
+func (e *fusionRefundedProviderError) Error() string { return e.err.Error() }
+func (e *fusionRefundedProviderError) Unwrap() error { return e.err }
+
 // fusionCanTryNextFuser reports whether a failed judge or final model may hand
-// off to the next one. Control-plane refusals other than an unroutable model
-// (balance, auth, limits) and a canceled request stop the chain either way.
+// off to the next one. With FuserFailover, a refunded provider failure also
+// hands off; anything that billed, and a canceled request, stops the chain.
 func fusionCanTryNextFuser(ctx context.Context, config fusionConfig, err error) bool {
 	if fusionCanTryNextModel(err) {
 		return true
@@ -681,8 +690,8 @@ func fusionCanTryNextFuser(ctx context.Context, config fusionConfig, err error) 
 	if !config.FuserFailover || ctx.Err() != nil {
 		return false
 	}
-	var controlErr *trustedrouter.ControlPlaneError
-	return !errors.As(err, &controlErr)
+	var refunded *fusionRefundedProviderError
+	return errors.As(err, &refunded)
 }
 
 func fusionClassifyAuthorizationError(err error) error {
@@ -2149,7 +2158,7 @@ func runAuthorizedFusionCallAttempt(
 		result.Usage.CacheReadInputTokens > 0 || result.Usage.CacheCreationInputTokens > 0)
 	if providerErr != nil && (!partialBillable || !meteredPartial) {
 		refundFusionCall(ctx, trGateway, authz, 502, "provider_error", requestStarted, req.Metadata)
-		return fusionCallResult{}, fusionProviderErrorForOrchestrationFallback(providerErr, routeType, req, authz, selectedRoute, options)
+		return fusionCallResult{}, &fusionRefundedProviderError{err: fusionProviderErrorForOrchestrationFallback(providerErr, routeType, req, authz, selectedRoute, options)}
 	}
 	rawText := result.Text
 	if providerErr == nil && strings.HasPrefix(routeType, "fusion.") {
@@ -2511,7 +2520,7 @@ func serveFusionFinalStreamingAttempt(
 	if err != nil {
 		refundFusionCallAfter(ctx, trGateway, authorization, 502, "provider_error", time.Since(requestStarted).Seconds(), req.Metadata)
 		_ = pr.Close()
-		return false, err
+		return false, &fusionRefundedProviderError{err: err}
 	}
 	streamModel := selectedRoute.Model(req.Model, authorization)
 	if streamModel != "" {
