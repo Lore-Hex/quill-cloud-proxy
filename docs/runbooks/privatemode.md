@@ -144,6 +144,14 @@ plaintext provider to work around a failed verification or unavailable cloud.
 
 ## Pin Updates
 
+### 2026-11-04 v1.62 Deployment Drift
+
+[The v1.62 review](privatemode-v162-review-2026-11-04.md) records independently
+reproduced policy and image hashes, unchanged hardware requirements, the changed
+recovery identity, and encrypted positive/negative qualification. This new
+remote pin requires separate operator approval; a Chutes approval is not enough.
+Keep production fail-closed until reviewed deployment is complete.
+
 ### 2026-11-01 v1.61 Deployment Drift
 
 [The v1.61 review](privatemode-v161-review-2026-11-01.md) records the new
