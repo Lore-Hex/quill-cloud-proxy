@@ -144,7 +144,7 @@ func TestPrivatemodeReasoningAndCacheScope(t *testing.T) {
 		{"gpt-oss-120b", "", true}, {"gpt-oss-120b", "medium", true},
 		{"gpt-oss-120b", "max", false}, {"gpt-oss-120b", "none", false},
 		{"glm-5.3", "max", true}, {"glm-5.3-flash", "low", true},
-		{"glm-5.3", "medium", false}, {"glm-5.3-flash", "none", false},
+		{"glm-5.3", "medium", false}, {"glm-5.3-flash", "none", true},
 	} {
 		req := &qtypes.OpenAIChatRequest{Reasoning: map[string]any{"effort": tc.effort}}
 		wire := openAICompatibleRequest{Model: tc.model, Thinking: map[string]any{"budget_tokens": 1024}}

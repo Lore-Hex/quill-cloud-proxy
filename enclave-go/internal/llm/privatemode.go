@@ -102,7 +102,7 @@ func (c *openAICompatibleClient) invokePrivatemode(ctx context.Context, req *qty
 }
 
 // Never substitute an expensive default for an unsupported explicit effort.
-// Reasoning chat models cannot disable reasoning; OCR does not reason.
+// The pinned v1.61 GLM workloads support off; GPT OSS still always reasons.
 func preparePrivatemodeWire(req *qtypes.OpenAIChatRequest, body *qtypes.AnthropicMessagesRequest, wire *openAICompatibleRequest, scope string) error {
 	if wire.Model == "deepseek-ocr-2" {
 		if effort := chatReasoningEffort(req); effort != "" && effort != "none" {
@@ -120,24 +120,38 @@ func preparePrivatemodeWire(req *qtypes.OpenAIChatRequest, body *qtypes.Anthropi
 		return isolatePrivatemodeCache(wire, scope)
 	}
 	invalid := func() error {
-		return &upstreamHTTPError{status: http.StatusBadRequest, body: "unsupported Privatemode reasoning setting; GLM supports low/high/max, GPT OSS supports low/medium/high; reasoning cannot be disabled"}
+		return &upstreamHTTPError{status: http.StatusBadRequest, body: "unsupported Privatemode reasoning setting; GLM supports none/low/high/max, GPT OSS supports low/medium/high; token budgets are not supported"}
 	}
 	effort := chatReasoningEffort(req)
+	supportsOff := wire.Model == "glm-5.3" || wire.Model == "glm-5.3-flash"
 	if req != nil {
 		if reasoning, ok := req.Reasoning.(map[string]any); ok {
-			if enabled, present := reasoning["enabled"].(bool); present && !enabled {
-				return invalid()
-			}
 			if reasoning["max_tokens"] != nil {
 				return invalid()
+			}
+			if enabled, present := reasoning["enabled"].(bool); present {
+				if !enabled {
+					if !supportsOff {
+						return invalid()
+					}
+					effort = "none"
+				} else if effort == "none" {
+					return invalid()
+				}
 			}
 		}
 	}
 	// Native Anthropic token budgets have no lossless mapping to effort levels.
 	if body != nil && body.NativeContent && body.Thinking != nil {
-		return invalid()
+		thinking, ok := body.Thinking.(map[string]any)
+		if !supportsOff || !ok || len(thinking) != 1 || thinking["type"] != "disabled" ||
+			(effort != "" && effort != "none") {
+			return invalid()
+		}
+		effort = "none"
 	}
 	if effort != "" && effort != "low" && effort != "high" &&
+		!(supportsOff && effort == "none") &&
 		!(wire.Model == "gpt-oss-120b" && effort == "medium") &&
 		!(strings.HasPrefix(wire.Model, "glm-") && effort == "max") {
 		return invalid()

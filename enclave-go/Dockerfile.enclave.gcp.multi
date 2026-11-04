@@ -31,11 +31,11 @@
 # that cleanly isolates Go 1.25 stdlib as the actual culprit.
 
 # Build only the MIT client from pinned source, with our bounded control-plane patch.
-FROM --platform=$BUILDPLATFORM golang:1.26.10-bookworm@sha256:ee3901c61e423732605a51f1b8157c849ec01194ea0a274213b5202b2c11e7bf AS privatemode
+FROM --platform=$BUILDPLATFORM golang:1.27.3-bookworm@sha256:d9b6a1beb9474adc2a1ce842573639b44b2a0dd49b6669f51d3821baf9ec37c9 AS privatemode
 ARG TARGETARCH=amd64
 ENV CGO_ENABLED=0 GOOS=linux GOARCH=${TARGETARCH}
 WORKDIR /src
-ADD --checksum=sha256:d6ef061c5d7430b44d66c6754b86ec8a287630c560fde9968fb0d4214f310036 https://codeload.github.com/edgelesssys/privatemode-public/tar.gz/1d35fd8496b6fbd88d95e201f292a19ea7f6e5b3 /tmp/privatemode-source.tar.gz
+ADD --checksum=sha256:f18d23309dcacfb4d6322b0bf6b899392437c4ebfc1a419109f04a5483c9d608 https://codeload.github.com/edgelesssys/privatemode-public/tar.gz/6b643fcec2145842745d0baf7df1176b5f0e65a5 /tmp/privatemode-source.tar.gz
 COPY third_party/privatemode ./third_party/privatemode
 RUN bash third_party/privatemode/build.sh /tmp/privatemode-source.tar.gz /out/privatemode-proxy
 
