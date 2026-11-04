@@ -1,7 +1,7 @@
 {
   "accepted_pcr0s": [
     "f57773ed07c9ba2c75f134be33514055ad65e45c7e817ffa6a09a6e588213ebeefa2264008806a4928d5418aee8d954d",
-    "1b0d1fee0cfa15d226925dc7802a506b9a6ab0cc89aa0c53bc67df6759ee74dd52047567fe3cc8d7d4bfb7a088eeebd2"
+    "6c3eeb1758b374ad2e7d5c93dfc02f0a4d632d5d8fd7af0384f13a5643c6abccc3700146950ef7e674d8fb5fb1365ff7"
   ],
   "api_base_url": "https://api-aws.trustedrouter.com/v1",
   "attestation_format": "cose-sign1-nitro-attestation-document",
@@ -29,10 +29,10 @@
     "mode": "acme-inside-nitro-enclave"
   },
   "transition_target": {
-    "image_digest": "sha256:4d39c25d77a54b9d38f3f9315f0b7c27020e8b88d7ceb56401ce8d9d915337de",
-    "observed_module_id": "i-02fd731d36459061c-enc01a1a58d4e021b27",
-    "pcr0": "1b0d1fee0cfa15d226925dc7802a506b9a6ab0cc89aa0c53bc67df6759ee74dd52047567fe3cc8d7d4bfb7a088eeebd2",
-    "source_commit": "7b09172b064816baf6089eff1693a26ea4b8d6ca",
+    "image_digest": "sha256:ccb8a1400b1cfd1b0e259d29dd9c7d4e67a3c74a9aa5e9161152103c3854ad0b",
+    "observed_module_id": "i-0a7deefe8ce021dca-enc01a1a61bf688384d",
+    "pcr0": "6c3eeb1758b374ad2e7d5c93dfc02f0a4d632d5d8fd7af0384f13a5643c6abccc3700146950ef7e674d8fb5fb1365ff7",
+    "source_commit": "fa7d04418322b9b9db194616f2f95947bb9f7f33",
     "source_commit_provenance": "operator-asserted",
     "state": "isolated-candidate"
   },
