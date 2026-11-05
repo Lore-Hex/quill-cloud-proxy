@@ -9,6 +9,7 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"net/url"
 	"reflect"
 	"strings"
 	"testing"
@@ -254,4 +255,16 @@ func postLiberty40(t *testing.T, trGateway *trustedrouter.Client, streamer *fusi
 	}
 	<-done
 	return resp.StatusCode, string(body)
+}
+
+func TestErrorTypeChainSkipsBillingMarkers(t *testing.T) {
+	inner := &url.Error{Op: "Post", URL: "https://provider.test", Err: errors.New("boom")}
+	for _, err := range []error{
+		&fusionRefundedProviderError{err: inner},
+		&settlementAttemptedError{err: inner},
+	} {
+		if got, want := errorTypeChain(err), errorTypeChain(inner); got != want {
+			t.Fatalf("errorTypeChain(%T) = %q, want %q", err, got, want)
+		}
+	}
 }

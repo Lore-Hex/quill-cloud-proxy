@@ -2235,7 +2235,9 @@ func runAuthorizedFusionCallAttempt(
 		return fusionCallResult{}, &settlementAttemptedError{err}
 	}
 	if providerErr != nil {
-		return fusionCallResult{}, fusionProviderErrorForOrchestrationFallback(providerErr, routeType, req, authz, selectedRoute, options)
+		// The metered partial generation was billed, so never reclassify it as
+		// a model fallback: the next model would bill the same work again.
+		return fusionCallResult{}, newOrchestrationCallError(providerErr, routeType, req, authz, selectedRoute, options)
 	}
 	elapsedMS := time.Since(requestStarted).Milliseconds()
 	if selectedModel == "" && authz != nil {
