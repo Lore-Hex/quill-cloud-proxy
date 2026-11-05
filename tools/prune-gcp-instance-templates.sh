@@ -4,8 +4,9 @@
 # template and nothing else removes them; on 2026-11-04 the project reached
 # 1,646 and every GCP deploy failed at template creation.
 #
-# Keeps the newest KEEP templates for the prefix (rollback targets) and any
-# template a managed instance group still references, in any version. Never
+# Keeps the newest KEEP templates for the prefix (rollback targets), any
+# template a managed instance group still references in any version, and any
+# template a running instance was created from (a stuck roll). Never
 # fatal: a failed list or delete only skips pruning, and the caller goes on to
 # create its template.
 #
@@ -28,6 +29,12 @@ if ! referenced="$(gcloud --project "$PROJECT_ID" compute instance-groups manage
   log "listing instance groups failed; skipping prune"
   exit 0
 fi
+if ! instance_templates="$(gcloud --project "$PROJECT_ID" compute instances list \
+  --format="value(metadata.items.instance-template.basename())")"; then
+  log "listing instances failed; skipping prune"
+  exit 0
+fi
+referenced="${referenced}"$'\n'"${instance_templates}"
 in_use="$(printf '%s\n' "$referenced" | tr ',; \t' '\n' | sed 's#.*/##' | grep . || true)"
 
 total=0

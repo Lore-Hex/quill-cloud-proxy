@@ -18,6 +18,8 @@ class PruneGCPInstanceTemplatesTests(unittest.TestCase):
         templates: list[str],
         referenced: str = "",
         *,
+        instances: str = "",
+        fail_instances: bool = False,
         fail_list: bool = False,
         keep: int = 20,
     ) -> tuple[subprocess.CompletedProcess[str], list[list[str]]]:
@@ -28,6 +30,7 @@ class PruneGCPInstanceTemplatesTests(unittest.TestCase):
             command_log = temp / "commands.log"
             (temp / "templates.txt").write_text("\n".join(templates) + "\n")
             (temp / "referenced.txt").write_text(referenced + "\n")
+            (temp / "instances.txt").write_text(instances + "\n")
             gcloud = bin_dir / "gcloud"
             gcloud.write_text(textwrap.dedent(r"""
                 #!/bin/bash
@@ -37,6 +40,9 @@ class PruneGCPInstanceTemplatesTests(unittest.TestCase):
                   cat "${STUB_DIR}/templates.txt"
                 elif [[ "$*" == *"instance-groups managed list"* ]]; then
                   cat "${STUB_DIR}/referenced.txt"
+                elif [[ "$*" == *"compute instances list"* ]]; then
+                  [[ "${FAIL_INSTANCES:-0}" == "1" ]] && exit 1
+                  cat "${STUB_DIR}/instances.txt"
                 fi
             """).lstrip())
             gcloud.chmod(0o755)
@@ -46,6 +52,7 @@ class PruneGCPInstanceTemplatesTests(unittest.TestCase):
                 "COMMAND_LOG": str(command_log),
                 "STUB_DIR": str(temp),
                 "FAIL_LIST": "1" if fail_list else "0",
+                "FAIL_INSTANCES": "1" if fail_instances else "0",
             }
             result = subprocess.run(
                 ["bash", str(SCRIPT), "proj", "quill-enclave-tpl-us", str(keep)],
@@ -72,6 +79,25 @@ class PruneGCPInstanceTemplatesTests(unittest.TestCase):
             kept,
             {f"quill-enclave-tpl-us-{n}" for n in (990, 991, 1006, 1007, 1008, 1009, 1010)},
         )
+
+    def test_keeps_templates_running_instances_were_created_from(self) -> None:
+        names = [f"quill-enclave-tpl-us-{n:03d}" for n in range(1, 11)]
+        result, batches = self.run_prune(
+            names,
+            referenced="quill-enclave-tpl-us-010\tquill-enclave-tpl-us-010;quill-enclave-tpl-us-004",
+            instances="quill-enclave-tpl-us-002\n\nquill-enclave-tpl-us-010",
+            keep=1,
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        kept = set(names) - {n for batch in batches for n in batch}
+        self.assertEqual(kept, {f"quill-enclave-tpl-us-{n:03d}" for n in (2, 4, 10)})
+
+    def test_instance_list_failure_skips_pruning(self) -> None:
+        result, batches = self.run_prune(
+            ["quill-enclave-tpl-us-001", "quill-enclave-tpl-us-002"], fail_instances=True, keep=0,
+        )
+        self.assertEqual(result.returncode, 0)
+        self.assertEqual(batches, [])
 
     def test_deletes_in_batches_of_fifty(self) -> None:
         names = [f"quill-enclave-tpl-us-{n:03d}" for n in range(1, 131)]
