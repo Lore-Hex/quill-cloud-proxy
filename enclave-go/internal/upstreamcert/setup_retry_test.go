@@ -34,7 +34,7 @@ func TestTLSSetupTimeoutRetriesBeforeAnyHTTPRequest(t *testing.T) {
 		client, server := net.Pipe()
 		go func() {
 			defer close(serverDone)
-			peer := tls.Server(server, &tls.Config{Certificates: []tls.Certificate{certificate}})
+			peer := tls.Server(server, &tls.Config{Certificates: []tls.Certificate{certificate}, MinVersion: tls.VersionTLS12})
 			defer peer.Close()
 			if err := peer.Handshake(); err == nil {
 				_, _ = io.Copy(io.Discard, peer)
@@ -43,7 +43,7 @@ func TestTLSSetupTimeoutRetriesBeforeAnyHTTPRequest(t *testing.T) {
 		return client, nil
 	}
 	registry := &Registry{}
-	conn, err := registry.DialTLSContext(dial, &tls.Config{RootCAs: roots}, time.Second)(t.Context(), "tcp", "example.com:443")
+	conn, err := registry.DialTLSContext(dial, &tls.Config{RootCAs: roots, MinVersion: tls.VersionTLS12}, time.Second)(t.Context(), "tcp", "example.com:443")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -89,13 +89,13 @@ func TestTLSSetupDoesNotRetryCertificateFailure(t *testing.T) {
 		client, server := net.Pipe()
 		go func() {
 			defer close(serverDone)
-			peer := tls.Server(server, &tls.Config{Certificates: []tls.Certificate{certificate}})
+			peer := tls.Server(server, &tls.Config{Certificates: []tls.Certificate{certificate}, MinVersion: tls.VersionTLS12})
 			defer peer.Close()
 			_ = peer.Handshake()
 		}()
 		return client, nil
 	}
-	_, err := (&Registry{}).DialTLSContext(dial, &tls.Config{RootCAs: x509.NewCertPool()}, time.Second)(t.Context(), "tcp", "example.com:443")
+	_, err := (&Registry{}).DialTLSContext(dial, &tls.Config{RootCAs: x509.NewCertPool(), MinVersion: tls.VersionTLS12}, time.Second)(t.Context(), "tcp", "example.com:443")
 	var certificateError x509.UnknownAuthorityError
 	if calls != 1 || !errors.As(err, &certificateError) {
 		t.Fatalf("calls=%d error=%v", calls, err)
