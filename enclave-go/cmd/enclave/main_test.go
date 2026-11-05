@@ -6666,7 +6666,6 @@ func TestNamedOrchestrationPresetsReturnNonEmptyThroughLocalGateway(t *testing.T
 			componentModels: []string{
 				"nvidia/nemotron-3.5-super-vl",
 				"reflection/beam-1.0",
-				"thinkingmachines/inkling",
 				"meta-models/muse-spark-open",
 			},
 		},

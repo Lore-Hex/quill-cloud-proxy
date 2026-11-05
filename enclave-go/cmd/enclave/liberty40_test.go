@@ -26,11 +26,11 @@ func TestLiberty40IsAUSOnlyFusionWithMuseSparkFusing(t *testing.T) {
 		t.Fatal("Liberty 4.0 must be a fusion model")
 	}
 	preset, panel, ok := fusionPresetPanelForModel(trustedRouterLiberty40Model)
-	wantPanel := []string{"nvidia/nemotron-3.5-super-vl", "reflection/beam-1.0", "thinkingmachines/inkling"}
+	wantPanel := []string{"nvidia/nemotron-3.5-super-vl", "reflection/beam-1.0", "meta-models/muse-spark-open"}
 	if !ok || preset != "liberty-4.0" || !reflect.DeepEqual(panel, wantPanel) {
 		t.Fatalf("panel = %q %#v, want liberty-4.0 %#v", preset, panel, wantPanel)
 	}
-	wantFusers := []string{"meta-models/muse-spark-open", "reflection/beam-1.0", "thinkingmachines/inkling", "nvidia/nemotron-3.5-super-vl"}
+	wantFusers := []string{"meta-models/muse-spark-open", "reflection/beam-1.0", "nvidia/nemotron-3.5-super-vl"}
 	judges, err := fusionJudgeModels(fusionConfig{}, trustedRouterLiberty40Model)
 	if err != nil || !reflect.DeepEqual(judges, wantFusers) {
 		t.Fatalf("judge models = %#v (%v), want %#v", judges, err, wantFusers)
@@ -121,25 +121,25 @@ func TestLiberty40FusesWhatReturnedAndFailsOverFusersThroughLocalGateway(t *test
 			name:       "Muse Spark down: Beam fuses",
 			failModels: map[string]bool{"meta-models/muse-spark-open": true},
 			wantFinal:  "reflection/beam-1.0",
-			// Beam answers on the panel, then takes over as judge and final.
-			wantCalls: map[string]int{"meta-models/muse-spark-open": 2, "reflection/beam-1.0": 3, "thinkingmachines/inkling": 1, "nvidia/nemotron-3.5-super-vl": 1},
+			// Muse Spark fails on the panel, as judge and as final; Beam answers
+			// on the panel, then takes over as judge and final.
+			wantCalls: map[string]int{"meta-models/muse-spark-open": 3, "reflection/beam-1.0": 3, "nvidia/nemotron-3.5-super-vl": 1},
 		},
 		{
 			name:       "Muse Spark down while streaming: Beam fuses",
 			stream:     true,
 			failModels: map[string]bool{"meta-models/muse-spark-open": true},
 			wantFinal:  "reflection/beam-1.0",
-			wantCalls:  map[string]int{"meta-models/muse-spark-open": 2, "reflection/beam-1.0": 3, "thinkingmachines/inkling": 1, "nvidia/nemotron-3.5-super-vl": 1},
+			wantCalls:  map[string]int{"meta-models/muse-spark-open": 3, "reflection/beam-1.0": 3, "nvidia/nemotron-3.5-super-vl": 1},
 		},
 		{
-			name: "Muse Spark, Beam and Nemotron down: Inkling's lone panel answer is fused by Inkling",
+			name: "Muse Spark and Beam down: Nemotron's lone panel answer is fused by Nemotron",
 			failModels: map[string]bool{
-				"meta-models/muse-spark-open":  true,
-				"reflection/beam-1.0":          true,
-				"nvidia/nemotron-3.5-super-vl": true,
+				"meta-models/muse-spark-open": true,
+				"reflection/beam-1.0":         true,
 			},
-			wantFinal: "thinkingmachines/inkling",
-			wantCalls: map[string]int{"meta-models/muse-spark-open": 2, "reflection/beam-1.0": 3, "thinkingmachines/inkling": 3, "nvidia/nemotron-3.5-super-vl": 1},
+			wantFinal: "nvidia/nemotron-3.5-super-vl",
+			wantCalls: map[string]int{"meta-models/muse-spark-open": 3, "reflection/beam-1.0": 3, "nvidia/nemotron-3.5-super-vl": 3},
 		},
 	}
 	for _, tt := range tests {
@@ -210,9 +210,10 @@ func TestLiberty40StopsTheFuserChainWhenAFuserMayAlreadyBeBilled(t *testing.T) {
 		gotCalls[call.Model]++
 	}
 	streamer.mu.Unlock()
-	want := map[string]int{"meta-models/muse-spark-open": 1, "reflection/beam-1.0": 1, "thinkingmachines/inkling": 1, "nvidia/nemotron-3.5-super-vl": 1}
+	// Muse Spark sits on the panel and is the first judge; nothing runs after.
+	want := map[string]int{"meta-models/muse-spark-open": 2, "reflection/beam-1.0": 1, "nvidia/nemotron-3.5-super-vl": 1}
 	if !reflect.DeepEqual(gotCalls, want) {
-		t.Fatalf("calls per model = %#v, want panel plus Muse Spark judge only %#v", gotCalls, want)
+		t.Fatalf("calls per model = %#v, want the panel plus Muse Spark's judge only %#v", gotCalls, want)
 	}
 }
 

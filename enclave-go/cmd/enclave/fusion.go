@@ -279,19 +279,18 @@ var fusionLiberty101MPanel = []string{
 	"nvidia/nemotron-3-ultra-550b-a55b",
 }
 
-// Liberty 4.0: American models on US-headquartered providers. The panel
+// Liberty 4.0: American models on US-headquartered 1M routes. The panel
 // answers in parallel and Muse Spark Open fuses whatever returned; if it
-// fails, Beam, then Inkling, then Nemotron take over as fuser.
+// fails, Beam, then Nemotron take over as fuser.
 var fusionLiberty40Panel = []string{
 	"nvidia/nemotron-3.5-super-vl",
 	"reflection/beam-1.0",
-	"thinkingmachines/inkling",
+	"meta-models/muse-spark-open",
 }
 
 var fusionLiberty40Fusers = []string{
 	"meta-models/muse-spark-open",
 	"reflection/beam-1.0",
-	"thinkingmachines/inkling",
 	"nvidia/nemotron-3.5-super-vl",
 }
 
