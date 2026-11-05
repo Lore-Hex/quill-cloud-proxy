@@ -7,6 +7,7 @@ import (
 	"crypto/sha256"
 	"crypto/tls"
 	"encoding/base64"
+	"errors"
 	"log"
 	"net"
 	"net/http"
@@ -173,15 +174,17 @@ func (c *closeObservedConn) Close() error {
 
 // DialTLSContext returns a net/http TLS dial callback that performs WebPKI
 // verification and registers the peer leaf against the returned *tls.Conn.
+// A timeout during setup gets one fresh attempt under the original caller
+// context. This cannot duplicate inference: no HTTP connection was returned.
 func (r *Registry) DialTLSContext(
 	dialContext func(context.Context, string, string) (net.Conn, error),
 	config *tls.Config,
 	handshakeTimeout time.Duration,
 ) func(context.Context, string, string) (net.Conn, error) {
-	return func(ctx context.Context, network, address string) (net.Conn, error) {
+	dialTLS := func(ctx context.Context, network, address string) (net.Conn, error) {
 		rawConn, err := dialContext(ctx, network, address)
 		if err != nil {
-			return nil, err
+			return nil, &SetupError{Phase: "dial", Err: err}
 		}
 		host, _, err := net.SplitHostPort(address)
 		if err != nil {
@@ -208,7 +211,7 @@ func (r *Registry) DialTLSContext(
 		cancel()
 		if err != nil {
 			_ = tlsConn.Close()
-			return nil, err
+			return nil, &SetupError{Phase: "tls", Err: err}
 		}
 		state := tlsConn.ConnectionState()
 		if len(state.PeerCertificates) > 0 {
@@ -216,7 +219,25 @@ func (r *Registry) DialTLSContext(
 		}
 		return tlsConn, nil
 	}
+	return func(ctx context.Context, network, address string) (net.Conn, error) {
+		conn, err := dialTLS(ctx, network, address)
+		var timeout net.Error
+		if err == nil || ctx.Err() != nil || !errors.As(err, &timeout) || !timeout.Timeout() {
+			return conn, err
+		}
+		return dialTLS(ctx, network, address)
+	}
 }
+
+// SetupError exposes a fixed phase without logging URLs, credentials, or
+// provider response bodies. Unwrap preserves cancellation and TLS failures.
+type SetupError struct {
+	Phase string
+	Err   error
+}
+
+func (e *SetupError) Error() string { return "upstream " + e.Phase + " setup: " + e.Err.Error() }
+func (e *SetupError) Unwrap() error { return e.Err }
 
 // Transport adds per-request GotConn attribution to a pooled transport.
 type Transport struct {

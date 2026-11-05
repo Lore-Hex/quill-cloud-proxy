@@ -306,6 +306,8 @@ func TestResponsesInputItemsEmptyAssistantText(t *testing.T) {
 		item any
 	}{
 		{"builder output", response["output"].([]any)[0]},
+		{"empty string", map[string]any{"role": "assistant", "content": ""}},
+		{"whitespace string", map[string]any{"role": "assistant", "content": " \n\t"}},
 		{"multiple empty text parts", map[string]any{"type": "message", "role": "assistant", "content": []any{
 			map[string]any{"type": "output_text", "text": ""}, map[string]any{"type": "input_text", "text": ""},
 			map[string]any{"type": "text", "text": ""}, map[string]any{"text": ""},

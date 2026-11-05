@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"os"
 	"strconv"
 	"strings"
@@ -19,6 +20,7 @@ import (
 	"github.com/Lore-Hex/quill-cloud-proxy/enclave-go/internal/shadowobserve"
 	"github.com/Lore-Hex/quill-cloud-proxy/enclave-go/internal/trustedrouter"
 	"github.com/Lore-Hex/quill-cloud-proxy/enclave-go/internal/types"
+	"github.com/Lore-Hex/quill-cloud-proxy/enclave-go/internal/upstreamcert"
 	"github.com/Lore-Hex/quill-cloud-proxy/enclave-go/internal/upstreamerror"
 )
 
@@ -392,6 +394,18 @@ func errorClass(err error) string {
 		return "ttfb_exceeded"
 	case strings.Contains(msg, "context canceled"):
 		return "ctx_canceled"
+	}
+	var setup *upstreamcert.SetupError
+	var timeout net.Error
+	if errors.As(err, &setup) && errors.As(setup.Err, &timeout) && timeout.Timeout() {
+		switch setup.Phase {
+		case "dial":
+			return "connect_dial_timeout"
+		case "tls":
+			return "connect_tls_timeout"
+		}
+	}
+	switch {
 	case strings.Contains(msg, "context deadline exceeded"):
 		return "ctx_deadline"
 	case strings.Contains(strings.ToLower(msg), "http 5"):
@@ -577,7 +591,11 @@ func (t *selectedRouteTracker) RecordFallbackFailure(option llm.InvokeOptions, e
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	if len(t.failures) < 8 {
-		t.failures = append(t.failures, option.Provider+"|"+option.EndpointID+"|"+errorClass(err))
+		class := errorClass(err)
+		if diagnostic := upstreamerror.Diagnostic(err); diagnostic != "" {
+			class += ";" + diagnostic
+		}
+		t.failures = append(t.failures, option.Provider+"|"+option.EndpointID+"|"+class)
 	}
 }
 
