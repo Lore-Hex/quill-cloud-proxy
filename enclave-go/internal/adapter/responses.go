@@ -489,8 +489,12 @@ func responseInputMessage(item any, index int) (message types.OpenAIChatMessage,
 	return types.OpenAIChatMessage{Role: role, Content: content}, false, nil
 }
 
-// responseEmptyTextParts recognizes the empty text message emitted by responsesObject.
+// responseEmptyTextParts recognizes empty assistant replay items, whether a
+// client preserves the output-text parts or flattens them to a string.
 func responseEmptyTextParts(content any) bool {
+	if text, ok := content.(string); ok {
+		return strings.TrimSpace(text) == ""
+	}
 	parts, ok := content.([]any)
 	if !ok || len(parts) == 0 {
 		return false

@@ -1,12 +1,15 @@
 package main
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"io"
 	"net"
 	"strings"
 	"testing"
+
+	"github.com/Lore-Hex/quill-cloud-proxy/enclave-go/internal/upstreamcert"
 )
 
 // errorClass feeds log lines on every route. It used to fall back to the first
@@ -21,6 +24,7 @@ func TestErrorClassNeverReturnsTheErrorsOwnText(t *testing.T) {
 		"decoder quote":  fmt.Errorf(`strconv.ParseFloat: parsing %q: value out of range`, secret),
 		"beside a known": fmt.Errorf("unexpected EOF after %s", secret),
 		"long":           errors.New(strings.Repeat("x", 200) + secret),
+		"unknown phase":  &upstreamcert.SetupError{Phase: secret, Err: context.DeadlineExceeded},
 	} {
 		class := errorClass(err)
 		if strings.Contains(class, "PRIVATE") || strings.Contains(class, "charged") || strings.Contains(class, "rejected") {
@@ -34,19 +38,21 @@ func TestErrorClassNeverReturnsTheErrorsOwnText(t *testing.T) {
 
 func TestErrorClassKeepsWhatOperatorsReadItFor(t *testing.T) {
 	for want, err := range map[string]error{
-		"ttfb_exceeded":      errors.New("llm/x: time-to-first-byte exceeded 8s"),
-		"ctx_canceled":       errors.New("Post \"https://h\": context canceled"),
-		"ctx_deadline":       errors.New("context deadline exceeded"),
-		"upstream_5xx":       errors.New("llm/upstream: http 503: overloaded"),
-		"rate_limited":       errors.New("llm/upstream: http 429: slow down"),
-		"upstream_4xx":       errors.New("llm/upstream: http 404: no such model"),
-		"unexpected_eof":     io.ErrUnexpectedEOF,
-		"eof":                io.EOF,
-		"conn_refused":       &net.OpError{Op: "dial", Net: "tcp", Err: errors.New("connect: connection refused")},
-		"conn_reset":         errors.New("read tcp 10.0.0.1:443: read: connection reset by peer"),
-		"io_timeout":         errors.New("net/http: TLS handshake timeout: i/o timeout"),
-		"dns_no_such_host":   errors.New("dial tcp: lookup api.example: no such host"),
-		"http2_stream_error": errors.New("stream error: stream ID 3; INTERNAL_ERROR"),
+		"ttfb_exceeded":        errors.New("llm/x: time-to-first-byte exceeded 8s"),
+		"ctx_canceled":         errors.New("Post \"https://h\": context canceled"),
+		"ctx_deadline":         errors.New("context deadline exceeded"),
+		"connect_dial_timeout": &upstreamcert.SetupError{Phase: "dial", Err: context.DeadlineExceeded},
+		"connect_tls_timeout":  fmt.Errorf("provider: %w", &upstreamcert.SetupError{Phase: "tls", Err: context.DeadlineExceeded}),
+		"upstream_5xx":         errors.New("llm/upstream: http 503: overloaded"),
+		"rate_limited":         errors.New("llm/upstream: http 429: slow down"),
+		"upstream_4xx":         errors.New("llm/upstream: http 404: no such model"),
+		"unexpected_eof":       io.ErrUnexpectedEOF,
+		"eof":                  io.EOF,
+		"conn_refused":         &net.OpError{Op: "dial", Net: "tcp", Err: errors.New("connect: connection refused")},
+		"conn_reset":           errors.New("read tcp 10.0.0.1:443: read: connection reset by peer"),
+		"io_timeout":           errors.New("net/http: TLS handshake timeout: i/o timeout"),
+		"dns_no_such_host":     errors.New("dial tcp: lookup api.example: no such host"),
+		"http2_stream_error":   errors.New("stream error: stream ID 3; INTERNAL_ERROR"),
 		// The gateway's OWN conditions keep the values they were always logged
 		// under: alerts match on them, and they were never anyone's content.
 		"empty upstream response":       errEmptyUpstreamResponse,
