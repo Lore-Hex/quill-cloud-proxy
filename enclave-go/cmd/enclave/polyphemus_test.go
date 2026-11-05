@@ -335,6 +335,35 @@ func TestPolyphemusResolvesOnlyUniqueConcreteModels(t *testing.T) {
 	}
 }
 
+func TestPolyphemusResolvesTelluviansDashedAnthropicVersions(t *testing.T) {
+	// The live catalog carries the dashed id as a BYOK-only alias next to the
+	// credit-billed dotted id, so the dashed name alone matches nothing eligible.
+	catalog := `{"data":[` +
+		`{"id":"anthropic/claude-opus-5.5","trustedrouter":{"supports_chat":true,"prepaid_available":true}},` +
+		`{"id":"anthropic/claude-opus-5-5","trustedrouter":{"supports_chat":true,"prepaid_available":false}},` +
+		`{"id":"anthropic/claude-haiku-4.5","trustedrouter":{"supports_chat":true,"prepaid_available":true}},` +
+		`{"id":"anthropic/claude-fable-5.1","trustedrouter":{"supports_chat":true,"prepaid_available":true}},` +
+		`{"id":"google/gemma-2-27b-it","trustedrouter":{"supports_chat":true,"prepaid_available":true}}]}`
+	for name, want := range map[string]string{
+		"anthropic/claude-opus-5-5":           "anthropic/claude-opus-5.5",
+		"claude-opus-5-5":                     "anthropic/claude-opus-5.5",
+		"anthropic/claude-fable-5-1":          "anthropic/claude-fable-5.1",
+		"anthropic/claude-haiku-4-5-20251001": "anthropic/claude-haiku-4.5",
+		"anthropic/claude-opus-5.5":           "anthropic/claude-opus-5.5",
+		"google/gemma-2-27b-it":               "google/gemma-2-27b-it",
+	} {
+		model, err := resolveSelectedModel([]byte(catalog), name)
+		if err != nil || model != want {
+			t.Errorf("%s resolved to %q (%v), want %q", name, model, err, want)
+		}
+	}
+	for _, name := range []string{"anthropic/claude-opus-6-1", "Anthropic/claude-opus-5-5", "anthropic/claude-sonnet-4-6"} {
+		if model, err := resolveSelectedModel([]byte(catalog), name); err == nil {
+			t.Errorf("%s resolved to %q, want no match", name, model)
+		}
+	}
+}
+
 func TestPolyphemusRejectsWrongRouteAndImage(t *testing.T) {
 	req := selectionTestRequest()
 	if validatePolyphemus(req, "chat.completions") == nil {
