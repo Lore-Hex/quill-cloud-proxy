@@ -5279,12 +5279,6 @@ func TestAdvisorComboPresetsConfigureWorkerAndAdvisorModels(t *testing.T) {
 			workers:  []string{"nvidia/nemotron-3-ultra-550b-a55b"},
 			advisors: []string{"google/gemma-4-31b-it", "openai/gpt-oss-120b", trustedRouterLiberty101MModel, "thinkingmachines/inkling"},
 		},
-		{
-			model:        trustedRouterLiberty40Model,
-			workers:      []string{"nvidia/nemotron-3-ultra-550b-a55b"},
-			advisors:     []string{trustedRouterLiberty101MModel, trustedRouterLiberty10Model, "meta-models/muse-spark-open", "reflection/beam-1.0"},
-			jurisdiction: providerJurisdictionUS,
-		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.model, func(t *testing.T) {
@@ -6405,8 +6399,6 @@ func TestLibertyAdvisorModelsUseTheirPublishedContextLimits(t *testing.T) {
 		"nvidia/nemotron-3-ultra-550b-a55b": 1_048_576,
 		"thinkingmachines/inkling":          262_144,
 		"thinkingmachines/inkling-1m":       1_048_576,
-		"meta-models/muse-spark-open":       1_048_576,
-		"reflection/beam-1.0":               1_048_576,
 		trustedRouterLiberty10Model:         262_144,
 		trustedRouterLiberty101MModel:       1_048_576,
 	}
@@ -6672,12 +6664,9 @@ func TestNamedOrchestrationPresetsReturnNonEmptyThroughLocalGateway(t *testing.T
 		{
 			model: trustedRouterLiberty40Model,
 			componentModels: []string{
-				"thinkingmachines/inkling-1m",
-				"thinkingmachines/inkling",
-				"nvidia/nemotron-3-ultra-550b-a55b",
-				"google/gemma-4-31b-it",
-				"meta-models/muse-spark-open",
+				"nvidia/nemotron-3.5-super-vl",
 				"reflection/beam-1.0",
+				"meta-models/muse-spark-open",
 			},
 		},
 	}
@@ -8704,6 +8693,9 @@ type fusionGatewayRecorder struct {
 	authorize []map[string]any
 	settle    []map[string]any
 	refund    []map[string]any
+	// dropSettleModels drops the connection on these models' settles, so the
+	// gateway queues the settle for retry instead of seeing a response.
+	dropSettleModels map[string]bool
 }
 
 func newFusionGatewayRecorder(t *testing.T) (*trustedrouter.Client, *fusionGatewayRecorder, func()) {
@@ -8753,7 +8745,14 @@ func newFusionGatewayRecorder(t *testing.T) (*trustedrouter.Client, *fusionGatew
 			recorder.mu.Lock()
 			recorder.settle = append(recorder.settle, payload)
 			settleID := len(recorder.settle)
+			drop := recorder.dropSettleModels[model]
 			recorder.mu.Unlock()
+			if drop {
+				if conn, _, err := w.(http.Hijacker).Hijack(); err == nil {
+					_ = conn.Close()
+				}
+				return
+			}
 			costMicrodollars := 1
 			if additional, ok := payload["additional_cost_microdollars"].(float64); ok {
 				costMicrodollars += int(additional)
@@ -8774,6 +8773,11 @@ func newFusionGatewayRecorder(t *testing.T) (*trustedrouter.Client, *fusionGatew
 			recorder.refund = append(recorder.refund, payload)
 			recorder.mu.Unlock()
 			_ = json.NewEncoder(w).Encode(map[string]any{"data": map[string]any{"refunded": true}})
+		case "/internal/gateway/validate":
+			_ = json.NewEncoder(w).Encode(map[string]any{"data": map[string]any{
+				"workspace_id": "ws_1",
+				"api_key_hash": "key_1",
+			}})
 		default:
 			t.Fatalf("unexpected control-plane path %s", r.URL.Path)
 		}

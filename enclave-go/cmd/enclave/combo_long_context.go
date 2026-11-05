@@ -24,6 +24,10 @@ var longContextComboProviders = map[string][]string{
 	"openai/gpt-6-astra":              {"openai"},
 	"anthropic/claude-fable-5.1":      {"anthropic"},
 	"google/gemini-3.8-flash":         {"google-ai-studio", "google-vertex"},
+	// Liberty 4.0 members, US-headquartered 1M hosts only, reviewed 2026-11-04.
+	"meta-models/muse-spark-open":  {"baseten"},
+	"reflection/beam-1.0":          {"baseten"},
+	"nvidia/nemotron-3.5-super-vl": {"crusoe"},
 }
 
 func isLongContextCombo(model string) bool {
@@ -31,7 +35,8 @@ func isLongContextCombo(model string) bool {
 	case trustedRouterPrometheusModel, trustedRouterPrometheus40Model,
 		trustedRouterZeusModel, trustedRouterZeus30Model,
 		trustedRouterPlatoModel, trustedRouterPlato40Model,
-		trustedRouterSocratesModel, trustedRouterSocrates30Model:
+		trustedRouterSocratesModel, trustedRouterSocrates30Model,
+		trustedRouterLiberty40Model:
 		return true
 	default:
 		return false
@@ -44,7 +49,7 @@ func constrainLongContextComboRoute(req *types.OpenAIChatRequest) error {
 	}
 	providers := longContextComboProviders[req.Model]
 	if len(providers) == 0 {
-		return &adapter.AdapterError{Status: 400, Message: "model has no reviewed 1M route for this combo", Context: "model"}
+		return &adapter.AdapterError{Status: 400, Message: "model has no reviewed long-context route for this combo", Context: "model"}
 	}
 	policy := cloneProviderRouting(req.Provider)
 	if policy == nil {
@@ -63,7 +68,7 @@ func constrainLongContextComboRoute(req *types.OpenAIChatRequest) error {
 		}
 	}
 	if len(only) == 0 {
-		return &adapter.AdapterError{Status: 400, Message: "provider.only excludes all reviewed 1M routes for this combo", Context: "provider.only"}
+		return &adapter.AdapterError{Status: 400, Message: "provider.only excludes all reviewed long-context routes for this combo", Context: "provider.only"}
 	}
 	// Preserve ignore, privacy, jurisdiction, price and fallback constraints.
 	policy.Only = only
@@ -76,11 +81,11 @@ func validateLongContextComboOptions(req *types.OpenAIChatRequest, options []llm
 		return nil
 	}
 	if req.Provider == nil || len(req.Provider.Only) == 0 || len(options) == 0 {
-		return fmt.Errorf("missing constrained 1M combo routes")
+		return fmt.Errorf("missing constrained long-context combo routes")
 	}
 	for _, option := range options {
 		if option.Model != req.Model || !slices.Contains(req.Provider.Only, option.Provider) {
-			return fmt.Errorf("authorization returned an unreviewed 1M combo route")
+			return fmt.Errorf("authorization returned an unreviewed long-context combo route")
 		}
 	}
 	return nil

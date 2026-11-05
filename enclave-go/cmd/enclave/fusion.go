@@ -49,6 +49,7 @@ const trustedRouterOpenPatcherS2Model = "trustedrouter/openpatcher-s2"
 const trustedRouterOpenPatcherS3Model = "trustedrouter/openpatcher-s3"
 const trustedRouterLiberty10Model = "trustedrouter/liberty-1.0"
 const trustedRouterLiberty101MModel = "trustedrouter/liberty-1.0-1m"
+const trustedRouterLiberty40Model = "trustedrouter/liberty-4.0"
 const trustedRouterFusionModel = "trustedrouter/fusion"
 const trustedRouterFusionCodeModel = "trustedrouter/fusion-code"
 const trustedRouterSelectorModel = "trustedrouter/selector"
@@ -278,6 +279,21 @@ var fusionLiberty101MPanel = []string{
 	"nvidia/nemotron-3-ultra-550b-a55b",
 }
 
+// Liberty 4.0: American models on US-headquartered 1M routes. The panel
+// answers in parallel and Muse Spark Open fuses whatever returned; if it
+// fails, Beam, then Nemotron take over as fuser.
+var fusionLiberty40Panel = []string{
+	"nvidia/nemotron-3.5-super-vl",
+	"reflection/beam-1.0",
+	"meta-models/muse-spark-open",
+}
+
+var fusionLiberty40Fusers = []string{
+	"meta-models/muse-spark-open",
+	"reflection/beam-1.0",
+	"nvidia/nemotron-3.5-super-vl",
+}
+
 // applyFusionCodeSwap rewrites the single model trustedrouter/fusion-code
 // differs on — the general Kimi -> the code-tuned Kimi — leaving everything else
 // untouched. This is the only difference between fusion and fusion-code.
@@ -336,6 +352,7 @@ func isFusionModel(model string) bool {
 		trustedRouterOpenPatcherS3Model,
 		trustedRouterLiberty10Model,
 		trustedRouterLiberty101MModel,
+		trustedRouterLiberty40Model,
 		trustedRouterFusionModel,
 		trustedRouterFusionCodeModel,
 		trustedRouterSelectorModel,
@@ -414,6 +431,8 @@ func fusionPresetPanelForModel(model string) (string, []string, bool) {
 		return "liberty-1.0", append([]string(nil), fusionLiberty10Panel...), true
 	case trustedRouterLiberty101MModel:
 		return "liberty-1.0-1m", append([]string(nil), fusionLiberty101MPanel...), true
+	case trustedRouterLiberty40Model:
+		return "liberty-4.0", append([]string(nil), fusionLiberty40Panel...), true
 	default:
 		return "", nil, false
 	}
@@ -455,6 +474,8 @@ func fusionPresetFinalModelsForModel(model string) ([]string, bool) {
 		return []string{"nvidia/nemotron-3-ultra-550b-a55b"}, true
 	case trustedRouterLiberty101MModel:
 		return []string{"nvidia/nemotron-3-ultra-550b-a55b"}, true
+	case trustedRouterLiberty40Model:
+		return append([]string(nil), fusionLiberty40Fusers...), true
 	default:
 		return nil, false
 	}
@@ -497,6 +518,8 @@ func fusionPresetJudgeModelsForModel(model string) ([]string, bool) {
 		return []string{"nvidia/nemotron-3-ultra-550b-a55b"}, true
 	case trustedRouterLiberty101MModel:
 		return []string{"nvidia/nemotron-3-ultra-550b-a55b"}, true
+	case trustedRouterLiberty40Model:
+		return append([]string(nil), fusionLiberty40Fusers...), true
 	default:
 		return nil, false
 	}
@@ -549,6 +572,12 @@ type fusionConfig struct {
 	SelectionStrategy    string
 	Preset               string
 	ProviderJurisdiction string
+	// FuserFailover lets the next judge/final model take over after a provider
+	// error whose hold was refunded in full, not only after an unroutable model.
+	// A failure that billed anything (metered partial usage, a queued settle)
+	// still stops the chain, and a streamed answer never switches models once
+	// content is committed.
+	FuserFailover bool
 }
 
 type fusionPromptBundle struct {
@@ -641,6 +670,27 @@ func (e *fusionModelFallbackError) Unwrap() error {
 func fusionCanTryNextModel(err error) bool {
 	var fallbackErr *fusionModelFallbackError
 	return errors.As(err, &fallbackErr)
+}
+
+// fusionRefundedProviderError marks a provider failure whose hold was refunded
+// in full, so handing the work to another model cannot bill it twice.
+type fusionRefundedProviderError struct{ err error }
+
+func (e *fusionRefundedProviderError) Error() string { return e.err.Error() }
+func (e *fusionRefundedProviderError) Unwrap() error { return e.err }
+
+// fusionCanTryNextFuser reports whether a failed judge or final model may hand
+// off to the next one. With FuserFailover, a refunded provider failure also
+// hands off; anything that billed, and a canceled request, stops the chain.
+func fusionCanTryNextFuser(ctx context.Context, config fusionConfig, err error) bool {
+	if fusionCanTryNextModel(err) {
+		return true
+	}
+	if !config.FuserFailover || ctx.Err() != nil {
+		return false
+	}
+	var refunded *fusionRefundedProviderError
+	return errors.As(err, &refunded)
 }
 
 func fusionClassifyAuthorizationError(err error) error {
@@ -896,8 +946,12 @@ func validateGenericFusionConfig(config fusionConfig, model string) error {
 func fusionConfigForRequest(req *types.OpenAIChatRequest) (fusionConfig, bool, error) {
 	config := fusionConfig{Enabled: true}
 	requested := isFusionModel(req.Model)
-	if strings.EqualFold(strings.TrimSpace(req.Model), trustedRouterOpenPatcherS1Model) {
+	switch strings.ToLower(strings.TrimSpace(req.Model)) {
+	case trustedRouterOpenPatcherS1Model:
 		config.ProviderJurisdiction = providerJurisdictionUS
+	case trustedRouterLiberty40Model:
+		config.ProviderJurisdiction = providerJurisdictionUS
+		config.FuserFailover = true
 	}
 
 	if pluginConfig, ok, err := fusionConfigFromPlugins(req.Plugins); err != nil {
@@ -1745,7 +1799,7 @@ func runFusionJudgeObserved(
 					"error": err.Error(),
 				})
 			}
-			if fusionCanTryNextModel(err) {
+			if fusionCanTryNextFuser(ctx, config, err) {
 				continue
 			}
 			return fusionCallResult{}, attempts, err
@@ -1826,7 +1880,7 @@ func runFusionFinal(
 				"enclave.fusion_final_failed request_log_id=%q request_id=%q model=%q attempt=%d error=%q\n",
 				requestLogID, requestID, finalModel, i+1, errorClass(err),
 			)
-			if !fusionCanTryNextModel(err) {
+			if !fusionCanTryNextFuser(ctx, config, err) {
 				return fusionCallResult{}, attempts, err
 			}
 			continue
@@ -2103,7 +2157,7 @@ func runAuthorizedFusionCallAttempt(
 		result.Usage.CacheReadInputTokens > 0 || result.Usage.CacheCreationInputTokens > 0)
 	if providerErr != nil && (!partialBillable || !meteredPartial) {
 		refundFusionCall(ctx, trGateway, authz, 502, "provider_error", requestStarted, req.Metadata)
-		return fusionCallResult{}, fusionProviderErrorForOrchestrationFallback(providerErr, routeType, req, authz, selectedRoute, options)
+		return fusionCallResult{}, &fusionRefundedProviderError{err: fusionProviderErrorForOrchestrationFallback(providerErr, routeType, req, authz, selectedRoute, options)}
 	}
 	rawText := result.Text
 	if providerErr == nil && strings.HasPrefix(routeType, "fusion.") {
@@ -2181,7 +2235,9 @@ func runAuthorizedFusionCallAttempt(
 		return fusionCallResult{}, &settlementAttemptedError{err}
 	}
 	if providerErr != nil {
-		return fusionCallResult{}, fusionProviderErrorForOrchestrationFallback(providerErr, routeType, req, authz, selectedRoute, options)
+		// The metered partial generation was billed, so never reclassify it as
+		// a model fallback: the next model would bill the same work again.
+		return fusionCallResult{}, newOrchestrationCallError(providerErr, routeType, req, authz, selectedRoute, options)
 	}
 	elapsedMS := time.Since(requestStarted).Milliseconds()
 	if selectedModel == "" && authz != nil {
@@ -2238,7 +2294,7 @@ func serveFusionFinalStreaming(
 				"enclave.fusion_final_stream_authorize_failed request_log_id=%q request_id=%q model=%q attempt=%d error=%q\n",
 				requestLogID, requestID, finalModel, i+1, err.Error(),
 			)
-			if fusionCanTryNextModel(err) {
+			if fusionCanTryNextFuser(ctx, config, err) {
 				continue
 			}
 			return err
@@ -2259,6 +2315,9 @@ func serveFusionFinalStreaming(
 				"enclave.fusion_final_stream_failed request_log_id=%q request_id=%q model=%q attempt=%d error=%q\n",
 				requestLogID, requestID, finalModel, i+1, errorClass(err),
 			)
+			if fusionCanTryNextFuser(ctx, config, err) {
+				continue
+			}
 			return err
 		}
 	}
@@ -2390,7 +2449,7 @@ func serveFusionFinalStreamingObserved(
 			if contentCommitted {
 				return err
 			}
-			if !fusionCanTryNextModel(err) {
+			if !fusionCanTryNextFuser(ctx, config, err) {
 				return err
 			}
 			continue
@@ -2462,7 +2521,7 @@ func serveFusionFinalStreamingAttempt(
 	if err != nil {
 		refundFusionCallAfter(ctx, trGateway, authorization, 502, "provider_error", time.Since(requestStarted).Seconds(), req.Metadata)
 		_ = pr.Close()
-		return false, err
+		return false, &fusionRefundedProviderError{err: err}
 	}
 	streamModel := selectedRoute.Model(req.Model, authorization)
 	if streamModel != "" {

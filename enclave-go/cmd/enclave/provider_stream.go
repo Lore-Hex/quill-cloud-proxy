@@ -448,7 +448,10 @@ var transportErrorClasses = []struct{ marker, class string }{
 func errorTypeChain(err error) string {
 	var names []string
 	for depth := 0; err != nil && depth < 4; depth++ {
-		if _, marker := err.(*settlementAttemptedError); !marker {
+		switch err.(type) {
+		case *settlementAttemptedError, *fusionRefundedProviderError:
+			// Billing markers, not part of what failed.
+		default:
 			names = append(names, fmt.Sprintf("%T", err))
 		}
 		err = errors.Unwrap(err)
