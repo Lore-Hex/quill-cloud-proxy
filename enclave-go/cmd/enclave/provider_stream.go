@@ -591,7 +591,11 @@ func (t *selectedRouteTracker) RecordFallbackFailure(option llm.InvokeOptions, e
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	if len(t.failures) < 8 {
-		t.failures = append(t.failures, option.Provider+"|"+option.EndpointID+"|"+errorClass(err))
+		class := errorClass(err)
+		if diagnostic := upstreamerror.Diagnostic(err); diagnostic != "" {
+			class += ";" + diagnostic
+		}
+		t.failures = append(t.failures, option.Provider+"|"+option.EndpointID+"|"+class)
 	}
 }
 

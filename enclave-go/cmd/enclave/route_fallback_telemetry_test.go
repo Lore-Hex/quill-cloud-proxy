@@ -8,7 +8,18 @@ import (
 	"testing"
 
 	"github.com/Lore-Hex/quill-cloud-proxy/enclave-go/internal/llm"
+	"github.com/Lore-Hex/quill-cloud-proxy/enclave-go/internal/upstreamerror"
 )
+
+func TestRouteFallbackRetainsSafeUpstreamDiagnosis(t *testing.T) {
+	selected := newSelectedRouteTracker()
+	selected.RecordFallbackFailure(llm.InvokeOptions{Provider: "provider", EndpointID: "route"},
+		&upstreamerror.Error{Status: 400, Body: `{"error":{"message":"PRIVATE PROMPT","code":"unsupported_parameter","param":"reasoning_effort"}}`})
+	want := "provider|route|upstream_4xx;http=400;code=unsupported_parameter;param=reasoning_effort"
+	if got := selected.Failures(); len(got) != 1 || got[0] != want {
+		t.Fatalf("failure = %q, want %q", got, want)
+	}
+}
 
 func TestRouteFallbackTelemetryIsBoundedAndContentFree(t *testing.T) {
 	client := &scriptedProviderStreamClient{invoke: func(option llm.InvokeOptions, out io.Writer) error {
