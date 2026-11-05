@@ -26,6 +26,8 @@ var contractParameterCategories = map[string]struct{}{
 	"stream": {}, "stream_options": {}, "text": {}, "response_format": {},
 	"temperature": {}, "top_p": {}, "reasoning": {}, "reasoning_effort": {},
 	"include_reasoning": {},
+	"thinking":          {},
+	"enable_thinking":   {},
 	"provider":          {}, "metadata": {}, "tags": {}, "max_tokens": {},
 	"max_output_tokens": {}, "max_completion_tokens": {}, "max_tool_calls": {},
 	"previous_response_id": {}, "conversation": {}, "background": {}, "include": {},
