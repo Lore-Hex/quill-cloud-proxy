@@ -566,7 +566,7 @@ python3 "${SCRIPT_DIR}/verify-gcp-runtime-secret-access.py" \
 # Pick the next template suffix by listing existing templates with our prefix.
 next_template_name() {
   local existing
-  existing=$(gc compute instance-templates list --filter="name~^${TEMPLATE_PREFIX}-[0-9]+\$" --format="value(name)" 2>/dev/null | sort | tail -1 || true)
+  existing=$(gc compute instance-templates list --filter="name~^${TEMPLATE_PREFIX}-[0-9]+\$" --format="value(name)" 2>/dev/null | sort -V | tail -1 || true)
   if [ -z "$existing" ]; then
     printf '%s-001' "$TEMPLATE_PREFIX"
   else
@@ -576,6 +576,9 @@ next_template_name() {
     printf '%s-%03d' "$TEMPLATE_PREFIX" "$n"
   fi
 }
+
+# Keep the project under its global instance-template quota before adding one.
+bash "${SCRIPT_DIR}/prune-gcp-instance-templates.sh" "$PROJECT_ID" "$TEMPLATE_PREFIX" 20 || true
 
 # 1. Instance template (always create new; rolling-replace handles the swap).
 TEMPLATE=$(next_template_name)
