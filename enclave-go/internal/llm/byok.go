@@ -93,6 +93,7 @@ type openAICompatibleRequest struct {
 	Prediction           any                 `json:"prediction,omitempty"`
 	PromptCacheKey       string              `json:"prompt_cache_key,omitempty"`
 	PromptCacheRetention string              `json:"prompt_cache_retention,omitempty"`
+	AllowMissingThinking *bool               `json:"allow_missing_thinking,omitempty"`
 	PromptCacheOptions   map[string]any      `json:"prompt_cache_options,omitempty"`
 	ResponseFormat       any                 `json:"response_format,omitempty"`
 	Tools                []any               `json:"tools,omitempty"`
@@ -506,12 +507,25 @@ func buildOpenAICompatibleRequest(
 		// pin that same tier instead of accepting an account or API default.
 		reqBody.SearchContextSize = "low"
 	}
+	if basetenRejectsMissingThinking(provider, upstreamID) {
+		// Baseten's Beam 1.0 answers 400 to any assistant turn sent back without
+		// its reasoning. OpenAI clients, and the fusion and agent loops whose
+		// earlier assistant turns another model wrote, do not echo it, so every
+		// turn after the first tool call would fail. Accept the degraded turn.
+		allow := true
+		reqBody.AllowMissingThinking = &allow
+	}
 	if normalizeDirectProvider(provider) == "coralbricks" {
 		// Coral's optional retained-cache writes cost extra. The catalog uses
 		// its opt-out tariff; ordinary engine caching and free reads remain on.
 		reqBody.PromptCacheRetention = "off"
 	}
 	return reqBody
+}
+
+func basetenRejectsMissingThinking(provider, upstreamID string) bool {
+	return normalizeDirectProvider(provider) == "baseten" &&
+		strings.EqualFold(strings.TrimSpace(upstreamID), "reflection/Beam-1.0")
 }
 
 func supportsStreamUsageOption(provider, modelID string) bool {
