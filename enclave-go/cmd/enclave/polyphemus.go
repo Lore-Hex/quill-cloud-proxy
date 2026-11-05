@@ -205,8 +205,8 @@ var (
 // telluvianModelNames lists the names to try for a recommendation, in order:
 // as given; with dashed major-minor versions dotted (claude-opus-4-5 →
 // claude-opus-4.5); then, for Claude only, also without a -YYYYMMDD snapshot
-// date, which the catalog's Claude ids never carry. Other vendors' snapshot
-// dates name distinct models, so they are kept.
+// date, since the catalog's Claude ids are usually undated. Other vendors'
+// snapshot dates name distinct models, so they are kept.
 func telluvianModelNames(name string) []string {
 	names := []string{name}
 	add := func(candidate string) {
