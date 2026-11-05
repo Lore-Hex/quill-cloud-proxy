@@ -18,7 +18,7 @@ var longContextComboProviders = map[string][]string{
 	"xiaomi/mimo-v2.6-pro-ultraspeed": {"xiaomi"},
 	"z-ai/glm-5.3":                    {"zai", "novita"},
 	fusionKimiK3:                      {"kimi", "novita", "together"},
-	fusionKimiK31Pro:                  {"kimi", "novita", "fireworks"},
+	fusionKimiK31Pro:                  {"novita", "fireworks", "baseten"},
 	deepSeekV41FlashModel:             {"novita", "together"},
 	"minimax/minimax-m3":              {"minimax", "novita"},
 	"qwen/qwen3.8-2.4t-a95b":          {"novita", "together"},
