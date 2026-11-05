@@ -1,5 +1,61 @@
 # Maple pilot qualification
 
+## Front measurement update (2026-11-05)
+
+This change proposes only PCR0
+`db70ca1d96a458ccea64cc995fb5c5f908b187e32293267e15e8a5677ac12a864c0b90abec6493f777060c95ece729da`.
+The superseded `9d6ec6db...` measurement is replaced, not added as another
+allowance. Production deployment remains gated on specific operator approval,
+CI, measured builds, signed trust publication and staged cloud verification.
+
+Maple's [approval PR #1443](https://github.com/MaplePrivacyLabs/Maple/pull/1443),
+merged as `c3b8ad45c2cf1c0512fa34c1981500aedad0de42`, binds the measurement to
+source `b3d45af55377e9c8fabdbf414fc3d835d3913fe4`. The enclave artifact from
+[release 41798490334](https://github.com/MaplePrivacyLabs/Maple/actions/runs/41798490334)
+passed GitHub/Sigstore verification constrained to that exact source,
+`refs/heads/master`, GitHub's OIDC issuer and the repository's
+`opensecret-eif-release.yml` workflow. The signed production history preserves
+all previous entries and appends one. Its P-384 signature verifies with the
+SDK-pinned history key and rejects the previous measurement as its message.
+The signing runner is self-hosted; independent reproduction is required below.
+
+An independent ARM64 build of the unchanged source and locked inputs passed
+with Determinate Nix 3.23.3 (Nix 2.35.3), `sandbox=true`,
+`sandbox-fallback=false`, and a derivation proving the `/build` directory.
+Only `cache.nixos.org` was enabled, not Maple or FlakeHub output caches. The
+full 234,346,327-byte EIF, `pcr.json`, `SHA256SUMS` and `handoff.json` match the
+published artifact byte for byte. EIF SHA-256 is
+`c6a9613084fef00e809dc4067e1f33d1bac41559fa5ddb204727c850425fe593`.
+Independent EIF v4 structure and CRC validation passed. PCR1 remains
+`a91689e37a54303051f68263010f397ddfa92d66e17df7a03a6777c33ff1e4fc12b69bbbe786894d43dcba1cf6d60aaa`;
+PCR2 is
+`f7016dc3e17997198a6c6756e4f9a850412ebab172b6bd59ab26e488460559c5b680b9ad7eb1aa33b0df7b2c75270ea5`.
+The build passed 1,105 Rust tests; 55 database/live tests were ignored, not
+claimed as passed.
+
+The scoped review from `0e7dbc0b...` covers 18 commits. Encrypted Transport V2,
+API-key authentication, cache namespace ownership, dedicated i02 hardware and
+weights policy and entrypoint are unchanged. The managed explicit model still
+has only its dedicated i02 route. Stock DeepSeek's weighted routing and Auto
+Quick defaults changed separately; they do not select the managed explicit
+model. Chat now requires a confirmed paid billing plan and fails closed on an
+unknown plan. A new optional client-attribution header is limited to three
+enum values, excluded from upstream headers, and adds no content to usage
+events. JWT-only Responses title generation follows Auto Quick and retains
+bounded pre-send fallback; it is outside TR's managed stateless chat path.
+The locked Nix inputs and Markdown parser changed and are covered by the exact
+rebuild. This is a scoped integration review, not a complete audit of Maple's
+applications, deployment or live database.
+
+The pin regression failed against the previous constant and passed with the
+new pin. The SDK/helper workspace passed 142 tests, with one live integration
+ignored. A credential-free live front handshake passed in 211 ms, followed by
+deliberate wrong-pin rejection. No inference was sent during those checks.
+The qualification client's `end_to_end_qualified=false` and
+`source_reproduction_verified=false` remain honest: it does not perform the
+independent build or downstream verification itself. Production acceptance is
+still required before this update is described as serving.
+
 ## Front measurement update (2026-11-01)
 
 The source now pins only PCR0
