@@ -1,5 +1,44 @@
 # Maple pilot qualification
 
+## Verified update automation
+
+`Verify Maple release` checks the signed production approval every 30 minutes.
+It does not learn pins from the live server, accept every vendor-signed build,
+or change any request's attestation policy at runtime.
+
+The reviewed baseline is `enclave-go/maple-transport/verified-release.json`.
+Only changes under `apps/`, `docs/`, the root README/license/agent instructions,
+and the four measurement-approval files are eligible automatically. Every
+other path is protected by default, including new paths, submodules, build
+recipes, dependencies, authentication, cache isolation, routing and downstream
+worker measurements. A changed protected tree creates one review issue per
+source commit and cannot publish a new pin without operator approval.
+
+For an eligible change, an independent credential-free ARM64 job rebuilds the
+complete EIF using locked source and Nix, a checked sandbox, and only the
+NixOS binary cache. All four release files must match byte for byte. GitHub
+provenance must bind the exact repository identity, source commit, main vendor
+branch, workflow and OIDC issuer; the P-384 approval history must be append-only
+and correctly signed. A separate clean job checks the positive attestation and
+deliberate wrong-pin rejection without sending credentials or inference.
+
+Only a final clean job receives the release bot token. It rechecks the current
+approval and protected tree, creates a two-file pin/evidence PR, waits for full
+CI on that exact head, and merges without an admin bypass. The existing GCP
+signed release and staged canary workflow then applies. AWS and Azure still
+require their shared rollout guard, measured-image publication and regional
+canaries; this workflow does not claim a merge has deployed those fleets.
+Rebuilds run only for changed, automatically eligible releases. Artifacts are
+small evidence records retained for one day, not copies of the large EIF.
+
+The only qualified managed model remains
+`deepseek-v4-1-flash-1017-uncensored`. Dealign is its weights publisher, not an
+upstream API call. Auto models, stock DeepSeek, shared Tinfoil routes and all
+other Maple models remain rejected before the encrypted helper is started.
+Changes to the dedicated worker are security-sensitive even if the model name
+is unchanged. Provider deployment overlap is still necessary to avoid an
+outage while a new security-sensitive release is reviewed and staged.
+
 ## Proposed front measurement update (2026-11-06)
 
 This update proposes replacing the sole front PCR0 with

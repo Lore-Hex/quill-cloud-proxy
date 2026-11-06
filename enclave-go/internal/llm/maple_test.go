@@ -46,6 +46,12 @@ func TestMapleRefusesUnpinnedAndBYOKBeforeSend(t *testing.T) {
 	for _, option := range []InvokeOptions{
 		{Provider: "maple", UpstreamModel: maple.Model, ProviderAPIKey: "byok"},
 		{Provider: "maple", UpstreamModel: "deepseek-v4-1-flash"},
+		{Provider: "maple", UpstreamModel: "auto"},
+		{Provider: "maple", UpstreamModel: "auto-quick"},
+		{Provider: "maple", UpstreamModel: "kimi-k3.1-pro"},
+		{Provider: "maple", UpstreamModel: "tinfoil/" + maple.Model},
+		{Provider: "maple", UpstreamModel: "dealign/" + maple.Model},
+		{Provider: "maple", UpstreamModel: "https://api.dealign.ai/v1/chat/completions"},
 		{Provider: "openai", UpstreamModel: maple.Model},
 	} {
 		err := invokeMapleWith(t.Context(), "key", &qtypes.OpenAIChatRequest{}, &qtypes.AnthropicMessagesRequest{}, io.Discard, option,
