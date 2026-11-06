@@ -1,5 +1,68 @@
 # Maple pilot qualification
 
+## Proposed front measurement update (2026-11-06)
+
+This update proposes replacing the sole front PCR0 with
+`3a67fa1c4317d83e77d74123f4e658c4a1a7b15a7a1f6e1e872612390a6499a50118f2dddf05bd034b0318c4bcef53f4`.
+The previous `db70ca1d...` measurement is not retained as an additional
+allowance. This is a proposal, not a deployment or operator approval.
+Fresh approval of this exact measurement, CI, measured release builds,
+signed publication and staged cloud checks remain required.
+
+Maple's [approval PR #1475](https://github.com/MaplePrivacyLabs/Maple/pull/1475),
+merged at `8b764796193690504cbe01be121a08177bfbe7b3`, appends one signed
+measurement for source `13d75aa71c9bf0670d71bd6cf453a8fcf497f226`.
+The P-384 history signature verifies using the SDK-pinned key; verifying that
+signature over the previous measurement fails. Previous history is unchanged.
+The artifact from [release 42114907636](https://github.com/MaplePrivacyLabs/Maple/actions/runs/42114907636)
+passed GitHub/Sigstore provenance verification constrained to that exact
+source, `refs/heads/master`, GitHub's OIDC issuer and the
+`opensecret-eif-release.yml` workflow. This is not sole reliance on its
+self-hosted build runner: an independent reproduction was performed.
+
+The clean source, submodules, locked inputs and unchanged vendor build script
+were rebuilt on ARM64 with `sandbox=true`, `sandbox-fallback=false`, and a
+derivation proving the `/build` directory. Only `cache.nixos.org` was enabled;
+no Maple or FlakeHub output cache was used. The complete 234,362,261-byte EIF,
+`pcr.json`, `SHA256SUMS` and `handoff.json` match the published artifact byte
+for byte. EIF SHA-256 is
+`5506eeb07eeb8ece1e9be6b5c1d4616f50362b7ba711c99a991499ba07e47242`.
+PCR1 remains
+`a91689e37a54303051f68263010f397ddfa92d66e17df7a03a6777c33ff1e4fc12b69bbbe786894d43dcba1cf6d60aaa`;
+PCR2 is
+`4a3eaf8258a233da63c4aa6609fa8365ddb46eb162ab1710f6effa92785534d58c432f9105cb35fb632b6dc2150d2849`.
+The vendor build passed 1,105 Rust tests; 55 database/live tests were ignored,
+not claimed as passed.
+
+The scoped comparison from `b3d45af5...` adds Kimi K3.1 Pro configuration and
+its Tinfoil route. Other changed enclave Rust files add Kimi tests. The managed
+explicit DeepSeek route, Transport V2, authentication, cache namespace
+ownership and dedicated i02 worker/weights policy are unchanged. The two
+parent-side Nitro Python container recipes update pinned apt packages and
+disable vulnerable download retries. Desktop Linux packaging gains a glibc
+floor and compiler settings; these do not replace the reproduced EIF recipe.
+This is a scoped integration review, not a complete audit of Maple or its
+live database. The earlier bundled proxy source-comparison limitations below
+still apply; no broader source-equivalence claim is made.
+
+During this investigation the existing approved pin failed its credential-free handshake.
+The isolated AWS candidate also failed before completing a Maple canary,
+while its parent TLS tunnel was healthy and managed credentials matched the
+configured source. No serving AWS gateway was rolled. This is evidence for
+the measurement-transition diagnosis, not an attribution of every historical
+provider error.
+
+The new pin regression failed against the previous constant before the update.
+The SDK/helper unit-test scope passed 142 tests, with one live integration
+ignored. A credential-free handshake using the new pin passed in 243 ms, and
+the subsequent wrong-pin negative control passed after its positive control.
+The vendor's separate account-management integration suite requires its
+disposable backend and was not successfully run. No credentials or inference
+were sent during these handshake checks. The qualification client's
+`end_to_end_qualified=false` and `source_reproduction_verified=false` fields
+remain honest: that client does not perform the independent rebuild or
+downstream verification itself.
+
 ## Front measurement update (2026-11-05)
 
 This change proposes only PCR0
