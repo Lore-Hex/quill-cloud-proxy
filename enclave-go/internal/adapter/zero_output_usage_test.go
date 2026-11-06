@@ -2,12 +2,81 @@ package adapter
 
 import (
 	"bytes"
+	"encoding/json"
 	"errors"
 	"io"
 	"strings"
 	"testing"
 	"testing/iotest"
 )
+
+func TestIncompleteResponsesPreserveConfirmedZeroCacheUsage(t *testing.T) {
+	for _, tc := range []struct {
+		name      string
+		prefix    string
+		usage     string
+		wantInput int
+	}{
+		{"inclusive_input", "", `{"input_tokens":1000,"cache_read_input_tokens":900,"output_tokens":0}`, 1000},
+		{"native_full_cache", "event: message_start\ndata: {\"type\":\"message_start\",\"message\":{\"usage\":{\"input_tokens\":0,\"output_tokens\":0,\"cache_read_input_tokens\":900}}}\n\n", `{"output_tokens":0}`, 900},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			stream := tc.prefix + "event: message_delta\ndata: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"max_tokens\"},\"usage\":" + tc.usage + "}\n\nevent: message_stop\ndata: {\"type\":\"message_stop\"}\n\n"
+			assertUsage := func(fields map[string]any) {
+				t.Helper()
+				if getInt(fields, "input_tokens") != tc.wantInput || getInt(fields, "output_tokens") != 0 || getInt(fields, "total_tokens") != tc.wantInput || getInt(getMap(fields, "input_tokens_details"), "cached_tokens") != 900 {
+					t.Fatalf("usage=%#v", fields)
+				}
+			}
+			assertResponse := func(response map[string]any) {
+				t.Helper()
+				if response["status"] != "incomplete" || response["completed_at"] != nil || getMap(response, "incomplete_details")["reason"] != "max_output_tokens" {
+					t.Fatalf("response=%#v", response)
+				}
+				assertUsage(getMap(response, "usage"))
+			}
+			var output bytes.Buffer
+			hooks := 0
+			result, err := TransformResponsesStreamControlled(strings.NewReader(stream), &output, "response", "model", 2000, nil, nil, nil, &StreamControl{
+				ExposeResponsesUsage: true,
+				BeforeTerminal: func(terminal StreamTerminal) error {
+					hooks++
+					if terminal.Result.FinishReason != "length" || terminal.Result.Usage == nil || !terminal.Result.Usage.ZeroOutputReported {
+						t.Fatalf("terminal=%#v", terminal.Result)
+					}
+					assertUsage(terminal.UsageFields)
+					return terminal.Emit()
+				},
+			})
+			if err != nil || hooks != 1 || result.Usage == nil {
+				t.Fatalf("hooks=%d usage=%#v err=%v", hooks, result.Usage, err)
+			}
+			terminals := 0
+			for _, block := range strings.Split(output.String(), "\n\n") {
+				name, event := parseSSEBlock([]byte(block))
+				if name == "response.completed" {
+					t.Fatal("length stop emitted response.completed")
+				}
+				if name == "response.incomplete" {
+					terminals++
+					assertResponse(getMap(event, "response"))
+				}
+			}
+			if terminals != 1 {
+				t.Fatalf("incomplete terminal count=%d, want 1", terminals)
+			}
+			var buffered bytes.Buffer
+			if err := WriteResponsesResponse(&buffered, "response", "model", result.Text, result.ToolCalls, result.FinishReason, result.Usage.InputTokens, result.Usage.OutputTokens, result.Usage, 123, nil, nil); err != nil {
+				t.Fatal(err)
+			}
+			var response map[string]any
+			if err := json.Unmarshal(buffered.Bytes(), &response); err != nil {
+				t.Fatal(err)
+			}
+			assertResponse(response)
+		})
+	}
+}
 
 func TestZeroOutputUsageAcrossResponseAdapters(t *testing.T) {
 	model := "deepseek/deepseek-v4.1-flash-1017"
