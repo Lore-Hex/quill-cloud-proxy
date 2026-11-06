@@ -3,7 +3,7 @@ pub mod relay;
 
 pub const BACKEND: &str = "https://enclave.trymaple.ai";
 pub const MODEL: &str = "deepseek-v4-1-flash-1017-uncensored";
-// Independently reproduced source 13d75aa7; evidence: docs/providers/maple.md.
+// Independently reproduced release; identity: ../verified-release.json.
 pub const PCR0: &str = "3a67fa1c4317d83e77d74123f4e658c4a1a7b15a7a1f6e1e872612390a6499a50118f2dddf05bd034b0318c4bcef53f4";
 
 #[cfg(test)]
@@ -11,8 +11,12 @@ mod tests {
     use super::PCR0;
 
     #[test]
-    fn front_pin_matches_independent_20261106_reproduction() {
-        assert_eq!(PCR0, "3a67fa1c4317d83e77d74123f4e658c4a1a7b15a7a1f6e1e872612390a6499a50118f2dddf05bd034b0318c4bcef53f4");
+    fn front_pin_matches_independently_verified_release() {
+        let release: serde_json::Value =
+            serde_json::from_str(include_str!("../verified-release.json")).unwrap();
+        assert_eq!(Some(PCR0), release["pcr0"].as_str());
+        assert_eq!(Some(super::BACKEND), release["backend"].as_str());
+        assert_eq!(Some(super::MODEL), release["model"].as_str());
         assert_eq!(PCR0.len(), 96);
         assert!(PCR0.bytes().all(|byte| byte.is_ascii_hexdigit()));
         // Superseded measurements are replaced, never kept as extra allowances.
