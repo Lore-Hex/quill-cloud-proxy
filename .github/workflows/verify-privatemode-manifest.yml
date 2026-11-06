@@ -23,7 +23,7 @@ jobs:
     timeout-minutes: 3
     steps:
       - uses: actions/checkout@v7
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v7
         with:
           python-version: "3.12"
       - run: python3 -m unittest discover -s tools -p test_check_privatemode_manifest.py
