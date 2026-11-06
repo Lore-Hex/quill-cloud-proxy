@@ -782,6 +782,8 @@ type StreamControl struct {
 	ObserveUsage         func(*StreamUsage)
 	Termination          func() *ControlledTermination
 	BeforeTerminal       func(StreamTerminal) error
+	// ToolCallID rewrites the call_id the client sees for each function call.
+	ToolCallID func(string) string
 }
 
 type StreamTerminal struct {

@@ -1,0 +1,270 @@
+name: Verify Maple release
+
+on:
+  schedule:
+    - cron: "11,41 * * * *"
+  workflow_dispatch:
+    inputs:
+      review_only:
+        description: Reproduce a changed security boundary for review; never publish or merge
+        type: boolean
+        default: false
+  pull_request:
+    paths:
+      - "tools/*maple*"
+      - "enclave-go/maple-transport/verified-release.json"
+      - ".github/workflows/verify-maple-release.yml"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: maple-verified-release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  discover:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    outputs:
+      status: ${{ steps.candidate.outputs.status }}
+      source: ${{ steps.candidate.outputs.source }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: python3 -m pip install cryptography==50.0.2
+      - run: python3 -m unittest discover -s tools -p 'test_maple*.py'
+      - name: Authenticate and classify the latest signed approval
+        if: github.event_name != 'pull_request'
+        id: candidate
+        run: |
+          git clone --filter=blob:none --no-checkout https://github.com/MaplePrivacyLabs/Maple.git "$RUNNER_TEMP/maple"
+          python3 tools/maple_policy.py discover --vendor "$RUNNER_TEMP/maple" --output candidate.json
+          python3 - <<'PY'
+          import json, os
+          value = json.load(open('candidate.json'))
+          with open(os.environ['GITHUB_OUTPUT'], 'a') as out:
+              out.write('status=' + value['status'] + '\nsource=' + value['source_commit'] + '\n')
+          PY
+      - uses: actions/upload-artifact@v4
+        if: github.event_name != 'pull_request'
+        with:
+          name: maple-candidate
+          path: candidate.json
+          retention-days: 1
+
+  security-review:
+    needs: discover
+    if: needs.discover.outputs.status == 'review_required'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      issues: write
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: maple-candidate
+      - run: python3 tools/maple_update.py report-review --candidate candidate.json
+        env:
+          GH_TOKEN: ${{ github.token }}
+
+  acquire:
+    needs: discover
+    if: needs.discover.outputs.status == 'automatic' || (inputs.review_only && needs.discover.outputs.status == 'review_required')
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: maple-candidate
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: python3 -m pip install cryptography==50.0.2
+      - name: Download and authenticate without executing vendor code
+        env:
+          # Cross-repository Actions artifacts require an authenticated reader.
+          # This clean job never runs the vendor build or SDK.
+          GH_TOKEN: ${{ secrets.TRUST_PUSH_TOKEN }}
+        run: python3 tools/maple_update.py download --candidate candidate.json --destination "$RUNNER_TEMP/vendor-artifacts"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: maple-vendor-artifacts
+          path: ${{ runner.temp }}/vendor-artifacts/
+          retention-days: 1
+          compression-level: 0
+
+  reproduce:
+    needs: [discover, acquire]
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 180
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: maple-candidate
+      - uses: DeterminateSystems/nix-installer-action@c5a866b6ab867e88becbed4467b93592bce69f8a # v21
+        with:
+          source-tag: v3.23.3
+          github-token: ""
+      - name: Obtain exact source without deployment credentials
+        env:
+          SOURCE: ${{ needs.discover.outputs.source }}
+        run: |
+          git clone --filter=blob:none --no-checkout https://github.com/MaplePrivacyLabs/Maple.git "$RUNNER_TEMP/maple"
+          git -C "$RUNNER_TEMP/maple" checkout --detach "$SOURCE"
+          git -C "$RUNNER_TEMP/maple" submodule update --init --recursive
+      - name: Independently reproduce with no provider cache or credentials
+        env:
+          SOURCE: ${{ needs.discover.outputs.source }}
+        run: bash tools/reproduce-maple.sh "$RUNNER_TEMP/maple" "$SOURCE" "$RUNNER_TEMP/reproduced"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: maple-reproduced-artifacts
+          path: ${{ runner.temp }}/reproduced/
+          retention-days: 1
+          compression-level: 0
+
+  verify:
+    needs: [discover, acquire, reproduce]
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: maple-candidate
+      - uses: actions/download-artifact@v4
+        with:
+          name: maple-vendor-artifacts
+          path: ${{ runner.temp }}/vendor-artifacts
+      - uses: actions/download-artifact@v4
+        with:
+          name: maple-reproduced-artifacts
+          path: ${{ runner.temp }}/reproduced
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: python3 -m pip install cryptography==50.0.2
+      - name: Require exact bytes, source provenance and signed history
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REVIEW_ONLY: ${{ inputs.review_only }}
+        run: |
+          git clone --filter=blob:none --no-checkout https://github.com/MaplePrivacyLabs/Maple.git "$RUNNER_TEMP/maple"
+          args=()
+          if [ "$REVIEW_ONLY" = true ]; then args+=(--review-only); fi
+          python3 tools/maple_policy.py verify --vendor "$RUNNER_TEMP/maple" --candidate candidate.json \
+            --artifacts "$RUNNER_TEMP/vendor-artifacts" --reproduced "$RUNNER_TEMP/reproduced" --output evidence.json "${args[@]}"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: maple-reproduction
+          path: evidence.json
+          retention-days: 1
+
+  cleanup-build-artifacts:
+    needs: [acquire, reproduce, verify]
+    if: always() && needs.acquire.result == 'success'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      actions: write
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - name: Remove only this run's two temporary image artifacts
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: python3 tools/maple_update.py cleanup
+
+  qualify:
+    needs: [discover, verify]
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: maple-candidate
+      - uses: actions/download-artifact@v4
+        with:
+          name: maple-reproduction
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: python3 -m pip install cryptography==50.0.2
+      - name: Stage only the independently verified pin
+        env:
+          REVIEW_ONLY: ${{ inputs.review_only }}
+        run: |
+          git clone --filter=blob:none --no-checkout https://github.com/MaplePrivacyLabs/Maple.git "$RUNNER_TEMP/maple"
+          args=()
+          if [ "$REVIEW_ONLY" = true ]; then args+=(--review-only); fi
+          python3 tools/maple_policy.py stage --vendor "$RUNNER_TEMP/maple" --candidate candidate.json --evidence evidence.json "${args[@]}"
+      - name: Test and qualify with no credentials or inference
+        working-directory: enclave-go/maple-transport
+        run: |
+          rustup toolchain install 1.94.1 --profile minimal --component rustfmt --component clippy
+          sh prepare-sdk.sh
+          cargo +1.94.1 test --locked --workspace --lib --bins
+          cargo +1.94.1 run --locked --bin trustedrouter-maple-pilot -- attest > "$GITHUB_WORKSPACE/valid-pin.json"
+          cargo +1.94.1 run --locked --bin trustedrouter-maple-pilot -- reject-pin > "$GITHUB_WORKSPACE/wrong-pin.json"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: maple-pin-checks
+          path: |
+            valid-pin.json
+            wrong-pin.json
+          retention-days: 1
+
+  publish:
+    needs: [discover, verify, qualify]
+    if: needs.discover.outputs.status == 'automatic' && github.ref == 'refs/heads/main' && !inputs.review_only
+    runs-on: ubuntu-latest
+    timeout-minutes: 55
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: main
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: maple-candidate
+      - uses: actions/download-artifact@v4
+        with:
+          name: maple-reproduction
+      - uses: actions/download-artifact@v4
+        with:
+          name: maple-pin-checks
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: python3 -m pip install cryptography==50.0.2
+      - name: Recheck current source and submit a CI-gated pin-only PR
+        env:
+          # Only clean acquisition/publication jobs receive the release token.
+          # No vendor code, SDK, build script or downloaded executable runs here.
+          GH_TOKEN: ${{ secrets.TRUST_PUSH_TOKEN }}
+        run: |
+          git clone --filter=blob:none --no-checkout https://github.com/MaplePrivacyLabs/Maple.git "$RUNNER_TEMP/maple"
+          python3 tools/maple_update.py publish --candidate candidate.json --evidence evidence.json \
+            --vendor "$RUNNER_TEMP/maple" --checks .

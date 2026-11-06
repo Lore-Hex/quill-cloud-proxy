@@ -115,7 +115,8 @@ func frozenBuildOpenAICompatibleRequest(
 	// at the provider chat-template boundary so ordinary OpenAI clients receive
 	// a usable visible answer. Keep the override scoped to this verified route.
 	if normalizeDirectProvider(provider) == "engy" && strings.EqualFold(strings.TrimSpace(upstreamID), "qwen3.6-35b-a3b") {
-		reqBody.ChatTemplateKwargs = &chatTemplateKwargs{EnableThinking: false}
+		disabled := false
+		reqBody.ChatTemplateKwargs = &chatTemplateKwargs{EnableThinking: &disabled}
 	}
 	if supportsStreamUsageOption(provider, upstreamID) {
 		reqBody.StreamOptions = &openAICompatibleStreamOptions{IncludeUsage: true}

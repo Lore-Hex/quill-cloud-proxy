@@ -1728,6 +1728,15 @@ func serveResponsesNonStreaming(
 	if req.Response != nil && (len(result.Citations) > 0 || len(result.SearchResults) > 0) {
 		req.Response.OutputAnnotations = responsesAnnotationsFromProviderProvenance(result)
 	}
+	if stamp := polyphemusToolCallStamp(ctx); stamp != nil {
+		for i := range result.ToolCalls {
+			call := &result.ToolCalls[i]
+			if call.CallID == "" {
+				call.CallID = call.ID
+			}
+			call.CallID = stamp(call.CallID)
+		}
+	}
 	var body bytes.Buffer
 	if err := adapter.WriteResponsesResponse(&body, requestID, responseModel, result.Text, result.ToolCalls, result.FinishReason, inputTokens, outputTokens, result.Usage, time.Now().Unix(), responseTextConfig(req), req.Response); err != nil {
 		writeSpentError(conn, 500, "responses encoding error")
@@ -2305,6 +2314,7 @@ func serveStreaming(
 				return before(terminal)
 			}
 		}
+		stageDControl.ToolCallID = polyphemusToolCallStamp(ctx)
 	}
 	stageDControl = withInferenceLocation(stageDControl, authorization, selectedRoute)
 	stageDControl = adapter.WithReasoningVisibility(stageDControl, req.ExcludeReasoning)
