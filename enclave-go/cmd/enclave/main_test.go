@@ -6435,8 +6435,8 @@ func TestPrometheusVersionsPinOldAndNewDeepSeekReleases(t *testing.T) {
 			model:      trustedRouterPrometheusModel,
 			preset:     "quality-4.0",
 			panel:      fusionPrometheus40Panel,
-			wantJudges: fusionSeptember26JudgeModels,
-			wantFinal:  fusionSeptember26FinalModels,
+			wantJudges: []string{mimo26ProModel, deepSeekV41FlashModel, "z-ai/glm-5.3", "moonshotai/kimi-k3.1-pro"},
+			wantFinal:  []string{mimo26ProModel, "moonshotai/kimi-k3.1-pro", "z-ai/glm-5.3", deepSeekV41FlashModel},
 		},
 	}
 	for _, tt := range tests {
