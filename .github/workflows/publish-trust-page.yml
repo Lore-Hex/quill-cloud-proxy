@@ -180,7 +180,7 @@ jobs:
       # every record carried publish-trust-page.yml as its signer while the
       # trust page told verifiers to pin the per-plane identity. The documented
       # command failed against the very bundle it named.
-      - uses: actions/configure-pages@v5
+      - uses: actions/configure-pages@v6
       - uses: actions/upload-pages-artifact@v5
         with:
           name: ${{ inputs.artifact_name || 'github-pages' }}
