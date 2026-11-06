@@ -116,7 +116,7 @@ jobs:
       - uses: actions/download-artifact@v4
         with:
           name: maple-candidate
-      - uses: DeterminateSystems/nix-installer-action@96c5ee93a9dddf2830d31e1da6ec719077336c28
+      - uses: DeterminateSystems/nix-installer-action@c5a866b6ab867e88becbed4467b93592bce69f8a # v21
         with:
           source-tag: v3.23.3
           github-token: ""
