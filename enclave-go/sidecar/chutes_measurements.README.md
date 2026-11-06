@@ -2,14 +2,50 @@
 
 `chutes_measurements.json` contains the release-pinned snapshot fetched from
 `https://api.chutes.ai/servers/tee/measurements` on 2026-08-15, plus the eight
-live-verified 1.4.1 profiles and the single reviewed 1.5.0 profile described below.
+live-verified 1.4.1 profiles and the two reviewed 1.5.0 profiles described below.
 
-SHA-256: `447bf6b9e74a6fbc818998852ccbc80cbff6f6d479a1b839e4064469e72f273c`
+SHA-256: `6f518cc99ad6628c747fbb43397816704a675a90708a0254b1b8723c3f16bbfa`
 
 The verifier accepts only an exact MRTD and runtime RTMR0 through RTMR3 match
 from this file. A Chutes measurement change therefore fails closed until the
 new public snapshot is reviewed, tested, committed, and deployed in a newly
 attested TrustedRouter image.
+
+## November 6, 2026 Qwen H200 pool investigation
+
+Two of the three advertised `Qwen/Qwen3.5-397B-A17B-TEE` instances moved to
+the 1.5.0 `8xh200 [10.2.1, numa-188c-1128g-nvsw-node1]` profile. Both failed
+the existing pinned measurement check and passed the real Intel TDX and NVIDIA
+verification in the test-only candidate harness, including fresh nonce,
+ML-KEM key, and certificate-key binding. The third instance still matched
+the approved 1.4.1 profile but returned HTTP 429 during encrypted invocation.
+The model-discovery endpoint also intermittently returned 502; changing a
+measurement cannot repair provider capacity or discovery failures.
+
+This adds only that single H200 profile. MRTD, RTMR0, and RTMR1 are unchanged
+from the reviewed 1.4.1 H200 profile; RTMR2 and RTMR3 match the 1.5.0 release
+already reviewed for the B300 pool below. All five registers remain exact
+matches. Older approved profiles remain accepted. Other new profiles remain
+rejected, and no SEV-SNP support or runtime trust fetch is introduced.
+
+The captured provider reference JSON has SHA-256
+`f4d63a17567616ffaf473de306ac8c228a36bd5876005acbe0b1548dc09c47aa`.
+It contains duplicate H200 entries with identical trust-relevant values;
+only one is included, without treating the vendor's fingerprint as a trust
+anchor. The immutable source is the same `v1.5.0` commit
+`a526aef429e96f07a8971483736c4c000dcbf07a` linked below. Its changelog and
+post-mount root-filesystem verification were reviewed again for this change.
+
+The new regression failed on the previous manifest. It requires the exact
+H200 profile and rejects mutation of MRTD and each of RTMR0 through RTMR3.
+The full GCP and AWS sidecar race suites pass. With only the proposed profile
+added to a locally built sidecar, a fresh encrypted Qwen PONG passed in 6.84
+seconds with no candidate-manifest runtime override. This is not proof of a
+production rollout or an end to intermittent upstream capacity errors.
+This is verification against the
+provider-published reference, not an independent rebuild of its guest image.
+Production merge and deployment require explicit approval of this exact
+profile; previous approval of the B300 profile does not authorize it.
 
 ## November 3, 2026 Kimi K3 investigation
 
