@@ -46,6 +46,11 @@ var HostedModels = map[string]bool{
 	"tinfoil/decision-small":         true,
 	"tinfoil/decision-medium":        true,
 	"tinfoil/decision-large":         true,
+	// Baseten-hosted System One models (POST {base}/systemone):
+	// https://docs.baseten.co/inference/model-apis/decision-models
+	"decision-models/baseten-elephant-9b-latest": true,
+	"decision-models/baseten-mammoth-27b-latest": true,
+	"decision-models/baseten-joey-2b-latest":     true,
 }
 
 // ModelAliases are other routers' names for a hosted decision model. The
