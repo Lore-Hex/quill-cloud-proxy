@@ -4,11 +4,13 @@ import (
 	"context"
 	"crypto/hmac"
 	"crypto/sha256"
+	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"os"
 	"regexp"
+	"strconv"
 	"strings"
 	"time"
 
@@ -58,6 +60,9 @@ type polyphemusReceipt struct {
 	FallbackReason   string
 	InputTokens      int
 	SessionSupplied  bool
+	// Pinned means an earlier turn of this conversation chose the model, so
+	// Telluvian was not called and no selector fee applies.
+	Pinned bool
 }
 
 type polyphemusContextKey struct{}
@@ -84,6 +89,73 @@ func polyphemusSelectorSessionID(bearer, sessionID string) string {
 	id[6] = (id[6] & 0x0f) | 0x80
 	id[8] = (id[8] & 0x3f) | 0x80
 	return fmt.Sprintf("%x-%x-%x-%x-%x", id[:4], id[4:6], id[6:8], id[8:10], id[10:])
+}
+
+// Telluvian may pick a different model on every turn, but a tool-using
+// conversation cannot change models midway: tool call ids, thought signatures
+// and context windows are model specific. The enclave keeps no conversation
+// state, so the chosen model rides in the call_id of every function call
+// Polyphemus returns, and clients echo call_ids back on the next turn:
+// "pm1" + 2 hex digits (length of the encoded model) + base64url(model) + "_" +
+// the upstream id. The charset fits every provider's id pattern. The prefix is
+// removed before the history reaches the model. A forged pin can only name a
+// model the caller could request directly, and still passes the catalog check.
+const polyphemusPinPrefix = "pm1"
+
+func polyphemusPinCallID(model, id string) string {
+	if model == "" || id == "" {
+		return id
+	}
+	encoded := base64.RawURLEncoding.EncodeToString([]byte(model))
+	if len(encoded) > 0xff {
+		return id
+	}
+	return fmt.Sprintf("%s%02x%s_%s", polyphemusPinPrefix, len(encoded), encoded, id)
+}
+
+func polyphemusUnpinCallID(id string) (model, upstream string, ok bool) {
+	rest, found := strings.CutPrefix(id, polyphemusPinPrefix)
+	if !found || len(rest) < 2 {
+		return "", id, false
+	}
+	n, err := strconv.ParseUint(rest[:2], 16, 8)
+	if err != nil || len(rest) < 2+int(n)+2 || rest[2+int(n)] != '_' {
+		return "", id, false
+	}
+	decoded, err := base64.RawURLEncoding.DecodeString(rest[2 : 2+int(n)])
+	if err != nil || len(decoded) == 0 {
+		return "", id, false
+	}
+	return string(decoded), rest[3+int(n):], true
+}
+
+// unpinPolyphemusHistory restores upstream tool call ids in place and returns
+// the model pinned by the latest assistant tool call, if any.
+func unpinPolyphemusHistory(messages []types.OpenAIChatMessage) string {
+	pinned := ""
+	for i := range messages {
+		for j := range messages[i].ToolCalls {
+			if model, upstream, ok := polyphemusUnpinCallID(messages[i].ToolCalls[j].ID); ok {
+				messages[i].ToolCalls[j].ID = upstream
+				pinned = model
+			}
+		}
+		if _, upstream, ok := polyphemusUnpinCallID(messages[i].ToolCallID); ok {
+			messages[i].ToolCallID = upstream
+		}
+	}
+	return pinned
+}
+
+// polyphemusToolCallStamp returns the call_id rewrite for this response, or nil
+// when there is nothing to pin (not Polyphemus, or the auto fallback).
+func polyphemusToolCallStamp(ctx context.Context) func(string) string {
+	receipt := polyphemusReceiptFromContext(ctx)
+	if receipt == nil || receipt.FallbackReason != "" || receipt.SelectedModel == "" {
+		return nil
+	}
+	model := receipt.SelectedModel
+	return func(id string) string { return polyphemusPinCallID(model, id) }
 }
 
 func validatePolyphemus(req *types.OpenAIChatRequest, routeType string) *adapter.AdapterError {
@@ -237,6 +309,7 @@ func preparePolyphemus(ctx context.Context, req *types.OpenAIChatRequest, gatewa
 	if err := validatePolyphemus(req, "responses"); err != nil {
 		return ctx, err
 	}
+	pinnedModel := unpinPolyphemusHistory(req.Messages)
 	payload, err := json.Marshal(struct {
 		Messages []types.OpenAIChatMessage `json:"messages"`
 		Tools    []any                     `json:"tools,omitempty"`
@@ -277,6 +350,15 @@ func preparePolyphemus(ctx context.Context, req *types.OpenAIChatRequest, gatewa
 		selectReq.Provider = &types.ProviderRouting{}
 	}
 	selectReq.Provider.Usage = "credits"
+	if pinnedModel != "" {
+		model, _, err := resolveSelectedModel(catalog, pinnedModel)
+		if err == nil && model == pinnedModel {
+			fmt.Fprintf(os.Stderr, "enclave.polyphemus.pinned request_log_id=%q selected_model=%q\n", requestLogID, model)
+			return continuePolyphemus(ctx, req, &polyphemusReceipt{SelectedModel: model, Pinned: true}, stageKey, selectReq.RequestFingerprint), nil
+		}
+		// The pinned model left the catalog; let Telluvian choose again.
+		fmt.Fprintf(os.Stderr, "enclave.polyphemus.pin_unavailable request_log_id=%q\n", requestLogID)
+	}
 	// Meter only the exact context sent to Model Select, including tools. Its
 	// API reports no usage, so use the shared estimate and label it explicitly.
 	// The authorization estimate adds message overhead and safely covers this
@@ -389,6 +471,7 @@ func annotatePolyphemusUsage(ctx context.Context, usage map[string]any) {
 	providerUsage["selector_provider"] = "telluvian"
 	providerUsage["selector_calls"] = receipt.SelectorCalls
 	providerUsage["selector_session_supplied"] = receipt.SessionSupplied
+	providerUsage["selector_pinned"] = receipt.Pinned
 	providerUsage["selector_cost_microdollars"] = receipt.CostMicrodollars
 	providerUsage["selector_input_tokens"] = receipt.InputTokens
 	providerUsage["selector_usage_estimated"] = true

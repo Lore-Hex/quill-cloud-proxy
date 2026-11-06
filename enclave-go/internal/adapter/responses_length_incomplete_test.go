@@ -88,3 +88,33 @@ func TestTransformResponsesStreamReportsLengthStopAsIncomplete(t *testing.T) {
 		t.Fatalf("message item still marked completed: %s", body)
 	}
 }
+
+func TestTransformResponsesStreamRewritesClientCallIDsOnly(t *testing.T) {
+	stream := strings.NewReader(strings.Join([]string{
+		`event: content_block_start`,
+		`data: {"type":"content_block_start","index":0,"content_block":{"type":"tool_use","id":"toolu_01","name":"web_search"}}`,
+		``,
+		`event: content_block_delta`,
+		`data: {"type":"content_block_delta","index":0,"delta":{"type":"input_json_delta","partial_json":"{}"}}`,
+		``,
+		`event: message_delta`,
+		`data: {"type":"message_delta","delta":{"stop_reason":"tool_use"},"usage":{"output_tokens":4}}`,
+		``,
+		`event: message_stop`,
+		`data: {"type":"message_stop"}`,
+		``,
+	}, "\n"))
+	var out bytes.Buffer
+	control := &StreamControl{ToolCallID: func(id string) string { return "pinned_" + id }}
+	result, err := TransformResponsesStreamControlled(stream, &out, "resp_test", "m", 10, nil, nil, nil, control)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(result.ToolCalls) != 1 || result.ToolCalls[0].CallID != "pinned_toolu_01" || result.ToolCalls[0].ID != "toolu_01" {
+		t.Fatalf("tool calls = %+v", result.ToolCalls)
+	}
+	body := out.String()
+	if strings.Count(body, `"call_id":"pinned_toolu_01"`) < 2 || strings.Contains(body, `"call_id":"toolu_01"`) {
+		t.Fatalf("client must see only the rewritten call_id in added and done events: %s", body)
+	}
+}
