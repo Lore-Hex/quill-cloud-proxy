@@ -98,6 +98,7 @@ const (
 	fusionGeneralKimi = "moonshotai/kimi-k2.6"
 	fusionCodeKimi    = "moonshotai/kimi-k2.7-code"
 	fusionKimiK3      = "moonshotai/kimi-k3"
+	fusionKimiK31Pro  = "moonshotai/kimi-k3.1-pro"
 )
 
 // Released orchestration presets are immutable. Add a new version and move
@@ -165,10 +166,12 @@ var fusionPrometheus30Panel = []string{
 	"xiaomi/mimo-v2.5-pro",
 }
 
+// Prometheus 4.0 moved from Kimi K3 to Kimi K3.1 Pro in every stage (Joseph,
+// 2026-11-05), an exception to the freeze above. Zeus 3.0 keeps Kimi K3.
 var fusionPrometheus40Panel = []string{
 	mimo26ProModel,
 	"z-ai/glm-5.3",
-	fusionKimiK3,
+	fusionKimiK31Pro,
 	deepSeekV41FlashModel,
 	"minimax/minimax-m3",
 	"qwen/qwen3.8-2.4t-a95b",
@@ -196,6 +199,20 @@ var fusionSeptember26JudgeModels = []string{
 	deepSeekV41FlashModel,
 	"z-ai/glm-5.3",
 	fusionKimiK3,
+}
+
+var fusionPrometheus40FinalModels = []string{
+	mimo26ProModel,
+	fusionKimiK31Pro,
+	"z-ai/glm-5.3",
+	deepSeekV41FlashModel,
+}
+
+var fusionPrometheus40JudgeModels = []string{
+	mimo26ProModel,
+	deepSeekV41FlashModel,
+	"z-ai/glm-5.3",
+	fusionKimiK31Pro,
 }
 
 var fusionBudgetPanel = []string{
@@ -440,7 +457,9 @@ func fusionPresetPanelForModel(model string) (string, []string, bool) {
 
 func fusionPresetFinalModelsForModel(model string) ([]string, bool) {
 	switch strings.ToLower(strings.TrimSpace(model)) {
-	case trustedRouterPrometheusModel, trustedRouterPrometheus40Model, trustedRouterZeusModel, trustedRouterZeus30Model:
+	case trustedRouterPrometheusModel, trustedRouterPrometheus40Model:
+		return append([]string(nil), fusionPrometheus40FinalModels...), true
+	case trustedRouterZeusModel, trustedRouterZeus30Model:
 		return append([]string(nil), fusionSeptember26FinalModels...), true
 	case trustedRouterPrometheus30Model:
 		return []string{deepSeekV4Pro0813Model, fusionKimiK3, "z-ai/glm-5.2", "minimax/minimax-m3"}, true
@@ -483,7 +502,9 @@ func fusionPresetFinalModelsForModel(model string) ([]string, bool) {
 
 func fusionPresetJudgeModelsForModel(model string) ([]string, bool) {
 	switch strings.ToLower(strings.TrimSpace(model)) {
-	case trustedRouterPrometheusModel, trustedRouterPrometheus40Model, trustedRouterZeusModel, trustedRouterZeus30Model:
+	case trustedRouterPrometheusModel, trustedRouterPrometheus40Model:
+		return append([]string(nil), fusionPrometheus40JudgeModels...), true
+	case trustedRouterZeusModel, trustedRouterZeus30Model:
 		return append([]string(nil), fusionSeptember26JudgeModels...), true
 	case trustedRouterPrometheus30Model:
 		return []string{deepSeekV4Pro0813Model, "minimax/minimax-m3", fusionKimiK3}, true
