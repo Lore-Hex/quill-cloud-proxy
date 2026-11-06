@@ -3,11 +3,26 @@
   "provider": "maple",
   "backend": "https://enclave.trymaple.ai",
   "model": "deepseek-v4-1-flash-1017-uncensored",
-  "source_commit": "13d75aa71c9bf0670d71bd6cf453a8fcf497f226",
-  "approval_commit": "8b764796193690504cbe01be121a08177bfbe7b3",
-  "pcr0": "3a67fa1c4317d83e77d74123f4e658c4a1a7b15a7a1f6e1e872612390a6499a50118f2dddf05bd034b0318c4bcef53f4",
-  "eif_sha256": "5506eeb07eeb8ece1e9be6b5c1d4616f50362b7ba711c99a991499ba07e47242",
-  "security_boundary_sha256": "620a55de212bfdb38c6c0387b9a8c7fca55156c50d09ed558ca87b622bb8ceb0",
+  "source_commit": "d8fa269c9155d800ab9f6e8f8897c8e154492711",
+  "approval_commit": "cd52297dba7bd2d0718722d89039d3c4cb4132f1",
+  "pcr0": "769e8dd045dad30df5bb13e4fe8ced547c64f906316fc6e8519a0e858cd8cdb2690bdcf66c9dad3ed5e5d0a37768189a",
+  "eif_sha256": "9174c64b51a1948f2d3067e134c6794c8323a4e6978a56edcc475ac1fb1903d6",
+  "security_boundary_sha256": "1c4c4ccd9dddb6a192b0c6631e95061cecf33dea91d1470641646f6a9a90deee",
   "history_public_key_der": "MHYwEAYHKoZIzj0CAQYFK4EEACIDYgAEHiUY9kFWK1GqBGzczohhwEwElXzgWLDZa9R6wBx3JOBocgSt9+UIzZlJbPDjYeGBfDUXh7Z62BG2vVsh2NgclLB5S7A2ucBBtb1wd8vSQHP8jpdPhZX1slauPgbnROIP",
-  "review": "https://github.com/Lore-Hex/quill-cloud-proxy/pull/709"
+  "review": "https://github.com/Lore-Hex/quill-cloud-proxy/issues/716",
+  "evidence": {
+    "source_commit": "d8fa269c9155d800ab9f6e8f8897c8e154492711",
+    "pcr0": "769e8dd045dad30df5bb13e4fe8ced547c64f906316fc6e8519a0e858cd8cdb2690bdcf66c9dad3ed5e5d0a37768189a",
+    "security_boundary_sha256": "1c4c4ccd9dddb6a192b0c6631e95061cecf33dea91d1470641646f6a9a90deee",
+    "reproduction_verified": true,
+    "provenance_verified": true,
+    "history_verified": true,
+    "review_only": true,
+    "files": {
+      "image.eif": "9174c64b51a1948f2d3067e134c6794c8323a4e6978a56edcc475ac1fb1903d6",
+      "pcr.json": "a9a0f91cce3b713a4c8007ffa4ca015fb759c57f86f2e5b97c647629a3766fc0",
+      "SHA256SUMS": "4c56c2b8e27328a8c3880bb4b5a0b0cf33d421e906d0033ffa0ba9c0dc9b259e",
+      "handoff.json": "41f8537fdb90d0f76b0c37dcfa0bc8c72ab9ff2d5f52d9ce057bd13dd4f4a0bc"
+    }
+  }
 }
