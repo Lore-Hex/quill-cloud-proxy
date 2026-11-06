@@ -34,6 +34,7 @@ func serveResponsesWebSearchJSON(
 		model,
 		text,
 		outcome.Final.Result.ToolCalls,
+		outcome.Final.Result.FinishReason,
 		outcome.InputTokens,
 		outcome.OutputTokens,
 		nil,
