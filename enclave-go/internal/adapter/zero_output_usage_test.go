@@ -78,6 +78,109 @@ func TestIncompleteResponsesPreserveConfirmedZeroCacheUsage(t *testing.T) {
 	}
 }
 
+func TestStampedResponsesPreserveConfirmedZeroCacheUsage(t *testing.T) {
+	for _, tc := range []struct {
+		name, prefix, usage string
+		rawInput, fullInput int
+		excludesCache       bool
+	}{
+		{"inclusive_input", "", `{"input_tokens":1000,"cache_read_input_tokens":900,"output_tokens":0}`, 1000, 1000, false},
+		{"native_full_cache", "event: message_start\ndata: {\"type\":\"message_start\",\"message\":{\"usage\":{\"input_tokens\":0,\"cache_read_input_tokens\":900,\"output_tokens\":0}}}\n\n", `{"output_tokens":0}`, 0, 900, true},
+	} {
+		for _, ending := range []struct {
+			name     string
+			terminal bool
+		}{{"confirmed", true}, {"missing_terminal", false}} {
+			t.Run(tc.name+"/"+ending.name, func(t *testing.T) {
+				stream := tc.prefix + strings.Join([]string{
+					"event: content_block_start",
+					`data: {"type":"content_block_start","index":0,"content_block":{"type":"tool_use","id":"toolu_01","name":"web_search"}}`,
+					"", "event: content_block_delta",
+					`data: {"type":"content_block_delta","index":0,"delta":{"type":"input_json_delta","partial_json":"{}"}}`,
+					"", "event: message_delta",
+					`data: {"type":"message_delta","delta":{"stop_reason":"tool_use"},"usage":` + tc.usage + `}`,
+					"", "",
+				}, "\n")
+				if ending.terminal {
+					stream += "event: message_stop\ndata: {\"type\":\"message_stop\"}\n\n"
+				}
+				assertUsage := func(usage *StreamUsage) {
+					t.Helper()
+					if usage == nil || usage.InputTokens != tc.rawInput || usage.InputExcludesCache != tc.excludesCache || usage.CacheReadInputTokens != 900 || usage.OutputTokens != 0 || usage.ZeroOutputReported != ending.terminal {
+						t.Fatalf("usage=%#v, confirmed=%v", usage, ending.terminal)
+					}
+				}
+				assertFields := func(fields map[string]any) {
+					t.Helper()
+					output := getInt(fields, "output_tokens")
+					if getInt(fields, "input_tokens") != tc.fullInput || getInt(fields, "total_tokens") != tc.fullInput+output || getInt(getMap(fields, "input_tokens_details"), "cached_tokens") != 900 {
+						t.Fatalf("public usage=%#v", fields)
+					}
+					if (ending.terminal && output != 0) || (!ending.terminal && output <= 0) {
+						t.Fatalf("output=%d, confirmed=%v", output, ending.terminal)
+					}
+				}
+				assertResponse := func(response map[string]any) {
+					t.Helper()
+					assertFields(getMap(response, "usage"))
+					items, ok := response["output"].([]any)
+					if !ok || len(items) != 1 {
+						t.Fatalf("output=%#v", response["output"])
+					}
+					item, ok := items[0].(map[string]any)
+					if !ok || item["call_id"] != "pinned_toolu_01" || item["name"] != "web_search" || item["arguments"] != "{}" {
+						t.Fatalf("function call=%#v", items[0])
+					}
+				}
+				var output bytes.Buffer
+				hooks, stamps := 0, 0
+				result, err := TransformResponsesStreamControlled(strings.NewReader(stream), &output, "response", "model", 2000, nil, nil, nil, &StreamControl{
+					ExposeResponsesUsage: true,
+					ToolCallID: func(id string) string {
+						stamps++
+						return "pinned_" + id
+					},
+					BeforeTerminal: func(terminal StreamTerminal) error {
+						hooks++
+						assertUsage(terminal.Result.Usage)
+						assertFields(terminal.UsageFields)
+						return terminal.Emit()
+					},
+				})
+				if err != nil || hooks != 1 || stamps != 1 {
+					t.Fatalf("hooks=%d stamps=%d err=%v", hooks, stamps, err)
+				}
+				assertUsage(result.Usage)
+				if len(result.ToolCalls) != 1 || result.ToolCalls[0].ID != "toolu_01" || result.ToolCalls[0].CallID != "pinned_toolu_01" {
+					t.Fatalf("tool calls=%#v", result.ToolCalls)
+				}
+				terminals := 0
+				for _, block := range strings.Split(output.String(), "\n\n") {
+					name, event := parseSSEBlock([]byte(block))
+					if name == "response.completed" {
+						terminals++
+						assertResponse(getMap(event, "response"))
+					}
+				}
+				if terminals != 1 {
+					t.Fatalf("terminal count=%d", terminals)
+				}
+				if ending.terminal {
+					var buffered bytes.Buffer
+					if err := WriteResponsesResponse(&buffered, "response", "model", result.Text, result.ToolCalls, result.FinishReason, result.Usage.InputTokens, 0, result.Usage, 123, nil, nil); err != nil {
+						t.Fatal(err)
+					}
+					var response map[string]any
+					if err := json.Unmarshal(buffered.Bytes(), &response); err != nil {
+						t.Fatal(err)
+					}
+					assertResponse(response)
+				}
+			})
+		}
+	}
+}
+
 func TestZeroOutputUsageAcrossResponseAdapters(t *testing.T) {
 	model := "deepseek/deepseek-v4.1-flash-1017"
 	readers := map[string]func(io.Reader) (StreamResult, error){
