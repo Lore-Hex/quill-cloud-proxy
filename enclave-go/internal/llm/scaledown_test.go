@@ -70,12 +70,12 @@ func TestScaleDownNativeTasksAndExactUsage(t *testing.T) {
 				t.Fatal("credential in output")
 			}
 			result, err := adapter.CollectAnthropicText(bytes.NewReader(out.Bytes()))
-			if err != nil || result.Text != response || result.Usage.InputTokens != 170 || result.Usage.OutputTokens != 0 {
+			if err != nil || result.Text != response || result.Usage == nil || result.Usage.InputTokens != 170 || result.Usage.OutputTokens != 0 || !result.Usage.ZeroOutputReported {
 				t.Fatalf("buffered adapter lost native usage/result: %#v %v", result, err)
 			}
 			var streamed bytes.Buffer
 			captured, err := adapter.TransformStreamCaptureWithOptions(bytes.NewReader(out.Bytes()), &streamed, "test", "scaledown/"+task, true)
-			if err != nil || captured.Usage.InputTokens != 170 || captured.Usage.OutputTokens != 0 || !strings.Contains(streamed.String(), "[DONE]") {
+			if err != nil || captured.Usage == nil || captured.Usage.InputTokens != 170 || captured.Usage.OutputTokens != 0 || !captured.Usage.ZeroOutputReported || !strings.Contains(streamed.String(), "[DONE]") {
 				t.Fatalf("OpenAI stream lost native usage: %#v %v", captured, err)
 			}
 		})
