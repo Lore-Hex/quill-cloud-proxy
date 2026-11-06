@@ -1,0 +1,13 @@
+{
+  "schema_version": 1,
+  "provider": "maple",
+  "backend": "https://enclave.trymaple.ai",
+  "model": "deepseek-v4-1-flash-1017-uncensored",
+  "source_commit": "13d75aa71c9bf0670d71bd6cf453a8fcf497f226",
+  "approval_commit": "8b764796193690504cbe01be121a08177bfbe7b3",
+  "pcr0": "3a67fa1c4317d83e77d74123f4e658c4a1a7b15a7a1f6e1e872612390a6499a50118f2dddf05bd034b0318c4bcef53f4",
+  "eif_sha256": "5506eeb07eeb8ece1e9be6b5c1d4616f50362b7ba711c99a991499ba07e47242",
+  "security_boundary_sha256": "620a55de212bfdb38c6c0387b9a8c7fca55156c50d09ed558ca87b622bb8ceb0",
+  "history_public_key_der": "MHYwEAYHKoZIzj0CAQYFK4EEACIDYgAEHiUY9kFWK1GqBGzczohhwEwElXzgWLDZa9R6wBx3JOBocgSt9+UIzZlJbPDjYeGBfDUXh7Z62BG2vVsh2NgclLB5S7A2ucBBtb1wd8vSQHP8jpdPhZX1slauPgbnROIP",
+  "review": "https://github.com/Lore-Hex/quill-cloud-proxy/pull/709"
+}
