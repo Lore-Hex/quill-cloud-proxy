@@ -239,6 +239,10 @@ func translateOpenAIStreamToAnthropicForProvider(r io.Reader, w io.Writer, provi
 	if provider == "tencent" && (!sawDone || !sawFinish || usage == nil || usage.PromptTokens <= 0 || usage.CompletionTokens < 0) {
 		return &upstreamHTTPError{status: http.StatusBadGateway, body: "Tencent TokenHub stream is incomplete or missing billable usage"}
 	}
+	if usage != nil && (!sawDone || !sawFinish) {
+		// A synthesized stop after EOF must not certify a zero-output response.
+		usage.CompletionTokensReported = false
+	}
 
 	for _, index := range toolOrder {
 		if err := writeAnthropicToolStop(w, index); err != nil {
@@ -308,11 +312,12 @@ type openAIToolCallAccumulator struct {
 // openAIStreamUsage is the OpenAI chat-completions stream usage object.
 // Also constructed by the Gemini path from usageMetadata.
 type openAIStreamUsage struct {
-	PromptTokens            int                       `json:"prompt_tokens"`
-	CompletionTokens        int                       `json:"completion_tokens"`
-	TotalTokens             int                       `json:"total_tokens"`
-	CompletionTokensDetails *openAIStreamUsageDetails `json:"completion_tokens_details"`
-	PromptTokensDetails     *openAIPromptTokenDetails `json:"prompt_tokens_details"`
+	PromptTokens             int                       `json:"prompt_tokens"`
+	CompletionTokens         int                       `json:"completion_tokens"`
+	CompletionTokensReported bool                      `json:"-"`
+	TotalTokens              int                       `json:"total_tokens"`
+	CompletionTokensDetails  *openAIStreamUsageDetails `json:"completion_tokens_details"`
+	PromptTokensDetails      *openAIPromptTokenDetails `json:"prompt_tokens_details"`
 	// Non-standard prompt-cache fields some OpenAI-compatible providers use
 	// INSTEAD of prompt_tokens_details.cached_tokens (verified 2026-06-20):
 	//   Moonshot/Kimi (kimi-k2.* automatic prefix cache) -> top-level usage.cached_tokens
@@ -322,6 +327,24 @@ type openAIStreamUsage struct {
 	CachedTokensTop      int    `json:"cached_tokens"`
 	PromptCacheHitTokens int    `json:"prompt_cache_hit_tokens"`
 	ServiceTier          string `json:"-"`
+}
+
+func (u *openAIStreamUsage) UnmarshalJSON(data []byte) error {
+	type plainUsage openAIStreamUsage
+	var value plainUsage
+	wire := struct {
+		*plainUsage
+		CompletionTokens *int `json:"completion_tokens"`
+	}{plainUsage: &value}
+	if err := json.Unmarshal(data, &wire); err != nil {
+		return err
+	}
+	*u = openAIStreamUsage(value)
+	u.CompletionTokensReported = wire.CompletionTokens != nil
+	if wire.CompletionTokens != nil {
+		u.CompletionTokens = *wire.CompletionTokens
+	}
+	return nil
 }
 
 // baseCachedTokens normalizes the non-orchestration cache field. The OpenAI-
@@ -557,8 +580,10 @@ func writeAnthropicStop(
 		// adapter.TransformStreamCapture/CollectAnthropicText, which read
 		// whichever keys are present.
 		usageBody := map[string]any{
-			"input_tokens":  usage.inputTokens(),
-			"output_tokens": usage.outputTokens(),
+			"input_tokens": usage.inputTokens(),
+		}
+		if output := usage.outputTokens(); output != 0 || (usage.CompletionTokensReported && usage.CompletionTokens == 0) {
+			usageBody["output_tokens"] = output
 		}
 		if tierInput := usage.priceTierInputTokens(); tierInput > 0 {
 			usageBody["price_tier_input_tokens"] = tierInput

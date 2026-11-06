@@ -477,7 +477,7 @@ func RelayAnthropicStreamWithTerminalHook(r io.Reader, w io.Writer, messageID, m
 				}
 			}
 			usageBody := getMap(dataJSON, "usage")
-			mergeUsage(&usage, usageBody)
+			mergeMessageDeltaUsage(&usage, dataJSON)
 			if _, private := usageBody["price_tier_input_tokens"]; private {
 				delete(usageBody, "price_tier_input_tokens")
 				// Passthrough and deferred terminal events also use raw bytes.
@@ -507,6 +507,7 @@ func RelayAnthropicStreamWithTerminalHook(r io.Reader, w io.Writer, messageID, m
 			continue
 		}
 		if eventName == "message_stop" {
+			confirmZeroOutput(usage)
 			if err := flushTerminal(); err != nil {
 				return StreamResult{}, err
 			}

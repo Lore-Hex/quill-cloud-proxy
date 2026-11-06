@@ -2681,12 +2681,6 @@ func resolvedModelForRequest(req *types.OpenAIChatRequest, options []llm.InvokeO
 	return ""
 }
 
-// realOrEstimatedTokens prefers the provider-reported usage captured from
-// the stream (adapter.StreamResult.Usage) and falls back to the chars/4
-// estimates the gateway has always used. Returns (input, output,
-// usageEstimated-for-settlement). Output is the signal: providers always
-// report both sides together, but if input is somehow missing we estimate
-// it and still flag the settlement as estimated.
 // applyCacheUsage copies provider-reported usage details into settlement. Most
 // fields are visibility metadata; PriceTierInputTokens is a private billing
 // basis that the control plane admits only for a pinned provider contract.
@@ -2755,11 +2749,14 @@ func requestedServiceTierForSettlement(req *types.OpenAIChatRequest) string {
 	}
 }
 
+// realOrEstimatedTokens prefers provider counts, including an explicit zero
+// output confirmed by a clean terminal event. Missing output retains the
+// existing chars/4 fallback; missing input still marks usage as estimated.
 func realOrEstimatedTokens(result adapter.StreamResult, estimatedInput, estimatedOutput int, selectedModels ...string) (int, int, bool) {
 	if len(selectedModels) == 1 && llm.InputOnlyModel(selectedModels[0]) && result.Usage != nil && result.Usage.InputTokens > 0 && result.Usage.OutputTokens == 0 {
 		return result.Usage.InputTokens, 0, false
 	}
-	if result.Usage == nil || result.Usage.OutputTokens <= 0 {
+	if result.Usage == nil || result.Usage.OutputTokens < 0 || (result.Usage.OutputTokens == 0 && !result.Usage.ZeroOutputReported) {
 		return estimatedInput, estimatedOutput, true
 	}
 	// input_tokens == 0 is a REAL count only for an Anthropic full prompt-cache

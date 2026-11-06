@@ -565,10 +565,14 @@ func JoinThinking(thinking []ThinkingBlock) string {
 
 // StreamUsage is the provider-reported token accounting for one stream.
 type StreamUsage struct {
-	InputTokens     int
-	OutputTokens    int
-	ReasoningTokens int // subset of OutputTokens; 0 when not reported
-	ServiceTier     string
+	InputTokens  int
+	OutputTokens int
+	// ZeroOutputReported requires an explicit terminal zero and message_stop.
+	// Initial message_start placeholders and incomplete streams cannot set it.
+	ZeroOutputReported bool `json:"-"`
+	zeroOutputPending  bool
+	ReasoningTokens    int // subset of OutputTokens; 0 when not reported
+	ServiceTier        string
 	// PriceTierInputTokens is the provider's original prompt count when its
 	// separately billable orchestration tokens must not select a context tier.
 	// It is an enclave-to-control-plane billing field and is never public output.
@@ -1172,7 +1176,7 @@ func TransformStreamCaptureControlled(
 			// stream_translate.go's synthetic stop event also carries
 			// input_tokens/reasoning_tokens relayed from OpenAI-compatible
 			// upstreams' include_usage final chunk.
-			mergeUsage(&usage, getMap(dataJSON, "usage"))
+			mergeMessageDeltaUsage(&usage, dataJSON)
 			if control != nil && control.ObserveUsage != nil {
 				control.ObserveUsage(usage)
 			}
@@ -1181,6 +1185,7 @@ func TransformStreamCaptureControlled(
 				decision = value
 			}
 		case "message_stop":
+			confirmZeroOutput(usage)
 			return finish(true, nil)
 		}
 	}
@@ -1461,6 +1466,26 @@ func mergeMessageStartUsage(usage **StreamUsage, message map[string]any) {
 		*usage = &StreamUsage{}
 	}
 	(*usage).InputExcludesCache = true
+	(*usage).zeroOutputPending = false
+}
+
+func confirmZeroOutput(usage *StreamUsage) {
+	if usage != nil {
+		usage.ZeroOutputReported = usage.zeroOutputPending && usage.OutputTokens == 0
+	}
+}
+
+func mergeMessageDeltaUsage(usage **StreamUsage, event map[string]any) {
+	m := getMap(event, "usage")
+	mergeUsage(usage, m)
+	output, present := m["output_tokens"].(float64)
+	zero := present && output == 0 && getString(getMap(event, "delta"), "stop_reason") != ""
+	if *usage == nil && zero {
+		*usage = &StreamUsage{}
+	}
+	if *usage != nil {
+		(*usage).zeroOutputPending = zero
+	}
 }
 
 // mergeUsage folds one Anthropic-shaped usage object into the running
