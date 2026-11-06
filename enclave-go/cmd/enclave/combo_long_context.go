@@ -28,6 +28,8 @@ var longContextComboProviders = map[string][]string{
 	"meta-models/muse-spark-open":  {"baseten"},
 	"reflection/beam-1.0":          {"baseten"},
 	"nvidia/nemotron-3.5-super-vl": {"crusoe"},
+	// 256K, so dropped from Liberty requests that exceed it.
+	fusionInkling2Small: {"thinkingmachines"},
 }
 
 func isLongContextCombo(model string) bool {

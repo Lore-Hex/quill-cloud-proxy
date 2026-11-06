@@ -279,13 +279,49 @@ var fusionLiberty101MPanel = []string{
 	"nvidia/nemotron-3-ultra-550b-a55b",
 }
 
-// Liberty 4.0: American models on US-headquartered 1M routes. The panel
+// Liberty 4.0: American models on US-headquartered routes. The panel
 // answers in parallel and Muse Spark Open fuses whatever returned; if it
-// fails, Beam, then Nemotron take over as fuser.
+// fails, Beam, then Nemotron take over as fuser. Inkling 2 Small (256K,
+// added 2026-11-05) sits out requests too long for its window; the rest
+// serve 1M.
 var fusionLiberty40Panel = []string{
 	"nvidia/nemotron-3.5-super-vl",
 	"reflection/beam-1.0",
 	"meta-models/muse-spark-open",
+	fusionInkling2Small,
+}
+
+const fusionInkling2Small = "thinkingmachines/inkling-2-small"
+
+// fusionShortWindowPanelMembers are built-in panel members whose window is
+// below their combo's. Such a member is dropped from a request that would not
+// fit, instead of failing upstream after the panel has been reserved.
+var fusionShortWindowPanelMembers = map[string]int{
+	fusionInkling2Small: 262_144,
+}
+
+// fusionPanelWithoutOverlongMembers drops short-window members when the
+// estimated prompt plus the panel's output reservation and a safety margin
+// would exceed the member's window. It never empties the panel.
+func fusionPanelWithoutOverlongMembers(panel []string, messages []types.OpenAIChatMessage) []string {
+	promptTokens := -1
+	kept := panel[:0:0]
+	for _, model := range panel {
+		limit, short := fusionShortWindowPanelMembers[model]
+		if short {
+			if promptTokens < 0 {
+				promptTokens = advisorEstimatedMessageTokens(messages)
+			}
+			if promptTokens+fusionPanelReasoningTokens+8_000 > limit {
+				continue
+			}
+		}
+		kept = append(kept, model)
+	}
+	if len(kept) == 0 {
+		return panel
+	}
+	return kept
 }
 
 var fusionLiberty40Fusers = []string{
@@ -846,7 +882,7 @@ func maybeServeFusion(
 	if len(config.AnalysisModels) == 0 {
 		if preset, panel, ok := fusionPresetPanelForModel(req.Model); ok {
 			config.Preset = preset
-			config.AnalysisModels = panel
+			config.AnalysisModels = fusionPanelWithoutOverlongMembers(panel, req.Messages)
 		} else if !isGenericFusionPrimitive(req.Model) {
 			config.AnalysisModels = append([]string(nil), fusionQualityPanel...)
 		}

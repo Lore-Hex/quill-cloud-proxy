@@ -1577,7 +1577,8 @@ func advisorContextLimitTokens(model string) int {
 		deepSeekV4Pro0813Model:
 		return 1_048_576
 	case trustedRouterLiberty10Model,
-		"thinkingmachines/inkling":
+		"thinkingmachines/inkling",
+		fusionInkling2Small:
 		return 262_144
 	default:
 		return 200_000
