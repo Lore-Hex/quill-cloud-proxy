@@ -177,6 +177,7 @@ jobs:
           python3 tools/test_prune_gcp_instance_templates.py
           python3 tools/test_cloud_rollout.py
           python3 tools/test_gcp_enclave_inventory.py
+          python3 tools/test_gcp_template_quota.py
           python3 tools/test_verify_gcp_runtime_secret_access.py
           python3 tools/test_verify_pcr0_build_args.py
           python3 tools/test_nitro_root_pin.py
