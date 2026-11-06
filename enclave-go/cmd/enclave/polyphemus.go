@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"regexp"
 	"strings"
 	"time"
 
@@ -132,7 +133,8 @@ func validatePolyphemus(req *types.OpenAIChatRequest, routeType string) *adapter
 
 // Only an exact, unique, currently published concrete chat model is eligible.
 // Upstream names cannot introduce a new URL, alias, provider, or recursion.
-func resolveSelectedModel(body []byte, recommendation string) (string, error) {
+// On failure it also returns a diagnosis safe to log.
+func resolveSelectedModel(body []byte, recommendation string) (string, string, error) {
 	var catalog struct {
 		Data []struct {
 			ID string `json:"id"`
@@ -144,25 +146,88 @@ func resolveSelectedModel(body []byte, recommendation string) (string, error) {
 		} `json:"data"`
 	}
 	if err := json.Unmarshal(body, &catalog); err != nil {
-		return "", polyphemusError(503, "Model catalog unavailable")
+		return "", "", polyphemusError(503, "Model catalog unavailable")
 	}
-	matches := make(map[string]bool)
-	for _, model := range catalog.Data {
-		if !model.TR.Chat || !model.TR.Credits || (model.TR.Responses != nil && !*model.TR.Responses) || strings.HasPrefix(model.ID, "trustedrouter/") || isOrchestrationModel(model.ID) {
-			continue
+	matchesFor := func(name string, eligibleOnly bool) map[string]bool {
+		matches := make(map[string]bool)
+		for _, model := range catalog.Data {
+			if eligibleOnly && (!model.TR.Chat || !model.TR.Credits || (model.TR.Responses != nil && !*model.TR.Responses) || strings.HasPrefix(model.ID, "trustedrouter/") || isOrchestrationModel(model.ID)) {
+				continue
+			}
+			_, suffix, _ := strings.Cut(model.ID, "/")
+			if model.ID == name || (!strings.Contains(name, "/") && suffix == name) {
+				matches[model.ID] = true
+			}
 		}
-		_, suffix, _ := strings.Cut(model.ID, "/")
-		if model.ID == recommendation || (!strings.Contains(recommendation, "/") && suffix == recommendation) {
-			matches[model.ID] = true
+		return matches
+	}
+	// Telluvian writes Anthropic versions the way Anthropic's API does
+	// (claude-opus-5-5, claude-haiku-4-5-20251001); the catalog's credit-billed
+	// ids use dots (claude-opus-5.5). The dashed ids that do appear in the
+	// catalog are BYOK-only. Each fallback runs only when the name before it
+	// matched no eligible model, and the result must still be unique.
+	candidates := telluvianModelNames(recommendation)
+	var matches map[string]bool
+	for _, name := range candidates {
+		if matches = matchesFor(name, true); len(matches) > 0 {
+			break
 		}
 	}
 	if len(matches) != 1 {
-		return "", polyphemusError(502, "Telluvian recommended an unavailable or ambiguous model")
+		// The recommendation is third-party text that may echo the prompt, so
+		// only catalog ids, which are public, reach the diagnosis.
+		diagnosis := "no_catalog_match"
+		if len(matches) > 1 {
+			diagnosis = "ambiguous"
+		} else {
+			for _, name := range candidates {
+				if known := matchesFor(name, false); len(known) == 1 {
+					for id := range known {
+						diagnosis = "ineligible:" + id
+					}
+					break
+				}
+			}
+		}
+		return "", diagnosis, polyphemusError(502, "Telluvian recommended an unavailable or ambiguous model")
 	}
 	for model := range matches {
-		return model, nil
+		return model, "", nil
 	}
-	return "", polyphemusError(502, "No eligible model selected")
+	return "", "no_catalog_match", polyphemusError(502, "No eligible model selected")
+}
+
+var (
+	modelDateSuffix   = regexp.MustCompile(`-20[0-9]{6}$`)
+	dashedVersionPair = regexp.MustCompile(`-([0-9]+)-([0-9])($|-)`)
+)
+
+// telluvianModelNames lists the names to try for a recommendation, in order:
+// as given; with dashed major-minor versions dotted (claude-opus-4-5 →
+// claude-opus-4.5); then, for Claude only, also without a -YYYYMMDD snapshot
+// date, since the catalog's Claude ids are usually undated. Other vendors'
+// snapshot dates name distinct models, so they are kept.
+func telluvianModelNames(name string) []string {
+	names := []string{name}
+	add := func(candidate string) {
+		if candidate != names[len(names)-1] {
+			names = append(names, candidate)
+		}
+	}
+	dotted := name
+	// Repeat: a match consumes the dash it ends on, so adjacent pairs need another pass.
+	for next := dashedVersionPair.ReplaceAllString(dotted, "-$1.$2$3"); next != dotted; next = dashedVersionPair.ReplaceAllString(dotted, "-$1.$2$3") {
+		dotted = next
+	}
+	add(dotted)
+	stem := name
+	if _, rest, ok := strings.Cut(name, "/"); ok {
+		stem = rest
+	}
+	if strings.HasPrefix(stem, "claude-") {
+		add(modelDateSuffix.ReplaceAllString(dotted, ""))
+	}
+	return names
 }
 
 // Admission and finalization are the same durable operations used by every
@@ -262,8 +327,12 @@ func preparePolyphemus(ctx context.Context, req *types.OpenAIChatRequest, gatewa
 	if err != nil || selection == nil {
 		return fallback("model_selection_failed", 1)
 	}
-	model, err := resolveSelectedModel(catalog, selection.Model)
+	model, diagnosis, err := resolveSelectedModel(catalog, selection.Model)
 	if err != nil {
+		// An empty diagnosis is our own unreadable catalog, not Telluvian's pick.
+		if diagnosis != "" {
+			fmt.Fprintf(os.Stderr, "enclave.polyphemus.unresolved_selection request_log_id=%q diagnosis=%q\n", requestLogID, diagnosis)
+		}
 		return fallback("invalid_model_selection", 1)
 	}
 	usage := trustedrouter.Usage{

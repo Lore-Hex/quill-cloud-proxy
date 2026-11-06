@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"reflect"
 	"regexp"
 	"strings"
 	"testing"
@@ -315,23 +316,115 @@ func TestPolyphemusRejectsPrivacyAndByokBeforeAdmission(t *testing.T) {
 
 func TestPolyphemusResolvesOnlyUniqueConcreteModels(t *testing.T) {
 	for _, name := range []string{"gemini-3.8-flash", "google/gemini-3.8-flash"} {
-		model, err := resolveSelectedModel([]byte(selectionTestCatalog), name)
+		model, _, err := resolveSelectedModel([]byte(selectionTestCatalog), name)
 		if err != nil || model != "google/gemini-3.8-flash" {
 			t.Fatal(model, err)
 		}
 	}
 	for _, name := range []string{"Gemini-3.8-flash", "trustedrouter/auto", "https://evil.test/model", "missing", "../gemini-3.8-flash"} {
-		if _, err := resolveSelectedModel([]byte(selectionTestCatalog), name); err == nil {
+		if _, _, err := resolveSelectedModel([]byte(selectionTestCatalog), name); err == nil {
 			t.Fatal("accepted", name)
 		}
 	}
 	ambiguous := strings.Replace(selectionTestCatalog, `]}`, `,{"id":"other/gemini-3.8-flash","trustedrouter":{"supports_chat":true,"prepaid_available":true}}]}`, 1)
-	if _, err := resolveSelectedModel([]byte(ambiguous), "gemini-3.8-flash"); err == nil {
+	if _, _, err := resolveSelectedModel([]byte(ambiguous), "gemini-3.8-flash"); err == nil {
 		t.Fatal("ambiguous suffix accepted")
 	}
 	chatOnly := strings.Replace(selectionTestCatalog, `"supports_chat":true`, `"supports_chat":true,"supports_responses":false`, 1)
-	if _, err := resolveSelectedModel([]byte(chatOnly), "gemini-3.8-flash"); err == nil {
+	if _, _, err := resolveSelectedModel([]byte(chatOnly), "gemini-3.8-flash"); err == nil {
 		t.Fatal("explicitly unsupported Responses target accepted")
+	}
+}
+
+func TestPolyphemusResolvesTelluviansDashedAnthropicVersions(t *testing.T) {
+	// The live catalog carries the dashed id as a BYOK-only alias next to the
+	// credit-billed dotted id, so the dashed name alone matches nothing eligible.
+	catalog := `{"data":[` +
+		`{"id":"anthropic/claude-opus-5.5","trustedrouter":{"supports_chat":true,"prepaid_available":true}},` +
+		`{"id":"anthropic/claude-opus-5-5","trustedrouter":{"supports_chat":true,"prepaid_available":false}},` +
+		`{"id":"anthropic/claude-haiku-4.5","trustedrouter":{"supports_chat":true,"prepaid_available":true}},` +
+		`{"id":"anthropic/claude-fable-5.1","trustedrouter":{"supports_chat":true,"prepaid_available":true}},` +
+		`{"id":"google/gemma-2-27b-it","trustedrouter":{"supports_chat":true,"prepaid_available":true}}]}`
+	for name, want := range map[string]string{
+		"anthropic/claude-opus-5-5":           "anthropic/claude-opus-5.5",
+		"claude-opus-5-5":                     "anthropic/claude-opus-5.5",
+		"anthropic/claude-fable-5-1":          "anthropic/claude-fable-5.1",
+		"anthropic/claude-haiku-4-5-20251001": "anthropic/claude-haiku-4.5",
+		"anthropic/claude-opus-5.5":           "anthropic/claude-opus-5.5",
+		"google/gemma-2-27b-it":               "google/gemma-2-27b-it",
+	} {
+		model, _, err := resolveSelectedModel([]byte(catalog), name)
+		if err != nil || model != want {
+			t.Errorf("%s resolved to %q (%v), want %q", name, model, err, want)
+		}
+	}
+	for _, name := range []string{"anthropic/claude-opus-6-1", "Anthropic/claude-opus-5-5", "anthropic/claude-sonnet-4-6"} {
+		if model, _, err := resolveSelectedModel([]byte(catalog), name); err == nil {
+			t.Errorf("%s resolved to %q, want no match", name, model)
+		}
+	}
+}
+
+func TestPolyphemusDashedVersionFallbackKeepsExactAndUniqueRules(t *testing.T) {
+	entry := func(id string, credits bool) string {
+		return fmt.Sprintf(`{"id":%q,"trustedrouter":{"supports_chat":true,"prepaid_available":%t}}`, id, credits)
+	}
+	catalog := func(entries ...string) []byte { return []byte(`{"data":[` + strings.Join(entries, ",") + `]}`) }
+
+	// An eligible exact dashed id wins over its dotted twin.
+	model, _, err := resolveSelectedModel(catalog(entry("x/model-3-5", true), entry("x/model-3.5", true)), "x/model-3-5")
+	if err != nil || model != "x/model-3-5" {
+		t.Errorf("exact dashed id: got %q (%v)", model, err)
+	}
+	// A bare name that dots to a suffix two providers share is still ambiguous.
+	_, diagnosis, err := resolveSelectedModel(catalog(entry("a/claude-opus-5.5", true), entry("b/claude-opus-5.5", true)), "claude-opus-5-5")
+	if err == nil || diagnosis != "ambiguous" {
+		t.Errorf("ambiguous dotted suffix: diagnosis %q (%v)", diagnosis, err)
+	}
+	// A dated Claude snapshot the catalog carries is kept before the date is dropped.
+	model, _, err = resolveSelectedModel(catalog(entry("anthropic/claude-3.5-sonnet-20240620", true), entry("anthropic/claude-3.5-sonnet", true)), "anthropic/claude-3-5-sonnet-20240620")
+	if err != nil || model != "anthropic/claude-3.5-sonnet-20240620" {
+		t.Errorf("dated snapshot: got %q (%v)", model, err)
+	}
+	// Other vendors' snapshot dates name distinct models and are never dropped.
+	if model, _, err := resolveSelectedModel(catalog(entry("openai/o3", true)), "openai/o3-20250416"); err == nil {
+		t.Errorf("non-Claude date dropped: resolved to %q", model)
+	}
+}
+
+func TestPolyphemusUnresolvedDiagnosisNamesOnlyCatalogIDs(t *testing.T) {
+	catalog := []byte(`{"data":[{"id":"anthropic/claude-opus-5-5","trustedrouter":{"supports_chat":true,"prepaid_available":false}}]}`)
+	_, diagnosis, err := resolveSelectedModel(catalog, "anthropic/claude-opus-5-5")
+	if err == nil || diagnosis != "ineligible:anthropic/claude-opus-5-5" {
+		t.Errorf("BYOK-only pick: diagnosis %q (%v)", diagnosis, err)
+	}
+	// Telluvian sees the prompt; a name it invents must never be echoed.
+	_, diagnosis, err = resolveSelectedModel(catalog, "the-password-is-hunter2")
+	if err == nil || diagnosis != "no_catalog_match" {
+		t.Errorf("unknown pick: diagnosis %q (%v)", diagnosis, err)
+	}
+	if _, diagnosis, err := resolveSelectedModel([]byte("not json"), "x"); err == nil || diagnosis != "" {
+		t.Errorf("unreadable catalog must not be blamed on the selection: %q (%v)", diagnosis, err)
+	}
+}
+
+func TestTelluvianModelNames(t *testing.T) {
+	for name, want := range map[string][]string{
+		"anthropic/claude-opus-5-5":           {"anthropic/claude-opus-5-5", "anthropic/claude-opus-5.5"},
+		"anthropic/claude-haiku-4-5-20251001": {"anthropic/claude-haiku-4-5-20251001", "anthropic/claude-haiku-4.5-20251001", "anthropic/claude-haiku-4.5"},
+		"claude-opus-4-20250514":              {"claude-opus-4-20250514", "claude-opus-4"},
+		"x-1-2-3-4":                           {"x-1-2-3-4", "x-1.2-3.4"},
+		"google/gemma-2-27b-it":               {"google/gemma-2-27b-it"},
+		"deepseek/deepseek-chat-v3-0324":      {"deepseek/deepseek-chat-v3-0324"},
+		"moonshotai/kimi-k2-0905":             {"moonshotai/kimi-k2-0905"},
+		"qwen/qwen-2.5-72b-instruct":          {"qwen/qwen-2.5-72b-instruct"},
+		"openai/gpt-4o-2024-08-06":            {"openai/gpt-4o-2024-08-06"},
+		"openai/o3-20250416":                  {"openai/o3-20250416"},
+		"meta/llama-3-1-8b":                   {"meta/llama-3-1-8b", "meta/llama-3.1-8b"},
+	} {
+		if got := telluvianModelNames(name); !reflect.DeepEqual(got, want) {
+			t.Errorf("telluvianModelNames(%q) = %q, want %q", name, got, want)
+		}
 	}
 }
 
