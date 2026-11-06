@@ -142,6 +142,8 @@ jobs:
     # Catches accidental script tags / external font fetches / etc. on
     # the static trust page before publish.
     runs-on: ubuntu-latest
+    env:
+      TR_REQUIRE_CRYPTO: "1"
     steps:
       - uses: actions/checkout@v7
         with:
@@ -152,9 +154,16 @@ jobs:
       - uses: astral-sh/setup-uv@v7
         with:
           version: "0.13.4"
-      # capture-plane-measurements.py imports cbor2 at module scope to parse
-      # the Nitro COSE attestation; same install verify-trust-freshness.yml does.
-      - run: pip install cbor2 'PyYAML>=6,<7' cryptography==50.0.2
+      - name: Install locked attestation dependencies in isolation
+        run: |
+          uv venv "$RUNNER_TEMP/trust-validation"
+          uv export --locked --script tools/verify-attestation.py \
+            --output-file "$RUNNER_TEMP/attestation-requirements.txt" >/dev/null
+          uv pip install --python "$RUNNER_TEMP/trust-validation/bin/python" \
+            --require-hashes -r "$RUNNER_TEMP/attestation-requirements.txt"
+          uv pip install --python "$RUNNER_TEMP/trust-validation/bin/python" 'PyYAML==6.0.3'
+          echo "$RUNNER_TEMP/trust-validation/bin" >> "$GITHUB_PATH"
+          echo "PYTHONNOUSERSITE=1" >> "$GITHUB_ENV"
       - name: Test deploy gate helpers
         run: |
           python3 tools/test_synthetic_gate_status.py
