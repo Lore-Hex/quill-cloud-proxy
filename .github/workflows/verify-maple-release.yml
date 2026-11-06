@@ -33,7 +33,7 @@ jobs:
       - uses: actions/checkout@v7
         with:
           persist-credentials: false
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v7
         with:
           python-version: "3.12"
       - run: python3 -m pip install cryptography==50.0.2
@@ -88,7 +88,7 @@ jobs:
       - uses: actions/download-artifact@v4
         with:
           name: maple-candidate
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v7
         with:
           python-version: "3.12"
       - run: python3 -m pip install cryptography==50.0.2
@@ -157,7 +157,7 @@ jobs:
         with:
           name: maple-reproduced-artifacts
           path: ${{ runner.temp }}/reproduced
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v7
         with:
           python-version: "3.12"
       - run: python3 -m pip install cryptography==50.0.2
@@ -208,7 +208,7 @@ jobs:
       - uses: actions/download-artifact@v4
         with:
           name: maple-reproduction
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v7
         with:
           python-version: "3.12"
       - run: python3 -m pip install cryptography==50.0.2
@@ -255,7 +255,7 @@ jobs:
       - uses: actions/download-artifact@v4
         with:
           name: maple-pin-checks
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v7
         with:
           python-version: "3.12"
       - run: python3 -m pip install cryptography==50.0.2
