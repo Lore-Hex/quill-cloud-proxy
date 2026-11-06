@@ -1729,7 +1729,7 @@ func serveResponsesNonStreaming(
 		req.Response.OutputAnnotations = responsesAnnotationsFromProviderProvenance(result)
 	}
 	var body bytes.Buffer
-	if err := adapter.WriteResponsesResponse(&body, requestID, responseModel, result.Text, result.ToolCalls, inputTokens, outputTokens, result.Usage, time.Now().Unix(), responseTextConfig(req), req.Response); err != nil {
+	if err := adapter.WriteResponsesResponse(&body, requestID, responseModel, result.Text, result.ToolCalls, result.FinishReason, inputTokens, outputTokens, result.Usage, time.Now().Unix(), responseTextConfig(req), req.Response); err != nil {
 		writeSpentError(conn, 500, "responses encoding error")
 		return
 	}

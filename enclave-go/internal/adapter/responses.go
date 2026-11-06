@@ -872,6 +872,7 @@ func WriteResponsesResponse(
 	model string,
 	text string,
 	toolCalls []types.ToolCall,
+	finishReason string,
 	inputTokens int,
 	outputTokens int,
 	usage *StreamUsage,
@@ -897,6 +898,7 @@ func WriteResponsesResponse(
 	// with a positive cached_tokens and a total that excludes the prompt.
 	promptTokens := foldedPromptTokens(inputTokens, cachedTokens, cacheCreationTokens, inputExcludesCache)
 	payload := responsesObject(responseID, model, text, toolCalls, promptTokens, outputTokens, cachedTokens, reasoningTokens, created, "completed", textConfig, meta)
+	markResponsesLengthIncomplete(payload, finishReason)
 	body, err := json.Marshal(payload)
 	if err != nil {
 		return err
@@ -1610,12 +1612,20 @@ func finishResponsesStream(
 			}},
 		}...)
 	}
+	terminalName := "response.completed"
+	terminalResponse := responsesObject(responseID, model, text, toolCalls, inputTokens, outputTokens, cachedTokens, reasoningTokens, created, "completed", textConfig, meta)
+	if markResponsesLengthIncomplete(terminalResponse, finishReason) {
+		terminalName = "response.incomplete"
+		if messageStarted {
+			events[len(events)-1].body["item"].(map[string]any)["status"] = "incomplete"
+		}
+	}
 	events = append(events, struct {
 		name string
 		body map[string]any
-	}{"response.completed", map[string]any{
-		"type":     "response.completed",
-		"response": responsesObject(responseID, model, text, toolCalls, inputTokens, outputTokens, cachedTokens, reasoningTokens, created, "completed", textConfig, meta),
+	}{terminalName, map[string]any{
+		"type":     terminalName,
+		"response": terminalResponse,
 	}})
 	result := StreamResult{Text: text, FinishReason: finishReason, ToolCalls: toolCalls, Thinking: thinking, Usage: usage}
 	// Output-part/item closing events are not the terminal sentinel. Preserve
@@ -1652,6 +1662,27 @@ func finishResponsesStream(
 		return result, control.BeforeTerminal(StreamTerminal{Result: result, UsageFields: usageFields, Created: created, FinishReason: finishReason, Emit: emit})
 	}
 	return result, emit()
+}
+
+// markResponsesLengthIncomplete reports a max-token stop the way OpenAI does:
+// status "incomplete" with reason max_output_tokens, keeping the partial output
+// and usage. Reporting it as completed hides that the answer was cut off (or,
+// for a reasoning model that spent the whole budget thinking, never started).
+func markResponsesLengthIncomplete(response map[string]any, finishReason string) bool {
+	if finishReason != "length" {
+		return false
+	}
+	response["status"] = "incomplete"
+	response["incomplete_details"] = map[string]any{"reason": "max_output_tokens"}
+	response["completed_at"] = nil
+	if output, ok := response["output"].([]map[string]any); ok {
+		for _, item := range output {
+			if item["type"] == "message" {
+				item["status"] = "incomplete"
+			}
+		}
+	}
+	return true
 }
 
 func responseOutputAnnotations(meta *types.ResponseRequestMeta) []map[string]any {
