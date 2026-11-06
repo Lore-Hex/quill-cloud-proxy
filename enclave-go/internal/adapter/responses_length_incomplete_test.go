@@ -14,6 +14,7 @@ func TestWriteResponsesResponseReportsLengthStopAsIncomplete(t *testing.T) {
 	}
 	var payload struct {
 		Status            string         `json:"status"`
+		CompletedAt       *int64         `json:"completed_at"`
 		IncompleteDetails map[string]any `json:"incomplete_details"`
 		Output            []struct {
 			Type   string `json:"type"`
@@ -26,6 +27,9 @@ func TestWriteResponsesResponseReportsLengthStopAsIncomplete(t *testing.T) {
 	}
 	if payload.Status != "incomplete" || payload.IncompleteDetails["reason"] != "max_output_tokens" {
 		t.Fatalf("status=%q incomplete_details=%v, want incomplete/max_output_tokens", payload.Status, payload.IncompleteDetails)
+	}
+	if payload.CompletedAt != nil {
+		t.Fatalf("completed_at = %d, want null on an incomplete response", *payload.CompletedAt)
 	}
 	if len(payload.Output) != 1 || payload.Output[0].Status != "incomplete" {
 		t.Fatalf("output = %+v, want one incomplete message", payload.Output)
@@ -74,6 +78,7 @@ func TestTransformResponsesStreamReportsLengthStopAsIncomplete(t *testing.T) {
 		`"status":"incomplete"`,
 		`"incomplete_details":{"reason":"max_output_tokens"}`,
 		`"text":"cut off mid"`,
+		`"completed_at":null`,
 	} {
 		if !strings.Contains(body, want) {
 			t.Fatalf("stream missing %s: %s", want, body)

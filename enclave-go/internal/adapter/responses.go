@@ -1672,6 +1672,7 @@ func markResponsesLengthIncomplete(response map[string]any, finishReason string)
 	}
 	response["status"] = "incomplete"
 	response["incomplete_details"] = map[string]any{"reason": "max_output_tokens"}
+	response["completed_at"] = nil
 	if output, ok := response["output"].([]map[string]any); ok {
 		for _, item := range output {
 			if item["type"] == "message" {
