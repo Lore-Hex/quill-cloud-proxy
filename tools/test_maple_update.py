@@ -14,6 +14,48 @@ import maple_update as update
 
 
 class TransportTests(unittest.TestCase):
+    def test_cleanup_keeps_evidence_and_other_runs(self):
+        calls = []
+        rows = {
+            "total_count": 4,
+            "artifacts": [
+                {"id": 1, "name": "maple-vendor-artifacts"},
+                {"id": 2, "name": "maple-reproduced-artifacts"},
+                {"id": 3, "name": "maple-reproduction"},
+                {"id": 4, "name": "unrelated"},
+            ],
+        }
+        with (
+            patch.dict(
+                os.environ, GITHUB_REPOSITORY=update.REPOSITORY, GITHUB_RUN_ID="123"
+            ),
+            patch.object(update, "api", return_value=rows) as api,
+            patch.object(update, "gh", side_effect=lambda *args: calls.append(args)),
+        ):
+            self.assertEqual(update.cleanup_artifacts(), [1, 2])
+            api.assert_called_once_with(
+                f"repos/{update.REPOSITORY}/actions/runs/123/artifacts?per_page=100"
+            )
+        self.assertEqual(
+            calls,
+            [
+                (
+                    "api",
+                    "--method",
+                    "DELETE",
+                    f"repos/{update.REPOSITORY}/actions/artifacts/{item}",
+                )
+                for item in (1, 2)
+            ],
+        )
+
+    def test_cleanup_refuses_wrong_repository(self):
+        with (
+            patch.dict(os.environ, GITHUB_REPOSITORY="other/repo", GITHUB_RUN_ID="123"),
+            self.assertRaises(policy.Refused),
+        ):
+            update.cleanup_artifacts()
+
     def test_exact_archive_and_rejected_members(self):
         for extra in (None, "../image.eif", "/tmp/escape", "script.sh", "image.eif"):
             with self.subTest(extra=extra), tempfile.TemporaryDirectory() as directory:

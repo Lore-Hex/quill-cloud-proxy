@@ -76,11 +76,11 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
 
-  reproduce:
+  acquire:
     needs: discover
     if: needs.discover.outputs.status == 'automatic' || (inputs.review_only && needs.discover.outputs.status == 'review_required')
-    runs-on: ubuntu-24.04-arm
-    timeout-minutes: 180
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@v7
         with:
@@ -92,28 +92,81 @@ jobs:
         with:
           python-version: "3.12"
       - run: python3 -m pip install cryptography==50.0.2
+      - name: Download and authenticate without executing vendor code
+        env:
+          # Cross-repository Actions artifacts require an authenticated reader.
+          # This clean job never runs the vendor build or SDK.
+          GH_TOKEN: ${{ secrets.TRUST_PUSH_TOKEN }}
+        run: python3 tools/maple_update.py download --candidate candidate.json --destination "$RUNNER_TEMP/vendor-artifacts"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: maple-vendor-artifacts
+          path: ${{ runner.temp }}/vendor-artifacts/
+          retention-days: 1
+          compression-level: 0
+
+  reproduce:
+    needs: [discover, acquire]
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 180
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: maple-candidate
       - uses: DeterminateSystems/nix-installer-action@96c5ee93a9dddf2830d31e1da6ec719077336c28
         with:
           source-tag: v3.23.3
           github-token: ""
-      - name: Obtain exact source and authenticated production artifacts
+      - name: Obtain exact source without deployment credentials
         env:
-          GH_TOKEN: ${{ github.token }}
           SOURCE: ${{ needs.discover.outputs.source }}
         run: |
           git clone --filter=blob:none --no-checkout https://github.com/MaplePrivacyLabs/Maple.git "$RUNNER_TEMP/maple"
           git -C "$RUNNER_TEMP/maple" checkout --detach "$SOURCE"
           git -C "$RUNNER_TEMP/maple" submodule update --init --recursive
-          python3 tools/maple_update.py download --candidate candidate.json --destination "$RUNNER_TEMP/vendor-artifacts"
       - name: Independently reproduce with no provider cache or credentials
         env:
           SOURCE: ${{ needs.discover.outputs.source }}
         run: bash tools/reproduce-maple.sh "$RUNNER_TEMP/maple" "$SOURCE" "$RUNNER_TEMP/reproduced"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: maple-reproduced-artifacts
+          path: ${{ runner.temp }}/reproduced/
+          retention-days: 1
+          compression-level: 0
+
+  verify:
+    needs: [discover, acquire, reproduce]
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: maple-candidate
+      - uses: actions/download-artifact@v4
+        with:
+          name: maple-vendor-artifacts
+          path: ${{ runner.temp }}/vendor-artifacts
+      - uses: actions/download-artifact@v4
+        with:
+          name: maple-reproduced-artifacts
+          path: ${{ runner.temp }}/reproduced
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: python3 -m pip install cryptography==50.0.2
       - name: Require exact bytes, source provenance and signed history
         env:
           GH_TOKEN: ${{ github.token }}
           REVIEW_ONLY: ${{ inputs.review_only }}
         run: |
+          git clone --filter=blob:none --no-checkout https://github.com/MaplePrivacyLabs/Maple.git "$RUNNER_TEMP/maple"
           args=()
           if [ "$REVIEW_ONLY" = true ]; then args+=(--review-only); fi
           python3 tools/maple_policy.py verify --vendor "$RUNNER_TEMP/maple" --candidate candidate.json \
@@ -124,8 +177,25 @@ jobs:
           path: evidence.json
           retention-days: 1
 
+  cleanup-build-artifacts:
+    needs: [acquire, reproduce, verify]
+    if: always() && needs.acquire.result == 'success'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      actions: write
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - name: Remove only this run's two temporary image artifacts
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: python3 tools/maple_update.py cleanup
+
   qualify:
-    needs: [discover, reproduce]
+    needs: [discover, verify]
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
@@ -167,7 +237,7 @@ jobs:
           retention-days: 1
 
   publish:
-    needs: [discover, reproduce, qualify]
+    needs: [discover, verify, qualify]
     if: needs.discover.outputs.status == 'automatic' && github.ref == 'refs/heads/main' && !inputs.review_only
     runs-on: ubuntu-latest
     timeout-minutes: 55
@@ -191,7 +261,7 @@ jobs:
       - run: python3 -m pip install cryptography==50.0.2
       - name: Recheck current source and submit a CI-gated pin-only PR
         env:
-          # Only this clean job receives the existing release bot token.
+          # Only clean acquisition/publication jobs receive the release token.
           # No vendor code, SDK, build script or downloaded executable runs here.
           GH_TOKEN: ${{ secrets.TRUST_PUSH_TOKEN }}
         run: |

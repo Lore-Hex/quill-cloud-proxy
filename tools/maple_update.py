@@ -159,6 +159,35 @@ def report_review(candidate: dict) -> str:
     )
 
 
+def cleanup_artifacts() -> list[int]:
+    policy.require(
+        os.environ.get("GITHUB_REPOSITORY") == REPOSITORY,
+        "cleanup requires the release repository",
+    )
+    run_id = os.environ.get("GITHUB_RUN_ID", "")
+    policy.require(
+        run_id.isascii() and run_id.isdigit() and int(run_id) > 0, "invalid run ID"
+    )
+    rows = api(f"repos/{REPOSITORY}/actions/runs/{run_id}/artifacts?per_page=100")
+    policy.require(rows["total_count"] <= 100, "unexpected artifact count")
+    deleted = []
+    for item in rows["artifacts"]:
+        if item["name"] not in {"maple-vendor-artifacts", "maple-reproduced-artifacts"}:
+            continue
+        artifact_id = item["id"]
+        policy.require(
+            type(artifact_id) is int and artifact_id > 0, "invalid artifact ID"
+        )
+        gh(
+            "api",
+            "--method",
+            "DELETE",
+            f"repos/{REPOSITORY}/actions/artifacts/{artifact_id}",
+        )
+        deleted.append(artifact_id)
+    return deleted
+
+
 def validate_pin_checks(directory: Path, pcr: str) -> None:
     positive = policy.strict_json((directory / "valid-pin.json").read_bytes())
     negative = policy.strict_json((directory / "wrong-pin.json").read_bytes())
@@ -328,13 +357,19 @@ def merge_after_ci(url: str, head: str) -> None:
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("command", choices=("download", "report-review", "publish"))
-    parser.add_argument("--candidate", type=Path, required=True)
+    parser.add_argument(
+        "command", choices=("download", "report-review", "publish", "cleanup")
+    )
+    parser.add_argument("--candidate", type=Path)
     parser.add_argument("--destination", type=Path)
     parser.add_argument("--evidence", type=Path)
     parser.add_argument("--vendor", type=Path)
     parser.add_argument("--checks", type=Path)
     args = parser.parse_args()
+    if args.command == "cleanup":
+        print(json.dumps({"deleted_temporary_artifacts": cleanup_artifacts()}))
+        return
+    policy.require(args.candidate is not None, "candidate is required")
     candidate = policy.strict_json(args.candidate.read_bytes())
     if args.command == "download":
         print(json.dumps(download(candidate, args.destination)))

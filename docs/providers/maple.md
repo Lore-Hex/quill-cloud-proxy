@@ -22,14 +22,19 @@ branch, workflow and OIDC issuer; the P-384 approval history must be append-only
 and correctly signed. A separate clean job checks the positive attestation and
 deliberate wrong-pin rejection without sending credentials or inference.
 
-Only a final clean job receives the release bot token. It rechecks the current
-approval and protected tree, creates a two-file pin/evidence PR, waits for full
+Only clean acquisition and publication jobs receive the release bot token;
+neither executes vendor code. The rebuild cannot modify the original artifacts
+or the verification code, because a fresh job performs the comparison.
+Publication rechecks the current approval and protected tree, creates a two-file pin/evidence PR, waits for full
 CI on that exact head, and merges without an admin bypass. The existing GCP
 signed release and staged canary workflow then applies. AWS and Azure still
 require their shared rollout guard, measured-image publication and regional
 canaries; this workflow does not claim a merge has deployed those fleets.
-Rebuilds run only for changed, automatically eligible releases. Artifacts are
-small evidence records retained for one day, not copies of the large EIF.
+Rebuilds run only for eligible changes or an explicitly dispatched review-only
+qualification. Review-only evidence can never authorize automatic publication.
+Large image artifacts are transferred between isolated jobs, deleted after
+verification, and expire after one day if cleanup fails. Small evidence records
+are retained for one day and included in the generated pin PR.
 
 The only qualified managed model remains
 `deepseek-v4-1-flash-1017-uncensored`. Dealign is its weights publisher, not an
