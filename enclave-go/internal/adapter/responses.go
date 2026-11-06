@@ -1313,9 +1313,13 @@ func TransformResponsesStreamControlled(
 				toolOrder = append(toolOrder, blockIndex)
 			}
 			id := getString(block, "id")
+			callID := id
+			if control != nil && control.ToolCallID != nil {
+				callID = control.ToolCallID(id)
+			}
 			call := &types.ToolCall{
 				ID:     id,
-				CallID: id,
+				CallID: callID,
 				Name:   getString(block, "name"),
 			}
 			toolCallsByIndex[blockIndex] = call
