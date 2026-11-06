@@ -116,7 +116,7 @@ func TestRelayAnthropicStreamRecordsCacheConvention(t *testing.T) {
 func TestResponsesUsageFoldsAnthropicFullCacheHit(t *testing.T) {
 	var out bytes.Buffer
 	err := WriteResponsesResponse(
-		&out, "resp_test", "anthropic/claude-haiku-4.5", "ok", nil,
+		&out, "resp_test", "anthropic/claude-haiku-4.5", "ok", nil, "stop",
 		0,  // real uncached input_tokens for a full cache hit
 		10, // output
 		&StreamUsage{OutputTokens: 10, CacheReadInputTokens: 6034, InputExcludesCache: true},
