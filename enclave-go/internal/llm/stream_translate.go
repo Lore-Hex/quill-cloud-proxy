@@ -219,7 +219,7 @@ func translateOpenAIStreamToAnthropicForProvider(r io.Reader, w io.Writer, provi
 				call.Name = delta.Function.Name
 			}
 			if delta.Function.Arguments != "" {
-				call.Arguments += delta.Function.Arguments
+				// Forward fragments directly; no later step needs a second argument buffer.
 				if err := writeAnthropicToolDelta(w, delta.Index, delta.Function.Arguments); err != nil {
 					return err
 				}
@@ -304,9 +304,8 @@ func openAIStreamContent(raw json.RawMessage) (string, string, error) {
 }
 
 type openAIToolCallAccumulator struct {
-	ID        string
-	Name      string
-	Arguments string
+	ID   string
+	Name string
 }
 
 // openAIStreamUsage is the OpenAI chat-completions stream usage object.
