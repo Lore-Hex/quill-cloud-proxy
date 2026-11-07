@@ -535,20 +535,24 @@ var polyphemusEffortOrder = []string{"none", "minimal", "low", "medium", "high",
 // selected model accepts, per the catalog's trustedrouter.capabilities.
 // reasoning_effort: the strongest supported effort at or below the
 // recommendation, else the weakest above it. A model declaring no efforts
-// gets none; an unknown declaration, or an effort we cannot rank, passes the
-// recommendation through unchanged.
+// gets none. An unknown or malformed declaration, one with no effort we can
+// rank, or a recommendation we cannot rank passes through unchanged.
 func polyphemusSupportedEffort(body []byte, model, effort string) string {
 	effort = strings.ToLower(strings.TrimSpace(effort))
 	if effort == "" {
 		return ""
 	}
+	want := slices.Index(polyphemusEffortOrder, effort)
+	if want < 0 {
+		return effort
+	}
+	// Decode only the selected row's declaration, so another model's
+	// malformed capabilities cannot disable the clamp.
 	var catalog struct {
 		Data []struct {
 			ID string `json:"id"`
 			TR struct {
-				Capabilities struct {
-					ReasoningEffort *[]string `json:"reasoning_effort"`
-				} `json:"capabilities"`
+				Capabilities json.RawMessage `json:"capabilities"`
 			} `json:"trustedrouter"`
 		} `json:"data"`
 	}
@@ -557,20 +561,23 @@ func polyphemusSupportedEffort(body []byte, model, effort string) string {
 	}
 	var supported *[]string
 	for _, row := range catalog.Data {
-		if row.ID == model {
-			supported = row.TR.Capabilities.ReasoningEffort
-			break
+		if row.ID != model {
+			continue
 		}
+		var capabilities struct {
+			ReasoningEffort *[]string `json:"reasoning_effort"`
+		}
+		if err := json.Unmarshal(row.TR.Capabilities, &capabilities); err != nil {
+			return effort
+		}
+		supported = capabilities.ReasoningEffort
+		break
 	}
 	if supported == nil {
 		return effort
 	}
 	if len(*supported) == 0 {
 		return ""
-	}
-	want := slices.Index(polyphemusEffortOrder, effort)
-	if want < 0 {
-		return effort
 	}
 	below, above := "", ""
 	for i, candidate := range polyphemusEffortOrder {
@@ -583,8 +590,12 @@ func polyphemusSupportedEffort(body []byte, model, effort string) string {
 			above = candidate
 		}
 	}
-	if below != "" {
+	switch {
+	case below != "":
 		return below
+	case above != "":
+		return above
+	default:
+		return effort // nothing declared that we can rank
 	}
-	return above
 }
