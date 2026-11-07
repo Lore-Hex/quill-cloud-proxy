@@ -112,5 +112,15 @@ func PrepareChatRequest(provider, upstreamModel string, req *qtypes.OpenAIChatRe
 }
 
 func hixtubeCacheEnabled(provider, model string) bool {
-	return normalizeDirectProvider(provider) == "hixtube" && model == "dealignai/deepseek-v4.1-flash-1017-uncensored-fp8"
+	if normalizeDirectProvider(provider) != "hixtube" {
+		return false
+	}
+	// Match exact served IDs; cache support never aliases the official model
+	// to the historical modified checkpoint or authorizes either route.
+	switch model {
+	case "dealignai/deepseek-v4.1-flash-1017-uncensored-fp8", "deepseek/deepseek-v4.1-flash-1017":
+		return true
+	default:
+		return false
+	}
 }
