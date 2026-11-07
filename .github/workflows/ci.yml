@@ -90,6 +90,46 @@ jobs:
         # actually compiles in.
         run: go test -race -tags '${{ matrix.tags }}' ./...
 
+      - name: Compare streamed tool argument allocations
+        # Opt in only after checking that the baseline file matches current callers.
+        if: github.event_name == 'pull_request' && matrix.tags == 'cloud_gcp,llm_multi' && contains(github.event.pull_request.title, '[benchmark-stream-copy]')
+        timeout-minutes: 10
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          COMPATIBLE_BASE_SHA: "9e3b8f93510bb79acafded11f0587fdc5d06f9df"
+          GOMAXPROCS: "2"
+          GOTOOLCHAIN: local
+          GOPROXY: "off"
+          GOSUMDB: "off"
+          GOWORK: "off"
+        shell: bash
+        run: |
+          set -euo pipefail
+          [[ "$BASE_SHA" =~ ^[0-9a-f]{40}$ ]]
+          [[ "$BASE_SHA" == "$COMPATIBLE_BASE_SHA" ]]
+          git fetch --no-tags --depth=1 origin "$BASE_SHA"
+          work=$(mktemp -d)
+          trap 'rm -rf "$work"' EXIT
+          baseline="$work/stream_translate.go"
+          target="$GITHUB_WORKSPACE/enclave-go/internal/llm/stream_translate.go"
+          git show "$BASE_SHA:enclave-go/internal/llm/stream_translate.go" > "$baseline"
+          jq -n --arg target "$target" --arg baseline "$baseline" \
+            '{Replace: {($target): $baseline}}' > "$work/overlay.json"
+          printf 'Baseline commit: %s\nCandidate commit: %s\n' "$BASE_SHA" "$(git rev-parse HEAD)"
+          sha256sum "$baseline" "$target" internal/llm/stream_tool_fragments_test.go
+          # Both variants use identical fixtures and current dependencies on this runner.
+          for variant in baseline candidate; do
+            flags=()
+            if [[ "$variant" == baseline ]]; then
+              flags=(-overlay="$work/overlay.json")
+            fi
+            printf '\nVariant: %s\n' "$variant"
+            go test "${flags[@]}" -mod=readonly -tags 'cloud_gcp,llm_multi' \
+              -run '^$' -bench '^BenchmarkTranslateToolArgumentFragments$' \
+              -benchmem -benchtime=200ms -count=5 -p=2 -parallel=2 \
+              -timeout=120s ./internal/llm
+          done
+
       - name: Check reachable Go vulnerabilities (${{ matrix.tags }})
         run: go run golang.org/x/vuln/cmd/govulncheck@v1.9.0 -tags '${{ matrix.tags }}' ./...
 
