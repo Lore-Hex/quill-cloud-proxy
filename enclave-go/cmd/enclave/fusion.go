@@ -296,11 +296,14 @@ var fusionLiberty101MPanel = []string{
 	"nvidia/nemotron-3-ultra-550b-a55b",
 }
 
-// Liberty 4.0: American models on US-headquartered 1M routes. The panel
+// Liberty 4.0: American models on US-headquartered routes. The panel
 // answers in parallel and Muse Spark Open fuses whatever returned; if it
-// fails, Beam, then Nemotron take over as fuser.
+// fails, Beam, then Nemotron take over as fuser. Nemotron 3 Ultra replaced
+// Nemotron 3.5 Super on 2026-11-07 (it scored higher on DRACO); its routes
+// serve 256K, so it sits out requests too long for that window while Muse
+// Spark and Beam serve 1M.
 var fusionLiberty40Panel = []string{
-	"nvidia/nemotron-3.5-super-vl",
+	fusionNemotron3Ultra,
 	"reflection/beam-1.0",
 	"meta-models/muse-spark-open",
 }
@@ -308,7 +311,39 @@ var fusionLiberty40Panel = []string{
 var fusionLiberty40Fusers = []string{
 	"meta-models/muse-spark-open",
 	"reflection/beam-1.0",
-	"nvidia/nemotron-3.5-super-vl",
+	fusionNemotron3Ultra,
+}
+
+const fusionNemotron3Ultra = "nvidia/nemotron-3-ultra-550b-a55b"
+
+// fusionShortWindowMembers are built-in panel members and fusers whose window
+// is below their combo's. Such a model is dropped from a request that would
+// not fit, instead of failing upstream after the panel has been reserved.
+var fusionShortWindowMembers = map[string]int{
+	fusionNemotron3Ultra: 262_144,
+}
+
+// fusionWithoutOverlongMembers drops short-window models when the estimated
+// prompt plus the output reservation and a safety margin would exceed the
+// model's window. It never empties the list and never mutates its input.
+func fusionWithoutOverlongMembers(models []string, messages []types.OpenAIChatMessage) []string {
+	promptTokens := -1
+	kept := models[:0:0]
+	for _, model := range models {
+		if limit, short := fusionShortWindowMembers[model]; short {
+			if promptTokens < 0 {
+				promptTokens = advisorEstimatedMessageTokens(messages)
+			}
+			if promptTokens+fusionPanelReasoningTokens+8_000 > limit {
+				continue
+			}
+		}
+		kept = append(kept, model)
+	}
+	if len(kept) == 0 {
+		return models
+	}
+	return kept
 }
 
 // applyFusionCodeSwap rewrites the single model trustedrouter/fusion-code
@@ -867,7 +902,7 @@ func maybeServeFusion(
 	if len(config.AnalysisModels) == 0 {
 		if preset, panel, ok := fusionPresetPanelForModel(req.Model); ok {
 			config.Preset = preset
-			config.AnalysisModels = panel
+			config.AnalysisModels = fusionWithoutOverlongMembers(panel, req.Messages)
 		} else if !isGenericFusionPrimitive(req.Model) {
 			config.AnalysisModels = append([]string(nil), fusionQualityPanel...)
 		}
@@ -904,6 +939,7 @@ func maybeServeFusion(
 	if err != nil {
 		return true, err
 	}
+	finalModels, judgeModels = fusionBuiltInFusersThatFit(config, req.Messages, finalModels, judgeModels)
 	selectorModels := judgeModels
 	if config.SelectionStrategy == fusionSelectorSelectionStrategy {
 		selectorModels, err = fusionSelectorModels(config)
@@ -3638,6 +3674,19 @@ func fusionPanelForSynthesis(panel []fusionCallResult, strategy string) ([]fusio
 		return nil, &adapter.AdapterError{Status: 502, Message: "trustedrouter/synth panel produced no non-refusal responses", Context: "fusion.panel"}
 	}
 	return filtered, nil
+}
+
+// fusionBuiltInFusersThatFit drops short-window models from built-in fuser
+// lists, which see the whole conversation too. A caller's explicit fuser lists
+// are left alone.
+func fusionBuiltInFusersThatFit(config fusionConfig, messages []types.OpenAIChatMessage, finals, judges []string) ([]string, []string) {
+	if len(config.FinalModels) == 0 && config.JudgeModel == "" {
+		finals = fusionWithoutOverlongMembers(finals, messages)
+	}
+	if len(config.JudgeModels) == 0 && config.JudgeModel == "" {
+		judges = fusionWithoutOverlongMembers(judges, messages)
+	}
+	return finals, judges
 }
 
 func fusionFinalModels(config fusionConfig, requestedModel string, fallback string) ([]string, error) {
