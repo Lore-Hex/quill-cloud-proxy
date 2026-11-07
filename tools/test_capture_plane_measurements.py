@@ -622,6 +622,20 @@ class AWSReleaseGateTests(unittest.TestCase):
         self.assertIn("FAILED AWS: serving pin verification failed", stderr.getvalue())
         self.assertNotIn("NOT RUN", stdout.getvalue())
 
+    def test_unreadable_region_does_not_hide_a_mismatch_in_the_other(self):
+        pins = capture.aws_fargate_pins
+        bad = {"release": "r", "digest": "d", "pin": self.OLD}
+        with mock.patch.object(pins, "serving_pin", side_effect=[bad, pins.AwsReadError("x")]), \
+             contextlib.redirect_stdout(io.StringIO()):
+            with self.assertRaises(ValueError) as caught:
+                capture.check_aws_pins(self.NEW, repin=False, keep=False)
+        self.assertNotIsInstance(caught.exception, pins.AwsReadError)
+        good = {"release": "r", "digest": "d", "pin": self.NEW}
+        with mock.patch.object(pins, "serving_pin", side_effect=[good, pins.AwsReadError("x")]), \
+             contextlib.redirect_stdout(io.StringIO()):
+            with self.assertRaises(pins.AwsReadError):
+                capture.check_aws_pins(self.NEW, repin=False, keep=False)
+
     def test_only_a_failed_cli_call_is_a_read_error(self):
         pins = capture.aws_fargate_pins
         with mock.patch.object(pins.subprocess, "run", side_effect=subprocess.CalledProcessError(255, "aws")):

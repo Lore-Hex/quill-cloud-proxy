@@ -358,7 +358,25 @@ def monitor_pin_verdict(live_pcr0: str, pin_value: str | None, pin_error: str | 
 
 def check_aws_pins(required: str, *, repin: bool, keep: bool) -> str:
     """Preflight both regions before any mutation; return the preserved set."""
-    evidence = [aws_fargate_pins.serving_pin(*surface) for surface in AWS_FARGATE_PIN_SURFACES]
+    collected = []
+    read_error = None
+    for surface in AWS_FARGATE_PIN_SURFACES:
+        try:
+            collected.append((surface, aws_fargate_pins.serving_pin(*surface)))
+        except aws_fargate_pins.AwsReadError as exc:
+            read_error = exc
+    if read_error is not None:
+        # Judge what WAS read before reporting what could not be: an
+        # unreadable region must not hide a mismatch another region showed,
+        # because callers may treat AwsReadError as "could not look".
+        if len({(item["release"], item["digest"]) for _, item in collected}) > 1:
+            raise ValueError("AWS control-plane regions serve different releases/images")
+        for surface, item in collected:
+            state, _ = monitor_pin_verdict(required, item["pin"], None)
+            if state != "ok":
+                raise ValueError(f"{surface[2]} does not accept the required PCR0 set")
+        raise read_error
+    evidence = [item for _, item in collected]
     if len({(item["release"], item["digest"]) for item in evidence}) != 1:
         raise ValueError("AWS control-plane regions serve different releases/images")
     pins = aws_fargate_pins.pin_set(required)
