@@ -6664,7 +6664,7 @@ func TestNamedOrchestrationPresetsReturnNonEmptyThroughLocalGateway(t *testing.T
 		{
 			model: trustedRouterLiberty40Model,
 			componentModels: []string{
-				"nvidia/nemotron-3.5-super-vl",
+				"nvidia/nemotron-3-ultra-550b-a55b",
 				"reflection/beam-1.0",
 				"meta-models/muse-spark-open",
 			},
