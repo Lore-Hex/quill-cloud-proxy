@@ -166,9 +166,15 @@ func (c *openAICompatibleClient) InvokeDecide(ctx context.Context, req *DecideRe
 	if provider == "tinfoil" {
 		return invokeTinfoilDecide(ctx, httpc, baseURL, apiKey, model, req)
 	}
+	// Baseten's shared base URL also serves chat models. Only a reviewed
+	// System One model may be sent to its decision endpoint, checked before
+	// any paid call.
+	if provider == basetenProvider && !isBasetenSystemOneModel(model) {
+		return nil, &DecideError{Provider: provider, Class: DecideErrConfig}
+	}
 	// Hosts expose different decision wire shapes. Translate both protocols
 	// to decide.Answer, then enforce the same decide.Verify contract.
-	if provider == typeSafeProvider || system1Tier(provider) != "" || provider == "azure" || provider == "regolo" {
+	if provider == typeSafeProvider || system1Tier(provider) != "" || provider == "azure" || provider == "regolo" || provider == basetenProvider {
 		return invokeSystemOne(ctx, httpc, provider, baseURL, apiKey, model, req)
 	}
 	wire := *req
@@ -242,6 +248,14 @@ func postDecideJSON(ctx context.Context, httpc *http.Client, provider, url, apiK
 // vendor directly, so the request crosses one third party instead of two.
 const typeSafeProvider = "typesafe"
 
+// basetenProvider serves System One decision models on POST {base}/systemone,
+// beside its OpenAI-compatible chat API on the same base URL.
+const basetenProvider = "baseten"
+
+func isBasetenSystemOneModel(model string) bool {
+	return strings.HasPrefix(model, "decision-models/baseten-") && decide.HostedModels[model]
+}
+
 // TypeSafe names the yes/no primitive "noul" and returns its probability in a
 // field of the same name. Everything else lines up with the public contract.
 const typeSafeBoolean = "noul"
@@ -294,6 +308,11 @@ func invokeSystemOne(ctx context.Context, httpc *http.Client, provider, baseURL,
 	// Regolo's decision endpoint has an input-only tariff. Do not settle a
 	// different model, missing usage, or newly billed output as Clef-Flash.
 	if provider == "regolo" && (model != "clef-flash" || parsed.Model != model || parsed.Usage.InputTokens <= 0 || parsed.Usage.OutputTokens == nil || *parsed.Usage.OutputTokens != 0) {
+		return nil, &DecideError{Provider: provider, Class: DecideErrDecode}
+	}
+	// Baseten echoes the requested System One slug and reports one output
+	// token per question; its published tariff for these models is input-only.
+	if provider == basetenProvider && (parsed.Model != model || parsed.Usage.InputTokens <= 0 || parsed.Usage.OutputTokens == nil || *parsed.Usage.OutputTokens < 0) {
 		return nil, &DecideError{Provider: provider, Class: DecideErrDecode}
 	}
 	// Azure returns the underlying model identity rather than its deployment
