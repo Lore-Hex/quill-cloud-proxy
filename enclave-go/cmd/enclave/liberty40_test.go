@@ -27,11 +27,11 @@ func TestLiberty40IsAUSOnlyFusionWithMuseSparkFusing(t *testing.T) {
 		t.Fatal("Liberty 4.0 must be a fusion model")
 	}
 	preset, panel, ok := fusionPresetPanelForModel(trustedRouterLiberty40Model)
-	wantPanel := []string{"nvidia/nemotron-3.5-super-vl", "reflection/beam-1.0", "meta-models/muse-spark-open"}
+	wantPanel := []string{fusionNemotron3Ultra, "reflection/beam-1.0", "meta-models/muse-spark-open"}
 	if !ok || preset != "liberty-4.0" || !reflect.DeepEqual(panel, wantPanel) {
 		t.Fatalf("panel = %q %#v, want liberty-4.0 %#v", preset, panel, wantPanel)
 	}
-	wantFusers := []string{"meta-models/muse-spark-open", "reflection/beam-1.0", "nvidia/nemotron-3.5-super-vl"}
+	wantFusers := []string{"meta-models/muse-spark-open", "reflection/beam-1.0", fusionNemotron3Ultra}
 	judges, err := fusionJudgeModels(fusionConfig{}, trustedRouterLiberty40Model)
 	if err != nil || !reflect.DeepEqual(judges, wantFusers) {
 		t.Fatalf("judge models = %#v (%v), want %#v", judges, err, wantFusers)
@@ -124,14 +124,14 @@ func TestLiberty40FusesWhatReturnedAndFailsOverFusersThroughLocalGateway(t *test
 			wantFinal:  "reflection/beam-1.0",
 			// Muse Spark fails on the panel, as judge and as final; Beam answers
 			// on the panel, then takes over as judge and final.
-			wantCalls: map[string]int{"meta-models/muse-spark-open": 3, "reflection/beam-1.0": 3, "nvidia/nemotron-3.5-super-vl": 1},
+			wantCalls: map[string]int{"meta-models/muse-spark-open": 3, "reflection/beam-1.0": 3, fusionNemotron3Ultra: 1},
 		},
 		{
 			name:       "Muse Spark down while streaming: Beam fuses",
 			stream:     true,
 			failModels: map[string]bool{"meta-models/muse-spark-open": true},
 			wantFinal:  "reflection/beam-1.0",
-			wantCalls:  map[string]int{"meta-models/muse-spark-open": 3, "reflection/beam-1.0": 3, "nvidia/nemotron-3.5-super-vl": 1},
+			wantCalls:  map[string]int{"meta-models/muse-spark-open": 3, "reflection/beam-1.0": 3, fusionNemotron3Ultra: 1},
 		},
 		{
 			name: "Muse Spark and Beam down: Nemotron's lone panel answer is fused by Nemotron",
@@ -139,8 +139,8 @@ func TestLiberty40FusesWhatReturnedAndFailsOverFusersThroughLocalGateway(t *test
 				"meta-models/muse-spark-open": true,
 				"reflection/beam-1.0":         true,
 			},
-			wantFinal: "nvidia/nemotron-3.5-super-vl",
-			wantCalls: map[string]int{"meta-models/muse-spark-open": 3, "reflection/beam-1.0": 3, "nvidia/nemotron-3.5-super-vl": 3},
+			wantFinal: fusionNemotron3Ultra,
+			wantCalls: map[string]int{"meta-models/muse-spark-open": 3, "reflection/beam-1.0": 3, fusionNemotron3Ultra: 3},
 		},
 	}
 	for _, tt := range tests {
@@ -212,13 +212,18 @@ func TestLiberty40StopsTheFuserChainWhenAFuserMayAlreadyBeBilled(t *testing.T) {
 	}
 	streamer.mu.Unlock()
 	// Muse Spark sits on the panel and is the first judge; nothing runs after.
-	want := map[string]int{"meta-models/muse-spark-open": 2, "reflection/beam-1.0": 1, "nvidia/nemotron-3.5-super-vl": 1}
+	want := map[string]int{"meta-models/muse-spark-open": 2, "reflection/beam-1.0": 1, fusionNemotron3Ultra: 1}
 	if !reflect.DeepEqual(gotCalls, want) {
 		t.Fatalf("calls per model = %#v, want the panel plus Muse Spark's judge only %#v", gotCalls, want)
 	}
 }
 
 func postLiberty40(t *testing.T, trGateway *trustedrouter.Client, streamer *fusionEchoLLM, stream bool) (int, string) {
+	t.Helper()
+	return postLiberty40Content(t, trGateway, streamer, stream, "Reply with a short local test answer.")
+}
+
+func postLiberty40Content(t *testing.T, trGateway *trustedrouter.Client, streamer *fusionEchoLLM, stream bool, content string) (int, string) {
 	t.Helper()
 	serverConn, client := net.Pipe()
 	defer client.Close()
@@ -230,7 +235,7 @@ func postLiberty40(t *testing.T, trGateway *trustedrouter.Client, streamer *fusi
 	requestBody, err := json.Marshal(map[string]any{
 		"model":      trustedRouterLiberty40Model,
 		"stream":     stream,
-		"messages":   []map[string]any{{"role": "user", "content": "Reply with a short local test answer."}},
+		"messages":   []map[string]any{{"role": "user", "content": content}},
 		"max_tokens": 512,
 	})
 	if err != nil {
@@ -267,4 +272,108 @@ func TestErrorTypeChainSkipsBillingMarkers(t *testing.T) {
 			t.Fatalf("errorTypeChain(%T) = %q, want %q", err, got, want)
 		}
 	}
+}
+
+func TestLiberty40DropsNemotronUltraWhenTheRequestOverrunsItsWindow(t *testing.T) {
+	_, panel, _ := fusionPresetPanelForModel(trustedRouterLiberty40Model)
+	fusers := append([]string(nil), fusionLiberty40Fusers...)
+	without := func(models []string) []string {
+		var out []string
+		for _, m := range models {
+			if m != fusionNemotron3Ultra {
+				out = append(out, m)
+			}
+		}
+		return out
+	}
+	request := func(model string, chars int, toolChars int, maxTokens int) *types.OpenAIChatRequest {
+		req := &types.OpenAIChatRequest{Model: model, Messages: []types.OpenAIChatMessage{{Role: "user", Content: strings.Repeat("a", chars)}}}
+		if toolChars > 0 {
+			req.Tools = []any{map[string]any{"type": "function", "function": map[string]any{"name": "lookup", "description": strings.Repeat("d", toolChars)}}}
+		}
+		if maxTokens > 0 {
+			req.MaxTokens = &maxTokens
+		}
+		return req
+	}
+	l40 := trustedRouterLiberty40Model
+	tests := []struct {
+		name                  string
+		req                   *types.OpenAIChatRequest
+		config                fusionConfig
+		builtIn               bool
+		panel, fuserIn        []string
+		wantPanel, wantFinals []string
+		wantJudges            []string
+	}{
+		// ~6 tokens: everything fits.
+		{"short", request(l40, 24, 0, 0), fusionConfig{}, true, panel, fusers, panel, fusers, fusers},
+		// ~200K tokens + 32K panel output fits Ultra's window; ~25K of tools does not.
+		{"messages alone fit the panel", request(l40, 800_000, 0, 0), fusionConfig{}, true, panel, fusers, panel, without(fusers), without(fusers)},
+		{"tools push the panel over", request(l40, 800_000, 100_000, 0), fusionConfig{}, true, panel, fusers, without(panel), without(fusers), without(fusers)},
+		// A configured 64K inner budget pushes the same ~200K prompt over.
+		{"configured panel budget", request(l40, 800_000, 0, 0), fusionConfig{MaxCompletionTokens: 65_536}, true, panel, fusers, without(panel), without(fusers), without(fusers)},
+		// ~130K tokens fits the panel, but the judge also reads three
+		// 32K panel answers.
+		{"judge reads panel answers", request(l40, 520_000, 0, 0), fusionConfig{}, true, panel, fusers, panel, without(fusers), without(fusers)},
+		// A short prompt whose final may write 250K tokens: only the final
+		// list loses Ultra.
+		{"final output budget", request(l40, 24, 0, 250_000), fusionConfig{}, true, panel, fusers, panel, without(fusers), fusers},
+		// A caller's explicit lists are theirs to keep.
+		{"explicit lists", request(l40, 900_000, 0, 0), fusionConfig{FinalModels: fusers, JudgeModels: fusers}, false, panel, fusers, panel, fusers, fusers},
+		// Combos without reviewed 1M routes keep Ultra: their windows are not Liberty 4.0's.
+		{"Liberty 1.0-1M untouched", request(trustedRouterLiberty101MModel, 900_000, 0, 0), fusionConfig{}, true, fusionLiberty101MPanel, []string{fusionNemotron3Ultra}, fusionLiberty101MPanel, []string{fusionNemotron3Ultra}, []string{fusionNemotron3Ultra}},
+		// A list is never emptied.
+		{"never empty", request(l40, 900_000, 0, 0), fusionConfig{}, true, []string{fusionNemotron3Ultra}, []string{fusionNemotron3Ultra}, []string{fusionNemotron3Ultra}, []string{fusionNemotron3Ultra}, []string{fusionNemotron3Ultra}},
+	}
+	for _, tt := range tests {
+		gotPanel, gotFinals, gotJudges := fusionBuiltInsThatFit(tt.req, tt.config, tt.builtIn, tt.panel, tt.fuserIn, tt.fuserIn)
+		if !reflect.DeepEqual(gotPanel, tt.wantPanel) || !reflect.DeepEqual(gotFinals, tt.wantFinals) || !reflect.DeepEqual(gotJudges, tt.wantJudges) {
+			t.Errorf("%s: panel=%v finals=%v judges=%v, want %v %v %v", tt.name, gotPanel, gotFinals, gotJudges, tt.wantPanel, tt.wantFinals, tt.wantJudges)
+		}
+	}
+	if !reflect.DeepEqual(panel, fusionLiberty40Panel) || !reflect.DeepEqual(fusers, fusionLiberty40Fusers) {
+		t.Fatal("dropping a member must not mutate the presets")
+	}
+}
+
+func TestLiberty40LongRequestsReachOnlyThe1MMembers(t *testing.T) {
+	calls := func(streamer *fusionEchoLLM) map[string]int {
+		streamer.mu.Lock()
+		defer streamer.mu.Unlock()
+		called := map[string]int{}
+		for _, call := range streamer.calls {
+			called[call.Model]++
+		}
+		return called
+	}
+	long := strings.Repeat("a", 900_000)
+
+	t.Run("top level", func(t *testing.T) {
+		trGateway, _, closeGateway := newFusionGatewayRecorder(t)
+		defer closeGateway()
+		streamer := &fusionEchoLLM{}
+		status, body := postLiberty40Content(t, trGateway, streamer, false, long)
+		if called := calls(streamer); status != http.StatusOK || called[fusionNemotron3Ultra] != 0 || called["reflection/beam-1.0"] == 0 {
+			t.Fatalf("status=%d calls=%#v body=%.300s", status, called, body)
+		}
+	})
+
+	// Liberty 4.0 nested as another combo's advisor or worker.
+	t.Run("nested", func(t *testing.T) {
+		trGateway, _, closeGateway := newFusionGatewayRecorder(t)
+		defer closeGateway()
+		streamer := &fusionEchoLLM{}
+		maxTokens := 512
+		req := &types.OpenAIChatRequest{
+			Model:                    trustedRouterLiberty40Model,
+			Messages:                 []types.OpenAIChatMessage{{Role: "user", Content: long}},
+			MaxTokens:                &maxTokens,
+			InternalLongContextCombo: true,
+		}
+		_, err := runAdvisorFusionOrchestrationRequest(context.Background(), streamer, req, advisorConfig{Depth: 2}, trustedRouterLiberty40Model, trGateway, nil, "local-test-key", "req-nested", "rlog-nested", nil)
+		if called := calls(streamer); err != nil || called[fusionNemotron3Ultra] != 0 || called["reflection/beam-1.0"] == 0 {
+			t.Fatalf("err=%v calls=%#v", err, called)
+		}
+	})
 }
