@@ -1056,8 +1056,24 @@ def main() -> int:
             aws_record["release_state"] = "current" if len(aws_record["accepted_pcr0s"]) == 1 else "rolling"
         except (ValueError, KeyError, TypeError, OSError):
             # Never echo AWS payloads/errors, which can contain secret values.
-            failures.append("AWS: serving pin verification failed; no AWS artifacts written")
             aws_record = None
+            if args.write or args.check_published or args.repin_aws_monitor:
+                failures.append("AWS: serving pin verification failed; no AWS artifacts written")
+            else:
+                # A plain dry run is the read-only path verify-trust-freshness.yml
+                # takes on every run, with no AWS credentials, so the ECS reads
+                # behind this preflight cannot succeed there. Counting that as a
+                # failure printed "FAILED AWS: serving pin verification failed"
+                # on every scheduled run, which reads as a real pin mismatch and
+                # trains everyone to ignore the line. The preflight still gates
+                # every path that writes, repins or verifies a release
+                # (--write, --repin-aws-monitor, --check-published, the last of
+                # which is release-aws-enclave.sh --verify-only).
+                print(
+                    "AWS   pin preflight NOT RUN (could not read the serving Fargate pins; "
+                    "a dry run without AWS credentials cannot). Not evidence of a match "
+                    "or a mismatch: --write and --check-published run it and refuse on failure."
+                )
 
     for failure in failures:
         print(f"FAILED {failure}", file=sys.stderr)

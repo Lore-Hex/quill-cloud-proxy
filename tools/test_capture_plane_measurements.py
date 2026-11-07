@@ -595,6 +595,34 @@ class AWSReleaseGateTests(unittest.TestCase):
             call.assert_not_called()
         self.assertNotIn("SECRET", stderr.getvalue())
 
+    def test_dry_run_reports_unreadable_pins_as_not_run_not_failed(self):
+        # verify-trust-freshness.yml runs a plain dry run with no AWS
+        # credentials; the preflight cannot read the Fargate pins there.
+        with mock.patch("sys.argv", [str(SCRIPT), "--plane", "aws"]), \
+             mock.patch.object(capture, "resolve_source_commit", return_value="1234567"), \
+             mock.patch.object(capture, "live_aws", return_value={"pcr0": self.NEW, "module_id": "instance"}), \
+             mock.patch.object(capture, "write_aws_files") as write, \
+             mock.patch.object(capture, "check_aws_pins", side_effect=ValueError("SECRET")), \
+             contextlib.redirect_stderr(io.StringIO()) as stderr, contextlib.redirect_stdout(io.StringIO()) as stdout:
+            self.assertEqual(capture.main(), 0)
+        write.assert_not_called()
+        self.assertNotIn("FAILED", stderr.getvalue())
+        self.assertIn("pin preflight NOT RUN", stdout.getvalue())
+        self.assertIn(f"AWS   PCR0     {self.NEW}", stdout.getvalue())
+        self.assertNotIn("SECRET", stdout.getvalue() + stderr.getvalue())
+
+    def test_check_published_still_fails_when_pins_unreadable(self):
+        with tempfile.TemporaryDirectory() as directory:
+            (Path(directory) / "accepted-pcr0s-aws.txt").write_text(self.NEW)
+            with mock.patch("sys.argv", [str(SCRIPT), "--plane", "aws", "--check-published"]), \
+                 mock.patch.object(capture, "TRUST_DIR", Path(directory)), \
+                 mock.patch.object(capture, "resolve_source_commit", return_value="1234567"), \
+                 mock.patch.object(capture, "live_aws", return_value={"pcr0": self.NEW, "module_id": "instance"}), \
+                 mock.patch.object(capture, "check_aws_pins", side_effect=ValueError("SECRET")), \
+                 contextlib.redirect_stderr(io.StringIO()) as stderr, contextlib.redirect_stdout(io.StringIO()):
+                self.assertEqual(capture.main(), 1)
+            self.assertIn("FAILED AWS: serving pin verification failed", stderr.getvalue())
+
     def test_unpublished_measurement_fails_without_mutation(self):
         with tempfile.TemporaryDirectory() as directory:
             (Path(directory) / "accepted-pcr0s-aws.txt").write_text(self.OLD)
