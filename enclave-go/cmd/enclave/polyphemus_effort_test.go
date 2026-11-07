@@ -28,6 +28,9 @@ func TestPolyphemusClampsTheRecommendedEffortToTheModelsOwn(t *testing.T) {
 		{"z-ai/glm-5.3", "medium", "low"},     // strongest supported at or below
 		{"z-ai/glm-5.3", "minimal", "low"},    // nothing below: weakest above
 		{"google/gemma-4-31b-it", "high", ""}, // declares no efforts: send none
+		{"google/gemma-4-31b-it", "auto", ""}, // ...even for an effort we cannot rank
+		{"acme/auto-only", "max", "max"},      // nothing rankable declared: pass through
+		{"acme/garbled", "max", "max"},        // malformed declaration: pass through
 		{"acme/mystery", "max", "max"},        // unknown declaration: pass through
 		{"acme/not-in-catalog", "max", "max"}, // no row: pass through
 		{"openai/gpt-5.5", "turbo", "turbo"},  // unrankable: pass through

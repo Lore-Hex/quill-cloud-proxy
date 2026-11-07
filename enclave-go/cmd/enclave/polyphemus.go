@@ -542,10 +542,6 @@ func polyphemusSupportedEffort(body []byte, model, effort string) string {
 	if effort == "" {
 		return ""
 	}
-	want := slices.Index(polyphemusEffortOrder, effort)
-	if want < 0 {
-		return effort
-	}
 	// Decode only the selected row's declaration, so another model's
 	// malformed capabilities cannot disable the clamp.
 	var catalog struct {
@@ -578,6 +574,10 @@ func polyphemusSupportedEffort(body []byte, model, effort string) string {
 	}
 	if len(*supported) == 0 {
 		return ""
+	}
+	want := slices.Index(polyphemusEffortOrder, effort)
+	if want < 0 {
+		return effort
 	}
 	below, above := "", ""
 	for i, candidate := range polyphemusEffortOrder {
