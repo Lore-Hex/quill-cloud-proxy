@@ -356,22 +356,6 @@ def monitor_pin_verdict(live_pcr0: str, pin_value: str | None, pin_error: str | 
     )
 
 
-def _aws_pins_readable() -> bool:
-    """Whether every serving Fargate pin can be read at all.
-
-    Separates "could not look" from "looked and it was wrong": a dry run
-    downgrades only the first. A failed comparison (pins that do not accept
-    the required set, regions on different releases) is a real failure in
-    every mode.
-    """
-    try:
-        for surface in AWS_FARGATE_PIN_SURFACES:
-            aws_fargate_pins.serving_pin(*surface)
-    except (ValueError, KeyError, TypeError, OSError):
-        return False
-    return True
-
-
 def check_aws_pins(required: str, *, repin: bool, keep: bool) -> str:
     """Preflight both regions before any mutation; return the preserved set."""
     evidence = [aws_fargate_pins.serving_pin(*surface) for surface in AWS_FARGATE_PIN_SURFACES]
@@ -1070,10 +1054,11 @@ def main() -> int:
             accepted = check_aws_pins(required, repin=args.repin_aws_monitor, keep=args.keep_accepted)
             aws_record["accepted_pcr0s"] = accepted.split(",")
             aws_record["release_state"] = "current" if len(aws_record["accepted_pcr0s"]) == 1 else "rolling"
-        except (ValueError, KeyError, TypeError, OSError):
+        except (ValueError, KeyError, TypeError, OSError) as exc:
             # Never echo AWS payloads/errors, which can contain secret values.
             aws_record = None
-            if args.write or args.check_published or args.repin_aws_monitor or _aws_pins_readable():
+            could_not_read = isinstance(exc, aws_fargate_pins.AwsReadError)
+            if args.write or args.check_published or args.repin_aws_monitor or not could_not_read:
                 failures.append("AWS: serving pin verification failed; no AWS artifacts written")
             else:
                 # A plain dry run is the read-only path verify-trust-freshness.yml
