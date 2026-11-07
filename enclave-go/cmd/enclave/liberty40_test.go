@@ -286,40 +286,50 @@ func TestLiberty40DropsNemotronUltraWhenTheRequestOverrunsItsWindow(t *testing.T
 		}
 		return out
 	}
-	request := func(model string, chars int, toolChars int) *types.OpenAIChatRequest {
+	request := func(model string, chars int, toolChars int, maxTokens int) *types.OpenAIChatRequest {
 		req := &types.OpenAIChatRequest{Model: model, Messages: []types.OpenAIChatMessage{{Role: "user", Content: strings.Repeat("a", chars)}}}
 		if toolChars > 0 {
 			req.Tools = []any{map[string]any{"type": "function", "function": map[string]any{"name": "lookup", "description": strings.Repeat("d", toolChars)}}}
 		}
+		if maxTokens > 0 {
+			req.MaxTokens = &maxTokens
+		}
 		return req
 	}
+	l40 := trustedRouterLiberty40Model
 	tests := []struct {
 		name                  string
 		req                   *types.OpenAIChatRequest
 		config                fusionConfig
 		builtIn               bool
 		panel, fuserIn        []string
-		wantPanel, wantFusers []string
+		wantPanel, wantFinals []string
+		wantJudges            []string
 	}{
 		// ~6 tokens: everything fits.
-		{"short", request(trustedRouterLiberty40Model, 24, 0), fusionConfig{}, true, panel, fusers, panel, fusers},
-		// ~200K tokens fits Ultra's panel window but not with ~25K of tools.
-		{"messages alone fit", request(trustedRouterLiberty40Model, 800_000, 0), fusionConfig{}, true, panel, fusers, panel, without(fusers)},
-		{"tools push it over", request(trustedRouterLiberty40Model, 800_000, 100_000), fusionConfig{}, true, panel, fusers, without(panel), without(fusers)},
-		// ~100K tokens fits the panel, but a fuser also reads up to three
-		// panel answers and the judge's analysis.
-		{"fuser reads panel answers", request(trustedRouterLiberty40Model, 400_000, 0), fusionConfig{}, true, panel, fusers, panel, without(fusers)},
+		{"short", request(l40, 24, 0, 0), fusionConfig{}, true, panel, fusers, panel, fusers, fusers},
+		// ~200K tokens + 32K panel output fits Ultra's window; ~25K of tools does not.
+		{"messages alone fit the panel", request(l40, 800_000, 0, 0), fusionConfig{}, true, panel, fusers, panel, without(fusers), without(fusers)},
+		{"tools push the panel over", request(l40, 800_000, 100_000, 0), fusionConfig{}, true, panel, fusers, without(panel), without(fusers), without(fusers)},
+		// A configured 64K inner budget pushes the same ~200K prompt over.
+		{"configured panel budget", request(l40, 800_000, 0, 0), fusionConfig{MaxCompletionTokens: 65_536}, true, panel, fusers, without(panel), without(fusers), without(fusers)},
+		// ~130K tokens fits the panel, but the judge also reads three
+		// 32K panel answers.
+		{"judge reads panel answers", request(l40, 520_000, 0, 0), fusionConfig{}, true, panel, fusers, panel, without(fusers), without(fusers)},
+		// A short prompt whose final may write 250K tokens: only the final
+		// list loses Ultra.
+		{"final output budget", request(l40, 24, 0, 250_000), fusionConfig{}, true, panel, fusers, panel, without(fusers), fusers},
 		// A caller's explicit lists are theirs to keep.
-		{"explicit lists", request(trustedRouterLiberty40Model, 900_000, 0), fusionConfig{FinalModels: fusers, JudgeModels: fusers}, false, panel, fusers, panel, fusers},
+		{"explicit lists", request(l40, 900_000, 0, 0), fusionConfig{FinalModels: fusers, JudgeModels: fusers}, false, panel, fusers, panel, fusers, fusers},
 		// Combos without reviewed 1M routes keep Ultra: their windows are not Liberty 4.0's.
-		{"Liberty 1.0-1M untouched", request(trustedRouterLiberty101MModel, 900_000, 0), fusionConfig{}, true, fusionLiberty101MPanel, []string{fusionNemotron3Ultra}, fusionLiberty101MPanel, []string{fusionNemotron3Ultra}},
+		{"Liberty 1.0-1M untouched", request(trustedRouterLiberty101MModel, 900_000, 0, 0), fusionConfig{}, true, fusionLiberty101MPanel, []string{fusionNemotron3Ultra}, fusionLiberty101MPanel, []string{fusionNemotron3Ultra}, []string{fusionNemotron3Ultra}},
 		// A list is never emptied.
-		{"never empty", request(trustedRouterLiberty40Model, 900_000, 0), fusionConfig{}, true, []string{fusionNemotron3Ultra}, []string{fusionNemotron3Ultra}, []string{fusionNemotron3Ultra}, []string{fusionNemotron3Ultra}},
+		{"never empty", request(l40, 900_000, 0, 0), fusionConfig{}, true, []string{fusionNemotron3Ultra}, []string{fusionNemotron3Ultra}, []string{fusionNemotron3Ultra}, []string{fusionNemotron3Ultra}, []string{fusionNemotron3Ultra}},
 	}
 	for _, tt := range tests {
 		gotPanel, gotFinals, gotJudges := fusionBuiltInsThatFit(tt.req, tt.config, tt.builtIn, tt.panel, tt.fuserIn, tt.fuserIn)
-		if !reflect.DeepEqual(gotPanel, tt.wantPanel) || !reflect.DeepEqual(gotFinals, tt.wantFusers) || !reflect.DeepEqual(gotJudges, tt.wantFusers) {
-			t.Errorf("%s: panel=%v finals=%v judges=%v, want panel=%v fusers=%v", tt.name, gotPanel, gotFinals, gotJudges, tt.wantPanel, tt.wantFusers)
+		if !reflect.DeepEqual(gotPanel, tt.wantPanel) || !reflect.DeepEqual(gotFinals, tt.wantFinals) || !reflect.DeepEqual(gotJudges, tt.wantJudges) {
+			t.Errorf("%s: panel=%v finals=%v judges=%v, want %v %v %v", tt.name, gotPanel, gotFinals, gotJudges, tt.wantPanel, tt.wantFinals, tt.wantJudges)
 		}
 	}
 	if !reflect.DeepEqual(panel, fusionLiberty40Panel) || !reflect.DeepEqual(fusers, fusionLiberty40Fusers) {

@@ -324,13 +324,13 @@ var fusionShortWindowMembers = map[string]int{
 	fusionNemotron3Ultra: 262_144,
 }
 
-// fusionWithoutOverlongMembers drops short-window models when promptTokens
-// plus the output reservation and a safety margin would exceed the model's
-// window. It never empties the list and never mutates its input.
-func fusionWithoutOverlongMembers(models []string, promptTokens int) []string {
+// fusionWithoutOverlongMembers drops short-window models when a request's
+// estimated input plus output tokens, and a safety margin, would exceed the
+// model's window. It never empties the list and never mutates its input.
+func fusionWithoutOverlongMembers(models []string, requestTokens int) []string {
 	kept := models[:0:0]
 	for _, model := range models {
-		if limit, short := fusionShortWindowMembers[model]; short && promptTokens+fusionPanelReasoningTokens+8_000 > limit {
+		if limit, short := fusionShortWindowMembers[model]; short && requestTokens+8_000 > limit {
 			continue
 		}
 		kept = append(kept, model)
@@ -343,9 +343,11 @@ func fusionWithoutOverlongMembers(models []string, promptTokens int) []string {
 
 // fusionBuiltInsThatFit applies fusionWithoutOverlongMembers to a long-context
 // combo's built-in panel and fuser lists; a caller's explicit lists, and every
-// other model, are left alone. Panel members see the conversation and its
-// tools. Fusers also see every panel answer and, for the final, the judge's
-// analysis, each bounded by fusionPanelReasoningTokens.
+// other model, are left alone. Each stage is sized on what it is sent and may
+// write: the panel reads the conversation and its tools; the judge also reads
+// every panel answer; the final also reads the judge's analysis and writes up
+// to the caller's max_tokens. Panel and judge outputs are bounded by the
+// configured inner budget (fusionInnerMaxTokens).
 func fusionBuiltInsThatFit(req *types.OpenAIChatRequest, config fusionConfig, builtInPanel bool, panel, finals, judges []string) ([]string, []string, []string) {
 	if !isLongContextCombo(req.Model) {
 		return panel, finals, judges
@@ -356,15 +358,20 @@ func fusionBuiltInsThatFit(req *types.OpenAIChatRequest, config fusionConfig, bu
 			prompt += len(encoded) / 4
 		}
 	}
+	inner := *fusionInnerMaxTokens(config.MaxCompletionTokens)
+	finalOut := fusionPanelReasoningTokens
+	if req.MaxTokens != nil && *req.MaxTokens > 0 {
+		finalOut = *req.MaxTokens
+	}
 	if builtInPanel {
-		panel = fusionWithoutOverlongMembers(panel, prompt)
+		panel = fusionWithoutOverlongMembers(panel, prompt+inner)
 	}
-	fuserPrompt := prompt + (len(panel)+1)*fusionPanelReasoningTokens
-	if len(config.FinalModels) == 0 && config.JudgeModel == "" {
-		finals = fusionWithoutOverlongMembers(finals, fuserPrompt)
-	}
+	judgeTokens := prompt + len(panel)*inner + inner
 	if len(config.JudgeModels) == 0 && config.JudgeModel == "" {
-		judges = fusionWithoutOverlongMembers(judges, fuserPrompt)
+		judges = fusionWithoutOverlongMembers(judges, judgeTokens)
+	}
+	if len(config.FinalModels) == 0 && config.JudgeModel == "" {
+		finals = fusionWithoutOverlongMembers(finals, judgeTokens+finalOut)
 	}
 	return panel, finals, judges
 }
