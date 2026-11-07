@@ -30,9 +30,13 @@ type selectionGatewayStub struct {
 	authErr, settleErr, refundErr error
 	request                       *types.OpenAIChatRequest
 	usage                         trustedrouter.Usage
+	catalog                       string // overrides selectionTestCatalog
 }
 
 func (g *selectionGatewayStub) PublicModels(context.Context) ([]byte, error) {
+	if g.catalog != "" {
+		return []byte(g.catalog), nil
+	}
 	return []byte(selectionTestCatalog), nil
 }
 func (g *selectionGatewayStub) AuthorizeWithRoute(_ context.Context, _ string, req *types.OpenAIChatRequest, route string) (*trustedrouter.Authorization, error) {

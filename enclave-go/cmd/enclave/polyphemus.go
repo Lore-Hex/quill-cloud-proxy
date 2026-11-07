@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"os"
 	"regexp"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -437,9 +438,10 @@ func preparePolyphemus(ctx context.Context, req *types.OpenAIChatRequest, gatewa
 		return ctx, polyphemusError(502, "Model selection settlement did not complete")
 	}
 	receipt := &polyphemusReceipt{CostMicrodollars: settlement.CostMicrodollars, ElapsedMS: selectorElapsedMS, SelectedModel: model, GenerationID: settlement.GenerationID, SelectorCalls: 1, InputTokens: selectorInputTokens, SessionSupplied: selectorSessionID != ""}
-	// Preserve caller reasoning if specified; otherwise apply the recommendation.
+	// Preserve caller reasoning if specified; otherwise apply the
+	// recommendation, clamped to the efforts the chosen model accepts.
 	if req.Reasoning == nil && req.ReasoningEffort == "" {
-		req.ReasoningEffort = selection.Reasoning.Effort
+		req.ReasoningEffort = polyphemusSupportedEffort(catalog, model, selection.Reasoning.Effort)
 	}
 	fmt.Fprintf(os.Stderr, "enclave.polyphemus.selection_done request_log_id=%q selected_model=%q selector_elapsed_ms=%d selector_cost_microdollars=%d\n", requestLogID, model, receipt.ElapsedMS, receipt.CostMicrodollars)
 	return continuePolyphemus(ctx, req, receipt, stageKey, selectReq.RequestFingerprint), nil
@@ -524,4 +526,76 @@ func polyphemusSelectionControls(req *types.OpenAIChatRequest) llm.SelectionCont
 		controls.ModelZoo = options.ModelZoo
 	}
 	return controls
+}
+
+// polyphemusEffortOrder ranks reasoning efforts from least to most thinking.
+var polyphemusEffortOrder = []string{"none", "minimal", "low", "medium", "high", "xhigh", "max"}
+
+// polyphemusSupportedEffort maps Telluvian's recommended effort onto one the
+// selected model accepts, per the catalog's trustedrouter.capabilities.
+// reasoning_effort: the strongest supported effort at or below the
+// recommendation, else the weakest above it. A model declaring no efforts
+// gets none. An unknown or malformed declaration, one with no effort we can
+// rank, or a recommendation we cannot rank passes through unchanged.
+func polyphemusSupportedEffort(body []byte, model, effort string) string {
+	effort = strings.ToLower(strings.TrimSpace(effort))
+	if effort == "" {
+		return ""
+	}
+	// Decode only the selected row's declaration, so another model's
+	// malformed capabilities cannot disable the clamp.
+	var catalog struct {
+		Data []struct {
+			ID string `json:"id"`
+			TR struct {
+				Capabilities json.RawMessage `json:"capabilities"`
+			} `json:"trustedrouter"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal(body, &catalog); err != nil {
+		return effort
+	}
+	var supported *[]string
+	for _, row := range catalog.Data {
+		if row.ID != model {
+			continue
+		}
+		var capabilities struct {
+			ReasoningEffort *[]string `json:"reasoning_effort"`
+		}
+		if err := json.Unmarshal(row.TR.Capabilities, &capabilities); err != nil {
+			return effort
+		}
+		supported = capabilities.ReasoningEffort
+		break
+	}
+	if supported == nil {
+		return effort
+	}
+	if len(*supported) == 0 {
+		return ""
+	}
+	want := slices.Index(polyphemusEffortOrder, effort)
+	if want < 0 {
+		return effort
+	}
+	below, above := "", ""
+	for i, candidate := range polyphemusEffortOrder {
+		if !slices.ContainsFunc(*supported, func(s string) bool { return strings.EqualFold(strings.TrimSpace(s), candidate) }) {
+			continue
+		}
+		if i <= want {
+			below = candidate
+		} else if above == "" {
+			above = candidate
+		}
+	}
+	switch {
+	case below != "":
+		return below
+	case above != "":
+		return above
+	default:
+		return effort // nothing declared that we can rank
+	}
 }
