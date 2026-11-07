@@ -840,12 +840,13 @@ func collectAnthropicText(r io.Reader, observer StreamObserver, requireTerminal,
 					finishReason = mapStopReason(reason)
 				}
 			}
-			mergeUsage(&usage, getMap(dataJSON, "usage"))
+			mergeMessageDeltaUsage(&usage, dataJSON)
 			citations, searchResults = providerProvenanceFromInternalEvent(dataJSON, citations, searchResults)
 			if value := getMap(dataJSON, "trustedrouter_decision"); value != nil {
 				decision = value
 			}
 		case "message_stop":
+			confirmZeroOutput(usage)
 			return StreamResult{Text: captured.String(), FinishReason: finishReason, ToolCalls: orderedToolCalls(toolCallsByIndex, toolOrder), Thinking: orderedThinking(thinkingByIndex, thinkingOrder), Usage: usage, Citations: citations, SearchResults: searchResults, Decision: decision}, nil
 		}
 	}
@@ -1457,7 +1458,7 @@ func TransformResponsesStreamControlled(
 					finishReason = mapStopReason(reason)
 				}
 			}
-			mergeUsage(&usage, getMap(dataJSON, "usage"))
+			mergeMessageDeltaUsage(&usage, dataJSON)
 			if control != nil && control.ObserveUsage != nil {
 				control.ObserveUsage(usage)
 			}
@@ -1466,6 +1467,7 @@ func TransformResponsesStreamControlled(
 				meta.ActualServiceTier = usage.ServiceTier
 			}
 		case "message_stop":
+			confirmZeroOutput(usage)
 			applyResponsesProviderProvenance(meta, captured.String(), citations, searchResults)
 			toolCalls := orderedToolCalls(toolCallsByIndex, toolOrder)
 			if err := finishReasoning(); err != nil {
@@ -1563,7 +1565,7 @@ func finishResponsesStream(
 	cachedTokens := 0
 	reasoningTokens := 0
 	if usage != nil {
-		if usage.InputTokens > 0 {
+		if usage.InputTokens > 0 || (usage.InputTokens == 0 && usage.InputExcludesCache && (usage.CacheReadInputTokens > 0 || usage.CacheCreationInputTokens > 0)) {
 			inputTokens = foldedPromptTokens(
 				usage.InputTokens,
 				usage.CacheReadInputTokens,
@@ -1571,7 +1573,7 @@ func finishResponsesStream(
 				usage.InputExcludesCache,
 			)
 		}
-		if usage.OutputTokens > 0 {
+		if usage.OutputTokens > 0 || (usage.OutputTokens == 0 && usage.ZeroOutputReported) {
 			outputTokens = usage.OutputTokens
 		}
 		cachedTokens = usage.CacheReadInputTokens

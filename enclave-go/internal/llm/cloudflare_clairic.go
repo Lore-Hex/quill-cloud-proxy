@@ -197,5 +197,6 @@ func (c *openAICompatibleClient) invokeClairic(ctx context.Context, req *qtypes.
 	if err := writeAnthropicTextDelta(out, string(envelope.Result)); err != nil {
 		return err
 	}
-	return writeAnthropicStop(out, "end_turn", &openAIStreamUsage{PromptTokens: *result.Usage.Input, TotalTokens: *result.Usage.Input}, nil, nil, nil)
+	// The native result above requires an explicit, exact output_tokens: 0.
+	return writeAnthropicStop(out, "end_turn", &openAIStreamUsage{PromptTokens: *result.Usage.Input, CompletionTokensReported: true, TotalTokens: *result.Usage.Input}, nil, nil, nil)
 }
