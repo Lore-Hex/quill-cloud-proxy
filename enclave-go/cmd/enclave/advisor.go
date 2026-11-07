@@ -1839,7 +1839,8 @@ func runAdvisorFusionOrchestrationRequest(
 	if !requested {
 		return fusionCallResult{}, &adapter.AdapterError{Status: 400, Message: "advisor model is not a supported orchestration model", Context: "advisor_model"}
 	}
-	if len(fusionConfig.AnalysisModels) == 0 {
+	builtInPanel := len(fusionConfig.AnalysisModels) == 0
+	if builtInPanel {
 		if preset, panel, ok := fusionPresetPanelForModel(orchestrationReq.Model); ok {
 			fusionConfig.Preset = preset
 			fusionConfig.AnalysisModels = panel
@@ -1861,6 +1862,7 @@ func runAdvisorFusionOrchestrationRequest(
 	if err != nil {
 		return fusionCallResult{}, err
 	}
+	fusionConfig.AnalysisModels, finalModels, judgeModels = fusionBuiltInsThatFit(orchestrationReq, fusionConfig, builtInPanel, fusionConfig.AnalysisModels, finalModels, judgeModels)
 	codeModel := isFusionCodeModel(orchestrationReq.Model)
 	fusionConfig.CodeModel = codeModel
 	if codeModel {

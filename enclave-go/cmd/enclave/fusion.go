@@ -296,11 +296,14 @@ var fusionLiberty101MPanel = []string{
 	"nvidia/nemotron-3-ultra-550b-a55b",
 }
 
-// Liberty 4.0: American models on US-headquartered 1M routes. The panel
+// Liberty 4.0: American models on US-headquartered routes. The panel
 // answers in parallel and Muse Spark Open fuses whatever returned; if it
-// fails, Beam, then Nemotron take over as fuser.
+// fails, Beam, then Nemotron take over as fuser. Nemotron 3 Ultra replaced
+// Nemotron 3.5 Super on 2026-11-07 (it scored higher on DRACO); its routes
+// serve 256K, so it sits out requests too long for that window while Muse
+// Spark and Beam serve 1M.
 var fusionLiberty40Panel = []string{
-	"nvidia/nemotron-3.5-super-vl",
+	fusionNemotron3Ultra,
 	"reflection/beam-1.0",
 	"meta-models/muse-spark-open",
 }
@@ -308,7 +311,69 @@ var fusionLiberty40Panel = []string{
 var fusionLiberty40Fusers = []string{
 	"meta-models/muse-spark-open",
 	"reflection/beam-1.0",
-	"nvidia/nemotron-3.5-super-vl",
+	fusionNemotron3Ultra,
+}
+
+const fusionNemotron3Ultra = "nvidia/nemotron-3-ultra-550b-a55b"
+
+// fusionShortWindowMembers are built-in panel members and fusers whose window
+// is below their long-context combo's. Such a model is dropped from a request
+// that would not fit, instead of failing upstream after the panel has been
+// reserved.
+var fusionShortWindowMembers = map[string]int{
+	fusionNemotron3Ultra: 262_144,
+}
+
+// fusionWithoutOverlongMembers drops short-window models when a request's
+// estimated input plus output tokens, and a safety margin, would exceed the
+// model's window. It never empties the list and never mutates its input.
+func fusionWithoutOverlongMembers(models []string, requestTokens int) []string {
+	kept := models[:0:0]
+	for _, model := range models {
+		if limit, short := fusionShortWindowMembers[model]; short && requestTokens+8_000 > limit {
+			continue
+		}
+		kept = append(kept, model)
+	}
+	if len(kept) == 0 {
+		return models
+	}
+	return kept
+}
+
+// fusionBuiltInsThatFit applies fusionWithoutOverlongMembers to a long-context
+// combo's built-in panel and fuser lists; a caller's explicit lists, and every
+// other model, are left alone. Each stage is sized on what it is sent and may
+// write: the panel reads the conversation and its tools; the judge also reads
+// every panel answer; the final also reads the judge's analysis and writes up
+// to the caller's max_tokens. Panel and judge outputs are bounded by the
+// configured inner budget (fusionInnerMaxTokens).
+func fusionBuiltInsThatFit(req *types.OpenAIChatRequest, config fusionConfig, builtInPanel bool, panel, finals, judges []string) ([]string, []string, []string) {
+	if !isLongContextCombo(req.Model) {
+		return panel, finals, judges
+	}
+	prompt := advisorEstimatedMessageTokens(req.Messages)
+	if len(req.Tools) > 0 {
+		if encoded, err := json.Marshal(req.Tools); err == nil {
+			prompt += len(encoded) / 4
+		}
+	}
+	inner := *fusionInnerMaxTokens(config.MaxCompletionTokens)
+	finalOut := fusionPanelReasoningTokens
+	if req.MaxTokens != nil && *req.MaxTokens > 0 {
+		finalOut = *req.MaxTokens
+	}
+	if builtInPanel {
+		panel = fusionWithoutOverlongMembers(panel, prompt+inner)
+	}
+	judgeTokens := prompt + len(panel)*inner + inner
+	if len(config.JudgeModels) == 0 && config.JudgeModel == "" {
+		judges = fusionWithoutOverlongMembers(judges, judgeTokens)
+	}
+	if len(config.FinalModels) == 0 && config.JudgeModel == "" {
+		finals = fusionWithoutOverlongMembers(finals, judgeTokens+finalOut)
+	}
+	return panel, finals, judges
 }
 
 // applyFusionCodeSwap rewrites the single model trustedrouter/fusion-code
@@ -864,7 +929,8 @@ func maybeServeFusion(
 		}
 		return true, nil
 	}
-	if len(config.AnalysisModels) == 0 {
+	builtInPanel := len(config.AnalysisModels) == 0
+	if builtInPanel {
 		if preset, panel, ok := fusionPresetPanelForModel(req.Model); ok {
 			config.Preset = preset
 			config.AnalysisModels = panel
@@ -904,6 +970,7 @@ func maybeServeFusion(
 	if err != nil {
 		return true, err
 	}
+	config.AnalysisModels, finalModels, judgeModels = fusionBuiltInsThatFit(req, config, builtInPanel, config.AnalysisModels, finalModels, judgeModels)
 	selectorModels := judgeModels
 	if config.SelectionStrategy == fusionSelectorSelectionStrategy {
 		selectorModels, err = fusionSelectorModels(config)
