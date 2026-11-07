@@ -603,6 +603,7 @@ class AWSReleaseGateTests(unittest.TestCase):
              mock.patch.object(capture, "live_aws", return_value={"pcr0": self.NEW, "module_id": "instance"}), \
              mock.patch.object(capture, "write_aws_files") as write, \
              mock.patch.object(capture, "check_aws_pins", side_effect=ValueError("SECRET")), \
+             mock.patch.object(capture, "_aws_pins_readable", return_value=False), \
              contextlib.redirect_stderr(io.StringIO()) as stderr, contextlib.redirect_stdout(io.StringIO()) as stdout:
             self.assertEqual(capture.main(), 0)
         write.assert_not_called()
@@ -610,6 +611,24 @@ class AWSReleaseGateTests(unittest.TestCase):
         self.assertIn("pin preflight NOT RUN", stdout.getvalue())
         self.assertIn(f"AWS   PCR0     {self.NEW}", stdout.getvalue())
         self.assertNotIn("SECRET", stdout.getvalue() + stderr.getvalue())
+
+    def test_dry_run_keeps_a_confirmed_pin_mismatch_as_failure(self):
+        # Credentials present, pins read, but they do not accept the set.
+        with mock.patch("sys.argv", [str(SCRIPT), "--plane", "aws"]), \
+             mock.patch.object(capture, "resolve_source_commit", return_value="1234567"), \
+             mock.patch.object(capture, "live_aws", return_value={"pcr0": self.NEW, "module_id": "instance"}), \
+             mock.patch.object(capture, "check_aws_pins", side_effect=ValueError("SECRET")), \
+             mock.patch.object(capture, "_aws_pins_readable", return_value=True), \
+             contextlib.redirect_stderr(io.StringIO()) as stderr, contextlib.redirect_stdout(io.StringIO()) as stdout:
+            self.assertEqual(capture.main(), 1)
+        self.assertIn("FAILED AWS: serving pin verification failed", stderr.getvalue())
+        self.assertNotIn("NOT RUN", stdout.getvalue())
+
+    def test_pins_readable_is_false_on_any_read_error(self):
+        with mock.patch.object(capture.aws_fargate_pins, "serving_pin", side_effect=ValueError("no creds")):
+            self.assertFalse(capture._aws_pins_readable())
+        with mock.patch.object(capture.aws_fargate_pins, "serving_pin", return_value={}):
+            self.assertTrue(capture._aws_pins_readable())
 
     def test_check_published_still_fails_when_pins_unreadable(self):
         with tempfile.TemporaryDirectory() as directory:
