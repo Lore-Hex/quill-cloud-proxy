@@ -249,10 +249,18 @@ func ResponsesToChat(req *types.OpenAIResponsesRequest) (*types.OpenAIChatReques
 	if err != nil {
 		return nil, err
 	}
-	toolChoice = namespacedToolChoice(req.ToolChoice, toolChoice, namespaces)
-	if len(req.Tools) > 0 && len(tools) == 0 && toolChoiceForcesCall(toolChoice) {
-		// Tool search alone, or empty namespaces, leave no function to call.
-		return nil, &AdapterError{Status: 400, Message: "tool_choice requires a callable function tool", Context: "tool_choice"}
+	toolChoice, err = namespacedToolChoice(req.ToolChoice, toolChoice, namespaces)
+	if err != nil {
+		return nil, err
+	}
+	if len(req.Tools) > 0 && len(tools) == 0 && toolChoice != nil {
+		// Tool search alone, or empty namespaces, leave no function to call:
+		// a forced call cannot be made, and providers refuse a tool_choice
+		// with no tools.
+		if toolChoiceForcesCall(toolChoice) {
+			return nil, &AdapterError{Status: 400, Message: "tool_choice requires a callable function tool", Context: "tool_choice"}
+		}
+		toolChoice = nil
 	}
 	webSearch, err := ResponsesWebSearchConfig(req.Tools, req.MaxToolCalls, req.Include)
 	if err != nil {
@@ -390,18 +398,19 @@ func responsesRequestedParameters(
 
 // namespacedToolChoice sends a tool_choice naming a namespaced function under
 // the name that function was sent with.
-func namespacedToolChoice(choice, converted any, namespaces map[string]types.ResponseNamespacedFunction) any {
+func namespacedToolChoice(choice, converted any, namespaces map[string]types.ResponseNamespacedFunction) (any, error) {
 	m, _ := choice.(map[string]any)
-	namespace := stringValue(m["namespace"])
+	namespace := strings.TrimSpace(stringValue(m["namespace"]))
 	out, _ := converted.(map[string]any)
 	fn, _ := out["function"].(map[string]any)
 	if namespace == "" || fn == nil {
-		return converted
+		return converted, nil
 	}
-	if sent := sentFunctionName(namespaces, namespace, stringValue(fn["name"])); sent != "" {
-		return map[string]any{"type": "function", "function": map[string]any{"name": sent}}
+	sent := sentFunctionName(namespaces, namespace, strings.TrimSpace(stringValue(fn["name"])))
+	if sent == "" {
+		return nil, &AdapterError{Status: 400, Message: "tool_choice names a function no namespace declares", Context: "tool_choice.namespace"}
 	}
-	return converted
+	return map[string]any{"type": "function", "function": map[string]any{"name": sent}}, nil
 }
 
 func toolChoiceForcesCall(choice any) bool {
@@ -487,16 +496,34 @@ func responseInputMessage(item any, index int, namespaces map[string]types.Respo
 		// Hosted search records are internal state; their results are already
 		// carried by the following message.
 		return types.OpenAIChatMessage{}, true, nil
-	case "function_call":
-		message, err := responseFunctionCallMessage(m, index)
-		if err == nil {
-			// A replayed call to a namespaced function names it as declared.
-			call := &message.ToolCalls[0].Function
-			if sent := sentFunctionName(namespaces, stringValue(m["namespace"]), call.Name); sent != "" {
-				call.Name = sent
+	case "tool_search_call", "tool_search_output":
+		// Hosted tool search only loaded functions, and every function is
+		// sent here, so its records carry nothing to replay. A client-run
+		// search's output is the caller's tool list, which needs the round
+		// trip this adapter does not offer.
+		if execution := stringValue(m["execution"]); execution != "" && execution != "server" {
+			return types.OpenAIChatMessage{}, false, &AdapterError{
+				Status: 501, Message: "not_supported_in_alpha", Context: fmt.Sprintf("input[%d].%s", index, itemType),
 			}
 		}
-		return message, false, err
+		return types.OpenAIChatMessage{}, true, nil
+	case "function_call":
+		message, err := responseFunctionCallMessage(m, index)
+		if err != nil {
+			return message, false, err
+		}
+		// A replayed call to a namespaced function names it as declared.
+		if namespace := strings.TrimSpace(stringValue(m["namespace"])); namespace != "" {
+			call := &message.ToolCalls[0].Function
+			sent := sentFunctionName(namespaces, namespace, call.Name)
+			if sent == "" {
+				return types.OpenAIChatMessage{}, false, &AdapterError{
+					Status: 400, Message: "function_call names a function no namespace declares", Context: fmt.Sprintf("input[%d].namespace", index),
+				}
+			}
+			call.Name = sent
+		}
+		return message, false, nil
 	case "custom_tool_call":
 		message, err := responseCustomToolCallMessage(m, index)
 		return message, false, err

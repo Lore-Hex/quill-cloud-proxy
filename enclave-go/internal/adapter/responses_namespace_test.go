@@ -320,3 +320,79 @@ func TestResponsesNamespacedReplayAndToolChoiceUseTheSentName(t *testing.T) {
 		t.Fatalf("tool_choice = %v", chat.ToolChoice)
 	}
 }
+
+func TestResponsesUndeclaredNamespaceIsRejected(t *testing.T) {
+	tools := decodeTools(t, namespaceToolsJSON)
+	for _, tc := range []struct {
+		name, context string
+		input         any
+		choice        any
+	}{
+		{"tool_choice", "tool_choice.namespace", "hi", map[string]any{"type": "function", "name": "search", "namespace": "billing"}},
+		{"tool_choice with a name the namespace lacks", "tool_choice.namespace", "hi", map[string]any{"type": "function", "name": "fetch", "namespace": "crm"}},
+		{"replayed call", "input[1].namespace", []any{
+			map[string]any{"role": "user", "content": "find it"},
+			map[string]any{"type": "function_call", "name": "search", "namespace": "billing", "call_id": "call_1", "arguments": "{}"},
+		}, nil},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := ResponsesToChat(&types.OpenAIResponsesRequest{Model: "m", Input: tc.input, Tools: tools, ToolChoice: tc.choice})
+			adapterErr, ok := err.(*AdapterError)
+			if !ok || adapterErr.Status != 400 || adapterErr.Context != tc.context {
+				t.Fatalf("err = %#v", err)
+			}
+		})
+	}
+	// A namespace is matched as declared, surrounding space trimmed alike.
+	spaced := decodeTools(t, `[{"type":"function","name":"search"},{"type":"namespace","name":" crm ","tools":[{"type":"function","name":"search"}]}]`)
+	chat, err := ResponsesToChat(&types.OpenAIResponsesRequest{
+		Model: "m", Input: "hi", Tools: spaced,
+		ToolChoice: map[string]any{"type": "function", "name": "search", "namespace": " crm "},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := (map[string]any{"type": "function", "function": map[string]any{"name": "crm__search"}}); !reflect.DeepEqual(chat.ToolChoice, want) {
+		t.Fatalf("tool_choice = %v", chat.ToolChoice)
+	}
+}
+
+func TestResponsesReplayedToolSearchItems(t *testing.T) {
+	tools := decodeTools(t, namespaceToolsJSON)
+	hosted := []any{
+		map[string]any{"role": "user", "content": "orders?"},
+		map[string]any{"type": "tool_search_call", "execution": "server", "call_id": nil, "status": "completed", "arguments": map[string]any{"paths": []any{"crm"}}},
+		map[string]any{"type": "tool_search_output", "execution": "server", "call_id": nil, "status": "completed", "tools": []any{}},
+		map[string]any{"type": "function_call", "name": "list_open_orders", "namespace": "crm", "call_id": "call_1", "arguments": "{}"},
+	}
+	chat, err := ResponsesToChat(&types.OpenAIResponsesRequest{Model: "m", Input: hosted, Tools: tools})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(chat.Messages) != 2 || chat.Messages[1].ToolCalls[0].Function.Name != "list_open_orders" {
+		t.Fatalf("messages = %+v", chat.Messages)
+	}
+	client := []any{
+		map[string]any{"role": "user", "content": "orders?"},
+		map[string]any{"type": "tool_search_output", "execution": "client", "call_id": "call_s", "status": "completed", "tools": []any{}},
+	}
+	_, err = ResponsesToChat(&types.OpenAIResponsesRequest{Model: "m", Input: client, Tools: tools})
+	adapterErr, ok := err.(*AdapterError)
+	if !ok || adapterErr.Status != 501 || adapterErr.Context != "input[1].tool_search_output" {
+		t.Fatalf("client tool search replay: err = %#v", err)
+	}
+}
+
+func TestResponsesNonForcingToolChoiceDroppedWithNoTools(t *testing.T) {
+	for _, choice := range []any{"auto", "none"} {
+		chat, err := ResponsesToChat(&types.OpenAIResponsesRequest{
+			Model: "m", Input: "hi", Tools: decodeTools(t, `[{"type":"tool_search"}]`), ToolChoice: choice,
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if chat.ToolChoice != nil || len(chat.Tools) != 0 {
+			t.Fatalf("%v: tool_choice=%v tools=%v", choice, chat.ToolChoice, chat.Tools)
+		}
+	}
+}
