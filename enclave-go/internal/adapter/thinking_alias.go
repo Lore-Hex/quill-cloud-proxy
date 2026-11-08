@@ -42,10 +42,13 @@ func validateThinkingAlias(raw map[string]json.RawMessage) (map[string]any, erro
 		}
 	}
 	var mode string
-	if err := json.Unmarshal(fields["type"], &mode); err != nil || (mode != "enabled" && mode != "disabled") {
-		return bad("thinking.type must be enabled or disabled; use reasoning for other controls")
+	if err := json.Unmarshal(fields["type"], &mode); err != nil || (mode != "enabled" && mode != "disabled" && mode != "adaptive") {
+		return bad("thinking.type must be enabled, disabled, or adaptive")
 	}
-	result := map[string]any{"enabled": mode == "enabled"}
+	if mode == "adaptive" && !presentNonNull(raw["output_config"]) {
+		return bad("adaptive thinking requires output_config.effort; alternatively use reasoning.effort")
+	}
+	result := map[string]any{"enabled": mode != "disabled"}
 	if value, exists := fields["budget_tokens"]; exists {
 		var budget *int
 		if err := json.Unmarshal(value, &budget); err != nil || budget == nil || *budget <= 0 || mode != "enabled" {
