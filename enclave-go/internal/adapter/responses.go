@@ -980,6 +980,7 @@ func TransformResponsesStreamControlled(
 	var toolOrder []int
 	toolOutputIndexes := map[int]int{}
 	toolDone := map[int]bool{}
+	namespaces := responsesFunctionNamespaces(meta)
 	thinkingByIndex := map[int]*ThinkingBlock{}
 	var thinkingOrder []int
 	var usage *StreamUsage
@@ -1198,7 +1199,7 @@ func TransformResponsesStreamControlled(
 				if call == nil {
 					continue
 				}
-				item := responseFunctionCallItem(responseID, outputIndex, *call)
+				item := responseFunctionCallItem(responseID, outputIndex, *call, namespaces)
 				if !toolDone[blockIndex] {
 					item["status"] = "incomplete"
 					if err := writeResponseEventSeq(w, &seq, "response.function_call_arguments.done", map[string]any{
@@ -1326,18 +1327,22 @@ func TransformResponsesStreamControlled(
 			outputIndex := nextOutputIndex
 			nextOutputIndex++
 			toolOutputIndexes[blockIndex] = outputIndex
+			item := map[string]any{
+				"id":        call.ID,
+				"type":      "function_call",
+				"status":    "in_progress",
+				"call_id":   call.CallID,
+				"name":      call.Name,
+				"arguments": "",
+			}
+			if namespace := namespaces[call.Name]; namespace != "" {
+				item["namespace"] = namespace
+			}
 			if err := writeResponseEventSeq(w, &seq, "response.output_item.added", map[string]any{
 				"type":         "response.output_item.added",
 				"response_id":  responseID,
 				"output_index": outputIndex,
-				"item": map[string]any{
-					"id":        call.ID,
-					"type":      "function_call",
-					"status":    "in_progress",
-					"call_id":   call.CallID,
-					"name":      call.Name,
-					"arguments": "",
-				},
+				"item":         item,
 			}); err != nil {
 				return StreamResult{}, err
 			}
@@ -1447,7 +1452,7 @@ func TransformResponsesStreamControlled(
 				"type":         "response.output_item.done",
 				"response_id":  responseID,
 				"output_index": outputIndex,
-				"item":         responseFunctionCallItem(responseID, outputIndex, *call),
+				"item":         responseFunctionCallItem(responseID, outputIndex, *call, namespaces),
 			}); err != nil {
 				return StreamResult{}, err
 			}
@@ -1732,7 +1737,7 @@ func responsesObject(
 			})
 		}
 		for index, call := range toolCalls {
-			output = append(output, responseFunctionCallItem(responseID, index, call))
+			output = append(output, responseFunctionCallItem(responseID, index, call, responsesFunctionNamespaces(meta)))
 		}
 		completedAt = created
 		usage = map[string]any{
@@ -1841,7 +1846,7 @@ func ResponseWebSearchCallItem(call types.ResponseWebSearchCall, includeSources 
 	return responseWebSearchCallItem(call, includeSources)
 }
 
-func responseFunctionCallItem(responseID string, index int, call types.ToolCall) map[string]any {
+func responseFunctionCallItem(responseID string, index int, call types.ToolCall, namespaces map[string]string) map[string]any {
 	id := call.ID
 	if id == "" {
 		id = fmt.Sprintf("fc_%s_%d", strings.TrimPrefix(responseID, "resp_"), index)
@@ -1850,7 +1855,7 @@ func responseFunctionCallItem(responseID string, index int, call types.ToolCall)
 	if callID == "" {
 		callID = id
 	}
-	return map[string]any{
+	item := map[string]any{
 		"id":        id,
 		"type":      "function_call",
 		"status":    "completed",
@@ -1858,6 +1863,10 @@ func responseFunctionCallItem(responseID string, index int, call types.ToolCall)
 		"name":      call.Name,
 		"arguments": call.Arguments,
 	}
+	if namespace := namespaces[call.Name]; namespace != "" {
+		item["namespace"] = namespace
+	}
+	return item
 }
 
 func responseParallelToolCalls(meta *types.ResponseRequestMeta) bool {
@@ -2161,7 +2170,14 @@ func validateResponsesInclude(value json.RawMessage) error {
 		return &AdapterError{Status: 400, Message: "include must be an array of strings", Context: "include"}
 	}
 	for _, include := range includes {
-		if include != "web_search_call.action.sources" {
+		switch include {
+		case "web_search_call.action.sources":
+		case "reasoning.encrypted_content":
+			// Stateless clients (store=false) ask for encrypted reasoning so
+			// they can replay it. This adapter has no reasoning state to
+			// encrypt and drops replayed reasoning items, so the request is
+			// answered with no encrypted_content, as when no reasoning ran.
+		default:
 			return &AdapterError{Status: 501, Message: "not_supported_in_alpha", Context: "include"}
 		}
 	}
@@ -2200,7 +2216,43 @@ func ChatToolsFromResponsesTools(tools []any) ([]any, error) {
 		return nil, nil
 	}
 	out := make([]any, 0, len(tools))
+	names := map[string]bool{}
+	add := func(normalized map[string]any) error {
+		fn, _ := normalized["function"].(map[string]any)
+		name := stringValue(fn["name"])
+		if names[name] {
+			// Namespaced functions reach the provider by their bare names, so
+			// two functions of one name cannot be told apart in its calls.
+			return &AdapterError{Status: 400, Message: "function tool names must be unique across namespaces", Context: "tools.function.name"}
+		}
+		names[name] = true
+		out = append(out, normalized)
+		return nil
+	}
 	for index, tool := range tools {
+		m, _ := tool.(map[string]any)
+		switch stringValue(m["type"]) {
+		case "namespace":
+			inner, err := responsesNamespaceFunctionTools(m, index)
+			if err != nil {
+				return nil, err
+			}
+			for _, normalized := range inner {
+				if err := add(normalized); err != nil {
+					return nil, err
+				}
+			}
+			continue
+		case "tool_search":
+			// Hosted tool search loads deferred functions on the model's
+			// request. Every function here, deferred or not, is already sent
+			// to the provider, so there is nothing left for it to load.
+			// Client-executed search needs a tool_search_call round trip.
+			if execution := stringValue(m["execution"]); execution != "" && execution != "server" {
+				return nil, &AdapterError{Status: 501, Message: "not_supported_in_alpha", Context: fmt.Sprintf("tools[%d].execution", index)}
+			}
+			continue
+		}
 		normalized, err := chatToolFromResponsesTool(tool)
 		if err != nil {
 			if adapterErr, ok := err.(*AdapterError); ok && adapterErr.Context == "tools.type" {
@@ -2208,9 +2260,79 @@ func ChatToolsFromResponsesTools(tools []any) ([]any, error) {
 			}
 			return nil, err
 		}
+		if err := add(normalized); err != nil {
+			return nil, err
+		}
+	}
+	return out, nil
+}
+
+// responsesNamespaceFunctionTools flattens a namespace tool into its
+// functions. A namespace holds only function tools; defer_loading is dropped
+// with the rest of tool search, since every function is sent. The
+// namespace's description, which the provider never sees as a group, leads
+// each of its functions' descriptions.
+func responsesNamespaceFunctionTools(m map[string]any, index int) ([]map[string]any, error) {
+	namespace := strings.TrimSpace(stringValue(m["name"]))
+	if namespace == "" {
+		return nil, &AdapterError{Status: 400, Message: "namespace name is required", Context: fmt.Sprintf("tools[%d].name", index)}
+	}
+	namespaceDescription := strings.TrimSpace(stringValue(m["description"]))
+	inner, ok := m["tools"].([]any)
+	if !ok {
+		return nil, &AdapterError{Status: 400, Message: "namespace tools must be an array", Context: fmt.Sprintf("tools[%d].tools", index)}
+	}
+	out := make([]map[string]any, 0, len(inner))
+	for innerIndex, tool := range inner {
+		fn, ok := tool.(map[string]any)
+		if !ok || stringValue(fn["type"]) != "function" {
+			return nil, &AdapterError{Status: 501, Message: "not_supported_in_alpha", Context: fmt.Sprintf("tools[%d].tools[%d].type", index, innerIndex)}
+		}
+		normalized, err := chatToolFromResponsesTool(fn)
+		if err != nil {
+			return nil, err
+		}
+		if namespaceDescription != "" {
+			function := normalized["function"].(map[string]any)
+			description := "Part of the " + namespace + " tools: " + namespaceDescription
+			if own := stringValue(function["description"]); own != "" {
+				description += "\n\n" + own
+			}
+			function["description"] = description
+		}
 		out = append(out, normalized)
 	}
 	return out, nil
+}
+
+// responsesFunctionNamespaces maps each namespaced function's name to its
+// namespace, so a call to it is answered with the namespace it was declared
+// in. Names are unique across namespaces (ChatToolsFromResponsesTools).
+func responsesFunctionNamespaces(meta *types.ResponseRequestMeta) map[string]string {
+	if meta == nil {
+		return nil
+	}
+	var out map[string]string
+	for _, tool := range meta.Tools {
+		m, _ := tool.(map[string]any)
+		if stringValue(m["type"]) != "namespace" {
+			continue
+		}
+		namespace := strings.TrimSpace(stringValue(m["name"]))
+		inner, _ := m["tools"].([]any)
+		for _, raw := range inner {
+			fn, _ := raw.(map[string]any)
+			name := strings.TrimSpace(stringValue(fn["name"]))
+			if name == "" || namespace == "" {
+				continue
+			}
+			if out == nil {
+				out = map[string]string{}
+			}
+			out[name] = namespace
+		}
+	}
+	return out
 }
 
 func ResponsesWebSearchConfig(tools []any, maxToolCalls *int, includes []string) (*types.ResponseWebSearchConfig, error) {

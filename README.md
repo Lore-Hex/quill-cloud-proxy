@@ -175,6 +175,21 @@ return `400` with the exact field in `error.param`; known OpenRouter controls
 that this release cannot honor return `501 not_supported_in_alpha` before
 authorization. This prevents compatibility fields from becoming silent no-ops.
 
+`POST /v1/responses` is stateless (`store` must be false) and runs every model
+through the chat path, which shapes three Responses features:
+
+- `include: ["reasoning.encrypted_content"]` is accepted. There is no
+  provider reasoning state to encrypt, so reasoning items carry no
+  `encrypted_content`, and reasoning items replayed in `input` are dropped.
+- A `namespace` tool's functions are sent to the model as ordinary functions,
+  each description led by the namespace's, so function names must be unique
+  across namespaces and top-level functions (`400` otherwise). A call to one
+  comes back as a `function_call` with its bare `name` and its `namespace`.
+- Every function is sent up front, deferred or not, so a hosted
+  `tool_search` tool has nothing to load and never emits `tool_search_call`.
+  Client-executed tool search (`"execution": "client"`) returns
+  `501 not_supported_in_alpha`.
+
 ## Web search and citations
 
 The attested `POST /v1/chat/completions` path supports OpenRouter's current
