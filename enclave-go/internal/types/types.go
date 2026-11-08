@@ -651,6 +651,14 @@ type ResponseRequestMeta struct {
 	WebSearch            *ResponseWebSearchConfig
 	WebSearchCalls       []ResponseWebSearchCall
 	OutputAnnotations    []map[string]any
+	// FunctionNamespaces maps the name a namespaced function is sent to the
+	// provider under to the namespace and name the caller declared it with.
+	FunctionNamespaces map[string]ResponseNamespacedFunction
+}
+
+type ResponseNamespacedFunction struct {
+	Namespace string
+	Name      string
 }
 
 type ResponseWebSearchConfig struct {

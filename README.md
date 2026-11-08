@@ -182,9 +182,12 @@ through the chat path, which shapes three Responses features:
   provider reasoning state to encrypt, so reasoning items carry no
   `encrypted_content`, and reasoning items replayed in `input` are dropped.
 - A `namespace` tool's functions are sent to the model as ordinary functions,
-  each description led by the namespace's, so function names must be unique
-  across namespaces and top-level functions (`400` otherwise). A call to one
-  comes back as a `function_call` with its bare `name` and its `namespace`.
+  each description led by the namespace's. A function whose name another
+  function shares (top-level or in another namespace) is sent as
+  `namespace__name`. If that name is taken too, or is not a valid function
+  name (`[A-Za-z0-9_-]`, at most 64 characters), the request returns `400`. A call to a namespaced function comes back
+  as a `function_call` with the declared `name` and its `namespace`, and a
+  replayed call or a `tool_choice` naming one by `namespace` reaches it.
 - Every function is sent up front, deferred or not, so a hosted
   `tool_search` tool has nothing to load and never emits `tool_search_call`.
   Client-executed tool search (`"execution": "client"`) returns

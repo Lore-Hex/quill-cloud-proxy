@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"regexp"
 	"sort"
 	"strings"
 	"time"
@@ -240,13 +241,18 @@ func ResponsesToChat(req *types.OpenAIResponsesRequest) (*types.OpenAIChatReques
 	if err != nil {
 		return nil, err
 	}
-	tools, err := ChatToolsFromResponsesTools(req.Tools)
+	tools, namespaces, err := chatToolsFromResponsesTools(req.Tools)
 	if err != nil {
 		return nil, err
 	}
 	toolChoice, err := ChatToolChoiceFromResponses(req.ToolChoice)
 	if err != nil {
 		return nil, err
+	}
+	toolChoice = namespacedToolChoice(req.ToolChoice, toolChoice, namespaces)
+	if len(req.Tools) > 0 && len(tools) == 0 && toolChoiceForcesCall(toolChoice) {
+		// Tool search alone, or empty namespaces, leave no function to call.
+		return nil, &AdapterError{Status: 400, Message: "tool_choice requires a callable function tool", Context: "tool_choice"}
 	}
 	webSearch, err := ResponsesWebSearchConfig(req.Tools, req.MaxToolCalls, req.Include)
 	if err != nil {
@@ -259,7 +265,7 @@ func ResponsesToChat(req *types.OpenAIResponsesRequest) (*types.OpenAIChatReques
 			Content: req.Instructions,
 		})
 	}
-	inputMessages, err := responseInputMessages(req.Input)
+	inputMessages, err := responseInputMessages(req.Input, namespaces)
 	if err != nil {
 		return nil, err
 	}
@@ -320,6 +326,7 @@ func ResponsesToChat(req *types.OpenAIResponsesRequest) (*types.OpenAIChatReques
 			Reasoning:            req.Reasoning,
 			Store:                false,
 			WebSearch:            webSearch,
+			FunctionNamespaces:   namespaces,
 		},
 	}
 	reasoning, _ := req.Reasoning.(map[string]any)
@@ -381,7 +388,41 @@ func responsesRequestedParameters(
 	return parameters
 }
 
-func responseInputMessages(input any) ([]types.OpenAIChatMessage, error) {
+// namespacedToolChoice sends a tool_choice naming a namespaced function under
+// the name that function was sent with.
+func namespacedToolChoice(choice, converted any, namespaces map[string]types.ResponseNamespacedFunction) any {
+	m, _ := choice.(map[string]any)
+	namespace := stringValue(m["namespace"])
+	out, _ := converted.(map[string]any)
+	fn, _ := out["function"].(map[string]any)
+	if namespace == "" || fn == nil {
+		return converted
+	}
+	if sent := sentFunctionName(namespaces, namespace, stringValue(fn["name"])); sent != "" {
+		return map[string]any{"type": "function", "function": map[string]any{"name": sent}}
+	}
+	return converted
+}
+
+func toolChoiceForcesCall(choice any) bool {
+	if text, ok := choice.(string); ok {
+		return text == "required"
+	}
+	return choice != nil
+}
+
+// sentFunctionName is the provider-facing name of a declared namespaced
+// function, or "" if the request declares none such.
+func sentFunctionName(namespaces map[string]types.ResponseNamespacedFunction, namespace, name string) string {
+	for sent, declared := range namespaces {
+		if declared.Namespace == namespace && declared.Name == name {
+			return sent
+		}
+	}
+	return ""
+}
+
+func responseInputMessages(input any, namespaces map[string]types.ResponseNamespacedFunction) ([]types.OpenAIChatMessage, error) {
 	switch value := input.(type) {
 	case string:
 		if strings.TrimSpace(value) == "" {
@@ -391,7 +432,7 @@ func responseInputMessages(input any) ([]types.OpenAIChatMessage, error) {
 	case []any:
 		out := make([]types.OpenAIChatMessage, 0, len(value))
 		for index, item := range value {
-			message, drop, err := responseInputMessage(item, index)
+			message, drop, err := responseInputMessage(item, index, namespaces)
 			if err != nil {
 				return nil, err
 			}
@@ -411,7 +452,7 @@ func responseInputMessages(input any) ([]types.OpenAIChatMessage, error) {
 		}
 		return out, nil
 	case map[string]any:
-		message, drop, err := responseInputMessage(value, 0)
+		message, drop, err := responseInputMessage(value, 0, namespaces)
 		if err != nil {
 			return nil, err
 		}
@@ -425,7 +466,7 @@ func responseInputMessages(input any) ([]types.OpenAIChatMessage, error) {
 }
 
 // responseInputMessage explicitly marks replay-only items for dropping.
-func responseInputMessage(item any, index int) (message types.OpenAIChatMessage, drop bool, err error) {
+func responseInputMessage(item any, index int, namespaces map[string]types.ResponseNamespacedFunction) (message types.OpenAIChatMessage, drop bool, err error) {
 	if text, ok := item.(string); ok {
 		return types.OpenAIChatMessage{Role: "user", Content: text}, false, nil
 	}
@@ -448,6 +489,13 @@ func responseInputMessage(item any, index int) (message types.OpenAIChatMessage,
 		return types.OpenAIChatMessage{}, true, nil
 	case "function_call":
 		message, err := responseFunctionCallMessage(m, index)
+		if err == nil {
+			// A replayed call to a namespaced function names it as declared.
+			call := &message.ToolCalls[0].Function
+			if sent := sentFunctionName(namespaces, stringValue(m["namespace"]), call.Name); sent != "" {
+				call.Name = sent
+			}
+		}
 		return message, false, err
 	case "custom_tool_call":
 		message, err := responseCustomToolCallMessage(m, index)
@@ -980,7 +1028,6 @@ func TransformResponsesStreamControlled(
 	var toolOrder []int
 	toolOutputIndexes := map[int]int{}
 	toolDone := map[int]bool{}
-	namespaces := responsesFunctionNamespaces(meta)
 	thinkingByIndex := map[int]*ThinkingBlock{}
 	var thinkingOrder []int
 	var usage *StreamUsage
@@ -1199,12 +1246,12 @@ func TransformResponsesStreamControlled(
 				if call == nil {
 					continue
 				}
-				item := responseFunctionCallItem(responseID, outputIndex, *call, namespaces)
+				item := responseFunctionCallItem(responseID, outputIndex, *call, meta)
 				if !toolDone[blockIndex] {
 					item["status"] = "incomplete"
 					if err := writeResponseEventSeq(w, &seq, "response.function_call_arguments.done", map[string]any{
 						"type":    "response.function_call_arguments.done",
-						"item_id": call.ID, "output_index": outputIndex, "name": call.Name, "arguments": call.Arguments,
+						"item_id": call.ID, "output_index": outputIndex, "name": item["name"], "arguments": call.Arguments,
 					}); err != nil {
 						return err
 					}
@@ -1327,15 +1374,16 @@ func TransformResponsesStreamControlled(
 			outputIndex := nextOutputIndex
 			nextOutputIndex++
 			toolOutputIndexes[blockIndex] = outputIndex
+			name, namespace := ResponseFunctionCallName(call.Name, meta)
 			item := map[string]any{
 				"id":        call.ID,
 				"type":      "function_call",
 				"status":    "in_progress",
 				"call_id":   call.CallID,
-				"name":      call.Name,
+				"name":      name,
 				"arguments": "",
 			}
-			if namespace := namespaces[call.Name]; namespace != "" {
+			if namespace != "" {
 				item["namespace"] = namespace
 			}
 			if err := writeResponseEventSeq(w, &seq, "response.output_item.added", map[string]any{
@@ -1443,7 +1491,7 @@ func TransformResponsesStreamControlled(
 				"arguments":    call.Arguments,
 			}
 			if control != nil {
-				done["name"] = call.Name
+				done["name"], _ = ResponseFunctionCallName(call.Name, meta)
 			}
 			if err := writeResponseEventSeq(w, &seq, "response.function_call_arguments.done", done); err != nil {
 				return StreamResult{}, err
@@ -1452,7 +1500,7 @@ func TransformResponsesStreamControlled(
 				"type":         "response.output_item.done",
 				"response_id":  responseID,
 				"output_index": outputIndex,
-				"item":         responseFunctionCallItem(responseID, outputIndex, *call, namespaces),
+				"item":         responseFunctionCallItem(responseID, outputIndex, *call, meta),
 			}); err != nil {
 				return StreamResult{}, err
 			}
@@ -1737,7 +1785,7 @@ func responsesObject(
 			})
 		}
 		for index, call := range toolCalls {
-			output = append(output, responseFunctionCallItem(responseID, index, call, responsesFunctionNamespaces(meta)))
+			output = append(output, responseFunctionCallItem(responseID, index, call, meta))
 		}
 		completedAt = created
 		usage = map[string]any{
@@ -1846,7 +1894,7 @@ func ResponseWebSearchCallItem(call types.ResponseWebSearchCall, includeSources 
 	return responseWebSearchCallItem(call, includeSources)
 }
 
-func responseFunctionCallItem(responseID string, index int, call types.ToolCall, namespaces map[string]string) map[string]any {
+func responseFunctionCallItem(responseID string, index int, call types.ToolCall, meta *types.ResponseRequestMeta) map[string]any {
 	id := call.ID
 	if id == "" {
 		id = fmt.Sprintf("fc_%s_%d", strings.TrimPrefix(responseID, "resp_"), index)
@@ -1860,10 +1908,11 @@ func responseFunctionCallItem(responseID string, index int, call types.ToolCall,
 		"type":      "function_call",
 		"status":    "completed",
 		"call_id":   callID,
-		"name":      call.Name,
 		"arguments": call.Arguments,
 	}
-	if namespace := namespaces[call.Name]; namespace != "" {
+	name, namespace := ResponseFunctionCallName(call.Name, meta)
+	item["name"] = name
+	if namespace != "" {
 		item["namespace"] = namespace
 	}
 	return item
@@ -2212,44 +2261,62 @@ func validateResponsesToolChoice(value json.RawMessage) error {
 }
 
 func ChatToolsFromResponsesTools(tools []any) ([]any, error) {
+	out, _, err := chatToolsFromResponsesTools(tools)
+	return out, err
+}
+
+// namespacedChatTool is one function of a namespace tool, normalized, before
+// its provider-facing name is chosen.
+type namespacedChatTool struct {
+	tool                       map[string]any
+	namespace, name            string
+	toolIndex, namespacedIndex int
+}
+
+// chatToolsFromResponsesTools converts Responses tools to chat tools and
+// returns, for each namespaced function, the provider-facing name it was
+// sent under and the namespace and name it was declared with. A namespaced
+// function keeps its own name unless another function (top-level or in any
+// namespace) shares it; then it is sent as namespace__name, so calls to it
+// can be told apart and answered with the name the caller declared.
+func chatToolsFromResponsesTools(tools []any) ([]any, map[string]types.ResponseNamespacedFunction, error) {
 	if len(tools) == 0 {
-		return nil, nil
+		return nil, nil, nil
 	}
-	out := make([]any, 0, len(tools))
-	names := map[string]bool{}
-	add := func(normalized map[string]any) error {
-		fn, _ := normalized["function"].(map[string]any)
-		name := stringValue(fn["name"])
-		if names[name] {
-			// Namespaced functions reach the provider by their bare names, so
-			// two functions of one name cannot be told apart in its calls.
-			return &AdapterError{Status: 400, Message: "function tool names must be unique across namespaces", Context: "tools.function.name"}
-		}
-		names[name] = true
-		out = append(out, normalized)
-		return nil
+	// Each entry is a converted top-level tool or a namespace's functions.
+	type entry struct {
+		tool       map[string]any
+		namespaced []namespacedChatTool
 	}
+	entries := make([]entry, 0, len(tools))
+	nameCount := map[string]int{}
 	for index, tool := range tools {
 		m, _ := tool.(map[string]any)
 		switch stringValue(m["type"]) {
 		case "namespace":
 			inner, err := responsesNamespaceFunctionTools(m, index)
 			if err != nil {
-				return nil, err
+				return nil, nil, err
 			}
-			for _, normalized := range inner {
-				if err := add(normalized); err != nil {
-					return nil, err
-				}
+			for _, fn := range inner {
+				nameCount[fn.name]++
 			}
+			entries = append(entries, entry{namespaced: inner})
 			continue
 		case "tool_search":
 			// Hosted tool search loads deferred functions on the model's
 			// request. Every function here, deferred or not, is already sent
 			// to the provider, so there is nothing left for it to load.
 			// Client-executed search needs a tool_search_call round trip.
-			if execution := stringValue(m["execution"]); execution != "" && execution != "server" {
-				return nil, &AdapterError{Status: 501, Message: "not_supported_in_alpha", Context: fmt.Sprintf("tools[%d].execution", index)}
+			execution, present := m["execution"]
+			if present && execution != nil {
+				text, ok := execution.(string)
+				if !ok {
+					return nil, nil, &AdapterError{Status: 400, Message: "tool_search execution must be a string", Context: fmt.Sprintf("tools[%d].execution", index)}
+				}
+				if text != "server" {
+					return nil, nil, &AdapterError{Status: 501, Message: "not_supported_in_alpha", Context: fmt.Sprintf("tools[%d].execution", index)}
+				}
 			}
 			continue
 		}
@@ -2258,13 +2325,47 @@ func ChatToolsFromResponsesTools(tools []any) ([]any, error) {
 			if adapterErr, ok := err.(*AdapterError); ok && adapterErr.Context == "tools.type" {
 				adapterErr.Context = fmt.Sprintf("tools[%d].type", index)
 			}
-			return nil, err
+			return nil, nil, err
 		}
-		if err := add(normalized); err != nil {
-			return nil, err
+		nameCount[chatToolName(normalized)]++
+		entries = append(entries, entry{tool: normalized})
+	}
+	out := make([]any, 0, len(entries))
+	var namespaces map[string]types.ResponseNamespacedFunction
+	for _, e := range entries {
+		if e.tool != nil {
+			out = append(out, e.tool)
+			continue
+		}
+		for _, fn := range e.namespaced {
+			sent := fn.name
+			if nameCount[fn.name] > 1 {
+				sent = fn.namespace + "__" + fn.name
+				_, taken := namespaces[sent]
+				if !providerFunctionName.MatchString(sent) || nameCount[sent] > 0 || taken {
+					return nil, nil, &AdapterError{
+						Status: 400, Message: "namespaced function name is not unique and cannot be qualified by its namespace",
+						Context: fmt.Sprintf("tools[%d].tools[%d].name", fn.toolIndex, fn.namespacedIndex),
+					}
+				}
+			}
+			fn.tool["function"].(map[string]any)["name"] = sent
+			if namespaces == nil {
+				namespaces = map[string]types.ResponseNamespacedFunction{}
+			}
+			namespaces[sent] = types.ResponseNamespacedFunction{Namespace: fn.namespace, Name: fn.name}
+			out = append(out, fn.tool)
 		}
 	}
-	return out, nil
+	return out, namespaces, nil
+}
+
+// providerFunctionName is the function name every chat provider accepts.
+var providerFunctionName = regexp.MustCompile(`^[A-Za-z0-9_-]{1,64}$`)
+
+func chatToolName(tool map[string]any) string {
+	fn, _ := tool["function"].(map[string]any)
+	return stringValue(fn["name"])
 }
 
 // responsesNamespaceFunctionTools flattens a namespace tool into its
@@ -2272,7 +2373,7 @@ func ChatToolsFromResponsesTools(tools []any) ([]any, error) {
 // with the rest of tool search, since every function is sent. The
 // namespace's description, which the provider never sees as a group, leads
 // each of its functions' descriptions.
-func responsesNamespaceFunctionTools(m map[string]any, index int) ([]map[string]any, error) {
+func responsesNamespaceFunctionTools(m map[string]any, index int) ([]namespacedChatTool, error) {
 	namespace := strings.TrimSpace(stringValue(m["name"]))
 	if namespace == "" {
 		return nil, &AdapterError{Status: 400, Message: "namespace name is required", Context: fmt.Sprintf("tools[%d].name", index)}
@@ -2282,7 +2383,7 @@ func responsesNamespaceFunctionTools(m map[string]any, index int) ([]map[string]
 	if !ok {
 		return nil, &AdapterError{Status: 400, Message: "namespace tools must be an array", Context: fmt.Sprintf("tools[%d].tools", index)}
 	}
-	out := make([]map[string]any, 0, len(inner))
+	out := make([]namespacedChatTool, 0, len(inner))
 	for innerIndex, tool := range inner {
 		fn, ok := tool.(map[string]any)
 		if !ok || stringValue(fn["type"]) != "function" {
@@ -2292,47 +2393,32 @@ func responsesNamespaceFunctionTools(m map[string]any, index int) ([]map[string]
 		if err != nil {
 			return nil, err
 		}
+		function := normalized["function"].(map[string]any)
 		if namespaceDescription != "" {
-			function := normalized["function"].(map[string]any)
 			description := "Part of the " + namespace + " tools: " + namespaceDescription
 			if own := stringValue(function["description"]); own != "" {
 				description += "\n\n" + own
 			}
 			function["description"] = description
 		}
-		out = append(out, normalized)
+		out = append(out, namespacedChatTool{
+			tool: normalized, namespace: namespace, name: stringValue(function["name"]),
+			toolIndex: index, namespacedIndex: innerIndex,
+		})
 	}
 	return out, nil
 }
 
-// responsesFunctionNamespaces maps each namespaced function's name to its
-// namespace, so a call to it is answered with the namespace it was declared
-// in. Names are unique across namespaces (ChatToolsFromResponsesTools).
-func responsesFunctionNamespaces(meta *types.ResponseRequestMeta) map[string]string {
-	if meta == nil {
-		return nil
-	}
-	var out map[string]string
-	for _, tool := range meta.Tools {
-		m, _ := tool.(map[string]any)
-		if stringValue(m["type"]) != "namespace" {
-			continue
-		}
-		namespace := strings.TrimSpace(stringValue(m["name"]))
-		inner, _ := m["tools"].([]any)
-		for _, raw := range inner {
-			fn, _ := raw.(map[string]any)
-			name := strings.TrimSpace(stringValue(fn["name"]))
-			if name == "" || namespace == "" {
-				continue
-			}
-			if out == nil {
-				out = map[string]string{}
-			}
-			out[name] = namespace
+// ResponseFunctionCallName is the name and namespace a function call is
+// answered with: the declared ones for a namespaced function, otherwise the
+// name the provider called.
+func ResponseFunctionCallName(called string, meta *types.ResponseRequestMeta) (name, namespace string) {
+	if meta != nil {
+		if declared, ok := meta.FunctionNamespaces[called]; ok {
+			return declared.Name, declared.Namespace
 		}
 	}
-	return out
+	return called, ""
 }
 
 func ResponsesWebSearchConfig(tools []any, maxToolCalls *int, includes []string) (*types.ResponseWebSearchConfig, error) {
