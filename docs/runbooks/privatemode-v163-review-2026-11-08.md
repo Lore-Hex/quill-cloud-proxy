@@ -78,9 +78,20 @@ attributes are content-free. The source diff does not remove these limitations.
   run with local networking enabled passed without changing tests.
 - The packaged source-built client rejected an intentionally altered
   coordinator policy with HTTP 401 before inference.
+- Upstream encrypted-version, OCSP and forwarding race tests passed with the
+  exact production `v1.63.0` linker version. An initial unversioned audit build
+  used upstream's `0.0.0-dev` default and failed its token-version fixture;
+  the failure was traced to that build input, not bypassed or retried blindly.
+- Source-mode govulncheck v1.9.0 reports zero reachable vulnerabilities and
+  zero affected imported packages in the hardened client. One required module
+  has an advisory outside the imported path; dependencies are not advisory-free.
 - Independent policy generation and Nix image reproduction are in progress.
   The image rebuild rejects vendor flake-cache settings and uses only
   `https://cache.nixos.org` as a binary substituter.
+- `.github/workflows/reproduce-privatemode-v163.yml` provides credential-free
+  reproduction of these exact inputs and retained comparison artifacts. It
+  neither approves recovery ownership nor publishes pins or deploys. Its
+  image job uses the same pinned Nix 2.31.2 used for the previous review.
 - Packaged positive encrypted qualification remains pending independent
   policy reproduction.
 - The requested secondary Claude CLI review could not start because its
