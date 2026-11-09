@@ -132,6 +132,11 @@ func (p *CloudDNSProvider) AddTXT(ctx context.Context, name, value string) (stri
 		Rrdatas: []string{strconv.Quote(value)},
 	}
 	created, err := p.change(ctx, cloudDNSChange{Additions: []cloudDNSRecordSet{rs}})
+	if errors.Is(err, errCloudDNSUndecodable) {
+		// The record exists, so return a handle the caller will clean up.
+		// Without a change id WaitTXT fails and the resolver is used.
+		created, err = cloudDNSChangeStatus{}, nil
+	}
 	if err != nil {
 		return "", err
 	}
@@ -167,20 +172,50 @@ func (p *CloudDNSProvider) WaitTXT(ctx context.Context, handle string) error {
 	defer cancel()
 	url := fmt.Sprintf("%s/projects/%s/managedZones/%s/changes/%s",
 		cloudDNSAPIBase, p.Project, p.ManagedZone, h.ChangeID)
+	last := errors.New("no response yet")
 	for {
 		var status cloudDNSChangeStatus
-		if err := p.do(ctx, http.MethodGet, url, nil, &status); err != nil {
-			return err
-		}
-		if status.Status == "done" {
+		err := p.do(ctx, http.MethodGet, url, nil, &status)
+		switch {
+		case err == nil && status.Status == "done":
 			return nil
+		case err == nil:
+			last = fmt.Errorf("change %s still %q", h.ChangeID, status.Status)
+		case isPermanentCloudDNSError(err):
+			// A refusal (403 without dns.changes.get, 404) will not change on
+			// retry; return it so the caller can fall back at once.
+			return err
+		default:
+			// A 5xx, 429 or transport error is worth retrying here: on AWS
+			// the resolver fallback cannot succeed, so leaving this loop
+			// early would spend the order for nothing.
+			last = err
 		}
 		select {
 		case <-ctx.Done():
-			return fmt.Errorf("clouddns: change %s still %q: %w", h.ChangeID, status.Status, ctx.Err())
+			return fmt.Errorf("clouddns: %w (%v)", ctx.Err(), last)
 		case <-time.After(cloudDNSChangePollInterval):
 		}
 	}
+}
+
+// cloudDNSStatusError is a non-2xx answer from the DNS API.
+type cloudDNSStatusError struct {
+	Method string
+	Code   int
+	Body   []byte
+}
+
+func (e *cloudDNSStatusError) Error() string {
+	return fmt.Sprintf("clouddns: %s status %d body=%s", strings.ToLower(e.Method), e.Code, e.Body)
+}
+
+// isPermanentCloudDNSError reports a 4xx other than 429: a refusal or a
+// malformed request, which no amount of waiting will change.
+func isPermanentCloudDNSError(err error) bool {
+	var status *cloudDNSStatusError
+	return errors.As(err, &status) &&
+		status.Code/100 == 4 && status.Code != http.StatusTooManyRequests
 }
 
 func (p *CloudDNSProvider) ttl() int {
@@ -239,13 +274,17 @@ func (p *CloudDNSProvider) do(ctx context.Context, method, url string, payload [
 	defer resp.Body.Close()
 	if resp.StatusCode/100 != 2 {
 		snippet, _ := io.ReadAll(io.LimitReader(resp.Body, 2048))
-		return fmt.Errorf("clouddns: %s status %d body=%s", strings.ToLower(method), resp.StatusCode, snippet)
+		return &cloudDNSStatusError{Method: method, Code: resp.StatusCode, Body: snippet}
 	}
 	if err := json.NewDecoder(io.LimitReader(resp.Body, 1<<20)).Decode(out); err != nil {
-		return fmt.Errorf("clouddns: decode response: %w", err)
+		return fmt.Errorf("%w: %v", errCloudDNSUndecodable, err)
 	}
 	return nil
 }
+
+// errCloudDNSUndecodable marks a 2xx whose body could not be read: the
+// request took effect, only its answer is unknown.
+var errCloudDNSUndecodable = errors.New("clouddns: undecodable response")
 
 // dnsFQDN normalises a name to the trailing-dot form Cloud DNS requires.
 //

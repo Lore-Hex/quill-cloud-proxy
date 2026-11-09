@@ -594,14 +594,20 @@ func cloudflareDeleteTXTRecord(ctx context.Context, cfg DNS01Config, recordID st
 // dns.changes.get, and they do have UDP, so the resolver still works there.
 func waitForChallengeTXT(ctx context.Context, provider DNS01Provider, handle, name, expected string) error {
 	if waiter, ok := provider.(DNS01PropagationWaiter); ok {
-		err := waiter.WaitTXT(ctx, handle)
-		if err == nil {
+		waitErr := waiter.WaitTXT(ctx, handle)
+		if waitErr == nil {
 			return nil
 		}
 		fmt.Fprintf(maybeStderr,
 			"dns01_renewer.provider_wait_failed provider=%s err=%v; using the public resolver\n",
-			provider.Name(), err,
+			provider.Name(), waitErr,
 		)
+		// Keep both causes: on AWS the resolver can only time out, and an
+		// error naming just that would hide why the provider's wait failed.
+		if err := resolverTXTWait(ctx, name, expected); err != nil {
+			return errors.Join(waitErr, err)
+		}
+		return nil
 	}
 	return resolverTXTWait(ctx, name, expected)
 }

@@ -676,3 +676,89 @@ func TestAFailedProviderWaitFallsBackToTheResolver(t *testing.T) {
 		t.Fatalf("waited=%q resolver asked=%q; want the provider first, then the resolver", p.waited, asked)
 	}
 }
+
+func TestWaitTXTRetriesATransientError(t *testing.T) {
+	// On AWS the resolver fallback cannot succeed, so a single 503 must not
+	// end the API path.
+	old := cloudDNSChangePollInterval
+	cloudDNSChangePollInterval = time.Millisecond
+	t.Cleanup(func() { cloudDNSChangePollInterval = old })
+
+	var gets int
+	p, srv := newTestProvider(t, func(w http.ResponseWriter, r *http.Request) {
+		gets++
+		switch gets {
+		case 1:
+			w.WriteHeader(http.StatusServiceUnavailable)
+		case 2:
+			w.WriteHeader(http.StatusTooManyRequests)
+		default:
+			_, _ = w.Write([]byte(`{"id":"42","status":"done"}`))
+		}
+	})
+	p.HTTPClient = redirect(t, srv)
+
+	if err := p.WaitTXT(context.Background(), `{"name":"x.","changeId":"42"}`); err != nil {
+		t.Fatalf("WaitTXT gave up on a transient error: %v", err)
+	}
+	if gets != 3 {
+		t.Fatalf("polled %d times, want 3", gets)
+	}
+}
+
+func TestWaitTXTReturnsAPermanentRefusalAtOnce(t *testing.T) {
+	// A 403 will not change on retry; returning at once lets GCP's
+	// confidential gateways fall back to the resolver without delay.
+	old := cloudDNSChangePollInterval
+	cloudDNSChangePollInterval = time.Millisecond
+	t.Cleanup(func() { cloudDNSChangePollInterval = old })
+	// Bounded so a version that retries fails in seconds, not five minutes.
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	var gets int
+	p, srv := newTestProvider(t, func(w http.ResponseWriter, r *http.Request) {
+		gets++
+		w.WriteHeader(http.StatusForbidden)
+	})
+	p.HTTPClient = redirect(t, srv)
+
+	if err := p.WaitTXT(ctx, `{"name":"x.","changeId":"42"}`); err == nil {
+		t.Fatal("a 403 was treated as success")
+	}
+	if gets != 1 {
+		t.Fatalf("a 403 was retried: %d calls", gets)
+	}
+}
+
+func TestAnUndecodableAddStillReturnsAHandle(t *testing.T) {
+	// A 2xx means the record exists. Returning an error here would skip the
+	// cleanup and leave a stale TXT that makes the next add of the same
+	// record set fail with 409.
+	p, srv := newTestProvider(t, func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte(`not json`))
+	})
+	p.HTTPClient = redirect(t, srv)
+
+	handle, err := p.AddTXT(context.Background(), "_acme-challenge.x.trustedrouter.com", "v")
+	if err != nil {
+		t.Fatalf("AddTXT: %v", err)
+	}
+	if err := p.WaitTXT(context.Background(), handle); err == nil {
+		t.Fatal("a handle without a change id should make WaitTXT fail, so the resolver is used")
+	}
+}
+
+func TestBothWaitFailuresAreReported(t *testing.T) {
+	// On AWS the resolver can only time out; the provider's reason must
+	// survive in the returned error.
+	old := resolverTXTWait
+	resolverErr := errors.New("resolver timed out")
+	resolverTXTWait = func(context.Context, string, string) error { return resolverErr }
+	t.Cleanup(func() { resolverTXTWait = old })
+
+	waitErr := errors.New("clouddns: get status 403")
+	err := waitForChallengeTXT(context.Background(), &recordingProvider{waitErr: waitErr}, "h", "x.", "v")
+	if !errors.Is(err, waitErr) || !errors.Is(err, resolverErr) {
+		t.Fatalf("error = %v, want both causes", err)
+	}
+}
