@@ -144,6 +144,13 @@ plaintext provider to work around a failed verification or unavailable cloud.
 
 ## Pin Updates
 
+### 2026-11-08 v1.63 Candidate Review
+
+[The v1.63 candidate review](privatemode-v163-review-2026-11-08.md) tracks the
+new deployment, changed recovery identity, reproduction and qualification
+gates. It is not authorization to accept the new remote measurement. Keep
+production fail-closed until the exact update is approved and deployed.
+
 ### 2026-11-04 v1.62 Deployment Drift
 
 [The v1.62 review](privatemode-v162-review-2026-11-04.md) records independently
