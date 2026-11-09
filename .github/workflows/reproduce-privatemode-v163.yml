@@ -103,8 +103,8 @@ jobs:
           export NIX_CONFIG=$'experimental-features = nix-command flakes\nsandbox = true\nsandbox-fallback = false\naccept-flake-config = false\nsubstituters = https://cache.nixos.org\nextra-substituters =\nhttp2 = false'
           test "$(nix config show sandbox)" = true
           test "$(nix config show sandbox-fallback)" = false
+          # Inspect the effective list; extra-substituters is an input modifier.
           test "$(nix config show substituters)" = https://cache.nixos.org
-          test -z "$(nix config show extra-substituters)"
           nix --version | tee "$RUNNER_TEMP/pm-evidence/nix-version.txt"
           test "$(nix --version)" = 'nix (Determinate Nix 3.23.3) 2.35.3'
           probe=$(env -i HOME="$HOME" PATH="$PATH" NIX_CONFIG="$NIX_CONFIG" \
