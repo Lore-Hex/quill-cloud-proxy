@@ -15,6 +15,7 @@
 package enclavetls
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -38,6 +39,19 @@ type DNS01Provider interface {
 	// Name identifies the provider in logs. An operator staring at a failed
 	// renewal needs to know WHICH zone API was refusing them.
 	Name() string
+}
+
+// DNS01PropagationWaiter is implemented by a provider that can confirm, from
+// its own API, that the record behind an AddTXT handle is being served by the
+// zone's authoritative nameservers, which are what the CA's resolver asks.
+//
+// It exists because the generic check polls a public resolver over UDP, and a
+// Nitro enclave has no network interface: only vsock tunnels to named HTTPS
+// hosts. On AWS that lookup cannot succeed, so every DNS-01 order timed out
+// after publishing its TXT and before asking the CA to validate it. The
+// api-aws certificate came within 12 days of expiry before anyone noticed.
+type DNS01PropagationWaiter interface {
+	WaitTXT(ctx context.Context, handle string) error
 }
 
 // ---------------------------------------------------------------------------
@@ -80,6 +94,26 @@ type cloudDNSChange struct {
 	Deletions []cloudDNSRecordSet `json:"deletions,omitempty"`
 }
 
+// cloudDNSChangeStatus is the part of the API's Change resource that says
+// whether a change has reached the authoritative servers ("done") or not
+// ("pending").
+type cloudDNSChangeStatus struct {
+	ID     string `json:"id"`
+	Status string `json:"status"`
+}
+
+// cloudDNSHandle is what AddTXT hands back: the exact record set, which
+// RemoveTXT needs, plus the id of the change that created it, which WaitTXT
+// needs. The record set is embedded so its fields stay at the top level.
+type cloudDNSHandle struct {
+	cloudDNSRecordSet
+	ChangeID string `json:"changeId,omitempty"`
+}
+
+// How often WaitTXT re-reads a pending change. A variable so tests do not
+// sleep.
+var cloudDNSChangePollInterval = 2 * time.Second
+
 // AddTXT creates the record and returns the exact record set as the handle.
 //
 // Cloud DNS deletes by VALUE, not by id: the deletion body must reproduce the
@@ -97,10 +131,11 @@ func (p *CloudDNSProvider) AddTXT(ctx context.Context, name, value string) (stri
 		// like slow propagation and never converges.
 		Rrdatas: []string{strconv.Quote(value)},
 	}
-	if err := p.change(ctx, cloudDNSChange{Additions: []cloudDNSRecordSet{rs}}); err != nil {
+	created, err := p.change(ctx, cloudDNSChange{Additions: []cloudDNSRecordSet{rs}})
+	if err != nil {
 		return "", err
 	}
-	handle, err := json.Marshal(rs)
+	handle, err := json.Marshal(cloudDNSHandle{cloudDNSRecordSet: rs, ChangeID: created.ID})
 	if err != nil {
 		return "", fmt.Errorf("clouddns: marshal handle: %w", err)
 	}
@@ -112,7 +147,40 @@ func (p *CloudDNSProvider) RemoveTXT(ctx context.Context, handle string) error {
 	if err := json.Unmarshal([]byte(handle), &rs); err != nil {
 		return fmt.Errorf("clouddns: bad handle: %w", err)
 	}
-	return p.change(ctx, cloudDNSChange{Deletions: []cloudDNSRecordSet{rs}})
+	_, err := p.change(ctx, cloudDNSChange{Deletions: []cloudDNSRecordSet{rs}})
+	return err
+}
+
+// WaitTXT polls the change that created the record until Cloud DNS reports it
+// "done", meaning every authoritative nameserver serves it. That is the
+// question the CA's validation actually depends on, and it is answered over
+// dns.googleapis.com, which the AWS enclave already tunnels.
+func (p *CloudDNSProvider) WaitTXT(ctx context.Context, handle string) error {
+	var h cloudDNSHandle
+	if err := json.Unmarshal([]byte(handle), &h); err != nil {
+		return fmt.Errorf("clouddns: bad handle: %w", err)
+	}
+	if h.ChangeID == "" {
+		return errors.New("clouddns: change id missing from handle")
+	}
+	ctx, cancel := context.WithTimeout(ctx, 5*time.Minute)
+	defer cancel()
+	url := fmt.Sprintf("%s/projects/%s/managedZones/%s/changes/%s",
+		cloudDNSAPIBase, p.Project, p.ManagedZone, h.ChangeID)
+	for {
+		var status cloudDNSChangeStatus
+		if err := p.do(ctx, http.MethodGet, url, nil, &status); err != nil {
+			return err
+		}
+		if status.Status == "done" {
+			return nil
+		}
+		select {
+		case <-ctx.Done():
+			return fmt.Errorf("clouddns: change %s still %q: %w", h.ChangeID, status.Status, ctx.Err())
+		case <-time.After(cloudDNSChangePollInterval):
+		}
+	}
 }
 
 func (p *CloudDNSProvider) ttl() int {
@@ -122,7 +190,21 @@ func (p *CloudDNSProvider) ttl() int {
 	return 60
 }
 
-func (p *CloudDNSProvider) change(ctx context.Context, body cloudDNSChange) error {
+func (p *CloudDNSProvider) change(ctx context.Context, body cloudDNSChange) (cloudDNSChangeStatus, error) {
+	var created cloudDNSChangeStatus
+	payload, err := json.Marshal(body)
+	if err != nil {
+		return created, fmt.Errorf("clouddns: marshal change: %w", err)
+	}
+	url := fmt.Sprintf("%s/projects/%s/managedZones/%s/changes",
+		cloudDNSAPIBase, p.Project, p.ManagedZone)
+	err = p.do(ctx, http.MethodPost, url, payload, &created)
+	return created, err
+}
+
+// do sends one authenticated request to the DNS API and decodes the JSON
+// response into out.
+func (p *CloudDNSProvider) do(ctx context.Context, method, url string, payload []byte, out any) error {
 	if p.Project == "" || p.ManagedZone == "" {
 		return errors.New("clouddns: project and managed zone are required")
 	}
@@ -133,18 +215,18 @@ func (p *CloudDNSProvider) change(ctx context.Context, body cloudDNSChange) erro
 	if err != nil {
 		return fmt.Errorf("clouddns: access token: %w", err)
 	}
-	payload, err := json.Marshal(body)
-	if err != nil {
-		return fmt.Errorf("clouddns: marshal change: %w", err)
+	var body io.Reader
+	if payload != nil {
+		body = bytes.NewReader(payload)
 	}
-	url := fmt.Sprintf("%s/projects/%s/managedZones/%s/changes",
-		cloudDNSAPIBase, p.Project, p.ManagedZone)
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, strings.NewReader(string(payload)))
+	req, err := http.NewRequestWithContext(ctx, method, url, body)
 	if err != nil {
 		return err
 	}
 	req.Header.Set("Authorization", "Bearer "+token)
-	req.Header.Set("Content-Type", "application/json")
+	if payload != nil {
+		req.Header.Set("Content-Type", "application/json")
+	}
 
 	client := p.HTTPClient
 	if client == nil {
@@ -157,7 +239,10 @@ func (p *CloudDNSProvider) change(ctx context.Context, body cloudDNSChange) erro
 	defer resp.Body.Close()
 	if resp.StatusCode/100 != 2 {
 		snippet, _ := io.ReadAll(io.LimitReader(resp.Body, 2048))
-		return fmt.Errorf("clouddns: change status %d body=%s", resp.StatusCode, snippet)
+		return fmt.Errorf("clouddns: %s status %d body=%s", strings.ToLower(method), resp.StatusCode, snippet)
+	}
+	if err := json.NewDecoder(io.LimitReader(resp.Body, 1<<20)).Decode(out); err != nil {
+		return fmt.Errorf("clouddns: decode response: %w", err)
 	}
 	return nil
 }

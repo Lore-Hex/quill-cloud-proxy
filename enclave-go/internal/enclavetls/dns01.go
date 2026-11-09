@@ -420,10 +420,9 @@ func runDNS01Order(ctx context.Context, cfg DNS01Config, ca DNS01CA) error {
 			}
 		}()
 
-		// Wait for the TXT to be visible from a public resolver so LE's
-		// validation doesn't race the propagation. Cloudflare's edge
-		// usually converges in 5-30s; we poll up to 5 minutes.
-		if err := waitForTXTPropagation(ctx, recordName, token); err != nil {
+		// Wait for the TXT to be served before asking the CA to look, so
+		// validation doesn't race the propagation.
+		if err := waitForChallengeTXT(ctx, provider, recordID, recordName, token); err != nil {
 			return fmt.Errorf("dns propagation: %w", err)
 		}
 
@@ -586,6 +585,29 @@ func cloudflareDeleteTXTRecord(ctx context.Context, cfg DNS01Config, recordID st
 	}
 	return nil
 }
+
+// waitForChallengeTXT asks the provider when it can answer from its own API
+// (Cloud DNS), and uses the public resolver otherwise (Cloudflare) or when the
+// provider's answer fails. The resolver needs UDP egress, which a Nitro enclave
+// does not have. The fallback is for credentials that may create records but
+// not read changes: GCP's confidential gateways hold a custom role without
+// dns.changes.get, and they do have UDP, so the resolver still works there.
+func waitForChallengeTXT(ctx context.Context, provider DNS01Provider, handle, name, expected string) error {
+	if waiter, ok := provider.(DNS01PropagationWaiter); ok {
+		err := waiter.WaitTXT(ctx, handle)
+		if err == nil {
+			return nil
+		}
+		fmt.Fprintf(maybeStderr,
+			"dns01_renewer.provider_wait_failed provider=%s err=%v; using the public resolver\n",
+			provider.Name(), err,
+		)
+	}
+	return resolverTXTWait(ctx, name, expected)
+}
+
+// The resolver fallback, indirect so tests can prove which path ran.
+var resolverTXTWait = waitForTXTPropagation
 
 // waitForTXTPropagation polls 1.1.1.1 (Cloudflare's own resolver, so
 // propagation is fastest) for the expected TXT value. Times out
