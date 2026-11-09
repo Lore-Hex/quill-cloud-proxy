@@ -106,7 +106,14 @@ jobs:
           test "$(nix config show substituters)" = https://cache.nixos.org
           test -z "$(nix config show extra-substituters)"
           nix --version | tee "$RUNNER_TEMP/pm-evidence/nix-version.txt"
-          nix build --option builders '' \
+          test "$(nix --version)" = 'nix (Determinate Nix 3.23.3) 2.35.3'
+          probe=$(env -i HOME="$HOME" PATH="$PATH" NIX_CONFIG="$NIX_CONFIG" \
+            nix build --impure --no-link --print-out-paths --expr "
+              let p = (builtins.getFlake \"path:$RUNNER_TEMP/pm-source\").legacyPackages.x86_64-linux;
+              in p.runCommand \"tr-privatemode-sandbox-check\" {} \"pwd > \$out\"")
+          test "$(cat "$probe")" = /build
+          env -i HOME="$HOME" PATH="$PATH" NIX_CONFIG="$NIX_CONFIG" \
+            nix build --option builders '' \
             --option connect-timeout 15 --option stalled-download-timeout 60 \
             --option download-attempts 2 --max-jobs 2 --cores 2 \
             --out-link "$RUNNER_TEMP/pm-images" --impure --expr "
