@@ -33,13 +33,13 @@ func TestServeLegacyUsageAndCacheRetention(t *testing.T) {
 				{"prompt_cache_retention", `null`, "", 200},
 				{"prompt_cache_retention", `"in_memory"`, "prompt_cache_retention", 501},
 				{"prompt_cache_retention", `"24h"`, "prompt_cache_retention", 501},
-				{"include", `["reasoning.encrypted_content"]`, "include", 501},
+				{"include", `["reasoning.encrypted_content"]`, "", 200},
 				{"include", `["reasoning.encrypted_content","private-value"]`, "include", 501},
 				{"modalities", `["audio"]`, "modalities", 501},
 			} {
 				t.Run(fmt.Sprintf("%s/%t/%s/%s", route, stream, tc.field, tc.value), func(t *testing.T) {
 					if tc.field == "include" && route == "/v1/chat/completions" {
-						tc.status = 400
+						tc.status, tc.parameter = 400, "include"
 					}
 					wantPreview := `"[redacted:string]"`
 					if tc.parameter == "prompt_cache_retention" {
