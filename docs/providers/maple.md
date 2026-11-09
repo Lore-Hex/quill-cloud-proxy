@@ -44,7 +44,7 @@ Changes to the dedicated worker are security-sensitive even if the model name
 is unchanged. Provider deployment overlap is still necessary to avoid an
 outage while a new security-sensitive release is reviewed and staged.
 
-## Proposed worker identity update (2026-11-06)
+## Approved worker identity update (2026-11-09)
 
 The exact candidate tracked in [review #716](https://github.com/Lore-Hex/quill-cloud-proxy/issues/716)
 replaces the front PCR0 with
@@ -52,7 +52,19 @@ replaces the front PCR0 with
 It binds source `d8fa269c9155d800ab9f6e8f8897c8e154492711` and the signed
 production approval `cd52297dba7bd2d0718722d89039d3c4cb4132f1`.
 The former `3a67fa1c...` measurement is replaced, not retained.
-This proposal does not assert operator approval or production deployment.
+Joseph explicitly approved this exact worker-identity update on November 9,
+2026, subject to fresh verification, full CI and the normal guarded rollout.
+This approval is not production deployment or inference acceptance, and does
+not authorize clearing another release's reservation.
+
+On November 9, a fresh credential-free check with the previously approved
+`3a67fa1c...` pin failed. The unchanged reviewed candidate passed front
+attestation in 164 ms, followed by deliberate wrong-pin rejection after its
+positive control. No credential or inference was sent. Two reported production
+requests failed in US Central and Europe with one Maple attempt, no fallback,
+and no response bytes. Their sanitized logs do not preserve the underlying
+exception, so these checks establish the trust-transition failure without
+claiming to identify every individual request's internal error.
 
 The independent credential-free ARM64 build in
 [run 42227131805](https://github.com/Lore-Hex/quill-cloud-proxy/actions/runs/42227131805)
@@ -81,8 +93,8 @@ deliberate wrong-pin rejection. These handshake checks sent no inference.
 The helper's `end_to_end_qualified=false` and
 `source_reproduction_verified=false` describe its limited scope, not the
 separate source rebuild or downstream evidence.
-Required CI, explicit approval of this worker identity, measured cloud builds,
-signed trust publication and production canaries remain release gates.
+Required CI, fresh trust verification, measured cloud builds, signed trust
+publication and production canaries remain release gates.
 The protected-tree baseline in this proposal changes only for this reviewed
 identity; future security-sensitive changes must still stop for review.
 
