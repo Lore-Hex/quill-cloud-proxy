@@ -188,8 +188,9 @@ class MirrorIndependence(unittest.TestCase):
             _step(pages, "python3 tools/check-trust-signatures.py trust-page"),
             _step(pages, "actions/upload-pages-artifact"),
         )
-        # Those steps always run. The cosign version every workflow installs is
-        # checked in tools/test_check_trust_signatures.py.
+        # Those steps always run. The cosign version every workflow installs,
+        # and the one retry that may follow a failed first install, are checked
+        # in tools/test_check_trust_signatures.py.
         for workflow, command in (
             (publisher, "sigstore/cosign-installer"),
             (publisher, "bash tools/publish-trust-s3.sh"),
@@ -199,7 +200,8 @@ class MirrorIndependence(unittest.TestCase):
             (job,) = workflow["jobs"].values()
             step = job["steps"][_step(workflow, command)]
             self.assertNotIn("if", step, command)
-            self.assertFalse(step.get("continue-on-error"), command)
+            if command != "sigstore/cosign-installer":
+                self.assertFalse(step.get("continue-on-error"), command)
 
 
 def _step(workflow: dict, command: str) -> int:

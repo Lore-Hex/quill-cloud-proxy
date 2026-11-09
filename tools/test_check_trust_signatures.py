@@ -573,6 +573,38 @@ class TheRepository(unittest.TestCase):
                 with self.subTest(workflow=name, release=release):
                     self.assertTrue(_patched(release), f"{name} installs cosign {release!r}")
 
+    def test_every_cosign_install_fails_closed(self) -> None:
+        # A first install may carry continue-on-error only when a retry follows:
+        # a pause and a second install, both run only after the first failed,
+        # asking for the same release, with no continue-on-error of their own.
+        # A failed retry then fails the job, as a failed single install does.
+        workflows = REPO / ".github/workflows"
+        checked = 0
+        for path in sorted([*workflows.glob("*.yml"), *workflows.glob("*.yaml")]):
+            workflow = yaml.safe_load(path.read_text())
+            for job_name, job in workflow["jobs"].items():
+                steps = job.get("steps", [])
+                ids = [step["id"] for step in steps if "id" in step]
+                self.assertEqual(len(ids), len(set(ids)), f"{path.name} {job_name}")
+                for index, step in enumerate(steps):
+                    if not _installs_cosign(step) or "if" in step:
+                        continue
+                    checked += 1
+                    with self.subTest(workflow=path.name, job=job_name, step=index):
+                        if not step.get("continue-on-error"):
+                            continue
+                        self.assertIs(step["continue-on-error"], True)
+                        retry_if = f"steps.{step['id']}.outcome == 'failure'"
+                        pause, retry = steps[index + 1], steps[index + 2]
+                        self.assertEqual(pause, {"if": retry_if, "run": pause["run"]})
+                        self.assertRegex(pause["run"], r"^sleep [1-9][0-9]*$")
+                        self.assertTrue(_installs_cosign(retry))
+                        self.assertEqual(retry.get("if"), retry_if)
+                        self.assertNotIn("continue-on-error", retry)
+                        self.assertEqual(retry.get("with"), step.get("with"))
+                        self.assertEqual(retry["uses"], step["uses"])
+        self.assertGreater(checked, 0)
+
     def test_the_patched_version_rule(self) -> None:
         for release, patched in (
             ("v2.4.1", False), ("v2.6.4", False), ("v2.6.5", True), ("v2.7.0", True),
@@ -612,6 +644,12 @@ class TheRepository(unittest.TestCase):
                 with self.subTest(plane=plane, document=document):
                     self.assertEqual(check.plane_of(document), plane)
                     self.assertIn(f"trust-page/{document}", triggers)
+
+
+def _installs_cosign(step: dict) -> bool:
+    """Whether a workflow step runs the cosign installer action."""
+    # GitHub resolves action names case-insensitively.
+    return str(step.get("uses", "")).lower().startswith("sigstore/cosign-installer")
 
 
 def _patched(release: str) -> bool:
