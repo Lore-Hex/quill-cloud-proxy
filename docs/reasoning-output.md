@@ -1,5 +1,41 @@
 # Reasoning output controls
 
+## Claude effort on chat completions
+
+`POST https://api.trustedrouter.com/v1/chat/completions` accepts Anthropic's
+`output_config.effort` spelling. For Claude Opus 5.5, this request reaches the
+Anthropic transport with `output_config: {"effort":"high"}` and
+`thinking: {"type":"adaptive"}`:
+
+```json
+{
+  "model": "anthropic/claude-opus-5.5",
+  "messages": [{"role": "user", "content": "What is 6 times 7?"}],
+  "output_config": {"effort": "high"},
+  "max_tokens": 4096
+}
+```
+
+The accepted effort levels are `low`, `medium`, `high`, `xhigh`, and `max`;
+availability depends on the selected model. JSON and streaming requests use the
+same forwarding path. You may also include `thinking: {"type":"adaptive"}`.
+With an OpenAI SDK, put `output_config` in `extra_body`.
+
+Chat normalizes this option to its existing `reasoning.effort` control. Use only
+one effort spelling per request. Invalid values, conflicting controls, disabled
+thinking combined with this alias, and unimplemented `output_config` members
+return 400 before billing authorization. `null` is treated as omitted.
+Use `response_format` for structured chat output, not `output_config.format`.
+
+Native `POST /v1/messages` already forwards `output_config` and `thinking`
+without this translation. Responses API clients should continue using
+`reasoning: {"effort":"high"}`. Effort changes reasoning work and token cost;
+it is not a setting for hiding reasoning text.
+
+Reference: [Anthropic effort documentation](https://platform.claude.com/docs/en/build-with-claude/effort).
+
+## Reasoning visibility
+
 Chat completions accept `include_reasoning` as a boolean compatibility option:
 
 * `true` returns reasoning when the provider supplies it.

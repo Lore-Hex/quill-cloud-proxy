@@ -25,6 +25,7 @@ var contractParameterCategories = map[string]struct{}{
 	"instructions": {}, "tools": {}, "tool_choice": {}, "parallel_tool_calls": {},
 	"stream": {}, "stream_options": {}, "text": {}, "response_format": {},
 	"temperature": {}, "top_p": {}, "reasoning": {}, "reasoning_effort": {},
+	"output_config": {}, "output_config.effort": {},
 	"include_reasoning": {},
 	"thinking":          {},
 	"enable_thinking":   {},
