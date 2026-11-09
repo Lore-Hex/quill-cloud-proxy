@@ -586,8 +586,15 @@ class TheRepository(unittest.TestCase):
                 steps = job.get("steps", [])
                 ids = [step["id"] for step in steps if "id" in step]
                 self.assertEqual(len(ids), len(set(ids)), f"{path.name} {job_name}")
+                retries = set()
                 for index, step in enumerate(steps):
-                    if not _installs_cosign(step) or "if" in step:
+                    if not _installs_cosign(step):
+                        continue
+                    if "if" in step:
+                        # A conditional install is only ever the checked retry
+                        # of the unconditional install two steps before it.
+                        with self.subTest(workflow=path.name, job=job_name, step=index):
+                            self.assertIn(index, retries)
                         continue
                     checked += 1
                     with self.subTest(workflow=path.name, job=job_name, step=index):
@@ -603,6 +610,7 @@ class TheRepository(unittest.TestCase):
                         self.assertNotIn("continue-on-error", retry)
                         self.assertEqual(retry.get("with"), step.get("with"))
                         self.assertEqual(retry["uses"], step["uses"])
+                        retries.add(index + 2)
         self.assertGreater(checked, 0)
 
     def test_the_patched_version_rule(self) -> None:
