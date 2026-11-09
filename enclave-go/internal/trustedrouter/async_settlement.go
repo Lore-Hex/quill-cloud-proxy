@@ -141,10 +141,23 @@ func (c *Client) bindAsyncAuthorization(a *Authorization, req *qtypes.OpenAIChat
 	asyncLog("async_negotiated", "")
 }
 
+// errCacheConvention is returned when the stream's own cache convention
+// disagrees with the frozen candidate's. It takes the same path as any other
+// ineligible usage: the settle is synchronous.
+var errCacheConvention = errors.New("cache_convention_mismatch")
+
 func buildAsyncSettlement(a *asyncAuthorization, usage Usage) (asyncSettlementRequest, error) {
 	var body asyncSettlementRequest
 	if usage.UsageEstimated || usage.RouteType != a.terminal.RouteType || usage.Streamed != a.terminal.Streamed || usage.SelectedEndpoint == "" || (usage.FinishReason == "heartbeat_lost" || usage.FinishReason == "cap_reached") {
 		return body, errors.New("incomplete_or_mismatched_usage")
+	}
+	// The adapter says whether the input count left out the cached tokens
+	// (usage.InputExcludesCache); the frozen candidate says how the router will
+	// read that count. Price nothing on a count read the other way.
+	for _, candidate := range a.snapshot.Candidates() {
+		if candidate.EndpointID == usage.SelectedEndpoint && usage.InputExcludesCache != (candidate.PromptConvention == "excludes_cache") {
+			return body, errCacheConvention
+		}
 	}
 	observed := a.requested
 	observed.RouteType, observed.Streamed = usage.RouteType, usage.Streamed
@@ -194,7 +207,11 @@ func (c *Client) tryAsyncSettlement(ctx context.Context, auth *Authorization, us
 		body, err := buildAsyncSettlement(a, usage)
 		if err != nil {
 			a.ineligible = true
-			asyncLog("fallback", "ineligible_usage")
+			reason := "ineligible_usage"
+			if errors.Is(err, errCacheConvention) {
+				reason = "cache_convention_mismatch"
+			}
+			asyncLog("fallback", reason)
 			return nil, nil
 		}
 		a.frozen, err = json.Marshal(body)

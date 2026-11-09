@@ -2713,6 +2713,7 @@ func applyCacheUsage(usage *trustedrouter.Usage, result adapter.StreamResult) {
 	usage.PriceTierInputTokens = result.Usage.PriceTierInputTokens
 	usage.CacheReadInputTokens = result.Usage.CacheReadInputTokens
 	usage.CacheCreationInputTokens = result.Usage.CacheCreationInputTokens
+	usage.InputExcludesCache = result.Usage.InputExcludesCache
 	if tier, ok := canonicalServiceTier(result.Usage.ServiceTier); ok {
 		usage.ServiceTier = tier
 	}

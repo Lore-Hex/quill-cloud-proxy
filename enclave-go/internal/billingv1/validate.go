@@ -281,17 +281,45 @@ func joinPath(path, name string) string {
 	}
 	return path + "." + name
 }
+
+// PromptConvention is the one statement of whose input count leaves out its
+// cached tokens: anthropic's own endpoints, and the anthropic/ models of the
+// two resellers whose streams the enclave relays in Anthropic's own format
+// (amazon-bedrock and google-vertex; see llm.InvokeStreaming). Every other
+// candidate, including those resellers' other models, is priced with an input
+// count that includes them. The router's settle path applies the same rule.
+//
+// Other native relays exist in the enclave and are outside the rule: azure
+// sends a claude- model through its Anthropic wire client (llm/azure.go,
+// azureUsesAnthropicWire), zero-g does the same for a claude- upstream id or
+// an anthropic/ model (llm/zero_g.go, zeroGUsesAnthropicFormat), and the
+// legacy vertex slug reaches the native gcpClient (llm/multi.go). The catalog
+// has no such Credits endpoint, and the router's
+// tests/test_resold_claude_cache_accounting.py
+// (test_the_rule_is_the_enclaves_dispatch_over_the_whole_catalog) fails if one
+// appears; that is when the rule must grow, here and in the router together.
+// Until then the settle path refuses to price asynchronously a stream whose
+// own convention disagrees with the frozen candidate's (trustedrouter
+// buildAsyncSettlement).
+func PromptConvention(provider, modelID string) string {
+	if provider == "anthropic" {
+		return "excludes_cache"
+	}
+	if (provider == "amazon-bedrock" || provider == "google-vertex") && strings.HasPrefix(modelID, "anthropic/") {
+		return "excludes_cache"
+	}
+	return "includes_cache"
+}
+
 func validateSemantics(v any) error {
 	switch x := v.(type) {
 	case Candidate:
 		if x.RequestFeeMicro != 0 {
 			return failure("request_fee")
 		}
-		convention := "includes_cache"
-		if x.Provider == "anthropic" {
-			convention = "excludes_cache"
-		}
-		if x.PromptConvention != convention || !strings.HasPrefix(x.ModelID, x.Provider+"/") {
+		// Every provider slug is accepted, and a provider may serve another
+		// publisher's model; the convention follows PromptConvention exactly.
+		if x.PromptConvention != PromptConvention(x.Provider, x.ModelID) {
 			return failure("unsupported_adapter")
 		}
 		previous := int64(-1)

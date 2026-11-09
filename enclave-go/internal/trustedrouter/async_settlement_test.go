@@ -7,6 +7,7 @@ import (
 	"crypto/sha256"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -300,7 +301,7 @@ func TestAsyncResponseDecisionsAndRetryIdentity(t *testing.T) {
 }
 
 func TestAsyncExpiryAndUsageFallback(t *testing.T) {
-	for _, name := range []string{"expired", "margin", "boundary", "estimated", "route", "stream", "missing_endpoint", "additional_cost", "private_tier", "service_tier", "negative", "parsed_only", "flag_disabled", "ineligible"} {
+	for _, name := range []string{"expired", "margin", "boundary", "estimated", "route", "stream", "missing_endpoint", "additional_cost", "private_tier", "service_tier", "negative", "cache_convention", "parsed_only", "flag_disabled", "ineligible"} {
 		t.Run(name, func(t *testing.T) {
 			a := fixtureAuthorization(t, true)
 			c := bindFixture(t, a)
@@ -330,6 +331,9 @@ func TestAsyncExpiryAndUsageFallback(t *testing.T) {
 				u.ServiceTier = "priority"
 			case "negative":
 				u.InputTokens = -1
+			case "cache_convention":
+				// The fixture candidate includes the cache; a stream that left it out disagrees.
+				u.InputExcludesCache = true
 			case "parsed_only":
 				a.async = nil
 			case "flag_disabled":
@@ -374,47 +378,89 @@ func TestAsyncExpiryAndUsageFallback(t *testing.T) {
 	}
 }
 
-func TestAsyncBuilderAllPositiveBillingCases(t *testing.T) {
+type billingCase struct {
+	Name     string                     `json:"name"`
+	Snapshot json.RawMessage            `json:"snapshot"`
+	Raw      json.RawMessage            `json:"raw_usage"`
+	Endpoint string                     `json:"selected_endpoint"`
+	Charge   *int64                     `json:"expected_charge_micro"`
+	Usage    *billingv1.NormalizedUsage `json:"expected_normalized_usage"`
+}
+
+// mergedBillingCases is the merged billing contract: the base fixture minus
+// the cases its supplement supersedes, then the supplement.
+func mergedBillingCases(t *testing.T) []billingCase {
+	t.Helper()
 	var f struct {
-		Cases []struct {
-			Name     string                     `json:"name"`
-			Snapshot json.RawMessage            `json:"snapshot"`
-			Raw      json.RawMessage            `json:"raw_usage"`
-			Endpoint string                     `json:"selected_endpoint"`
-			Charge   *int64                     `json:"expected_charge_micro"`
-			Usage    *billingv1.NormalizedUsage `json:"expected_normalized_usage"`
-		} `json:"cases"`
+		Cases []billingCase `json:"cases"`
 	}
 	if err := json.Unmarshal(asyncFixture(t, "billing_v1"), &f); err != nil {
 		t.Fatal(err)
 	}
-	count := 0
+	var s struct {
+		Superseded []string      `json:"superseded_cases"`
+		Cases      []billingCase `json:"cases"`
+	}
+	if err := json.Unmarshal(asyncFixture(t, "billing_v1_providers"), &s); err != nil {
+		t.Fatal(err)
+	}
+	superseded := map[string]bool{}
+	for _, name := range s.Superseded {
+		superseded[name] = true
+	}
+	var cases []billingCase
 	for _, tc := range f.Cases {
+		if !superseded[tc.Name] {
+			cases = append(cases, tc)
+		}
+	}
+	return append(cases, s.Cases...)
+}
+
+// bindBillingCase binds the fixture authorization to the case's snapshot and
+// returns the usage a correct stream for its selected candidate would produce,
+// including the stream's cache convention.
+func bindBillingCase(t *testing.T, tc billingCase) (*Authorization, Usage) {
+	t.Helper()
+	a := fixtureAuthorization(t, true)
+	bindFixture(t, a)
+	s, err := billingv1.ParseSnapshot(tc.Snapshot)
+	if err != nil {
+		t.Fatal(err)
+	}
+	a.async.snapshot = s
+	a.async.raw = tc.Snapshot
+	a.async.terminal.SnapshotHash, _ = billingv1.CanonicalHash(s)
+	var raw billingv1.RawUsage
+	if err := json.Unmarshal(tc.Raw, &raw); err != nil {
+		t.Fatal(err)
+	}
+	u := fixtureUsage()
+	u.SelectedEndpoint = tc.Endpoint
+	u.InputTokens = int(raw.InputTokens)
+	u.OutputTokens = int(raw.OutputTokens)
+	u.CacheReadInputTokens = int(raw.CacheReadTokens)
+	u.CacheCreationInputTokens = int(raw.CacheCreationTokens)
+	u.ReasoningTokens = int(raw.ReasoningTokens)
+	for _, candidate := range s.Candidates() {
+		if candidate.EndpointID == tc.Endpoint {
+			u.InputExcludesCache = candidate.PromptConvention == "excludes_cache"
+		}
+	}
+	return a, u
+}
+
+// Every positive case of the merged billing contract prices the same through
+// the run-time builder as through the evaluator alone.
+func TestAsyncBuilderAllPositiveBillingCases(t *testing.T) {
+	count := 0
+	for _, tc := range mergedBillingCases(t) {
 		if tc.Charge == nil || len(tc.Snapshot) == 0 || len(tc.Raw) == 0 {
 			continue
 		}
 		count++
 		t.Run(tc.Name, func(t *testing.T) {
-			a := fixtureAuthorization(t, true)
-			bindFixture(t, a)
-			s, err := billingv1.ParseSnapshot(tc.Snapshot)
-			if err != nil {
-				t.Fatal(err)
-			}
-			a.async.snapshot = s
-			a.async.raw = tc.Snapshot
-			a.async.terminal.SnapshotHash, _ = billingv1.CanonicalHash(s)
-			var raw billingv1.RawUsage
-			if err := json.Unmarshal(tc.Raw, &raw); err != nil {
-				t.Fatal(err)
-			}
-			u := fixtureUsage()
-			u.SelectedEndpoint = tc.Endpoint
-			u.InputTokens = int(raw.InputTokens)
-			u.OutputTokens = int(raw.OutputTokens)
-			u.CacheReadInputTokens = int(raw.CacheReadTokens)
-			u.CacheCreationInputTokens = int(raw.CacheCreationTokens)
-			u.ReasoningTokens = int(raw.ReasoningTokens)
+			a, u := bindBillingCase(t, tc)
 			body, err := buildAsyncSettlement(a.async, u)
 			if err != nil {
 				t.Fatal(err)
@@ -427,8 +473,48 @@ func TestAsyncBuilderAllPositiveBillingCases(t *testing.T) {
 			}
 		})
 	}
-	if count < 20 {
+	if count < 30 {
 		t.Fatalf("only %d positive cases", count)
+	}
+}
+
+// The stream's own cache convention (the adapter's InputExcludesCache, copied
+// into Usage) must agree with the frozen candidate's, in both directions.
+// A disagreement makes the usage ineligible, like malformed usage: the settle
+// is synchronous.
+func TestAsyncCacheConventionMustMatchStream(t *testing.T) {
+	byName := map[string]billingCase{}
+	for _, tc := range mergedBillingCases(t) {
+		byName[tc.Name] = tc
+	}
+	for _, tc := range []struct {
+		name     string
+		excludes bool
+	}{
+		{"openai_cache", false},                  // openai: the input count includes the cache
+		{"anthropic_cache", true},                // anthropic: it leaves the cache out
+		{"bedrock_anthropic_cache", true},        // amazon-bedrock serving an anthropic/ model
+		{"vertex_anthropic_cache", true},         // google-vertex serving an anthropic/ model
+		{"bedrock_other_publisher_cache", false}, // amazon-bedrock serving another publisher's model
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			c, ok := byName[tc.name]
+			if !ok || c.Charge == nil {
+				t.Fatalf("no positive case %s", tc.name)
+			}
+			a, u := bindBillingCase(t, c)
+			if u.InputExcludesCache != tc.excludes {
+				t.Fatalf("candidate convention excludes=%v, want %v", u.InputExcludesCache, tc.excludes)
+			}
+			body, err := buildAsyncSettlement(a.async, u)
+			if err != nil || body.Terminal.ChargeMicro != *c.Charge {
+				t.Fatalf("agreement: %+v (%v)", body.Terminal, err)
+			}
+			u.InputExcludesCache = !tc.excludes
+			if _, err = buildAsyncSettlement(a.async, u); !errors.Is(err, errCacheConvention) {
+				t.Fatalf("disagreement: %v", err)
+			}
+		})
 	}
 }
 
@@ -473,6 +559,10 @@ var asyncFixturePins = map[string]string{
 	"status_refunded_v1":   "ad00e267dce089140deadd0fbb2cadc4603c990c8d76fcd5acafc9308bee6707",
 	"status_settled_v1":    "d0ec592ee60f6a79f721b0af780b50dc2530e19a54cb0a328ea7497307b28876",
 	"sync_required_v1":     "5b3d999ea9ff61829d0494de2f473787cc9bdace9bdc39d36e22ec1d2089fddb",
+
+	// The every-provider supplement to billing_v1 (router handoff); the base files above are unchanged.
+	"billing_v1_providers":        "b74f40c3c079569e63bc8d296ca2a9953e9b09b5b2a5b6eb24b1cf85a2df45f4",
+	"billing_v1_providers.schema": "de35dba91ae2970afee42f3983de2351264721228ebd8e31a4436b7bf206dc15",
 }
 
 func TestAsyncAllSyncRequiredReasons(t *testing.T) {

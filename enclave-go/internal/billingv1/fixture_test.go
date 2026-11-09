@@ -13,8 +13,22 @@ import (
 	"testing"
 )
 
-const fixturePath = "../trustedrouter/testdata/async_settlement/billing_v1.json"
+const fixtureDir = "../trustedrouter/testdata/async_settlement/"
+const fixturePath = fixtureDir + "billing_v1.json"
 const fixtureSHA = "4aedf13e4ba30b4d1f0767f829e790c37ce3f957a39c15d1eb6aff8c8734fd81"
+const rulesPath = fixtureDir + "billing_v1.rules.json"
+const rulesSHA = "ab9bac52a666efb4e268dbec210c1a598e490815bf25501ccc0759fe722ce5c4"
+const baseCaseCount, baseRuleCount = 759, 374
+
+// The router's supplement for every provider. The base files stay byte for
+// byte as pinned above; the contract is the base minus the names the
+// supplement supersedes, then the supplement's own cases and rules, in order.
+const supplementPath = fixtureDir + "billing_v1_providers.json"
+const supplementSHA = "b74f40c3c079569e63bc8d296ca2a9953e9b09b5b2a5b6eb24b1cf85a2df45f4"
+const supplementSchemaPath = fixtureDir + "billing_v1_providers.schema.json"
+const supplementSchemaSHA = "de35dba91ae2970afee42f3983de2351264721228ebd8e31a4436b7bf206dc15"
+const supplementCaseCount, supplementRuleCount = 24, 18
+const supersededCaseCount, supersededRuleCount = 4, 4
 
 type fixtureCase struct {
 	RawJSONHex                   *string          `json:"raw_json_hex"`
@@ -43,35 +57,117 @@ type fixture struct {
 	Identity map[string]json.RawMessage `json:"envelope_identity"`
 	Cases    []fixtureCase              `json:"cases"`
 }
+type fixtureRule struct {
+	Name          string   `json:"name"`
+	Cases         []string `json:"cases"`
+	PositiveCases []string `json:"positive_cases"`
+}
+type supplement struct {
+	Version         int           `json:"fixture_version"`
+	BaseFixtureSHA  string        `json:"base_fixture_sha256"`
+	BaseRulesSHA    string        `json:"base_rules_sha256"`
+	SupersededCases []string      `json:"superseded_cases"`
+	SupersededRules []string      `json:"superseded_rules"`
+	Cases           []fixtureCase `json:"cases"`
+	Rules           []fixtureRule `json:"rules"`
+}
 
+func readPinned(t *testing.T, path, sha string) []byte {
+	t.Helper()
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := fmt.Sprintf("%x", sha256.Sum256(raw)); got != sha {
+		t.Fatalf("%s changed: %s", path, got)
+	}
+	return raw
+}
+func loadSupplement(t *testing.T) supplement {
+	t.Helper()
+	var s supplement
+	if err := json.Unmarshal(readPinned(t, supplementPath, supplementSHA), &s); err != nil {
+		t.Fatal(err)
+	}
+	if s.Version != 1 || s.BaseFixtureSHA != fixtureSHA || s.BaseRulesSHA != rulesSHA || len(s.Cases) != supplementCaseCount || len(s.Rules) != supplementRuleCount || len(s.SupersededCases) != supersededCaseCount || len(s.SupersededRules) != supersededRuleCount {
+		t.Fatalf("unexpected supplement: version %d, base %s/%s, %d cases, %d rules, %d/%d superseded", s.Version, s.BaseFixtureSHA, s.BaseRulesSHA, len(s.Cases), len(s.Rules), len(s.SupersededCases), len(s.SupersededRules))
+	}
+	return s
+}
+
+// loadFixture returns the merged contract: the base cases without the names
+// the supplement supersedes, in base order, then the supplement's cases.
 func loadFixture(t *testing.T) fixture {
 	t.Helper()
-	raw, err := os.ReadFile(fixturePath)
-	if err != nil {
-		t.Fatal(err)
-	}
 	var f fixture
-	if err = json.Unmarshal(raw, &f); err != nil {
+	if err := json.Unmarshal(readPinned(t, fixturePath, fixtureSHA), &f); err != nil {
 		t.Fatal(err)
 	}
+	if f.Version != 1 || len(f.Cases) != baseCaseCount {
+		t.Fatalf("unexpected fixture version/count: %d/%d", f.Version, len(f.Cases))
+	}
+	s := loadSupplement(t)
+	f.Cases = mergeSupplement(t, f.Cases, s.Cases, s.SupersededCases, func(c fixtureCase) string { return c.Name })
 	return f
 }
+
+// mergeSupplement removes each superseded name from the base exactly once and
+// appends the supplement. A supplement entry may take a superseded name (a
+// successor rule over the new declaration); every name in the result is unique.
+func mergeSupplement[T any](t *testing.T, base, added []T, superseded []string, name func(T) string) []T {
+	t.Helper()
+	remove := map[string]bool{}
+	for _, n := range superseded {
+		if remove[n] {
+			t.Fatalf("superseded twice: %s", n)
+		}
+		remove[n] = true
+	}
+	merged := []T{}
+	inBase, kept := map[string]bool{}, map[string]bool{}
+	for _, entry := range base {
+		n := name(entry)
+		if inBase[n] {
+			t.Fatalf("duplicate base entry %s", n)
+		}
+		inBase[n] = true
+		if remove[n] {
+			delete(remove, n)
+			continue
+		}
+		kept[n] = true
+		merged = append(merged, entry)
+	}
+	for n := range remove {
+		t.Fatalf("superseded name absent from the base: %s", n)
+	}
+	seen := map[string]bool{}
+	for _, entry := range added {
+		n := name(entry)
+		if kept[n] {
+			t.Fatalf("supplement entry %s has the name of a base entry that is not superseded", n)
+		}
+		if seen[n] {
+			t.Fatalf("duplicate supplement entry %s", n)
+		}
+		seen[n] = true
+		merged = append(merged, entry)
+	}
+	return merged
+}
 func TestFixturePin(t *testing.T) {
-	raw, err := os.ReadFile(fixturePath)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if got := fmt.Sprintf("%x", sha256.Sum256(raw)); got != fixtureSHA {
-		t.Fatalf("fixture changed: %s", got)
-	}
+	readPinned(t, fixturePath, fixtureSHA)
+	readPinned(t, rulesPath, rulesSHA)
+	readPinned(t, supplementPath, supplementSHA)
+	readPinned(t, supplementSchemaPath, supplementSchemaSHA)
 }
 
 // Every literal case executes through the production validator/evaluator. No
 // expected charges, normalized counts or hashes are generated by Go or Python.
 func TestFixtures(t *testing.T) {
 	f := loadFixture(t)
-	if f.Version != 1 || len(f.Cases) != 759 {
-		t.Fatalf("unexpected fixture version/count: %d/%d", f.Version, len(f.Cases))
+	if len(f.Cases) != baseCaseCount-supersededCaseCount+supplementCaseCount {
+		t.Fatalf("unexpected merged count: %d", len(f.Cases))
 	}
 	executed := map[string]bool{}
 	for _, c := range f.Cases {
@@ -83,29 +179,28 @@ func TestFixtures(t *testing.T) {
 	}
 	t.Run("rules_manifest", func(t *testing.T) { checkRules(t, executed) })
 }
+
+// checkRules merges the base rules with the supplement's the same way and
+// requires every case a merged rule names to have run successfully, so a rule
+// that still names a superseded case fails here.
 func checkRules(t *testing.T, executed map[string]bool) {
 	t.Helper()
-	raw, err := os.ReadFile("../trustedrouter/testdata/async_settlement/billing_v1.rules.json")
-	if err != nil {
+	var base []fixtureRule
+	if err := json.Unmarshal(readPinned(t, rulesPath, rulesSHA), &base); err != nil {
 		t.Fatal(err)
 	}
-	var rules []struct {
-		Name          string   `json:"name"`
-		Cases         []string `json:"cases"`
-		PositiveCases []string `json:"positive_cases"`
+	if len(base) != baseRuleCount {
+		t.Fatalf("rules count: %d", len(base))
 	}
-	if err = json.Unmarshal(raw, &rules); err != nil {
-		t.Fatal(err)
+	s := loadSupplement(t)
+	rules := mergeSupplement(t, base, s.Rules, s.SupersededRules, func(r fixtureRule) string { return r.Name })
+	if len(rules) != baseRuleCount-supersededRuleCount+supplementRuleCount {
+		t.Fatalf("merged rules count: %d", len(rules))
 	}
-	if len(rules) != 374 {
-		t.Fatalf("rules count: %d", len(rules))
-	}
-	seen := map[string]bool{}
 	for _, r := range rules {
-		if seen[r.Name] || r.Name == "" || len(r.Cases) == 0 {
+		if r.Name == "" || len(r.Cases) == 0 {
 			t.Fatalf("invalid rule %q", r.Name)
 		}
-		seen[r.Name] = true
 		for _, name := range append(r.Cases, r.PositiveCases...) {
 			if !executed[name] {
 				t.Errorf("rule %s not exercised successfully by %s", r.Name, name)

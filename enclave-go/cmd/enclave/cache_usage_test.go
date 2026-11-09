@@ -43,6 +43,27 @@ func TestApplyCacheUsageCarriesPrivatePriceTierInput(t *testing.T) {
 	}
 }
 
+// The stream's cache convention reaches settlement unchanged, in both states,
+// so the async settle can refuse a frozen candidate that reads the input count
+// the other way. Without a usage object nothing is copied and the convention
+// stays unset, as every other usage field does.
+func TestApplyCacheUsageCarriesStreamCacheConvention(t *testing.T) {
+	for _, excludes := range []bool{true, false} {
+		usage := trustedrouter.Usage{}
+		applyCacheUsage(&usage, adapter.StreamResult{Usage: &adapter.StreamUsage{
+			InputTokens: 4, OutputTokens: 2, CacheReadInputTokens: 8, CacheCreationInputTokens: 2, InputExcludesCache: excludes,
+		}})
+		if usage.InputExcludesCache != excludes || usage.CacheReadInputTokens != 8 || usage.CacheCreationInputTokens != 2 {
+			t.Fatalf("excludes=%v: %+v", excludes, usage)
+		}
+	}
+	usage := trustedrouter.Usage{}
+	applyCacheUsage(&usage, adapter.StreamResult{})
+	if usage.InputExcludesCache || usage.CacheReadInputTokens != 0 {
+		t.Fatalf("no usage object: %+v", usage)
+	}
+}
+
 // TestFusionUsageTotalsFoldPerChild verifies aggregated orchestration usage
 // folds cache PER CHILD by provider convention, so a mixed panel stays coherent:
 // an Anthropic full cache hit (input 0, cache_read 6034, InputExcludesCache)

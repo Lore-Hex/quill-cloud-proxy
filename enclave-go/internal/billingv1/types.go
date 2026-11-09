@@ -16,10 +16,12 @@ type Tier struct {
 }
 
 // Candidate is a detached view of one frozen endpoint. Modifying it cannot
-// change the Snapshot from which it was obtained.
+// change the Snapshot from which it was obtained. Provider is any provider slug
+// in the identity alphabet; PromptConvention must be what the PromptConvention
+// function gives for the provider and model.
 type Candidate struct {
 	EndpointID          string `json:"endpoint_id" check:"identity"`
-	Provider            string `json:"provider" literal:"openai|anthropic"`
+	Provider            string `json:"provider" check:"identity"`
 	ModelID             string `json:"model_id" check:"identity"`
 	UsageType           string `json:"usage_type" literal:"Credits"`
 	PriceHistoryVersion int64  `json:"price_history_version" literal:"1"`

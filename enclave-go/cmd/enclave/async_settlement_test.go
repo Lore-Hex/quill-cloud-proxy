@@ -38,8 +38,25 @@ func (w *asyncOutput) String() string { w.mu.Lock(); defer w.mu.Unlock(); return
 
 type asyncCleanupProvider struct{ release, stopped chan struct{} }
 
+// The authorization under test is an openai endpoint, so the stream carries
+// the shape the enclave's OpenAI-compatible translator produces: no native
+// message_start usage, the cache-inclusive counts on message_delta. A native
+// Anthropic shape under this candidate is what the async settle now refuses
+// (internal/trustedrouter: TestAsyncCacheConventionMustMatchStream).
 func (p *asyncCleanupProvider) InvokeStreaming(ctx context.Context, req *types.OpenAIChatRequest, native *types.AnthropicMessagesRequest, out io.Writer, options ...llm.InvokeOptions) error {
-	if err := (&fakeStreamingLLM{}).InvokeStreaming(ctx, req, native, out, options...); err != nil {
+	if _, err := fmt.Fprint(out, `event: content_block_delta
+data: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"Hello"}}
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":" world"}}
+
+event: message_delta
+data: {"type":"message_delta","delta":{"stop_reason":"end_turn","stop_sequence":null},"usage":{"input_tokens":2,"output_tokens":2}}
+
+event: message_stop
+data: {"type":"message_stop"}
+
+`); err != nil {
 		return err
 	}
 	<-ctx.Done()
