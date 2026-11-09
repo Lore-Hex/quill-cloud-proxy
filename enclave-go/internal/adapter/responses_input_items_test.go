@@ -282,7 +282,7 @@ func TestResponsesInputItemsAssistantTurns(t *testing.T) {
 			[]types.OpenAIChatMessage{folded, {Role: "user", Content: "continue"}, {Role: "assistant", Content: "", ToolCalls: []types.OpenAIToolCall{toolCall("c3")}}}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			messages, err := responseInputMessages(tc.input)
+			messages, err := responseInputMessages(tc.input, nil)
 			if err != nil || !reflect.DeepEqual(messages, tc.want) {
 				t.Fatalf("messages = %#v, error = %v, want %#v", messages, err, tc.want)
 			}
