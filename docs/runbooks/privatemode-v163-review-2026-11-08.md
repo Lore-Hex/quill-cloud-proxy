@@ -91,7 +91,13 @@ attributes are content-free. The source diff does not remove these limitations.
 - `.github/workflows/reproduce-privatemode-v163.yml` provides credential-free
   reproduction of these exact inputs and retained comparison artifacts. It
   neither approves recovery ownership nor publishes pins or deploys. Its
-  image job uses the same pinned Nix 2.31.2 used for the previous review.
+  image job uses the repository's pinned Determinate Nix v3.23.3 installer,
+  with per-build sandboxing required and sandbox fallback disabled.
+  The first workflow attempt failed before policy generation because release
+  downloads did not follow redirects; unchanged SHA-256 pins now verify with
+  redirect-following. Its unsandboxed image job also stopped on Nix's shared
+  home-directory purity check. The sandboxed replacement must pass; neither
+  failed attempt is accepted as reproduction evidence.
 - Packaged positive encrypted qualification remains pending independent
   policy reproduction.
 - The requested secondary Claude CLI review could not start because its

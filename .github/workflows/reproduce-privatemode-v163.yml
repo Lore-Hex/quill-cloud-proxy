@@ -91,32 +91,29 @@ jobs:
           (root / 'policy-comparison.json').write_text(json.dumps(evidence, indent=2) + '\n')
           print(json.dumps(evidence))
           PY
+      - uses: DeterminateSystems/nix-installer-action@c5a866b6ab867e88becbed4467b93592bce69f8a # v21
+        if: matrix.kind == 'images'
+        with:
+          source-tag: v3.23.3
+          github-token: ""
       - name: Rebuild all five security-component images without vendor caches
         if: matrix.kind == 'images'
         run: |
           set -euo pipefail
-          mkdir "$RUNNER_TEMP/pm-images"
-          docker run --rm --cpus 4 --memory 10g --pids-limit 512 \
-            --cap-drop ALL --security-opt no-new-privileges \
-            --mount "type=bind,source=$RUNNER_TEMP/pm-source,target=/src,readonly" \
-            --mount "type=bind,source=$RUNNER_TEMP/pm-images,target=/out" \
-            --entrypoint /bin/sh \
-            nixos/nix@sha256:c7cc6c8cb5d81bed19997247629604708fda95c99c43ac362daa05b6a68e8a24 \
-            -ec '
-              nix --version
-              nix --extra-experimental-features "nix-command flakes" build \
-                --option accept-flake-config false \
-                --option substituters https://cache.nixos.org --option extra-substituters "" \
-                --option sandbox false --option build-users-group "" --option builders "" \
-                --option connect-timeout 15 --option stalled-download-timeout 60 \
-                --option download-attempts 2 --max-jobs 2 --cores 2 \
-                --out-link /tmp/result --impure --expr '\''
-                  let p = (builtins.getFlake "path:/src").legacyPackages.x86_64-linux;
-                  in p.linkFarmFromDrvs "privatemode-security-images"
-                    (map p.toOciImage [p.attestation-agent.image p.disk-mounter.image
-                      p.inference-proxy.image p.kernel-log.image p.secret-service.image])'\''
-              cp -RL /tmp/result/. /out/
-            '
+          export NIX_CONFIG=$'experimental-features = nix-command flakes\nsandbox = true\nsandbox-fallback = false\naccept-flake-config = false\nsubstituters = https://cache.nixos.org\nextra-substituters =\nhttp2 = false'
+          test "$(nix config show sandbox)" = true
+          test "$(nix config show sandbox-fallback)" = false
+          test "$(nix config show substituters)" = https://cache.nixos.org
+          test -z "$(nix config show extra-substituters)"
+          nix --version | tee "$RUNNER_TEMP/pm-evidence/nix-version.txt"
+          nix build --option builders '' \
+            --option connect-timeout 15 --option stalled-download-timeout 60 \
+            --option download-attempts 2 --max-jobs 2 --cores 2 \
+            --out-link "$RUNNER_TEMP/pm-images" --impure --expr "
+              let p = (builtins.getFlake \"path:$RUNNER_TEMP/pm-source\").legacyPackages.x86_64-linux;
+              in p.linkFarmFromDrvs \"privatemode-security-images\"
+                (map p.toOciImage [p.attestation-agent.image p.disk-mounter.image
+                  p.inference-proxy.image p.kernel-log.image p.secret-service.image])"
           python3 - <<'PY'
           import hashlib, json, os
           from pathlib import Path
