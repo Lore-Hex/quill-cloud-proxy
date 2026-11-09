@@ -36,7 +36,7 @@ jobs:
         run: |
           set -euo pipefail
           mkdir -p "$RUNNER_TEMP/pm-source" "$RUNNER_TEMP/pm-evidence"
-          curl --fail --silent --show-error --max-time 300 \
+          curl --location --fail --silent --show-error --max-time 300 \
             "https://codeload.github.com/edgelesssys/privatemode-public/tar.gz/$SOURCE_COMMIT" \
             -o "$RUNNER_TEMP/pm-source.tar.gz"
           printf '%s  %s\n' "$SOURCE_SHA256" "$RUNNER_TEMP/pm-source.tar.gz" | sha256sum -c -
@@ -49,12 +49,12 @@ jobs:
         run: |
           set -euo pipefail
           mkdir "$RUNNER_TEMP/pm-tools"
-          curl --fail --silent --show-error --max-time 300 \
+          curl --location --fail --silent --show-error --max-time 300 \
             https://github.com/edgelesssys/contrast/releases/download/v1.26.1/contrast-x86_64-linux \
             -o "$RUNNER_TEMP/pm-tools/contrast"
           printf '%s  %s\n' a13a8264c7557e9943df5566e60c3d14fc4f37d4bfef301f32a1def5461372d8 \
             "$RUNNER_TEMP/pm-tools/contrast" | sha256sum -c -
-          curl --fail --silent --show-error --max-time 120 \
+          curl --location --fail --silent --show-error --max-time 120 \
             https://github.com/mikefarah/yq/releases/download/v4.53.6/yq_linux_amd64 \
             -o "$RUNNER_TEMP/pm-tools/yq"
           printf '%s  %s\n' c5f056448f973ae7d39b5401949648a78f2dc1947d6a8eb65be60d5c504b9385 \
@@ -149,4 +149,4 @@ jobs:
           name: privatemode-v163-${{ matrix.kind }}-${{ github.run_id }}
           path: ${{ runner.temp }}/pm-evidence/
           if-no-files-found: error
-          retention-days: 30
+          retention-days: 1
