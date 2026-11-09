@@ -30,7 +30,7 @@ var chatRequestFields = map[string]struct{}{
 	"temperature": {}, "tool_choice": {}, "tools": {}, "top_a": {}, "top_k": {},
 	"top_logprobs": {}, "top_p": {}, "trace": {}, "user": {}, "web_search_options": {},
 	// TrustedRouter compatibility/extensions already supported by the gateway.
-	"allow_fallbacks": {}, "depth": {}, "enable_thinking": {}, "include_reasoning": {}, "max_output_tokens": {}, "n": {}, "repeat_penalty": {}, "store": {}, "tags": {}, "thinking": {}, "usage": {},
+	"allow_fallbacks": {}, "depth": {}, "enable_thinking": {}, "include_reasoning": {}, "max_output_tokens": {}, "n": {}, "output_config": {}, "repeat_penalty": {}, "store": {}, "tags": {}, "thinking": {}, "usage": {},
 }
 
 var unsupportedChatFields = map[string]struct{}{
@@ -78,6 +78,7 @@ var endpointCapabilityFields = map[string]string{
 	"prompt_cache_options":  "prompt_cache_key",
 	"reasoning":             "reasoning",
 	"reasoning_effort":      "reasoning",
+	"output_config":         "reasoning",
 	"thinking":              "reasoning",
 	"enable_thinking":       "reasoning",
 	"repetition_penalty":    "repetition_penalty",
@@ -100,6 +101,10 @@ var endpointCapabilityFields = map[string]string{
 // honor are stable 501s. Nothing accepted here may silently disappear.
 func ValidateChatRequestFields(raw map[string]json.RawMessage) (ChatRequestValidation, error) {
 	reasoningAlias, err := validateThinkingAlias(raw)
+	if err != nil {
+		return ChatRequestValidation{}, err
+	}
+	reasoningAlias, err = validateOutputConfigAlias(raw, reasoningAlias)
 	if err != nil {
 		return ChatRequestValidation{}, err
 	}

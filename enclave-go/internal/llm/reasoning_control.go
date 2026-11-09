@@ -48,7 +48,7 @@ func applyChatReasoningEffort(provider string, req *qtypes.OpenAIChatRequest, bo
 		}
 	}
 	switch normalizeDirectProvider(provider) {
-	case "meta", "openai", "gemini", "google-ai-studio", "deepseek", "zai", "kimi", "mistral", "alibaba", "tencent", "tinfoil", "grok", "baseten", "crusoe", "cerebras":
+	case "meta", "openai", "gemini", "google-ai-studio", "deepseek", "zai", "kimi", "mistral", "alibaba", "tencent", "tinfoil", "grok", "baseten", "crusoe", "cerebras", "fireworks":
 		// These chat endpoints consume top-level reasoning_effort. Responses
 		// arrives here with nested reasoning.effort; passing that object through
 		// silently used upstream defaults (including when effort was "none").

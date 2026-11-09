@@ -29,6 +29,10 @@ var longContextComboProviders = map[string][]string{
 	"meta-models/muse-spark-open":  {"baseten"},
 	"reflection/beam-1.0":          {"baseten"},
 	"nvidia/nemotron-3.5-super-vl": {"crusoe"},
+	// 256K with tools, reviewed 2026-11-07 (Baseten serves only 200K; DeepInfra
+	// is excluded from every combo). fusionWithoutOverlongMembers drops it from
+	// Liberty requests above that.
+	fusionNemotron3Ultra: {"fireworks", "nvidia-nim"},
 }
 
 func isLongContextCombo(model string) bool {

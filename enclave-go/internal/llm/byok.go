@@ -93,7 +93,6 @@ type openAICompatibleRequest struct {
 	Prediction           any                 `json:"prediction,omitempty"`
 	PromptCacheKey       string              `json:"prompt_cache_key,omitempty"`
 	PromptCacheRetention string              `json:"prompt_cache_retention,omitempty"`
-	AllowMissingThinking *bool               `json:"allow_missing_thinking,omitempty"`
 	PromptCacheOptions   map[string]any      `json:"prompt_cache_options,omitempty"`
 	ResponseFormat       any                 `json:"response_format,omitempty"`
 	Tools                []any               `json:"tools,omitempty"`
@@ -114,7 +113,8 @@ type openAICompatibleRequest struct {
 }
 
 type chatTemplateKwargs struct {
-	EnableThinking bool `json:"enable_thinking"`
+	EnableThinking       *bool `json:"enable_thinking,omitempty"`
+	AllowMissingThinking bool  `json:"allow_missing_thinking,omitempty"`
 }
 
 type openAICompatibleStreamOptions struct {
@@ -481,6 +481,7 @@ func buildOpenAICompatibleRequest(
 	if isAzureKimiDeployment(provider, upstreamID) {
 		reqBody.Thinking = nil
 	}
+	applyFireworksReasoningContract(provider, upstreamID, req, body, &reqBody)
 	applyGeminiParameterContract(provider, upstreamID, &reqBody)
 	if effort := googleAIStudioDefaultReasoningEffort(provider, upstreamID, req, body); effort != "" {
 		reqBody.ReasoningEffort = effort
@@ -496,7 +497,8 @@ func buildOpenAICompatibleRequest(
 	// at the provider chat-template boundary so ordinary OpenAI clients receive
 	// a usable visible answer. Keep the override scoped to this verified route.
 	if normalizeDirectProvider(provider) == "engy" && strings.EqualFold(strings.TrimSpace(upstreamID), "qwen3.6-35b-a3b") {
-		reqBody.ChatTemplateKwargs = &chatTemplateKwargs{EnableThinking: false}
+		disabled := false
+		reqBody.ChatTemplateKwargs = &chatTemplateKwargs{EnableThinking: &disabled}
 	}
 	if supportsStreamUsageOption(provider, upstreamID) {
 		reqBody.StreamOptions = &openAICompatibleStreamOptions{IncludeUsage: true}
@@ -512,8 +514,9 @@ func buildOpenAICompatibleRequest(
 		// its reasoning. OpenAI clients, and the fusion and agent loops whose
 		// earlier assistant turns another model wrote, do not echo it, so every
 		// turn after the first tool call would fail. Accept the degraded turn.
-		allow := true
-		reqBody.AllowMissingThinking = &allow
+		// Baseten reads the flag only from chat_template_kwargs; a top-level
+		// or extra_body copy is ignored and the 400 still fires.
+		reqBody.ChatTemplateKwargs = &chatTemplateKwargs{AllowMissingThinking: true}
 	}
 	if normalizeDirectProvider(provider) == "coralbricks" {
 		// Coral's optional retained-cache writes cost extra. The catalog uses
