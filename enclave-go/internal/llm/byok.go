@@ -481,6 +481,7 @@ func buildOpenAICompatibleRequest(
 	if isAzureKimiDeployment(provider, upstreamID) {
 		reqBody.Thinking = nil
 	}
+	applyFireworksReasoningContract(provider, upstreamID, req, body, &reqBody)
 	applyGeminiParameterContract(provider, upstreamID, &reqBody)
 	if effort := googleAIStudioDefaultReasoningEffort(provider, upstreamID, req, body); effort != "" {
 		reqBody.ReasoningEffort = effort
