@@ -176,7 +176,7 @@ func (p *CloudDNSProvider) WaitTXT(ctx context.Context, handle string) error {
 	defer cancel()
 	url := fmt.Sprintf("%s/projects/%s/managedZones/%s/changes/%s",
 		cloudDNSAPIBase, p.Project, p.ManagedZone, h.ChangeID)
-	last := errors.New("no response yet")
+	var last error
 	for {
 		var status cloudDNSChangeStatus
 		err := p.do(ctx, http.MethodGet, url, nil, &status)
