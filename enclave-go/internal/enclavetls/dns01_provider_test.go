@@ -7,11 +7,13 @@ import (
 	"crypto/x509"
 	"encoding/json"
 	"encoding/pem"
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"golang.org/x/crypto/acme/autocert"
 )
@@ -407,5 +409,446 @@ func TestSharedNameBootstrapsOnCacheMiss(t *testing.T) {
 	// tried to issue. Any earlier return means bootstrap did not happen.
 	if !strings.Contains(err.Error(), "acme") && !strings.Contains(err.Error(), "connect") {
 		t.Fatalf("returned before attempting the order: %v", err)
+	}
+}
+
+// --------------------------------------------------------------------------
+// Waiting for the challenge to be served
+// --------------------------------------------------------------------------
+
+func TestAddTXTHandleCarriesTheChangeID(t *testing.T) {
+	// WaitTXT polls the change that created the record, so the handle must
+	// remember its id. RemoveTXT must still reproduce the record set exactly.
+	var deleted cloudDNSChange
+	p, srv := newTestProvider(t, func(w http.ResponseWriter, r *http.Request) {
+		var c cloudDNSChange
+		body, _ := io.ReadAll(r.Body)
+		_ = json.Unmarshal(body, &c)
+		if len(c.Deletions) > 0 {
+			deleted = c
+		}
+		_, _ = w.Write([]byte(`{"id":"42","status":"pending"}`))
+	})
+	p.HTTPClient = redirect(t, srv)
+	ctx := context.Background()
+
+	handle, err := p.AddTXT(ctx, "_acme-challenge.api-aws.trustedrouter.com", "abc")
+	if err != nil {
+		t.Fatalf("AddTXT: %v", err)
+	}
+	var h cloudDNSHandle
+	if err := json.Unmarshal([]byte(handle), &h); err != nil {
+		t.Fatalf("handle is not JSON: %v", err)
+	}
+	if h.ChangeID != "42" {
+		t.Fatalf("change id = %q, want 42", h.ChangeID)
+	}
+	if err := p.RemoveTXT(ctx, handle); err != nil {
+		t.Fatalf("RemoveTXT: %v", err)
+	}
+	if len(deleted.Deletions) != 1 || deleted.Deletions[0].Rrdatas[0] != `"abc"` {
+		t.Fatalf("deletion lost the record set: %+v", deleted)
+	}
+}
+
+func TestWaitTXTPollsTheChangeUntilDone(t *testing.T) {
+	// "done" is Cloud DNS saying every authoritative server has the record,
+	// which is what the CA's resolver will ask.
+	old := cloudDNSChangePollInterval
+	cloudDNSChangePollInterval = time.Millisecond
+	t.Cleanup(func() { cloudDNSChangePollInterval = old })
+
+	var gets int
+	var path string
+	p, srv := newTestProvider(t, func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet {
+			t.Errorf("method = %s, want GET", r.Method)
+		}
+		gets++
+		path = r.URL.Path
+		status := "pending"
+		if gets >= 3 {
+			status = "done"
+		}
+		_, _ = w.Write([]byte(`{"id":"42","status":"` + status + `"}`))
+	})
+	p.HTTPClient = redirect(t, srv)
+
+	if err := p.WaitTXT(context.Background(), `{"name":"x.","changeId":"42"}`); err != nil {
+		t.Fatalf("WaitTXT: %v", err)
+	}
+	if gets != 3 {
+		t.Fatalf("polled %d times, want 3", gets)
+	}
+	if want := "/dns/v1/projects/quill-cloud-proxy/managedZones/trustedrouter-com/changes/42"; path != want {
+		t.Fatalf("path = %q, want %q", path, want)
+	}
+}
+
+func TestWaitTXTWithoutAChangeIDMakesNoCall(t *testing.T) {
+	called := false
+	p, srv := newTestProvider(t, func(http.ResponseWriter, *http.Request) { called = true })
+	p.HTTPClient = redirect(t, srv)
+
+	if err := p.WaitTXT(context.Background(), `{"name":"x."}`); err == nil {
+		t.Fatal("a handle with no change id was accepted")
+	}
+	if called {
+		t.Error("made an API call without a change id")
+	}
+}
+
+func TestWaitTXTSurfacesAnAPIRejection(t *testing.T) {
+	// Bounded, so a version that retries a 403 fails fast instead of hanging
+	// for the five-minute wait and then passing on the wrapped text.
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	var gets int
+	p, srv := newTestProvider(t, func(w http.ResponseWriter, r *http.Request) {
+		gets++
+		w.WriteHeader(http.StatusForbidden)
+		_, _ = w.Write([]byte(`{"error":{"message":"Forbidden: dns.changes.get"}}`))
+	})
+	p.HTTPClient = redirect(t, srv)
+
+	err := p.WaitTXT(ctx, `{"name":"x.","changeId":"42"}`)
+	if err == nil || !strings.Contains(err.Error(), "403") || !strings.Contains(err.Error(), "dns.changes.get") {
+		t.Fatalf("error should carry status and body: %v", err)
+	}
+	if gets != 1 {
+		t.Fatalf("a 403 was retried: %d calls", gets)
+	}
+}
+
+type waitingProvider struct {
+	cloudflareProvider
+	waited string
+}
+
+func (p *waitingProvider) WaitTXT(_ context.Context, handle string) error {
+	p.waited = handle
+	return nil
+}
+
+func TestAProviderThatCanWaitIsAskedInsteadOfTheResolver(t *testing.T) {
+	// The resolver dials UDP 1.1.1.1:53. A Nitro enclave has no network
+	// interface, so on AWS that wait can only time out, and every DNS-01 order
+	// died between publishing the TXT and asking the CA to validate it.
+	old := resolverTXTWait
+	resolverTXTWait = func(context.Context, string, string) error {
+		t.Error("the public resolver was used although the provider can wait")
+		return nil
+	}
+	t.Cleanup(func() { resolverTXTWait = old })
+
+	p := &waitingProvider{}
+	if err := waitForChallengeTXT(context.Background(), p, "handle-1", "x.", "v"); err != nil {
+		t.Fatal(err)
+	}
+	if p.waited != "handle-1" {
+		t.Fatalf("provider waited on %q, want handle-1", p.waited)
+	}
+}
+
+func TestCloudDNSIsAProviderThatCanWait(t *testing.T) {
+	var p DNS01Provider = &CloudDNSProvider{}
+	if _, ok := p.(DNS01PropagationWaiter); !ok {
+		t.Fatal("Cloud DNS must confirm propagation through its API, not the resolver")
+	}
+}
+
+func TestAProviderThatCannotWaitFallsBackToTheResolver(t *testing.T) {
+	old := resolverTXTWait
+	var asked string
+	resolverTXTWait = func(_ context.Context, name, _ string) error { asked = name; return nil }
+	t.Cleanup(func() { resolverTXTWait = old })
+
+	if err := waitForChallengeTXT(context.Background(), cloudflareProvider{}, "h", "_acme-challenge.x.", "v"); err != nil {
+		t.Fatal(err)
+	}
+	if asked != "_acme-challenge.x." {
+		t.Fatalf("resolver asked about %q", asked)
+	}
+}
+
+// fakeACME serves just enough of RFC 8555 for runDNS01Order to reach the
+// propagation wait: directory, nonce, account, order and one authorization
+// offering dns-01. The challenge itself is refused, so a test can tell whether
+// the order got past the wait. Signatures are not checked.
+func fakeACME(t *testing.T) *httptest.Server {
+	t.Helper()
+	var srv *httptest.Server
+	srv = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		u := srv.URL
+		w.Header().Set("Replay-Nonce", "nonce")
+		w.Header().Set("Content-Type", "application/json")
+		switch r.URL.Path {
+		case "/directory":
+			_, _ = io.WriteString(w, `{"newNonce":"`+u+`/nonce","newAccount":"`+u+`/account","newOrder":"`+u+`/order"}`)
+		case "/nonce":
+			w.WriteHeader(http.StatusOK)
+		case "/account":
+			w.Header().Set("Location", u+"/account/1")
+			w.WriteHeader(http.StatusCreated)
+			_, _ = io.WriteString(w, `{"status":"valid"}`)
+		case "/order":
+			w.Header().Set("Location", u+"/order/1")
+			w.WriteHeader(http.StatusCreated)
+			_, _ = io.WriteString(w, `{"status":"pending","identifiers":[{"type":"dns","value":"api-aws.trustedrouter.com"}],`+
+				`"authorizations":["`+u+`/authz/1"],"finalize":"`+u+`/finalize/1"}`)
+		case "/authz/1":
+			_, _ = io.WriteString(w, `{"status":"pending","identifier":{"type":"dns","value":"api-aws.trustedrouter.com"},`+
+				`"challenges":[{"type":"dns-01","url":"`+u+`/chal/1","token":"tok","status":"pending"}]}`)
+		case "/chal/1":
+			// Reached only after the wait returned; refusing here ends the
+			// order without serving finalize or a certificate.
+			w.Header().Set("Content-Type", "application/problem+json")
+			w.WriteHeader(http.StatusForbidden)
+			_, _ = io.WriteString(w, `{"type":"urn:ietf:params:acme:error:unauthorized","detail":"test stops here"}`)
+		default:
+			t.Errorf("order went past the challenge: %s %s", r.Method, r.URL.Path)
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	t.Cleanup(srv.Close)
+	return srv
+}
+
+type recordingProvider struct {
+	waitErr        error
+	added, removed []string
+	waited         []string
+}
+
+func (p *recordingProvider) Name() string { return "recording" }
+func (p *recordingProvider) AddTXT(_ context.Context, name, _ string) (string, error) {
+	p.added = append(p.added, name)
+	return "handle:" + name, nil
+}
+func (p *recordingProvider) RemoveTXT(_ context.Context, handle string) error {
+	p.removed = append(p.removed, handle)
+	return nil
+}
+func (p *recordingProvider) WaitTXT(_ context.Context, handle string) error {
+	p.waited = append(p.waited, handle)
+	return p.waitErr
+}
+
+func TestTheOrderWaitsThroughTheProviderAndCleansUp(t *testing.T) {
+	// End to end through runDNS01Order, so a call site that goes back to the
+	// public resolver fails here and not only in the helper's own test.
+	old := resolverTXTWait
+	resolverTXTWait = func(context.Context, string, string) error {
+		t.Error("the order used the public resolver")
+		return nil
+	}
+	t.Cleanup(func() { resolverTXTWait = old })
+
+	provider := &recordingProvider{}
+	acmeSrv := fakeACME(t)
+	err := runDNS01Order(context.Background(), DNS01Config{
+		DNSName:         "api-aws.trustedrouter.com",
+		ChallengeRecord: "_acme-challenge.api-aws.trustedrouter.com",
+		Provider:        provider,
+		Email:           "ops@example.com",
+		Cache:           &missCache{},
+		HTTPClient:      acmeSrv.Client(),
+	}, DNS01CA{DirectoryURL: acmeSrv.URL + "/directory"})
+
+	// The order must get past the wait to the challenge, which the fake CA
+	// refuses.
+	if err == nil || !strings.Contains(err.Error(), "acme accept challenge") {
+		t.Fatalf("order error = %v, want it to reach the challenge", err)
+	}
+	want := "handle:_acme-challenge.api-aws.trustedrouter.com"
+	if len(provider.waited) != 1 || provider.waited[0] != want {
+		t.Fatalf("provider waited on %q, want [%s]", provider.waited, want)
+	}
+	if len(provider.removed) != 1 || provider.removed[0] != want {
+		t.Fatalf("challenge record not cleaned up: removed=%q", provider.removed)
+	}
+}
+
+func TestAFailedProviderWaitFallsBackToTheResolver(t *testing.T) {
+	// GCP's confidential gateways may create records but not read changes. A
+	// 403 from WaitTXT must not end renewals that worked through the resolver.
+	old := resolverTXTWait
+	var asked string
+	resolverTXTWait = func(_ context.Context, name, _ string) error { asked = name; return nil }
+	t.Cleanup(func() { resolverTXTWait = old })
+
+	p := &recordingProvider{waitErr: errors.New("clouddns: get status 403")}
+	if err := waitForChallengeTXT(context.Background(), p, "h", "_acme-challenge.x.", "v"); err != nil {
+		t.Fatalf("fallback should have succeeded: %v", err)
+	}
+	if len(p.waited) != 1 || asked != "_acme-challenge.x." {
+		t.Fatalf("waited=%q resolver asked=%q; want the provider first, then the resolver", p.waited, asked)
+	}
+}
+
+func TestWaitTXTRetriesATransientError(t *testing.T) {
+	// On AWS the resolver fallback cannot succeed, so a single 503 must not
+	// end the API path.
+	old := cloudDNSChangePollInterval
+	cloudDNSChangePollInterval = time.Millisecond
+	t.Cleanup(func() { cloudDNSChangePollInterval = old })
+
+	var gets int
+	p, srv := newTestProvider(t, func(w http.ResponseWriter, r *http.Request) {
+		gets++
+		switch gets {
+		case 1:
+			w.WriteHeader(http.StatusServiceUnavailable)
+		case 2:
+			w.WriteHeader(http.StatusTooManyRequests)
+		default:
+			_, _ = w.Write([]byte(`{"id":"42","status":"done"}`))
+		}
+	})
+	p.HTTPClient = redirect(t, srv)
+
+	if err := p.WaitTXT(context.Background(), `{"name":"x.","changeId":"42"}`); err != nil {
+		t.Fatalf("WaitTXT gave up on a transient error: %v", err)
+	}
+	if gets != 3 {
+		t.Fatalf("polled %d times, want 3", gets)
+	}
+}
+
+func TestWaitTXTReturnsAPermanentRefusalAtOnce(t *testing.T) {
+	// A 403 will not change on retry; returning at once lets GCP's
+	// confidential gateways fall back to the resolver without delay.
+	old := cloudDNSChangePollInterval
+	cloudDNSChangePollInterval = time.Millisecond
+	t.Cleanup(func() { cloudDNSChangePollInterval = old })
+	// Bounded so a version that retries fails in seconds, not five minutes.
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	var gets int
+	p, srv := newTestProvider(t, func(w http.ResponseWriter, r *http.Request) {
+		gets++
+		w.WriteHeader(http.StatusForbidden)
+	})
+	p.HTTPClient = redirect(t, srv)
+
+	if err := p.WaitTXT(ctx, `{"name":"x.","changeId":"42"}`); err == nil {
+		t.Fatal("a 403 was treated as success")
+	}
+	if gets != 1 {
+		t.Fatalf("a 403 was retried: %d calls", gets)
+	}
+}
+
+func TestAnUndecodableAddStillReturnsAHandle(t *testing.T) {
+	// A 2xx means the record exists. Returning an error here would skip the
+	// cleanup and leave a stale TXT that makes the next add of the same
+	// record set fail with 409.
+	p, srv := newTestProvider(t, func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte(`not json`))
+	})
+	p.HTTPClient = redirect(t, srv)
+
+	handle, err := p.AddTXT(context.Background(), "_acme-challenge.x.trustedrouter.com", "v")
+	if err != nil {
+		t.Fatalf("AddTXT: %v", err)
+	}
+	if err := p.WaitTXT(context.Background(), handle); err == nil {
+		t.Fatal("a handle without a change id should make WaitTXT fail, so the resolver is used")
+	}
+}
+
+func TestBothWaitFailuresAreReported(t *testing.T) {
+	// On AWS the resolver can only time out; the provider's reason must
+	// survive in the returned error.
+	old := resolverTXTWait
+	resolverErr := errors.New("resolver timed out")
+	resolverTXTWait = func(context.Context, string, string) error { return resolverErr }
+	t.Cleanup(func() { resolverTXTWait = old })
+
+	waitErr := errors.New("clouddns: get status 403")
+	err := waitForChallengeTXT(context.Background(), &recordingProvider{waitErr: waitErr}, "h", "x.", "v")
+	if !errors.Is(err, waitErr) || !errors.Is(err, resolverErr) {
+		t.Fatalf("error = %v, want both causes", err)
+	}
+}
+
+func TestWaitTXTStopsWhenTheOrderIsCancelled(t *testing.T) {
+	// The retry loop must answer to the order's context, not only its own
+	// five-minute deadline.
+	old := cloudDNSChangePollInterval
+	cloudDNSChangePollInterval = 10 * time.Millisecond
+	t.Cleanup(func() { cloudDNSChangePollInterval = old })
+
+	p, srv := newTestProvider(t, func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusServiceUnavailable)
+	})
+	p.HTTPClient = redirect(t, srv)
+	ctx, cancel := context.WithCancel(context.Background())
+	time.AfterFunc(100*time.Millisecond, cancel)
+
+	err := waitTXTWithin(t, p, ctx, 2*time.Second)
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("error = %v, want context.Canceled", err)
+	}
+}
+
+// waitTXTWithin runs WaitTXT and fails the test if it has not returned in
+// time, so a loop that ignores its context fails in seconds, not at the
+// package timeout.
+func waitTXTWithin(t *testing.T, p *CloudDNSProvider, ctx context.Context, limit time.Duration) error {
+	t.Helper()
+	done := make(chan error, 1)
+	go func() { done <- p.WaitTXT(ctx, `{"name":"x.","changeId":"42"}`) }()
+	select {
+	case err := <-done:
+		return err
+	case <-time.After(limit):
+		t.Fatalf("WaitTXT still running %v later; it does not answer to its context", limit)
+		return nil
+	}
+}
+
+func TestWaitTXTRetriesArePaced(t *testing.T) {
+	// A retry that skips the pause spins on the API, and once the deadline
+	// passes it never sees ctx.Done again.
+	old := cloudDNSChangePollInterval
+	cloudDNSChangePollInterval = 20 * time.Millisecond
+	t.Cleanup(func() { cloudDNSChangePollInterval = old })
+
+	var gets int
+	p, srv := newTestProvider(t, func(w http.ResponseWriter, r *http.Request) {
+		gets++
+		w.WriteHeader(http.StatusTooManyRequests)
+	})
+	p.HTTPClient = redirect(t, srv)
+	ctx, cancel := context.WithTimeout(context.Background(), 300*time.Millisecond)
+	defer cancel()
+
+	if err := waitTXTWithin(t, p, ctx, 2*time.Second); !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("error = %v, want the deadline", err)
+	}
+	// 300ms at one call per 20ms is about 15; a hot loop makes hundreds.
+	if gets < 2 || gets > 30 {
+		t.Fatalf("made %d calls in 300ms; retries are not paced", gets)
+	}
+}
+
+func TestAnUndecodableDeleteIsACleanup(t *testing.T) {
+	p, srv := newTestProvider(t, func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusNoContent)
+	})
+	p.HTTPClient = redirect(t, srv)
+	if err := p.RemoveTXT(context.Background(), `{"name":"x.","type":"TXT","ttl":60,"rrdatas":["\"v\""]}`); err != nil {
+		t.Fatalf("a 2xx delete was reported as failed: %v", err)
+	}
+}
+
+func TestWaitTXTWithoutConfigurationFailsAtOnce(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	p := &CloudDNSProvider{Project: "quill-cloud-proxy"}
+	err := p.WaitTXT(ctx, `{"name":"x.","changeId":"42"}`)
+	if !errors.Is(err, errCloudDNSConfig) {
+		t.Fatalf("error = %v, want the configuration error at once", err)
 	}
 }
