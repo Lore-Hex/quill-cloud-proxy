@@ -43,6 +43,15 @@ def pin_set(value: str) -> set[str]:
     return pins
 
 
+class AwsReadError(ValueError):
+    """The AWS CLI call itself failed: no credentials, no CLI, denied, timed out.
+
+    "Could not look", as distinct from a ValueError raised after a successful
+    read revealed something wrong. Callers that may downgrade the former must
+    never downgrade the latter.
+    """
+
+
 def aws_json(region: str, *args: str) -> dict:
     try:
         result = subprocess.run(
@@ -52,13 +61,16 @@ def aws_json(region: str, *args: str) -> dict:
             timeout=60,
             check=True,
         )
+    except (OSError, subprocess.SubprocessError):
+        # Task definitions can contain secret values. Never include cloud
+        # stdout/stderr or exception details in operator logs.
+        raise AwsReadError(f"AWS {args[0]} {args[1]} failed in {region}") from None
+    try:
         payload = json.loads(result.stdout)
         require(isinstance(payload, dict), "unexpected AWS response shape")
         return payload
-    except (OSError, subprocess.SubprocessError, ValueError):
-        # Task definitions can contain secret values. Never include cloud
-        # stdout/stderr or exception details in operator logs.
-        raise ValueError(f"AWS {args[0]} {args[1]} failed in {region}") from None
+    except ValueError:
+        raise ValueError(f"AWS {args[0]} {args[1]} returned an unexpected response in {region}") from None
 
 
 def service_snapshot(region: str, cluster: str, service: str) -> dict:

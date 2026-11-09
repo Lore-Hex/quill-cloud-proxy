@@ -27,6 +27,7 @@ var contractValueEnums = map[string]string{
 	"prompt_cache_options.ttl": "in_memory 24h",
 	"reasoning_effort":         "none minimal low medium high xhigh max auto",
 	"reasoning.effort":         "none minimal low medium high xhigh max auto",
+	"output_config.effort":     "low medium high xhigh max",
 	"service_tier":             "auto default flex priority scale",
 	"truncation":               "auto disabled",
 	"provider.data_collection": "allow deny",

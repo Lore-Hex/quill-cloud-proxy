@@ -398,7 +398,7 @@ func (emitter *responsesWebSearchEmitter) Finish(outcome responsesWebSearchOutco
 		}
 		outputIndex := emitter.nextIndex
 		emitter.nextIndex++
-		item := responseFunctionCallStreamingItem(emitter.responseID, outputIndex, call)
+		item := responseFunctionCallStreamingItem(emitter.responseID, outputIndex, call, emitter.req.Response)
 		if err := adapter.WriteResponsesEvent(emitter.w, &emitter.sequence, "response.output_item.added", map[string]any{
 			"type": "response.output_item.added", "output_index": outputIndex, "item": item,
 		}); err != nil {
@@ -461,7 +461,7 @@ func (emitter *responsesWebSearchEmitter) finishMessage(text string, annotations
 	})
 }
 
-func responseFunctionCallStreamingItem(responseID string, index int, call types.ToolCall) map[string]any {
+func responseFunctionCallStreamingItem(responseID string, index int, call types.ToolCall, meta *types.ResponseRequestMeta) map[string]any {
 	id := call.ID
 	if id == "" {
 		id = fmt.Sprintf("fc_%s_%d", strings.TrimPrefix(responseID, "resp_"), index)
@@ -470,7 +470,12 @@ func responseFunctionCallStreamingItem(responseID string, index int, call types.
 	if callID == "" {
 		callID = id
 	}
-	return map[string]any{"id": id, "type": "function_call", "status": "completed", "call_id": callID, "name": call.Name, "arguments": call.Arguments}
+	name, namespace := adapter.ResponseFunctionCallName(call.Name, meta)
+	item := map[string]any{"id": id, "type": "function_call", "status": "completed", "call_id": callID, "name": name, "arguments": call.Arguments}
+	if namespace != "" {
+		item["namespace"] = namespace
+	}
+	return item
 }
 
 func annotateResponsesWebSearchObject(payload map[string]any, outcome responsesWebSearchOutcome) {

@@ -595,6 +595,70 @@ class AWSReleaseGateTests(unittest.TestCase):
             call.assert_not_called()
         self.assertNotIn("SECRET", stderr.getvalue())
 
+    def test_dry_run_reports_unreadable_pins_as_not_run_not_failed(self):
+        # verify-trust-freshness.yml runs a plain dry run with no AWS
+        # credentials; the preflight cannot read the Fargate pins there.
+        with mock.patch("sys.argv", [str(SCRIPT), "--plane", "aws"]), \
+             mock.patch.object(capture, "resolve_source_commit", return_value="1234567"), \
+             mock.patch.object(capture, "live_aws", return_value={"pcr0": self.NEW, "module_id": "instance"}), \
+             mock.patch.object(capture, "write_aws_files") as write, \
+             mock.patch.object(capture, "check_aws_pins", side_effect=capture.aws_fargate_pins.AwsReadError("SECRET")), \
+             contextlib.redirect_stderr(io.StringIO()) as stderr, contextlib.redirect_stdout(io.StringIO()) as stdout:
+            self.assertEqual(capture.main(), 0)
+        write.assert_not_called()
+        self.assertNotIn("FAILED", stderr.getvalue())
+        self.assertIn("pin preflight NOT RUN", stdout.getvalue())
+        self.assertIn(f"AWS   PCR0     {self.NEW}", stdout.getvalue())
+        self.assertNotIn("SECRET", stdout.getvalue() + stderr.getvalue())
+
+    def test_dry_run_keeps_a_confirmed_pin_mismatch_as_failure(self):
+        # Credentials present, pins read, but they do not accept the set.
+        with mock.patch("sys.argv", [str(SCRIPT), "--plane", "aws"]), \
+             mock.patch.object(capture, "resolve_source_commit", return_value="1234567"), \
+             mock.patch.object(capture, "live_aws", return_value={"pcr0": self.NEW, "module_id": "instance"}), \
+             mock.patch.object(capture, "check_aws_pins", side_effect=ValueError("SECRET")), \
+             contextlib.redirect_stderr(io.StringIO()) as stderr, contextlib.redirect_stdout(io.StringIO()) as stdout:
+            self.assertEqual(capture.main(), 1)
+        self.assertIn("FAILED AWS: serving pin verification failed", stderr.getvalue())
+        self.assertNotIn("NOT RUN", stdout.getvalue())
+
+    def test_unreadable_region_does_not_hide_a_mismatch_in_the_other(self):
+        pins = capture.aws_fargate_pins
+        bad = {"release": "r", "digest": "d", "pin": self.OLD}
+        with mock.patch.object(pins, "serving_pin", side_effect=[bad, pins.AwsReadError("x")]), \
+             contextlib.redirect_stdout(io.StringIO()):
+            with self.assertRaises(ValueError) as caught:
+                capture.check_aws_pins(self.NEW, repin=False, keep=False)
+        self.assertNotIsInstance(caught.exception, pins.AwsReadError)
+        good = {"release": "r", "digest": "d", "pin": self.NEW}
+        with mock.patch.object(pins, "serving_pin", side_effect=[good, pins.AwsReadError("x")]), \
+             contextlib.redirect_stdout(io.StringIO()):
+            with self.assertRaises(pins.AwsReadError):
+                capture.check_aws_pins(self.NEW, repin=False, keep=False)
+
+    def test_only_a_failed_cli_call_is_a_read_error(self):
+        pins = capture.aws_fargate_pins
+        with mock.patch.object(pins.subprocess, "run", side_effect=subprocess.CalledProcessError(255, "aws")):
+            with self.assertRaises(pins.AwsReadError):
+                pins.aws_json("eu-west-1", "ecs", "describe-services")
+        bad = subprocess.CompletedProcess([], 0, stdout="[]", stderr="")
+        with mock.patch.object(pins.subprocess, "run", return_value=bad):
+            with self.assertRaises(ValueError) as caught:
+                pins.aws_json("eu-west-1", "ecs", "describe-services")
+            self.assertNotIsInstance(caught.exception, pins.AwsReadError)
+
+    def test_check_published_still_fails_when_pins_unreadable(self):
+        with tempfile.TemporaryDirectory() as directory:
+            (Path(directory) / "accepted-pcr0s-aws.txt").write_text(self.NEW)
+            with mock.patch("sys.argv", [str(SCRIPT), "--plane", "aws", "--check-published"]), \
+                 mock.patch.object(capture, "TRUST_DIR", Path(directory)), \
+                 mock.patch.object(capture, "resolve_source_commit", return_value="1234567"), \
+                 mock.patch.object(capture, "live_aws", return_value={"pcr0": self.NEW, "module_id": "instance"}), \
+                 mock.patch.object(capture, "check_aws_pins", side_effect=capture.aws_fargate_pins.AwsReadError("SECRET")), \
+                 contextlib.redirect_stderr(io.StringIO()) as stderr, contextlib.redirect_stdout(io.StringIO()):
+                self.assertEqual(capture.main(), 1)
+            self.assertIn("FAILED AWS: serving pin verification failed", stderr.getvalue())
+
     def test_unpublished_measurement_fails_without_mutation(self):
         with tempfile.TemporaryDirectory() as directory:
             (Path(directory) / "accepted-pcr0s-aws.txt").write_text(self.OLD)
