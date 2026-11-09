@@ -499,15 +499,24 @@ func TestWaitTXTWithoutAChangeIDMakesNoCall(t *testing.T) {
 }
 
 func TestWaitTXTSurfacesAnAPIRejection(t *testing.T) {
+	// Bounded, so a version that retries a 403 fails fast instead of hanging
+	// for the five-minute wait and then passing on the wrapped text.
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	var gets int
 	p, srv := newTestProvider(t, func(w http.ResponseWriter, r *http.Request) {
+		gets++
 		w.WriteHeader(http.StatusForbidden)
 		_, _ = w.Write([]byte(`{"error":{"message":"Forbidden: dns.changes.get"}}`))
 	})
 	p.HTTPClient = redirect(t, srv)
 
-	err := p.WaitTXT(context.Background(), `{"name":"x.","changeId":"42"}`)
+	err := p.WaitTXT(ctx, `{"name":"x.","changeId":"42"}`)
 	if err == nil || !strings.Contains(err.Error(), "403") || !strings.Contains(err.Error(), "dns.changes.get") {
 		t.Fatalf("error should carry status and body: %v", err)
+	}
+	if gets != 1 {
+		t.Fatalf("a 403 was retried: %d calls", gets)
 	}
 }
 
@@ -760,5 +769,86 @@ func TestBothWaitFailuresAreReported(t *testing.T) {
 	err := waitForChallengeTXT(context.Background(), &recordingProvider{waitErr: waitErr}, "h", "x.", "v")
 	if !errors.Is(err, waitErr) || !errors.Is(err, resolverErr) {
 		t.Fatalf("error = %v, want both causes", err)
+	}
+}
+
+func TestWaitTXTStopsWhenTheOrderIsCancelled(t *testing.T) {
+	// The retry loop must answer to the order's context, not only its own
+	// five-minute deadline.
+	old := cloudDNSChangePollInterval
+	cloudDNSChangePollInterval = 10 * time.Millisecond
+	t.Cleanup(func() { cloudDNSChangePollInterval = old })
+
+	p, srv := newTestProvider(t, func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusServiceUnavailable)
+	})
+	p.HTTPClient = redirect(t, srv)
+	ctx, cancel := context.WithCancel(context.Background())
+	time.AfterFunc(100*time.Millisecond, cancel)
+
+	err := waitTXTWithin(t, p, ctx, 2*time.Second)
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("error = %v, want context.Canceled", err)
+	}
+}
+
+// waitTXTWithin runs WaitTXT and fails the test if it has not returned in
+// time, so a loop that ignores its context fails in seconds, not at the
+// package timeout.
+func waitTXTWithin(t *testing.T, p *CloudDNSProvider, ctx context.Context, limit time.Duration) error {
+	t.Helper()
+	done := make(chan error, 1)
+	go func() { done <- p.WaitTXT(ctx, `{"name":"x.","changeId":"42"}`) }()
+	select {
+	case err := <-done:
+		return err
+	case <-time.After(limit):
+		t.Fatalf("WaitTXT still running %v later; it does not answer to its context", limit)
+		return nil
+	}
+}
+
+func TestWaitTXTRetriesArePaced(t *testing.T) {
+	// A retry that skips the pause spins on the API, and once the deadline
+	// passes it never sees ctx.Done again.
+	old := cloudDNSChangePollInterval
+	cloudDNSChangePollInterval = 20 * time.Millisecond
+	t.Cleanup(func() { cloudDNSChangePollInterval = old })
+
+	var gets int
+	p, srv := newTestProvider(t, func(w http.ResponseWriter, r *http.Request) {
+		gets++
+		w.WriteHeader(http.StatusTooManyRequests)
+	})
+	p.HTTPClient = redirect(t, srv)
+	ctx, cancel := context.WithTimeout(context.Background(), 300*time.Millisecond)
+	defer cancel()
+
+	if err := waitTXTWithin(t, p, ctx, 2*time.Second); !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("error = %v, want the deadline", err)
+	}
+	// 300ms at one call per 20ms is about 15; a hot loop makes hundreds.
+	if gets < 2 || gets > 30 {
+		t.Fatalf("made %d calls in 300ms; retries are not paced", gets)
+	}
+}
+
+func TestAnUndecodableDeleteIsACleanup(t *testing.T) {
+	p, srv := newTestProvider(t, func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusNoContent)
+	})
+	p.HTTPClient = redirect(t, srv)
+	if err := p.RemoveTXT(context.Background(), `{"name":"x.","type":"TXT","ttl":60,"rrdatas":["\"v\""]}`); err != nil {
+		t.Fatalf("a 2xx delete was reported as failed: %v", err)
+	}
+}
+
+func TestWaitTXTWithoutConfigurationFailsAtOnce(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	p := &CloudDNSProvider{Project: "quill-cloud-proxy"}
+	err := p.WaitTXT(ctx, `{"name":"x.","changeId":"42"}`)
+	if !errors.Is(err, errCloudDNSConfig) {
+		t.Fatalf("error = %v, want the configuration error at once", err)
 	}
 }

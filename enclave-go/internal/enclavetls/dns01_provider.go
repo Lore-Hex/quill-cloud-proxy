@@ -153,6 +153,10 @@ func (p *CloudDNSProvider) RemoveTXT(ctx context.Context, handle string) error {
 		return fmt.Errorf("clouddns: bad handle: %w", err)
 	}
 	_, err := p.change(ctx, cloudDNSChange{Deletions: []cloudDNSRecordSet{rs}})
+	if errors.Is(err, errCloudDNSUndecodable) {
+		// A 2xx: the record is gone; only the answer was unreadable.
+		return nil
+	}
 	return err
 }
 
@@ -210,9 +214,16 @@ func (e *cloudDNSStatusError) Error() string {
 	return fmt.Sprintf("clouddns: %s status %d body=%s", strings.ToLower(e.Method), e.Code, e.Body)
 }
 
-// isPermanentCloudDNSError reports a 4xx other than 429: a refusal or a
-// malformed request, which no amount of waiting will change.
+// errCloudDNSConfig marks a provider that cannot make any request at all.
+var errCloudDNSConfig = errors.New("clouddns: incomplete configuration")
+
+// isPermanentCloudDNSError reports an error no amount of waiting will change:
+// a 4xx other than 429 (a refusal or a malformed request), or a provider
+// missing its configuration.
 func isPermanentCloudDNSError(err error) bool {
+	if errors.Is(err, errCloudDNSConfig) {
+		return true
+	}
 	var status *cloudDNSStatusError
 	return errors.As(err, &status) &&
 		status.Code/100 == 4 && status.Code != http.StatusTooManyRequests
@@ -241,10 +252,10 @@ func (p *CloudDNSProvider) change(ctx context.Context, body cloudDNSChange) (clo
 // response into out.
 func (p *CloudDNSProvider) do(ctx context.Context, method, url string, payload []byte, out any) error {
 	if p.Project == "" || p.ManagedZone == "" {
-		return errors.New("clouddns: project and managed zone are required")
+		return fmt.Errorf("%w: project and managed zone are required", errCloudDNSConfig)
 	}
 	if p.AccessToken == nil {
-		return errors.New("clouddns: no access token source")
+		return fmt.Errorf("%w: no access token source", errCloudDNSConfig)
 	}
 	token, err := p.AccessToken(ctx)
 	if err != nil {
