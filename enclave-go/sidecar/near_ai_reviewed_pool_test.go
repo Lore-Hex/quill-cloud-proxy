@@ -13,9 +13,17 @@ import (
 	tdxpb "github.com/google/go-tdx-guest/proto/tdx"
 )
 
-// Public histories captured with fresh nonces on October 3 and 9, 2026.
-// These tests exercise policy binding; cryptographic validation is covered by
-// TestLiveNearAIEvidence, not by the quote/GPU doubles used here.
+// Public histories captured with fresh nonces on November 6, 2026 (dstack
+// 0.5.12 guests). These tests exercise policy binding; cryptographic validation
+// is covered by TestLiveNearAIEvidence, not by the quote/GPU doubles used here.
+const (
+	nearAIGPU03Compose = "a0e3c6f4f21a60ea3f5c96bc7ef319b03a184ca2049605399275fbcea74e8c5f"
+	nearAIGPU04Compose = "5f7ebd85cf1f480a118f75dd10fd0cb277e4ddbb23845f1c20d8ea0f1e87efa6"
+	// Retired: the same two instances before their dstack 0.5.12 reboot.
+	nearAIRetiredGPU03Compose = "55db164f4f8c6a837c2217c601c21bba4758f908536a6cd5b2978550205a9179"
+	nearAIRetiredGPU04Compose = "c82b1a2eaf6996154a5f39ae621643f034b082d5e51edd3d2ba6009273881d86"
+)
+
 func reviewedNearAIPoolCase(t *testing.T, compose string) *nearAITestCase {
 	t.Helper()
 	c := newNearAITestCase(t)
@@ -45,10 +53,7 @@ func reviewedNearAIPoolCase(t *testing.T, compose string) *nearAITestCase {
 	c.report.Info.AppName = policy.AppName
 	c.report.Info.OSImageHash = policy.OSImageHash
 	c.report.Info.ComposeHash = compose
-	fixtureDate := "near-ai-2026-10-03"
-	if compose == "55db164f4f8c6a837c2217c601c21bba4758f908536a6cd5b2978550205a9179" {
-		fixtureDate = "near-ai-2026-10-09"
-	}
+	const fixtureDate = "near-ai-2026-11-06"
 	eventBytes, err := os.ReadFile(filepath.Join("testdata", fixtureDate, compose[:8]+"-events.json"))
 	if err != nil {
 		t.Fatal(err)
@@ -91,10 +96,12 @@ func bindNearAITestActions(t *testing.T, c *nearAITestCase, actions json.RawMess
 	c.encodeReport(t)
 }
 
-func TestNearAIReviewedOctoberPoolHistories(t *testing.T) {
-	composes := []string{
-		"55db164f4f8c6a837c2217c601c21bba4758f908536a6cd5b2978550205a9179",
-		"c82b1a2eaf6996154a5f39ae621643f034b082d5e51edd3d2ba6009273881d86",
+func TestNearAIReviewedPoolHistories(t *testing.T) {
+	composes := []string{nearAIGPU03Compose, nearAIGPU04Compose}
+	// The last reviewed or observed history of the same physical instance.
+	superseded := map[string]string{
+		nearAIGPU03Compose: filepath.Join("near-ai-2026-10-09", "55db164f-actions.json"),
+		nearAIGPU04Compose: filepath.Join("near-ai-2026-10-09", "c82b1a2e-unreviewed-actions.json"),
 	}
 	for index, compose := range composes {
 		t.Run(compose[:8], func(t *testing.T) {
@@ -122,13 +129,13 @@ func TestNearAIReviewedOctoberPoolHistories(t *testing.T) {
 			}
 
 			c = reviewedNearAIPoolCase(t, compose)
-			oldActions, err := os.ReadFile(filepath.Join("testdata", "near-ai-2026-10-02", compose[:8]+"-actions.json"))
+			oldActions, err := os.ReadFile(filepath.Join("testdata", superseded[compose]))
 			if err != nil {
 				t.Fatal(err)
 			}
 			bindNearAITestActions(t, c, oldActions)
-			if _, err := c.verifier.verify(context.Background(), c.request); err == nil {
-				t.Fatal("accepted superseded deployment history")
+			if _, err := c.verifier.verify(context.Background(), c.request); err == nil || !strings.Contains(err.Error(), "deployment history") {
+				t.Fatalf("accepted superseded deployment history: %v", err)
 			}
 
 			c = reviewedNearAIPoolCase(t, compose)
@@ -138,7 +145,7 @@ func TestNearAIReviewedOctoberPoolHistories(t *testing.T) {
 			}
 			// Even a correctly re-quoted telemetry-only update requires review.
 			actions = append(actions, map[string]any{
-				"action": "compose_up", "timestamp": "2026-10-09T00:00:00Z",
+				"action": "compose_up", "timestamp": "2026-11-06T00:00:00Z",
 				"file": c.policy.DeploymentFile, "commit": c.policy.DeploymentCommit,
 				"file_sha256": c.policy.DeploymentSHA256, "services": []string{"otelcol-contrib"},
 			})
@@ -155,10 +162,16 @@ func TestNearAIReviewedOctoberPoolHistories(t *testing.T) {
 }
 
 func TestNearAIReviewedPoolRetiresOldCompose(t *testing.T) {
-	c := reviewedNearAIPoolCase(t, "55db164f4f8c6a837c2217c601c21bba4758f908536a6cd5b2978550205a9179")
-	c.report.Info.ComposeHash = "533e43fd215d56ec6cd719adb5defe6615f7ba6ae0b018e832f7c8dadf2e25d4"
-	c.encodeReport(t)
-	if _, err := c.verifier.verify(context.Background(), c.request); err == nil || !strings.Contains(err.Error(), "workload identity") {
-		t.Fatalf("retired compose must not remain eligible, got %v", err)
+	for _, retired := range []string{
+		nearAIRetiredGPU03Compose,
+		nearAIRetiredGPU04Compose,
+		"533e43fd215d56ec6cd719adb5defe6615f7ba6ae0b018e832f7c8dadf2e25d4",
+	} {
+		c := reviewedNearAIPoolCase(t, nearAIGPU03Compose)
+		c.report.Info.ComposeHash = retired
+		c.encodeReport(t)
+		if _, err := c.verifier.verify(context.Background(), c.request); err == nil || !strings.Contains(err.Error(), "workload identity") {
+			t.Fatalf("retired compose %s must not remain eligible, got %v", retired[:8], err)
+		}
 	}
 }

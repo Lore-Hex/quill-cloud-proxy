@@ -9,7 +9,7 @@ import (
 )
 
 func TestNearAIReplicaEventRejectsUnreviewedChanges(t *testing.T) {
-	const compose = "55db164f4f8c6a837c2217c601c21bba4758f908536a6cd5b2978550205a9179"
+	const compose = nearAIGPU03Compose
 	tests := map[string]func(*nearAITestCase){
 		"unknown post-boot event": func(c *nearAITestCase) { c.report.EventLog[len(c.report.EventLog)-1].Event = "unknown" },
 		"post-boot identity": func(c *nearAITestCase) {
@@ -44,7 +44,7 @@ func TestNearAIReplicaEventRejectsUnreviewedChanges(t *testing.T) {
 }
 
 func TestNearAIReplicaKeyPayloadValidation(t *testing.T) {
-	c := reviewedNearAIPoolCase(t, "55db164f4f8c6a837c2217c601c21bba4758f908536a6cd5b2978550205a9179")
+	c := reviewedNearAIPoolCase(t, nearAIGPU03Compose)
 	payload, err := hex.DecodeString(c.report.EventLog[len(c.report.EventLog)-1].EventPayload)
 	if err != nil {
 		t.Fatal(err)
