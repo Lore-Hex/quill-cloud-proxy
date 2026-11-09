@@ -5,7 +5,7 @@ set -eu
 archive=$1
 output=$2
 root=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
-echo "f18d23309dcacfb4d6322b0bf6b899392437c4ebfc1a419109f04a5483c9d608  $archive" | sha256sum -c -
+echo "d76de0050c7e3d16a0938bdc4d2f87f4008ed67fd2e2312b587f0d340540da5d  $archive" | sha256sum -c -
 source_dir=$(mktemp -d)
 trap 'rm -rf "$source_dir"' EXIT
 tar -xzf "$archive" --strip-components=1 -C "$source_dir"
@@ -28,6 +28,6 @@ GOOS=$(go env GOHOSTOS) GOARCH=$(go env GOHOSTARCH) go test -tags contrast_unsta
     ./privatemode-proxy/internal/server ./internal/oss/encbody ./internal/oss/ocspheader
 GOOS=$target_os GOARCH=$target_arch go build -trimpath -buildvcs=false \
     -tags contrast_unstable_api \
-    -ldflags '-s -w -X github.com/edgelesssys/continuum/internal/oss/constants.version=v1.62.0' \
+    -ldflags '-s -w -X github.com/edgelesssys/continuum/internal/oss/constants.version=v1.63.0' \
     -o "$output" ./privatemode-proxy
 cp LICENSE.MIT "${output}.LICENSE"
