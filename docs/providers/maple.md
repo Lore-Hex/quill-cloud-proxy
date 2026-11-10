@@ -44,7 +44,61 @@ Changes to the dedicated worker are security-sensitive even if the model name
 is unchanged. Provider deployment overlap is still necessary to avoid an
 outage while a new security-sensitive release is reviewed and staged.
 
-## Proposed front measurement update (2026-11-06)
+## Approved worker identity update (2026-11-09)
+
+The exact candidate tracked in [review #716](https://github.com/Lore-Hex/quill-cloud-proxy/issues/716)
+replaces the front PCR0 with
+`769e8dd045dad30df5bb13e4fe8ced547c64f906316fc6e8519a0e858cd8cdb2690bdcf66c9dad3ed5e5d0a37768189a`.
+It binds source `d8fa269c9155d800ab9f6e8f8897c8e154492711` and the signed
+production approval `cd52297dba7bd2d0718722d89039d3c4cb4132f1`.
+The former `3a67fa1c...` measurement is replaced, not retained.
+Joseph explicitly approved this exact worker-identity update on November 9,
+2026, subject to fresh verification, full CI and the normal guarded rollout.
+This approval is not production deployment or inference acceptance, and does
+not authorize clearing another release's reservation.
+
+On November 9, a fresh credential-free check with the previously approved
+`3a67fa1c...` pin failed. The unchanged reviewed candidate passed front
+attestation in 164 ms, followed by deliberate wrong-pin rejection after its
+positive control. No credential or inference was sent. Two reported production
+requests failed in US Central and Europe with one Maple attempt, no fallback,
+and no response bytes. Their sanitized logs do not preserve the underlying
+exception, so these checks establish the trust-transition failure without
+claiming to identify every individual request's internal error.
+
+The independent credential-free ARM64 build in
+[run 42227131805](https://github.com/Lore-Hex/quill-cloud-proxy/actions/runs/42227131805)
+matches `image.eif`, `pcr.json`, `SHA256SUMS` and `handoff.json` byte for byte.
+EIF SHA-256 is
+`9174c64b51a1948f2d3067e134c6794c8323a4e6978a56edcc475ac1fb1903d6`.
+The reviewed verifier also passed exact-source GitHub/Sigstore provenance
+and the append-only P-384 approval history checks. This is independent
+reproduction, not acceptance of the live server's advertised pin.
+
+The dedicated uncensored workload moves from i02 to i01. Its worker policy
+changes to release `v0.1.0+b300`, image
+`6a8e906bc31caaccf5b6bbe84dec99c7213ec1d77aa360df464d531744590ac2`,
+and CVM version 0.14.17. The protected tree hash therefore changes and this
+update cannot qualify for automatic publication. The managed model still
+selects only that dedicated attested worker. Stock DeepSeek's separate i02
+and shared Tinfoil routes remain outside the managed route; the helper's
+one-model admission restriction is unchanged.
+
+Fresh CPU/platform/TLS evidence and wrong-nonce, wrong-pin and tamper controls
+for the new worker are recorded in review #716. The front-pin regression failed
+against the previous compiled pin first. After the update, 142 SDK/helper unit
+tests passed with one live integration ignored, and 24 policy/update tests
+passed. A credential-free front handshake passed in 186 ms, followed by
+deliberate wrong-pin rejection. These handshake checks sent no inference.
+The helper's `end_to_end_qualified=false` and
+`source_reproduction_verified=false` describe its limited scope, not the
+separate source rebuild or downstream evidence.
+Required CI, fresh trust verification, measured cloud builds, signed trust
+publication and production canaries remain release gates.
+The protected-tree baseline in this proposal changes only for this reviewed
+identity; future security-sensitive changes must still stop for review.
+
+## Earlier front measurement update (2026-11-06)
 
 This update proposes replacing the sole front PCR0 with
 `3a67fa1c4317d83e77d74123f4e658c4a1a7b15a7a1f6e1e872612390a6499a50118f2dddf05bd034b0318c4bcef53f4`.
