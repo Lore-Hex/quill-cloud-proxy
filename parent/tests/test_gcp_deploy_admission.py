@@ -8,7 +8,9 @@ admission gives up after an hour loses the freed lease to the next router run
 and fails without a rollout. The wait is the coordinator's cap, four hours,
 which is also what the router waits for the mirror case (a gateway rollout
 holds the lease about 2 h 20 min); the job must not time out before the wait
-does, and the lease must outlast the job that holds it.
+does. The lease TTL clock starts at acquisition, and its holder is the rollout
+job (no job timeout, so GitHub's default) and the short finalizers after it:
+the TTL is the coordinator's maximum and outlasts that default.
 """
 
 from __future__ import annotations
@@ -24,6 +26,10 @@ COORDINATOR_PIN = REPO_ROOT / "tools" / "cloud-rollout-source.json"
 # MAX_ADMISSION_WAIT_SECONDS of scripts/deploy/cloud_rollout.py in quill-router at
 # the pinned commit (raised from two hours in quill-router #1481, 2026-10-02).
 PINNED_COORDINATOR_CAP_SECONDS = 4 * 3600
+# The coordinator's maximum lease TTL (`60 <= ttl <= 43_200`), and GitHub's
+# default job timeout, which bounds the rollout job that holds the lease.
+PINNED_COORDINATOR_MAX_TTL_SECONDS = 12 * 3600
+GITHUB_DEFAULT_JOB_TIMEOUT_MINUTES = 360
 
 
 def _admit_cloud_job() -> str:
@@ -45,7 +51,8 @@ def test_the_admission_wait_is_the_pinned_coordinators_cap() -> None:
     ttl = _setting(job, r'TR_DEPLOY_MUTEX_TTL_SECONDS: "(\d+)"')
     assert wait == PINNED_COORDINATOR_CAP_SECONDS
     assert timeout_minutes * 60 > wait
-    assert ttl > timeout_minutes * 60
+    assert ttl == PINNED_COORDINATOR_MAX_TTL_SECONDS
+    assert ttl > GITHUB_DEFAULT_JOB_TIMEOUT_MINUTES * 60
     assert 'fence="$(python3 tools/cloud-rollout.py acquire --cloud gcp)"' in job
 
 

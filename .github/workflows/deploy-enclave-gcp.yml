@@ -564,11 +564,13 @@ jobs:
     if: github.repository == 'Lore-Hex/quill-cloud-proxy'
     runs-on: ubuntu-latest
     # The wait must outlast a run of control-plane holders of the gcp lease.
-    # A quill-router rollout holds it for 70-80 min, and router pushes land
+    # A quill-router rollout holds it for 66-77 min, and router pushes land
     # back to back, each polling for the lease from the moment its CI passes;
-    # with a 1 h wait this job lost the freed lease to the next router run
-    # three times in a row (2026-11-09 19:25Z, 2026-11-10 03:42Z and 05:59Z),
-    # each time within a minute of the release. Four hours is the pinned
+    # with a 1 h wait this job ran out three times in a row (2026-11-09 19:25Z,
+    # 2026-11-10 03:42Z and 05:59Z): once before a 70-min hold ended, once
+    # while the router's aws and azure deploys held the other two leases and
+    # the coordinator protected the third, and once four seconds after the
+    # next router run had taken the freed lease. Four hours is the pinned
     # coordinator's cap (MAX_ADMISSION_WAIT_SECONDS) and the router's own wait
     # for the mirror case, a gateway rollout holding the lease about 2 h 20 min.
     timeout-minutes: 250
