@@ -1,7 +1,19 @@
 {
   "accepted_pcr0s": [
-    "81cb7b5931119b5cf370de40db73a65979c616858087afb405ffe0de98dbdfff72b978c01df63c611c5d582ee80b4be2",
-    "432d24f7f1f07c6a3a877769ed4c6e7579326a669ed65d0b60a6b440e3d2d5a69d5ce58d2b19b0d585d086397386fb1e"
+    "1c9cce6aee2a3b058554976df8c375cb08363a8d237fe436e1f39712ac34206050880280384229d1dcf24f713752e58e",
+    "432d24f7f1f07c6a3a877769ed4c6e7579326a669ed65d0b60a6b440e3d2d5a69d5ce58d2b19b0d585d086397386fb1e",
+    "81cb7b5931119b5cf370de40db73a65979c616858087afb405ffe0de98dbdfff72b978c01df63c611c5d582ee80b4be2"
+  ],
+  "additional_transition_targets": [
+    {
+      "image_digest": "sha256:7b2d666dd1b999ea2a44df17f91e4006a1d12d99059e81de0f8369a23d387704",
+      "measurement_provenance": "Paris standalone candidate, outside the ASG, all regional target groups and canonical DNS. Exact PCR0, Nitro root, signed instance identity, certificate, fresh nonce and same-socket TLS binding verified; wrong-PCR0 control rejected. All three encrypted Privatemode boot probes passed HTTP 200 and nonzero usage. The serving fleet remains on the primary record's older source and measurement. Source-to-image provenance is operator-asserted, not independent AWS image reproduction.",
+      "observed_module_id": "i-0ebe1d80381af7aaa-enc01a1c37b028d3fff",
+      "pcr0": "1c9cce6aee2a3b058554976df8c375cb08363a8d237fe436e1f39712ac34206050880280384229d1dcf24f713752e58e",
+      "source_commit": "45ff2be88f792b5a140c3c298c92a36b6eaa9ab3",
+      "source_commit_provenance": "operator-asserted",
+      "state": "isolated-candidate"
+    }
   ],
   "api_base_url": "https://api-aws.trustedrouter.com/v1",
   "attestation_format": "cose-sign1-nitro-attestation-document",
