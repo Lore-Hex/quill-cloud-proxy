@@ -46,7 +46,20 @@ jobs:
           # Match the attested release workflow's protected-main publisher.
           # Signing still uses this workflow's separate OIDC identity.
           token: ${{ secrets.TRUST_PUSH_TOKEN }}
-      - uses: sigstore/cosign-installer@v3
+      # The installer downloads cosign from GitHub Releases once, with no
+      # retry; on 2026-11-09 that download failed in three runs within 16
+      # minutes and stranded a deploy. A failed first install is retried once
+      # after a pause. The retry has no continue-on-error, so a second failure
+      # still fails the job (tools/test_check_trust_signatures.py checks this).
+      - id: cosign-install
+        uses: sigstore/cosign-installer@v3
+        continue-on-error: true
+        with:
+          cosign-release: v2.6.5
+      - if: steps.cosign-install.outcome == 'failure'
+        run: sleep 30
+      - if: steps.cosign-install.outcome == 'failure'
+        uses: sigstore/cosign-installer@v3
         with:
           cosign-release: v2.6.5
       - name: Sign the GCP Confidential Space record
