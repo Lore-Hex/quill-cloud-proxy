@@ -589,7 +589,17 @@ jobs:
     needs: [build-and-release, grant-batch-image-access, verify-transition-trust-page]
     if: github.repository == 'Lore-Hex/quill-cloud-proxy'
     runs-on: ubuntu-latest
-    timeout-minutes: 65
+    # The wait must outlast a run of control-plane holders of the gcp lease.
+    # A quill-router rollout holds it for 67-72 min, and router pushes land
+    # back to back, each polling for the lease from the moment its CI passes;
+    # with a 1 h wait this job ran out three times in a row (2026-11-09 19:25Z,
+    # 2026-11-10 03:42Z and 05:59Z): once before a 70-min hold ended, once
+    # while the router's aws and azure deploys held the other two leases and
+    # the coordinator protected the third, and once four seconds after the
+    # next router run had taken the freed lease. Four hours is the pinned
+    # coordinator's cap (MAX_ADMISSION_WAIT_SECONDS) and the router's own wait
+    # for the mirror case, a gateway rollout holding the lease about 2 h 20 min.
+    timeout-minutes: 250
     outputs:
       operation: ${{ steps.admit.outputs.TR_DEPLOY_MUTEX_OPERATION }}
     steps:
@@ -605,7 +615,7 @@ jobs:
           GH_TOKEN: ${{ secrets.TRUST_PUSH_TOKEN }}
           TR_DEPLOY_MUTEX_OWNER: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
           TR_DEPLOY_MUTEX_TTL_SECONDS: "43200"
-          TR_DEPLOY_WAIT_SECONDS: "3600"
+          TR_DEPLOY_WAIT_SECONDS: "14400"
         run: |
           set -euo pipefail
           fence="$(python3 tools/cloud-rollout.py acquire --cloud gcp)"
