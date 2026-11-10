@@ -3,7 +3,7 @@
 Both repositories' deploys reserve the gcp lease through the one reviewed
 coordinator (tools/cloud-rollout.py fetches it at the commit pinned in
 tools/cloud-rollout-source.json). A quill-router rollout holds the lease for
-70-80 minutes, and router pushes land back to back, so a gateway deploy whose
+67-72 minutes, and router pushes land back to back, so a gateway deploy whose
 admission gives up after an hour loses the freed lease to the next router run
 and fails without a rollout. The wait is the coordinator's cap, four hours,
 which is also what the router waits for the mirror case (a gateway rollout

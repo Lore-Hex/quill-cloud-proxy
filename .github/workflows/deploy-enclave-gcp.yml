@@ -564,7 +564,7 @@ jobs:
     if: github.repository == 'Lore-Hex/quill-cloud-proxy'
     runs-on: ubuntu-latest
     # The wait must outlast a run of control-plane holders of the gcp lease.
-    # A quill-router rollout holds it for 66-77 min, and router pushes land
+    # A quill-router rollout holds it for 67-72 min, and router pushes land
     # back to back, each polling for the lease from the moment its CI passes;
     # with a 1 h wait this job ran out three times in a row (2026-11-09 19:25Z,
     # 2026-11-10 03:42Z and 05:59Z): once before a 70-min hold ended, once
