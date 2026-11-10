@@ -807,6 +807,12 @@ type Usage struct {
 	VideoResolution            string
 	VideoAspectRatio           string
 	VideoGenerateAudio         bool
+	// InputExcludesCache is the stream's own cache convention, copied from the
+	// adapter: true when InputTokens leaves out the cached tokens (a native
+	// Anthropic message_start carried the usage). It is enclave-local, never
+	// sent; the async settle refuses a frozen candidate whose convention
+	// disagrees with it.
+	InputExcludesCache bool
 }
 
 // RefundAttribution carries the same content-free request identifiers as a
