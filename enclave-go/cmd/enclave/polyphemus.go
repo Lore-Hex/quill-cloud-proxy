@@ -209,34 +209,66 @@ func polyphemusMessageText(content any) (string, *adapter.AdapterError) {
 	return strings.Join(texts, "\n"), nil
 }
 
-// polyphemusSelectionText is the latest user turn with text, which is the
-// only content the classifier sees.
+// polyphemusSelectionText is the latest user turn whose first MaxTextBytes
+// contain text: exactly what the classifier sees.
 func polyphemusSelectionText(messages []types.OpenAIChatMessage) string {
 	for i := len(messages) - 1; i >= 0; i-- {
 		if messages[i].Role != "user" {
 			continue
 		}
-		if text, err := polyphemusMessageText(messages[i].Content); err == nil && strings.TrimSpace(text) != "" {
-			return text
+		if text, err := polyphemusMessageText(messages[i].Content); err == nil {
+			if text = polyclass.Truncate(text); strings.TrimSpace(text) != "" {
+				return text
+			}
 		}
 	}
 	return ""
 }
 
-// polyphemusConfidential reports whether the caller requires confidential
-// routing, by the control plane's own privacy-tier names.
-func polyphemusConfidential(ctx context.Context, req *types.OpenAIChatRequest) bool {
+// Privacy tiers, numbered as in the control plane's catalog
+// (trustedrouter.privacy_tier on /v1/models).
+const (
+	privacyTierNoStore       = 1
+	privacyTierZeroRetention = 2
+	privacyTierConfidential  = 3
+	privacyTierTrusted       = 4
+)
+
+// polyphemusRequiredTier is the lowest privacy tier the caller accepts, by
+// the control plane's own names for provider.min_privacy.
+func polyphemusRequiredTier(ctx context.Context, req *types.OpenAIChatRequest) int {
+	tier := 0
 	if trustedrouter.ConfidentialOnly(ctx) {
-		return true
+		tier = privacyTierConfidential
 	}
-	if req.Provider == nil {
-		return false
+	p := req.Provider
+	if p == nil {
+		return tier
 	}
-	switch strings.ToLower(strings.TrimSpace(req.Provider.MinPrivacy)) {
-	case "confidential", "trusted", "e2e", "e2ee", "max", "maximum":
-		return true
+	named := 0
+	switch strings.ToLower(strings.TrimSpace(p.MinPrivacy)) {
+	case "no_store", "no-store", "nostore":
+		named = privacyTierNoStore
+	case "zdr", "zero_retention", "zero-retention":
+		named = privacyTierZeroRetention
+	case "confidential", "e2e", "e2ee", "max", "maximum":
+		named = privacyTierConfidential
+	case "trusted":
+		named = privacyTierTrusted
 	}
-	return false
+	if p.ZDR != nil && *p.ZDR {
+		named = max(named, privacyTierZeroRetention)
+	}
+	if strings.EqualFold(p.DataCollection, "deny") {
+		named = max(named, privacyTierNoStore)
+	}
+	return max(tier, named)
+}
+
+// polyphemusConfidential reports whether the caller requires confidential
+// routing.
+func polyphemusConfidential(ctx context.Context, req *types.OpenAIChatRequest) bool {
+	return polyphemusRequiredTier(ctx, req) >= privacyTierConfidential
 }
 
 // choosePolyphemusModel is the whole routing rule.
@@ -255,15 +287,18 @@ func choosePolyphemusModel(result polyclass.Result, hasTools, confidential bool)
 }
 
 // resolveSelectedModel requires the exact id to be a unique, currently
-// published, credit-billed concrete chat model that serves Responses.
-func resolveSelectedModel(body []byte, model string) error {
+// published, credit-billed concrete chat model that serves Responses and
+// offers an endpoint at or above the caller's privacy tier. Checking before
+// settlement keeps the selector fee off requests the model cannot serve.
+func resolveSelectedModel(body []byte, model string, requiredTier int) error {
 	var catalog struct {
 		Data []struct {
 			ID string `json:"id"`
 			TR struct {
-				Chat      bool  `json:"supports_chat"`
-				Credits   bool  `json:"prepaid_available"`
-				Responses *bool `json:"supports_responses"`
+				Chat        bool  `json:"supports_chat"`
+				Credits     bool  `json:"prepaid_available"`
+				Responses   *bool `json:"supports_responses"`
+				PrivacyTier int   `json:"privacy_tier"`
 			} `json:"trustedrouter"`
 		} `json:"data"`
 	}
@@ -275,7 +310,7 @@ func resolveSelectedModel(body []byte, model string) error {
 		if row.ID != model {
 			continue
 		}
-		if !row.TR.Chat || !row.TR.Credits || (row.TR.Responses != nil && !*row.TR.Responses) || strings.HasPrefix(row.ID, "trustedrouter/") || isOrchestrationModel(row.ID) {
+		if !row.TR.Chat || !row.TR.Credits || (row.TR.Responses != nil && !*row.TR.Responses) || row.TR.PrivacyTier < requiredTier || strings.HasPrefix(row.ID, "trustedrouter/") || isOrchestrationModel(row.ID) {
 			return polyphemusError(502, "Selected model is not available")
 		}
 		matches++
@@ -327,18 +362,31 @@ func preparePolyphemus(ctx context.Context, req *types.OpenAIChatRequest, gatewa
 		selectReq.Provider = &types.ProviderRouting{}
 	}
 	selectReq.Provider.Usage = "credits"
-	confidential := polyphemusConfidential(ctx, req)
+	requiredTier := polyphemusRequiredTier(ctx, req)
+	confidential := requiredTier >= privacyTierConfidential
 	if pinnedModel != "" {
-		if err := resolveSelectedModel(catalog, pinnedModel); err == nil {
+		if err := resolveSelectedModel(catalog, pinnedModel, requiredTier); err == nil {
 			fmt.Fprintf(os.Stderr, "enclave.polyphemus.pinned request_log_id=%q selected_model=%q\n", requestLogID, pinnedModel)
 			return continuePolyphemus(ctx, req, &polyphemusReceipt{SelectedModel: pinnedModel, Pinned: true, Confidential: confidential}, stageKey, selectReq.RequestFingerprint), nil
 		}
 		// The pinned model left the catalog; choose again.
 		fmt.Fprintf(os.Stderr, "enclave.polyphemus.pin_unavailable request_log_id=%q\n", requestLogID)
 	}
+	if len(req.Tools) > 0 {
+		// Tools always mean the strong model, so the classifier could not
+		// change the choice: skip it and its fee.
+		model, tier := choosePolyphemusModel(polyclass.Result{}, true, confidential)
+		if err := resolveSelectedModel(catalog, model, requiredTier); err != nil {
+			fmt.Fprintf(os.Stderr, "enclave.polyphemus.unresolved_selection request_log_id=%q selected_model=%q\n", requestLogID, model)
+			receipt := &polyphemusReceipt{SelectedModel: "trustedrouter/auto", FallbackReason: "invalid_model_selection", Confidential: confidential}
+			return continuePolyphemus(ctx, req, receipt, stageKey, selectReq.RequestFingerprint), nil
+		}
+		fmt.Fprintf(os.Stderr, "enclave.polyphemus.selection_done request_log_id=%q selected_model=%q tier=%q selector_calls=0\n", requestLogID, model, tier)
+		return continuePolyphemus(ctx, req, &polyphemusReceipt{SelectedModel: model, Tier: tier, Confidential: confidential}, stageKey, selectReq.RequestFingerprint), nil
+	}
 	// Meter exactly the text the classifier reads, with the shared estimate.
 	// No prompt is sent to the control plane: admission sees only its size.
-	selectionText := polyclass.Truncate(polyphemusSelectionText(req.Messages))
+	selectionText := polyphemusSelectionText(req.Messages)
 	if selectionText == "" {
 		return ctx, polyphemusError(400, "Polyphemus needs a user message with text")
 	}
@@ -389,8 +437,8 @@ func preparePolyphemus(ctx context.Context, req *types.OpenAIChatRequest, gatewa
 	if err != nil {
 		return fallback("model_selection_failed", 1)
 	}
-	model, tier := choosePolyphemusModel(result, len(req.Tools) > 0, confidential)
-	if err := resolveSelectedModel(catalog, model); err != nil {
+	model, tier := choosePolyphemusModel(result, false, confidential)
+	if err := resolveSelectedModel(catalog, model, requiredTier); err != nil {
 		fmt.Fprintf(os.Stderr, "enclave.polyphemus.unresolved_selection request_log_id=%q selected_model=%q\n", requestLogID, model)
 		return fallback("invalid_model_selection", 1)
 	}
@@ -456,6 +504,8 @@ func annotatePolyphemusUsage(ctx context.Context, usage map[string]any) {
 	providerUsage["selector_elapsed_ms"] = receipt.ElapsedMS
 	if receipt.Tier != "" {
 		providerUsage["selector_tier"] = receipt.Tier
+	}
+	if receipt.Task != "" {
 		providerUsage["selector_task"] = receipt.Task
 		providerUsage["selector_domain_knowledge"] = receipt.DomainKnowledge
 	}

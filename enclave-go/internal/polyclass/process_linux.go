@@ -39,7 +39,9 @@ func HelperEntrypoint() bool {
 	return true
 }
 
-func startHelper() (*process, error) {
+// helperCommand re-executes the gateway as the helper's unprivileged user,
+// with no environment, descriptors or stderr, killed if the gateway dies.
+func helperCommand() *exec.Cmd {
 	// #nosec G204 -- fixed launcher and argument, never request-controlled.
 	cmd := exec.Command("/quill-enclave", childFlag)
 	cmd.Env = []string{}
@@ -50,6 +52,11 @@ func startHelper() (*process, error) {
 	}
 	cmd.Stderr = io.Discard
 	cmd.WaitDelay = 2 * time.Second
+	return cmd
+}
+
+func startHelper() (*process, error) {
+	cmd := helperCommand()
 	stdin, err := cmd.StdinPipe()
 	if err != nil {
 		return nil, ErrUnavailable

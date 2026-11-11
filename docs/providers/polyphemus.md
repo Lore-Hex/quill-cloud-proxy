@@ -26,16 +26,28 @@ A request is confidential when `provider.min_privacy` is `confidential`,
 confidential-only hostname. The caller's privacy settings still apply to the
 generation, so the control plane only admits endpoints that meet them.
 
-A conversation that already used tools stays on the model that started it
-(the model rides in the tool call ids). If the classifier is unavailable,
-the request goes to `trustedrouter/auto` and the selector hold is refunded.
+Requests that carry tools go straight to the strong model without running
+the classifier or charging the selector fee. A conversation that already
+used tools stays on the model that started it (the model rides in the tool
+call ids).
+
+The chosen model must offer an endpoint at or above the caller's privacy
+tier (`trustedrouter.privacy_tier` on `/v1/models`) before the selector fee
+is settled. If it does not, or the classifier is busy or unavailable, the
+request goes to `trustedrouter/auto` and the selector hold is refunded.
+
+The helper answers one request at a time. A request waits at most 1.5 s for
+it, and one classification may take at most 3 s before the helper is
+replaced. The helper starts in the background at boot and restarts at most
+once every 15 s, never on a request's path. A client that disconnects
+mid-classification does not stop the helper.
 
 `polyphemus.x_perf` and `polyphemus.model_zoo` are still accepted, so old
 clients keep working, but they no longer change the choice.
 
 ## Billing
 
-The selector costs $0.05 per million tokens of the classified text, estimated
+When the classifier runs, the selector costs $0.05 per million tokens of the classified text, estimated
 as UTF-8 bytes / 4, rounded down, minimum one token and $0.000001. The chosen
 model is billed at its normal rates.
 

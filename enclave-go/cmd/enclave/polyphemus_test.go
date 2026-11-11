@@ -13,11 +13,12 @@ import (
 	"github.com/Lore-Hex/quill-cloud-proxy/enclave-go/internal/types"
 )
 
+// Privacy tiers as published on /v1/models today.
 const selectionTestCatalog = `{"data":[` +
 	`{"id":"google/gemini-3.8-flash","trustedrouter":{"supports_chat":true,"prepaid_available":true}},` +
-	`{"id":"anthropic/claude-opus-5.5","trustedrouter":{"supports_chat":true,"prepaid_available":true}},` +
-	`{"id":"deepseek/deepseek-v4.1-flash-1017","trustedrouter":{"supports_chat":true,"prepaid_available":true}},` +
-	`{"id":"moonshotai/kimi-k3.1-pro","trustedrouter":{"supports_chat":true,"prepaid_available":true}}]}`
+	`{"id":"anthropic/claude-opus-5.5","trustedrouter":{"supports_chat":true,"prepaid_available":true,"privacy_tier":2}},` +
+	`{"id":"deepseek/deepseek-v4.1-flash-1017","trustedrouter":{"supports_chat":true,"prepaid_available":true,"privacy_tier":4}},` +
+	`{"id":"moonshotai/kimi-k3.1-pro","trustedrouter":{"supports_chat":true,"prepaid_available":true,"privacy_tier":4}}]}`
 
 type classifierStub func(context.Context, string) (polyclass.Result, error)
 
@@ -120,6 +121,34 @@ func TestPolyphemusClassifiesOnlyTheLatestUserText(t *testing.T) {
 	if got := polyphemusSelectionText(blank); got != "real" {
 		t.Fatalf("blank latest turn: got %q", got)
 	}
+	// Text past the classifier's cut does not count: that turn is blank to it.
+	padded := []types.OpenAIChatMessage{{Role: "user", Content: "real"}, {Role: "user", Content: strings.Repeat(" ", polyclass.MaxTextBytes) + "late"}}
+	if got := polyphemusSelectionText(padded); got != "real" {
+		t.Fatalf("blank after truncation: got %q", got)
+	}
+}
+
+func TestPolyphemusRequiredTierUsesTheControlPlanesNames(t *testing.T) {
+	yes, no := true, false
+	for _, tc := range []struct {
+		provider *types.ProviderRouting
+		want     int
+	}{
+		{nil, 0}, {&types.ProviderRouting{MinPrivacy: "standard"}, 0}, {&types.ProviderRouting{ZDR: &no}, 0},
+		{&types.ProviderRouting{MinPrivacy: "no-store"}, 1}, {&types.ProviderRouting{DataCollection: "deny"}, 1},
+		{&types.ProviderRouting{MinPrivacy: "zdr"}, 2}, {&types.ProviderRouting{ZDR: &yes}, 2},
+		{&types.ProviderRouting{MinPrivacy: "no_store", ZDR: &yes}, 2},
+		{&types.ProviderRouting{MinPrivacy: "e2ee"}, 3}, {&types.ProviderRouting{MinPrivacy: "trusted"}, 4},
+	} {
+		req := selectionTestRequest()
+		req.Provider = tc.provider
+		if got := polyphemusRequiredTier(context.Background(), req); got != tc.want {
+			t.Errorf("%+v: tier %d, want %d", tc.provider, got, tc.want)
+		}
+	}
+	if got := polyphemusRequiredTier(trustedrouter.WithConfidentialOnly(context.Background()), selectionTestRequest()); got != 3 {
+		t.Errorf("confidential hostname: tier %d", got)
+	}
 }
 
 func TestPolyphemusConfidentialUsesTheControlPlanesNames(t *testing.T) {
@@ -148,7 +177,6 @@ func TestPolyphemusSelectionUsesSharedBillingAndPreservesRequest(t *testing.T) {
 		{Role: "system", Content: "PRIVATE SYSTEM"},
 		{Role: "user", Content: "PRIVATE TASK 日本語"},
 	}
-	req.Tools = []any{map[string]any{"type": "function", "function": map[string]any{"name": "read_file", "description": strings.Repeat("large schema ", 1000)}}}
 	gateway := &selectionGatewayStub{}
 	calls := 0
 	classifier := classifierStub(func(_ context.Context, text string) (polyclass.Result, error) {
@@ -172,11 +200,10 @@ func TestPolyphemusSelectionUsesSharedBillingAndPreservesRequest(t *testing.T) {
 	if gateway.usage.InputTokens != wantTokens || !gateway.usage.UsageEstimated || gateway.usage.OutputTokens != 0 || gateway.usage.RouteType != polyphemusSelectRoute {
 		t.Fatal("selector fee is not metered on the classified text")
 	}
-	if len(gateway.request.Tools) != 0 || len(gateway.request.Messages) != 1 || trustedrouter.EstimateInputTokens(gateway.request) < wantTokens {
+	if len(gateway.request.Messages) != 1 || trustedrouter.EstimateInputTokens(gateway.request) < wantTokens {
 		t.Fatal("admission does not cover exactly the classified text")
 	}
-	// Tools make the request strong whatever the classifier says.
-	if req.Model != polyphemusStrongModel || req.ResponseModel != polyphemusModel || len(req.Tools) != 1 || req.Provider.Usage != "credits" || len(req.Messages) != 2 {
+	if req.Model != polyphemusCheapModel || req.ResponseModel != polyphemusModel || req.Provider.Usage != "credits" || len(req.Messages) != 2 {
 		t.Fatalf("bad continuation: %#v", req)
 	}
 	if req.ReasoningEffort != "" {
@@ -189,12 +216,73 @@ func TestPolyphemusSelectionUsesSharedBillingAndPreservesRequest(t *testing.T) {
 	annotatePolyphemusUsage(ctx, usage)
 	meta := usage["provider_usage"].(map[string]any)
 	if usage["cost_microdollars"] != 38 || meta["selector_input_tokens"] != wantTokens || meta["selector_provider"] != "trustedrouter" ||
-		meta["selector_runs_in_gateway"] != true || meta["selector_tier"] != "strong" || meta["selector_task"] != "Open QA" || meta["selected_model"] != polyphemusStrongModel {
+		meta["selector_runs_in_gateway"] != true || meta["selector_tier"] != "cheap" || meta["selector_task"] != "Open QA" || meta["selected_model"] != polyphemusCheapModel {
 		t.Fatalf("receipt: %#v", meta)
 	}
 	encoded, _ := json.Marshal(usage)
 	if strings.Contains(string(encoded), "PRIVATE") || strings.Contains(string(encoded), "private-key") {
 		t.Fatal("content leak")
+	}
+}
+
+func TestPolyphemusToolRequestsGoStrongWithoutClassifierOrFee(t *testing.T) {
+	for _, tc := range []struct {
+		provider *types.ProviderRouting
+		want     string
+	}{{nil, polyphemusStrongModel}, {&types.ProviderRouting{MinPrivacy: "confidential"}, polyphemusConfidentialStrongModel}} {
+		req := selectionTestRequest()
+		req.Provider = tc.provider
+		req.Tools = []any{map[string]any{"type": "function", "function": map[string]any{"name": "read_file"}}}
+		gateway := &selectionGatewayStub{}
+		never := classifierStub(func(context.Context, string) (polyclass.Result, error) {
+			t.Fatal("classified a tool request")
+			return polyclass.Result{}, nil
+		})
+		ctx, err := preparePolyphemus(context.Background(), req, gateway, never, "key", "test")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if gateway.admitted != 0 || gateway.settled != 0 || gateway.refunded != 0 {
+			t.Fatalf("tool request touched selector billing: %+v", gateway)
+		}
+		if req.Model != tc.want || len(req.Tools) != 1 || req.IdempotencyKey == "" || req.RequestFingerprint == "" {
+			t.Fatalf("bad continuation: %#v", req)
+		}
+		usage := map[string]any{"cost_microdollars": 37}
+		annotatePolyphemusUsage(ctx, usage)
+		meta := usage["provider_usage"].(map[string]any)
+		if usage["cost_microdollars"] != 37 || meta["selector_calls"] != 0 || meta["selector_tier"] != "strong" || meta["selected_model"] != tc.want {
+			t.Fatalf("receipt: %#v", meta)
+		}
+		if _, ok := meta["selector_task"]; ok {
+			t.Fatal("receipt claims a classification that never ran")
+		}
+	}
+}
+
+func TestPolyphemusModelBelowTheCallersPrivacyTierIsNeverCharged(t *testing.T) {
+	// Opus without a zero-retention endpoint: a zdr request must not pay the
+	// selector fee for a model the generation admission would refuse.
+	noZDR := strings.Replace(selectionTestCatalog, `"prepaid_available":true,"privacy_tier":2`, `"prepaid_available":true,"privacy_tier":0`, 1)
+	req := selectionTestRequest()
+	req.Provider = &types.ProviderRouting{MinPrivacy: "zdr"}
+	gateway := &selectionGatewayStub{catalog: noZDR}
+	if _, err := preparePolyphemus(context.Background(), req, gateway, returns("Code Generation", 0.99), "key", "test"); err != nil {
+		t.Fatal(err)
+	}
+	if gateway.settled != 0 || gateway.refunded != 1 || req.Model != "trustedrouter/auto" || req.Provider.MinPrivacy != "zdr" {
+		t.Fatalf("settled=%d refunded=%d model=%s", gateway.settled, gateway.refunded, req.Model)
+	}
+	// Tool requests skip admission entirely, so nothing is held or refunded.
+	req = selectionTestRequest()
+	req.Provider = &types.ProviderRouting{MinPrivacy: "zdr"}
+	req.Tools = []any{map[string]any{"type": "function"}}
+	gateway = &selectionGatewayStub{catalog: noZDR}
+	if _, err := preparePolyphemus(context.Background(), req, gateway, returns("Open QA", 0.3), "key", "test"); err != nil {
+		t.Fatal(err)
+	}
+	if gateway.admitted != 0 || req.Model != "trustedrouter/auto" {
+		t.Fatalf("admitted=%d model=%s", gateway.admitted, req.Model)
 	}
 }
 
@@ -268,7 +356,6 @@ func TestPolyphemusClassifierFailuresFallBackToAutoWithoutFee(t *testing.T) {
 			}
 			req := selectionTestRequest()
 			req.ReasoningEffort = "low"
-			req.Tools = []any{map[string]any{"type": "function"}}
 			outCtx, err := preparePolyphemus(ctx, req, gateway, classifier, "key", "test")
 			if gateway.admitted != 1 || gateway.refunded != 1 || gateway.settled != 0 {
 				t.Fatal("wrong billing sequence", gateway)
@@ -282,7 +369,7 @@ func TestPolyphemusClassifierFailuresFallBackToAutoWithoutFee(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if req.Model != "trustedrouter/auto" || req.ResponseModel != polyphemusModel || req.ReasoningEffort != "low" || len(req.Tools) != 1 {
+			if req.Model != "trustedrouter/auto" || req.ResponseModel != polyphemusModel || req.ReasoningEffort != "low" {
 				t.Fatal("lost fallback request")
 			}
 			usage := map[string]any{"cost_microdollars": 37}
@@ -346,26 +433,29 @@ func TestPolyphemusRejectsByokAndTextlessRequestsBeforeAdmission(t *testing.T) {
 }
 
 func TestPolyphemusResolvesOnlyExactEligibleModels(t *testing.T) {
-	if err := resolveSelectedModel([]byte(selectionTestCatalog), "google/gemini-3.8-flash"); err != nil {
+	if err := resolveSelectedModel([]byte(selectionTestCatalog), "google/gemini-3.8-flash", 0); err != nil {
 		t.Fatal(err)
 	}
 	for _, name := range []string{"gemini-3.8-flash", "Google/gemini-3.8-flash", "trustedrouter/auto", "missing"} {
-		if resolveSelectedModel([]byte(selectionTestCatalog), name) == nil {
+		if resolveSelectedModel([]byte(selectionTestCatalog), name, 0) == nil {
 			t.Fatal("accepted", name)
 		}
 	}
 	duplicate := strings.Replace(selectionTestCatalog, `]}`, `,{"id":"google/gemini-3.8-flash","trustedrouter":{"supports_chat":true,"prepaid_available":true}}]}`, 1)
-	if resolveSelectedModel([]byte(duplicate), "google/gemini-3.8-flash") == nil {
+	if resolveSelectedModel([]byte(duplicate), "google/gemini-3.8-flash", 0) == nil {
 		t.Fatal("duplicate id accepted")
 	}
 	for _, flags := range []string{`"supports_chat":true,"prepaid_available":false`, `"supports_chat":false,"prepaid_available":true`, `"supports_chat":true,"prepaid_available":true,"supports_responses":false`} {
 		catalog := `{"data":[{"id":"google/gemini-3.8-flash","trustedrouter":{` + flags + `}}]}`
-		if resolveSelectedModel([]byte(catalog), "google/gemini-3.8-flash") == nil {
+		if resolveSelectedModel([]byte(catalog), "google/gemini-3.8-flash", 0) == nil {
 			t.Fatalf("ineligible model accepted: %s", flags)
 		}
 	}
-	if resolveSelectedModel([]byte("not json"), "google/gemini-3.8-flash") == nil {
+	if resolveSelectedModel([]byte("not json"), "google/gemini-3.8-flash", 0) == nil {
 		t.Fatal("unreadable catalog accepted")
+	}
+	if resolveSelectedModel([]byte(selectionTestCatalog), polyphemusStrongModel, 2) != nil || resolveSelectedModel([]byte(selectionTestCatalog), polyphemusStrongModel, 3) == nil {
+		t.Fatal("privacy tier not enforced at the boundary")
 	}
 }
 
