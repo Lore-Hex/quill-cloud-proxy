@@ -37,9 +37,10 @@ is settled. If it does not, or the classifier is busy or unavailable, the
 request goes to `trustedrouter/auto` and the selector hold is refunded.
 
 The helper answers one request at a time. A request waits at most 1.5 s for
-it, and one classification may take at most 3 s before the helper is
-replaced. The helper starts in the background at boot and restarts at most
-once every 15 s, never on a request's path. A client that disconnects
+it and 3 s for an answer, then falls back; the helper still finishes that
+classification. Only a helper stuck on one request for 10 s is replaced. It
+starts in the background at boot and restarts at most once every 15 s, on a
+timer rather than on a request's path. A client that disconnects
 mid-classification does not stop the helper.
 
 `polyphemus.x_perf` and `polyphemus.model_zoo` are still accepted, so old

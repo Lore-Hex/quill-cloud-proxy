@@ -91,7 +91,7 @@ func always(out string) func(string) (string, time.Duration) {
 // warmClient returns a client whose helper is running.
 func warmClient(t *testing.T, f *fakeHelper, wait, timeout time.Duration) *Client {
 	t.Helper()
-	c := newClient(f.start, wait, timeout, time.Hour)
+	c := newClient(f.start, wait, timeout, timeout, time.Hour)
 	c.Warm()
 	eventually(t, func() bool { return c.running() })
 	return c
@@ -133,7 +133,7 @@ func TestClassifyReturnsHelperScoresFromOneProcess(t *testing.T) {
 
 func TestColdClientFailsFastAndStartsInBackground(t *testing.T) {
 	f := &fakeHelper{respond: always(codeReply)}
-	c := newClient(f.start, time.Second, time.Second, time.Hour)
+	c := newClient(f.start, time.Second, time.Second, time.Second, time.Hour)
 	started := time.Now()
 	if _, err := c.Classify(context.Background(), "x"); !errors.Is(err, ErrUnavailable) {
 		t.Fatalf("err = %v", err)
@@ -201,7 +201,7 @@ func TestCancelledCallerDoesNotKillTheHelper(t *testing.T) {
 
 func TestStalledHelperIsKilledAndRestartedInBackground(t *testing.T) {
 	f := &fakeHelper{respond: always(codeReply)}
-	c := newClient(f.start, time.Second, 50*time.Millisecond, 0)
+	c := newClient(f.start, time.Second, 50*time.Millisecond, 50*time.Millisecond, 0)
 	c.Warm()
 	eventually(t, c.running)
 	f.setRespond(always(""))
@@ -226,10 +226,65 @@ func TestAbandonedStallIsStillKilledByTheWatchdog(t *testing.T) {
 	eventually(t, func() bool { return f.stopped.Load() == 1 && len(c.slot) == 0 })
 }
 
+func TestSlowAnswerFallsBackWithoutKillingTheHelper(t *testing.T) {
+	f := &fakeHelper{respond: always(codeReply)}
+	c := newClient(f.start, time.Second, 20*time.Millisecond, time.Minute, time.Hour)
+	c.Warm()
+	eventually(t, c.running)
+	f.setRespond(func(text string) (string, time.Duration) {
+		if text == "long prompt" {
+			return codeReply, 150 * time.Millisecond
+		}
+		return `{"task":"Open QA","task_probability":0.9,"domain_knowledge":0.3,"tokens":3}`, 0
+	})
+	if _, err := c.Classify(context.Background(), "long prompt"); !errors.Is(err, ErrUnavailable) {
+		t.Fatalf("slow answer: %v", err)
+	}
+	// The slow reply is drained, the helper survives, and the next request
+	// gets its own answer.
+	eventually(t, func() bool { return len(c.slot) == 0 })
+	got, err := c.Classify(context.Background(), "next")
+	if err != nil || got.Task != "Open QA" || f.stopped.Load() != 0 || f.started.Load() != 1 {
+		t.Fatalf("got %+v %v started=%d stopped=%d", got, err, f.started.Load(), f.stopped.Load())
+	}
+}
+
+func TestDeadHelperRestartsAfterBackoffWithoutTraffic(t *testing.T) {
+	f := &fakeHelper{respond: always("garbled")}
+	c := newClient(f.start, time.Second, time.Second, time.Second, 100*time.Millisecond)
+	c.Warm()
+	eventually(t, c.running)
+	if _, err := c.Classify(context.Background(), "x"); !errors.Is(err, ErrUnavailable) {
+		t.Fatalf("err = %v", err)
+	}
+	// No further requests: the replacement must still arrive on its own.
+	eventually(t, func() bool { return f.started.Load() == 2 && c.running() })
+}
+
+func TestFiredWatchdogNeverLeavesTheNextRequestADyingHelper(t *testing.T) {
+	f := &fakeHelper{respond: always(codeReply)}
+	c := newClient(f.start, time.Second, time.Second, time.Millisecond, time.Hour)
+	// The watchdog fires mid-exchange but its retirement is held up, so the
+	// reply arrives first and Stop reports the watchdog already fired.
+	release := make(chan struct{})
+	c.onStuck = func(p *process) { <-release; c.retire(p) }
+	c.Warm()
+	eventually(t, c.running)
+	f.setRespond(func(string) (string, time.Duration) { return codeReply, 30 * time.Millisecond })
+	if _, err := c.Classify(context.Background(), "x"); !errors.Is(err, ErrUnavailable) {
+		t.Fatalf("a reply that lost to the watchdog was trusted: %v", err)
+	}
+	eventually(t, func() bool { return len(c.slot) == 0 })
+	if c.running() || f.stopped.Load() != 1 {
+		t.Fatal("the slot freed while the stuck helper was still current")
+	}
+	close(release)
+}
+
 func TestMalformedOrOutOfRangeReplyReplacesHelper(t *testing.T) {
 	for _, bad := range []string{"not json", `{"task":""}`, `{"task":"Open QA","domain_knowledge":1.5}`} {
 		f := &fakeHelper{respond: always(bad)}
-		c := newClient(f.start, time.Second, time.Second, 0)
+		c := newClient(f.start, time.Second, time.Second, time.Second, 0)
 		c.Warm()
 		eventually(t, c.running)
 		if _, err := c.Classify(context.Background(), "x"); !errors.Is(err, ErrUnavailable) {
@@ -253,7 +308,7 @@ func TestHelperRefusalKeepsTheProcess(t *testing.T) {
 func TestRestartsAreRateLimited(t *testing.T) {
 	f := &fakeHelper{respond: always(codeReply)}
 	f.failing.Store(true)
-	c := newClient(f.start, time.Second, time.Second, 30*time.Second)
+	c := newClient(f.start, time.Second, time.Second, time.Second, 30*time.Second)
 	now := time.Unix(1000, 0)
 	var clock sync.Mutex
 	c.now = func() time.Time { clock.Lock(); defer clock.Unlock(); return now }

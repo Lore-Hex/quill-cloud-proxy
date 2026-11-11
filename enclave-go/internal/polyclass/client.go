@@ -53,26 +53,34 @@ type Client struct {
 	start starter
 	// slot is held for exactly one in-flight helper request.
 	slot chan struct{}
-	// wait bounds how long a caller queues for the slot; timeout bounds one
-	// inference, whether or not its caller is still waiting.
-	wait, timeout time.Duration
+	// wait bounds how long a caller queues for the slot and answer bounds
+	// how long it waits for a reply; past either it falls back. stuck is how
+	// long one inference may run before the helper is replaced, whether or
+	// not its caller is still waiting. A slow prompt costs one fallback, not
+	// a reload of the weights.
+	wait, answer, stuck time.Duration
 	// backoff is the minimum time between helper start attempts.
 	backoff time.Duration
 	now     func() time.Time
+	// onStuck runs when the watchdog fires; tests delay it.
+	onStuck func(*process)
 
 	mu        sync.Mutex
 	proc      *process
 	starting  bool
+	scheduled bool
 	lastStart time.Time
 }
 
-func newClient(start starter, wait, timeout, backoff time.Duration) *Client {
-	return &Client{start: start, slot: make(chan struct{}, 1), wait: wait, timeout: timeout, backoff: backoff, now: time.Now}
+func newClient(start starter, wait, answer, stuck, backoff time.Duration) *Client {
+	c := &Client{start: start, slot: make(chan struct{}, 1), wait: wait, answer: answer, stuck: stuck, backoff: backoff, now: time.Now}
+	c.onStuck = c.retire
+	return c
 }
 
 // New returns a client for the measured helper. Call Warm to start it.
 func New() *Client {
-	return newClient(startHelper, 1500*time.Millisecond, 3*time.Second, 15*time.Second)
+	return newClient(startHelper, 1500*time.Millisecond, 3*time.Second, 10*time.Second, 15*time.Second)
 }
 
 // Warm starts the helper in the background.
@@ -90,13 +98,29 @@ func Truncate(text string) string {
 	return text[:cut]
 }
 
-// startAsync launches the helper unless it is running, starting, or was
-// started too recently.
+// startAsync launches the helper unless it is running or starting. Inside
+// the backoff window it schedules one attempt for the window's end, so
+// recovery never waits for traffic.
 func (c *Client) startAsync() {
 	c.mu.Lock()
-	if c.proc != nil || c.starting || (!c.lastStart.IsZero() && c.now().Sub(c.lastStart) < c.backoff) {
+	if c.proc != nil || c.starting {
 		c.mu.Unlock()
 		return
+	}
+	if !c.lastStart.IsZero() {
+		if remaining := c.backoff - c.now().Sub(c.lastStart); remaining > 0 {
+			if !c.scheduled {
+				c.scheduled = true
+				time.AfterFunc(remaining, func() {
+					c.mu.Lock()
+					c.scheduled = false
+					c.mu.Unlock()
+					c.startAsync()
+				})
+			}
+			c.mu.Unlock()
+			return
+		}
 	}
 	c.starting = true
 	c.lastStart = c.now()
@@ -165,19 +189,29 @@ func (c *Client) Classify(ctx context.Context, text string) (Result, error) {
 	done := make(chan reply, 1)
 	// The request owns the slot until the helper answers or is killed, even
 	// if its caller leaves, so the next request never reads a stale reply.
-	watchdog := time.AfterFunc(c.timeout, func() { c.retire(proc) })
+	onStuck := c.onStuck
+	watchdog := time.AfterFunc(c.stuck, func() { onStuck(proc) })
 	go func() {
 		defer func() { <-c.slot }()
 		got := exchange(proc, line)
-		watchdog.Stop()
-		if got.err != nil && !errors.Is(got.err, ErrInvalid) {
+		// A watchdog that already fired may still be retiring proc; finish
+		// that here so the next request never picks up a dying helper.
+		fired := !watchdog.Stop()
+		if fired || (got.err != nil && !errors.Is(got.err, ErrInvalid)) {
 			c.retire(proc)
+		}
+		if fired {
+			got = reply{err: ErrUnavailable}
 		}
 		done <- got
 	}()
+	answer := time.NewTimer(c.answer)
+	defer answer.Stop()
 	select {
 	case got := <-done:
 		return got.result, got.err
+	case <-answer.C:
+		return Result{}, ErrUnavailable
 	case <-ctx.Done():
 		return Result{}, ctx.Err()
 	}
