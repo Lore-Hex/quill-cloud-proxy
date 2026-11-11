@@ -1,0 +1,13 @@
+Polyphemus prompt classifier
+
+The model weights (model.safetensors) and tokenizer (tokenizer.json) are
+NVIDIA's prompt-task-and-complexity-classifier, revision
+fea1121511eafabaf7dd6fc66863dcb04f74defb:
+https://huggingface.co/nvidia/prompt-task-and-complexity-classifier
+
+Licensed by NVIDIA Corporation under the NVIDIA Open Model License:
+https://developer.download.nvidia.com/licenses/nvidia-open-model-license-agreement-june-2024.pdf
+
+The classifier program in this directory is TrustedRouter's own code and is
+licensed under Apache-2.0. It uses candle (Apache-2.0 OR MIT) and Hugging
+Face tokenizers (Apache-2.0).

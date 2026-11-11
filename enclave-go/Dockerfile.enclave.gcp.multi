@@ -45,6 +45,16 @@ WORKDIR /src
 COPY maple-transport ./
 RUN sh build.sh
 
+# Polyphemus's local prompt classifier: NVIDIA's open weights at a pinned
+# revision, checked here by digest and again by the binary's self-test.
+FROM rust:1.94.1-alpine@sha256:77237dd363a0b127bb5ef532c2d64c0deb380b738e43a9c4bdac73398d6d0a08 AS polyphemus-classifier
+RUN apk add --no-cache build-base
+ADD --checksum=sha256:d9abb6b67d266a712a7f5baea5117bcb8f4be4bec325cf4c7856d35df0fcb953 https://huggingface.co/nvidia/prompt-task-and-complexity-classifier/resolve/fea1121511eafabaf7dd6fc66863dcb04f74defb/model.safetensors /weights/model.safetensors
+ADD --checksum=sha256:5124ef2ead1a10a717703bc436de7f353da76d6340e4587719b42b1693707964 https://huggingface.co/nvidia/prompt-task-and-complexity-classifier/resolve/fea1121511eafabaf7dd6fc66863dcb04f74defb/tokenizer.json /weights/tokenizer.json
+WORKDIR /src
+COPY polyphemus-classifier ./
+RUN sh build.sh
+
 FROM golang:1.26.11-bookworm@sha256:dc40a13b61304647ed7e5d581d246b86413dfc29d63c6d018310feb93cd98fc0 AS builder
 
 RUN apt-get update \
@@ -88,6 +98,9 @@ RUN mkdir -p /out/rootfs/tmp && chmod 1777 /out/rootfs/tmp
 FROM scratch
 COPY --from=maple /out/maple-transport /maple-transport
 COPY --from=maple /src/MAPLE-LICENSE /licenses/maple-MIT.txt
+COPY --from=polyphemus-classifier /out/polyphemus-classifier /polyphemus-classifier
+COPY --from=polyphemus-classifier /out/model/ /polyphemus-classifier-model/
+COPY --from=polyphemus-classifier /src/NOTICE /licenses/polyphemus-classifier-NOTICE.txt
 COPY --from=privatemode /out/privatemode-proxy /privatemode-proxy
 COPY --from=privatemode /out/privatemode-proxy.LICENSE /licenses/privatemode-MIT.txt
 COPY --from=builder /out/rootfs/ /

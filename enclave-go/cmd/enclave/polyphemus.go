@@ -9,40 +9,49 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
-	"regexp"
-	"slices"
 	"strconv"
 	"strings"
 	"time"
 
 	"github.com/Lore-Hex/quill-cloud-proxy/enclave-go/internal/adapter"
-	"github.com/Lore-Hex/quill-cloud-proxy/enclave-go/internal/llm"
+	"github.com/Lore-Hex/quill-cloud-proxy/enclave-go/internal/polyclass"
 	"github.com/Lore-Hex/quill-cloud-proxy/enclave-go/internal/trustedrouter"
 	"github.com/Lore-Hex/quill-cloud-proxy/enclave-go/internal/types"
 )
 
 const polyphemusModel = adapter.PolyphemusModel
-
-// polyphemusXPerf is the default for Telluvian's quality bar when the caller
-// sends no polyphemus.x_perf: pick the cheapest model at or above this
-// level, where 1.0 is Telluvian's fixed reference (openai/gpt-6-astra's published level;
-// see telluvian.ai/docs/model-zoo). The probe may still choose a cheaper model when it
-// predicts comparable success on the request. At 0.9 it chose deepseek-v4-flash
-// (published 0.36) for every SimpleQA-Verified question tried and missed all four.
-const polyphemusXPerf = 1.0
 const polyphemusSelectRoute = "responses.polyphemus.select"
 
-type modelSelector interface {
-	Select(context.Context, string, llm.SelectionControls, string) (*llm.ModelSelection, error)
+// Polyphemus picks between two models with a local classifier: the measured
+// /polyphemus-classifier helper (NVIDIA's prompt task-and-complexity
+// classifier) reads the latest user turn inside this gateway. No prompt text
+// leaves the gateway to choose a model.
+//
+// The strong model handles code, prompts that need expert domain knowledge,
+// and every request that carries tools; the cheap model handles the rest.
+// Confidential requests use a pair that only runs on confidential endpoints.
+const (
+	polyphemusStrongModel             = "anthropic/claude-opus-5.5"
+	polyphemusCheapModel              = "deepseek/deepseek-v4.1-flash-1017"
+	polyphemusConfidentialStrongModel = "moonshotai/kimi-k3.1-pro"
+	polyphemusConfidentialCheapModel  = "deepseek/deepseek-v4.1-flash-1017"
+	// domain_knowledge is 0 (none) to 1 (expert). Technical prompts score
+	// about 0.95 or more and everyday ones about 0.3 to 0.5.
+	polyphemusExpertDomain = 0.8
+)
+
+type promptClassifier interface {
+	Classify(context.Context, string) (polyclass.Result, error)
 }
 
-var enclaveModelSelector modelSelector
+var enclaveModelSelector promptClassifier
 
-func configureModelSelector(key string) {
-	enclaveModelSelector = nil
-	if selector, err := llm.NewTelluvianSelector(key, llm.NewProviderHTTPClient()); err == nil {
-		enclaveModelSelector = selector
-	}
+// configureModelSelector starts loading the classifier at boot so the first
+// Polyphemus request does not wait for the weights.
+func configureModelSelector() {
+	client := polyclass.New()
+	client.Warm()
+	enclaveModelSelector = client
 }
 
 type polyphemusGateway interface {
@@ -60,9 +69,14 @@ type polyphemusReceipt struct {
 	SelectorCalls    int
 	FallbackReason   string
 	InputTokens      int
-	SessionSupplied  bool
+	// Classifier labels and the tier they chose. Labels describe the prompt's
+	// kind, never its content, and go only to the caller's own response.
+	Task            string
+	DomainKnowledge float64
+	Tier            string
+	Confidential    bool
 	// Pinned means an earlier turn of this conversation chose the model, so
-	// Telluvian was not called and no selector fee applies.
+	// the classifier was not run and no selector fee applies.
 	Pinned bool
 }
 
@@ -77,22 +91,7 @@ func polyphemusError(status int, message string) *adapter.AdapterError {
 	return &adapter.AdapterError{Status: status, Message: message, Context: "polyphemus"}
 }
 
-// All customers share the operator's Telluvian key. Scope conversation IDs to
-// the caller's API key without exposing either value upstream. UUIDv8 carries
-// the domain-separated HMAC; no per-instance session state is needed.
-func polyphemusSelectorSessionID(bearer, sessionID string) string {
-	if bearer == "" || sessionID == "" {
-		return ""
-	}
-	mac := hmac.New(sha256.New, []byte(bearer))
-	_, _ = mac.Write([]byte("trustedrouter/telluvian/session/v1\x00" + sessionID))
-	id := mac.Sum(nil)[:16]
-	id[6] = (id[6] & 0x0f) | 0x80
-	id[8] = (id[8] & 0x3f) | 0x80
-	return fmt.Sprintf("%x-%x-%x-%x-%x", id[:4], id[4:6], id[6:8], id[8:10], id[10:])
-}
-
-// Telluvian may pick a different model on every turn, but a tool-using
+// Polyphemus may pick a different model on every turn, but a tool-using
 // conversation cannot change models midway: tool call ids, thought signatures
 // and context windows are model specific. The enclave keeps no conversation
 // state, so the chosen model rides in the call_id of every function call
@@ -158,7 +157,6 @@ func polyphemusToolCallStamp(ctx context.Context) func(string) string {
 	model := receipt.SelectedModel
 	return func(id string) string { return polyphemusPinCallID(model, id) }
 }
-
 func validatePolyphemus(req *types.OpenAIChatRequest, routeType string) *adapter.AdapterError {
 	if routeType != "responses" || req.Response == nil {
 		return polyphemusError(400, "Polyphemus requires POST /v1/responses")
@@ -170,10 +168,6 @@ func validatePolyphemus(req *types.OpenAIChatRequest, routeType string) *adapter
 		return polyphemusError(400, "depth must be between 0 and 4")
 	}
 	if p := req.Provider; p != nil {
-		privacy := strings.ToLower(strings.TrimSpace(p.MinPrivacy))
-		if (privacy != "" && privacy != "any" && privacy != "standard") || (p.ZDR != nil && *p.ZDR) || strings.EqualFold(p.DataCollection, "deny") {
-			return polyphemusError(400, "Polyphemus sends context to Telluvian and does not support no-store, ZDR, or confidential requests")
-		}
 		for _, mode := range []string{p.Usage, p.UsageType, p.Billing} {
 			if mode != "" && !strings.EqualFold(mode, "credits") && !strings.EqualFold(mode, "prepaid") {
 				return polyphemusError(400, "Polyphemus requires Credits, not BYOK")
@@ -181,33 +175,88 @@ func validatePolyphemus(req *types.OpenAIChatRequest, routeType string) *adapter
 		}
 	}
 	for _, message := range req.Messages {
-		if message.Content == nil {
-			continue
-		}
-		if _, ok := message.Content.(string); ok {
-			continue
-		}
-		encoded, err := json.Marshal(message.Content)
-		var parts []struct {
-			Type string `json:"type"`
-			Text string `json:"text"`
-		}
-		if err != nil || json.Unmarshal(encoded, &parts) != nil || parts == nil {
-			return polyphemusError(400, "Polyphemus currently supports text input only")
-		}
-		for _, part := range parts {
-			if part.Type != "text" {
-				return polyphemusError(400, "Polyphemus currently supports text input only")
-			}
+		if _, err := polyphemusMessageText(message.Content); err != nil {
+			return err
 		}
 	}
 	return nil
 }
 
-// Only an exact, unique, currently published concrete chat model is eligible.
-// Upstream names cannot introduce a new URL, alias, provider, or recursion.
-// On failure it also returns a diagnosis safe to log.
-func resolveSelectedModel(body []byte, recommendation string) (string, string, error) {
+// polyphemusMessageText joins a message's text parts. Any non-text part is
+// refused: the classifier and the routing rule only understand text.
+func polyphemusMessageText(content any) (string, *adapter.AdapterError) {
+	switch value := content.(type) {
+	case nil:
+		return "", nil
+	case string:
+		return value, nil
+	}
+	encoded, err := json.Marshal(content)
+	var parts []struct {
+		Type string `json:"type"`
+		Text string `json:"text"`
+	}
+	if err != nil || json.Unmarshal(encoded, &parts) != nil || parts == nil {
+		return "", polyphemusError(400, "Polyphemus currently supports text input only")
+	}
+	texts := make([]string, 0, len(parts))
+	for _, part := range parts {
+		if part.Type != "text" {
+			return "", polyphemusError(400, "Polyphemus currently supports text input only")
+		}
+		texts = append(texts, part.Text)
+	}
+	return strings.Join(texts, "\n"), nil
+}
+
+// polyphemusSelectionText is the latest user turn with text, which is the
+// only content the classifier sees.
+func polyphemusSelectionText(messages []types.OpenAIChatMessage) string {
+	for i := len(messages) - 1; i >= 0; i-- {
+		if messages[i].Role != "user" {
+			continue
+		}
+		if text, err := polyphemusMessageText(messages[i].Content); err == nil && strings.TrimSpace(text) != "" {
+			return text
+		}
+	}
+	return ""
+}
+
+// polyphemusConfidential reports whether the caller requires confidential
+// routing, by the control plane's own privacy-tier names.
+func polyphemusConfidential(ctx context.Context, req *types.OpenAIChatRequest) bool {
+	if trustedrouter.ConfidentialOnly(ctx) {
+		return true
+	}
+	if req.Provider == nil {
+		return false
+	}
+	switch strings.ToLower(strings.TrimSpace(req.Provider.MinPrivacy)) {
+	case "confidential", "trusted", "e2e", "e2ee", "max", "maximum":
+		return true
+	}
+	return false
+}
+
+// choosePolyphemusModel is the whole routing rule.
+func choosePolyphemusModel(result polyclass.Result, hasTools, confidential bool) (model, tier string) {
+	strong := hasTools || result.Task == "Code Generation" || result.DomainKnowledge >= polyphemusExpertDomain
+	switch {
+	case strong && confidential:
+		return polyphemusConfidentialStrongModel, "strong"
+	case strong:
+		return polyphemusStrongModel, "strong"
+	case confidential:
+		return polyphemusConfidentialCheapModel, "cheap"
+	default:
+		return polyphemusCheapModel, "cheap"
+	}
+}
+
+// resolveSelectedModel requires the exact id to be a unique, currently
+// published, credit-billed concrete chat model that serves Responses.
+func resolveSelectedModel(body []byte, model string) error {
 	var catalog struct {
 		Data []struct {
 			ID string `json:"id"`
@@ -219,105 +268,31 @@ func resolveSelectedModel(body []byte, recommendation string) (string, string, e
 		} `json:"data"`
 	}
 	if err := json.Unmarshal(body, &catalog); err != nil {
-		return "", "", polyphemusError(503, "Model catalog unavailable")
+		return polyphemusError(503, "Model catalog unavailable")
 	}
-	matchesFor := func(name string, eligibleOnly bool) map[string]bool {
-		matches := make(map[string]bool)
-		for _, model := range catalog.Data {
-			if eligibleOnly && (!model.TR.Chat || !model.TR.Credits || (model.TR.Responses != nil && !*model.TR.Responses) || strings.HasPrefix(model.ID, "trustedrouter/") || isOrchestrationModel(model.ID)) {
-				continue
-			}
-			_, suffix, _ := strings.Cut(model.ID, "/")
-			if model.ID == name || (!strings.Contains(name, "/") && suffix == name) {
-				matches[model.ID] = true
-			}
+	matches := 0
+	for _, row := range catalog.Data {
+		if row.ID != model {
+			continue
 		}
-		return matches
-	}
-	// Telluvian writes Anthropic versions the way Anthropic's API does
-	// (claude-opus-5-5, claude-haiku-4-5-20251001); the catalog's credit-billed
-	// ids use dots (claude-opus-5.5). The dashed ids that do appear in the
-	// catalog are BYOK-only. Each fallback runs only when the name before it
-	// matched no eligible model, and the result must still be unique.
-	candidates := telluvianModelNames(recommendation)
-	var matches map[string]bool
-	for _, name := range candidates {
-		if matches = matchesFor(name, true); len(matches) > 0 {
-			break
+		if !row.TR.Chat || !row.TR.Credits || (row.TR.Responses != nil && !*row.TR.Responses) || strings.HasPrefix(row.ID, "trustedrouter/") || isOrchestrationModel(row.ID) {
+			return polyphemusError(502, "Selected model is not available")
 		}
+		matches++
 	}
-	if len(matches) != 1 {
-		// The recommendation is third-party text that may echo the prompt, so
-		// only catalog ids, which are public, reach the diagnosis.
-		diagnosis := "no_catalog_match"
-		if len(matches) > 1 {
-			diagnosis = "ambiguous"
-		} else {
-			for _, name := range candidates {
-				if known := matchesFor(name, false); len(known) == 1 {
-					for id := range known {
-						diagnosis = "ineligible:" + id
-					}
-					break
-				}
-			}
-		}
-		return "", diagnosis, polyphemusError(502, "Telluvian recommended an unavailable or ambiguous model")
+	if matches != 1 {
+		return polyphemusError(502, "Selected model is not available")
 	}
-	for model := range matches {
-		return model, "", nil
-	}
-	return "", "no_catalog_match", polyphemusError(502, "No eligible model selected")
-}
-
-var (
-	modelDateSuffix   = regexp.MustCompile(`-20[0-9]{6}$`)
-	dashedVersionPair = regexp.MustCompile(`-([0-9]+)-([0-9])($|-)`)
-)
-
-// telluvianModelNames lists the names to try for a recommendation, in order:
-// as given; with dashed major-minor versions dotted (claude-opus-4-5 →
-// claude-opus-4.5); then, for Claude only, also without a -YYYYMMDD snapshot
-// date, since the catalog's Claude ids are usually undated. Other vendors'
-// snapshot dates name distinct models, so they are kept.
-func telluvianModelNames(name string) []string {
-	names := []string{name}
-	add := func(candidate string) {
-		if candidate != names[len(names)-1] {
-			names = append(names, candidate)
-		}
-	}
-	dotted := name
-	// Repeat: a match consumes the dash it ends on, so adjacent pairs need another pass.
-	for next := dashedVersionPair.ReplaceAllString(dotted, "-$1.$2$3"); next != dotted; next = dashedVersionPair.ReplaceAllString(dotted, "-$1.$2$3") {
-		dotted = next
-	}
-	add(dotted)
-	stem := name
-	if _, rest, ok := strings.Cut(name, "/"); ok {
-		stem = rest
-	}
-	if strings.HasPrefix(stem, "claude-") {
-		add(modelDateSuffix.ReplaceAllString(dotted, ""))
-	}
-	return names
+	return nil
 }
 
 // Admission and finalization are the same durable operations used by every
-// generation. The selector never runs on a replayed admission, since its own
-// API has no idempotency guarantee. Do not retry ambiguous selector failures.
-func preparePolyphemus(ctx context.Context, req *types.OpenAIChatRequest, gateway polyphemusGateway, selector modelSelector, bearer, requestLogID string) (context.Context, error) {
+// generation. The selector never runs on a replayed admission.
+func preparePolyphemus(ctx context.Context, req *types.OpenAIChatRequest, gateway polyphemusGateway, classifier promptClassifier, bearer, requestLogID string) (context.Context, error) {
 	if err := validatePolyphemus(req, "responses"); err != nil {
 		return ctx, err
 	}
 	pinnedModel := unpinPolyphemusHistory(req.Messages)
-	payload, err := json.Marshal(struct {
-		Messages []types.OpenAIChatMessage `json:"messages"`
-		Tools    []any                     `json:"tools,omitempty"`
-	}{req.Messages, req.Tools})
-	if err != nil || len(payload) > 1<<20 {
-		return ctx, polyphemusError(400, "Polyphemus selection context exceeds 1 MiB")
-	}
 	catalog, err := gateway.PublicModels(ctx)
 	if err != nil {
 		return ctx, polyphemusError(503, "Model catalog unavailable")
@@ -327,7 +302,7 @@ func preparePolyphemus(ctx context.Context, req *types.OpenAIChatRequest, gatewa
 		rootID = newResponseID()
 	}
 	selectReq := cloneChatRequest(req)
-	selectReq.Polyphemus = nil // selector controls go to Telluvian, not to admission
+	selectReq.Polyphemus = nil
 	rootDigest := sha256.Sum256([]byte(rootID))
 	stageKey := hex.EncodeToString(rootDigest[:])
 	selectReq.IdempotencyKey = "polyphemus-select:" + stageKey
@@ -338,7 +313,8 @@ func preparePolyphemus(ctx context.Context, req *types.OpenAIChatRequest, gatewa
 	mac := hmac.New(sha256.New, []byte(bearer))
 	_, _ = mac.Write(canonical)
 	if req.Polyphemus != nil {
-		// The field is never serialized, so the canonical JSON above omits it; bind it here.
+		// The field is never serialized, so the canonical JSON above omits it;
+		// bind it here. The options are accepted for compatibility and ignored.
 		options, _ := json.Marshal(struct {
 			XPerf    any    `json:"x_perf,omitempty"`
 			ModelZoo string `json:"model_zoo,omitempty"`
@@ -351,21 +327,23 @@ func preparePolyphemus(ctx context.Context, req *types.OpenAIChatRequest, gatewa
 		selectReq.Provider = &types.ProviderRouting{}
 	}
 	selectReq.Provider.Usage = "credits"
+	confidential := polyphemusConfidential(ctx, req)
 	if pinnedModel != "" {
-		model, _, err := resolveSelectedModel(catalog, pinnedModel)
-		if err == nil && model == pinnedModel {
-			fmt.Fprintf(os.Stderr, "enclave.polyphemus.pinned request_log_id=%q selected_model=%q\n", requestLogID, model)
-			return continuePolyphemus(ctx, req, &polyphemusReceipt{SelectedModel: model, Pinned: true}, stageKey, selectReq.RequestFingerprint), nil
+		if err := resolveSelectedModel(catalog, pinnedModel); err == nil {
+			fmt.Fprintf(os.Stderr, "enclave.polyphemus.pinned request_log_id=%q selected_model=%q\n", requestLogID, pinnedModel)
+			return continuePolyphemus(ctx, req, &polyphemusReceipt{SelectedModel: pinnedModel, Pinned: true, Confidential: confidential}, stageKey, selectReq.RequestFingerprint), nil
 		}
-		// The pinned model left the catalog; let Telluvian choose again.
+		// The pinned model left the catalog; choose again.
 		fmt.Fprintf(os.Stderr, "enclave.polyphemus.pin_unavailable request_log_id=%q\n", requestLogID)
 	}
-	// Meter only the exact context sent to Model Select, including tools. Its
-	// API reports no usage, so use the shared estimate and label it explicitly.
-	// The authorization estimate adds message overhead and safely covers this
-	// smaller settlement count. No prompt is sent to the control plane.
-	selectorInputTokens := types.ContentTokenEstimate(string(payload))
-	selectReq.Messages = []types.OpenAIChatMessage{{Role: "user", Content: string(payload)}}
+	// Meter exactly the text the classifier reads, with the shared estimate.
+	// No prompt is sent to the control plane: admission sees only its size.
+	selectionText := polyclass.Truncate(polyphemusSelectionText(req.Messages))
+	if selectionText == "" {
+		return ctx, polyphemusError(400, "Polyphemus needs a user message with text")
+	}
+	selectorInputTokens := types.ContentTokenEstimate(selectionText)
+	selectReq.Messages = []types.OpenAIChatMessage{{Role: "user", Content: selectionText}}
 	selectReq.Tools = nil
 	one := 1
 	selectReq.MaxTokens, selectReq.MaxCompletionTokens, selectReq.MaxOutputTokens = &one, nil, nil
@@ -378,13 +356,14 @@ func preparePolyphemus(ctx context.Context, req *types.OpenAIChatRequest, gatewa
 	if auth.IdempotentReplay {
 		return ctx, polyphemusError(409, "Polyphemus request already admitted; use a new idempotency key for a new request")
 	}
-	if auth.Model != polyphemusModel || auth.Provider != "telluvian" || !strings.EqualFold(auth.UsageType, "credits") {
+	// "telluvian" is the selector's former provider slug, accepted until the
+	// control plane's catalog moves it to "trustedrouter".
+	if auth.Model != polyphemusModel || (auth.Provider != "trustedrouter" && auth.Provider != "telluvian") || !strings.EqualFold(auth.UsageType, "credits") {
 		_ = gateway.Refund(ctx, auth, 502, "routing_integrity_error", 0, req.Metadata)
 		return ctx, polyphemusError(502, "Polyphemus selection routing integrity check failed")
 	}
-	selectorSessionID := polyphemusSelectorSessionID(bearer, req.SessionID)
 	started := time.Now()
-	// Provider failures may fall back; admission/privacy/billing failures never do.
+	// Classifier failures fall back; admission/privacy/billing failures never do.
 	fallback := func(reason string, calls int) (context.Context, error) {
 		finalCtx, cancel := finalizeContext(ctx)
 		defer cancel()
@@ -398,24 +377,21 @@ func preparePolyphemus(ctx context.Context, req *types.OpenAIChatRequest, gatewa
 		if err := ctx.Err(); err != nil {
 			return ctx, polyphemusError(499, "Request cancelled before fallback")
 		}
-		receipt := &polyphemusReceipt{ElapsedMS: elapsed.Milliseconds(), SelectedModel: "trustedrouter/auto", SelectorCalls: calls, FallbackReason: reason, SessionSupplied: calls > 0 && selectorSessionID != ""}
+		receipt := &polyphemusReceipt{ElapsedMS: elapsed.Milliseconds(), SelectedModel: "trustedrouter/auto", SelectorCalls: calls, FallbackReason: reason, Confidential: confidential}
 		fmt.Fprintf(os.Stderr, "enclave.polyphemus.fallback request_log_id=%q reason=%q\n", requestLogID, reason)
 		return continuePolyphemus(ctx, req, receipt, stageKey, selectReq.RequestFingerprint), nil
 	}
-	if selector == nil {
+	if classifier == nil {
 		return fallback("model_selector_unavailable", 0)
 	}
-	selection, err := selector.Select(ctx, string(payload), polyphemusSelectionControls(req), selectorSessionID)
+	result, err := classifier.Classify(ctx, selectionText)
 	selectorElapsedMS := time.Since(started).Milliseconds()
-	if err != nil || selection == nil {
+	if err != nil {
 		return fallback("model_selection_failed", 1)
 	}
-	model, diagnosis, err := resolveSelectedModel(catalog, selection.Model)
-	if err != nil {
-		// An empty diagnosis is our own unreadable catalog, not Telluvian's pick.
-		if diagnosis != "" {
-			fmt.Fprintf(os.Stderr, "enclave.polyphemus.unresolved_selection request_log_id=%q diagnosis=%q\n", requestLogID, diagnosis)
-		}
+	model, tier := choosePolyphemusModel(result, len(req.Tools) > 0, confidential)
+	if err := resolveSelectedModel(catalog, model); err != nil {
+		fmt.Fprintf(os.Stderr, "enclave.polyphemus.unresolved_selection request_log_id=%q selected_model=%q\n", requestLogID, model)
 		return fallback("invalid_model_selection", 1)
 	}
 	usage := trustedrouter.Usage{
@@ -437,13 +413,12 @@ func preparePolyphemus(ctx context.Context, req *types.OpenAIChatRequest, gatewa
 	if settlement == nil || settlement.CostMicrodollars < 1 || stageDDispositionLost(settlement) {
 		return ctx, polyphemusError(502, "Model selection settlement did not complete")
 	}
-	receipt := &polyphemusReceipt{CostMicrodollars: settlement.CostMicrodollars, ElapsedMS: selectorElapsedMS, SelectedModel: model, GenerationID: settlement.GenerationID, SelectorCalls: 1, InputTokens: selectorInputTokens, SessionSupplied: selectorSessionID != ""}
-	// Preserve caller reasoning if specified; otherwise apply the
-	// recommendation, clamped to the efforts the chosen model accepts.
-	if req.Reasoning == nil && req.ReasoningEffort == "" {
-		req.ReasoningEffort = polyphemusSupportedEffort(catalog, model, selection.Reasoning.Effort)
+	receipt := &polyphemusReceipt{
+		CostMicrodollars: settlement.CostMicrodollars, ElapsedMS: selectorElapsedMS, SelectedModel: model,
+		GenerationID: settlement.GenerationID, SelectorCalls: 1, InputTokens: selectorInputTokens,
+		Task: result.Task, DomainKnowledge: result.DomainKnowledge, Tier: tier, Confidential: confidential,
 	}
-	fmt.Fprintf(os.Stderr, "enclave.polyphemus.selection_done request_log_id=%q selected_model=%q selector_elapsed_ms=%d selector_cost_microdollars=%d\n", requestLogID, model, receipt.ElapsedMS, receipt.CostMicrodollars)
+	fmt.Fprintf(os.Stderr, "enclave.polyphemus.selection_done request_log_id=%q selected_model=%q tier=%q selector_elapsed_ms=%d selector_cost_microdollars=%d\n", requestLogID, model, tier, receipt.ElapsedMS, receipt.CostMicrodollars)
 	return continuePolyphemus(ctx, req, receipt, stageKey, selectReq.RequestFingerprint), nil
 }
 
@@ -459,7 +434,6 @@ func continuePolyphemus(ctx context.Context, req *types.OpenAIChatRequest, recei
 	req.RequestFingerprint = fingerprint
 	return context.WithValue(ctx, polyphemusContextKey{}, receipt)
 }
-
 func annotatePolyphemusUsage(ctx context.Context, usage map[string]any) {
 	receipt := polyphemusReceiptFromContext(ctx)
 	if receipt == nil || usage == nil {
@@ -470,16 +444,21 @@ func annotatePolyphemusUsage(ctx context.Context, usage map[string]any) {
 		providerUsage = map[string]any{}
 	}
 	providerUsage["router"] = "polyphemus"
-	providerUsage["selector_provider"] = "telluvian"
+	providerUsage["selector_provider"] = "trustedrouter"
+	providerUsage["selector_runs_in_gateway"] = true
 	providerUsage["selector_calls"] = receipt.SelectorCalls
-	providerUsage["selector_session_supplied"] = receipt.SessionSupplied
 	providerUsage["selector_pinned"] = receipt.Pinned
+	providerUsage["selector_confidential"] = receipt.Confidential
 	providerUsage["selector_cost_microdollars"] = receipt.CostMicrodollars
 	providerUsage["selector_input_tokens"] = receipt.InputTokens
 	providerUsage["selector_usage_estimated"] = true
-	providerUsage["selector_token_basis"] = "serialized_context_utf8_bytes_div_4"
-	providerUsage["selector_upstream_cost_known"] = false
+	providerUsage["selector_token_basis"] = "classified_text_utf8_bytes_div_4"
 	providerUsage["selector_elapsed_ms"] = receipt.ElapsedMS
+	if receipt.Tier != "" {
+		providerUsage["selector_tier"] = receipt.Tier
+		providerUsage["selector_task"] = receipt.Task
+		providerUsage["selector_domain_knowledge"] = receipt.DomainKnowledge
+	}
 	if receipt.FallbackReason != "" {
 		providerUsage["selector_fallback_model"] = receipt.SelectedModel
 		providerUsage["selector_fallback_reason"] = receipt.FallbackReason
@@ -513,89 +492,4 @@ func annotatePolyphemusResponse(ctx context.Context, body []byte) ([]byte, error
 		payload["trustedrouter"] = mergeTrustedRouterRouting(payload["trustedrouter"], usage["provider_usage"].(map[string]any))
 	}
 	return json.Marshal(payload)
-}
-
-// polyphemusSelectionControls applies the caller's polyphemus options over the
-// defaults. The responses adapter has already validated them.
-func polyphemusSelectionControls(req *types.OpenAIChatRequest) llm.SelectionControls {
-	controls := llm.SelectionControls{XPerf: polyphemusXPerf}
-	if options := req.Polyphemus; options != nil {
-		if options.XPerf != nil {
-			controls.XPerf = options.XPerf
-		}
-		controls.ModelZoo = options.ModelZoo
-	}
-	return controls
-}
-
-// polyphemusEffortOrder ranks reasoning efforts from least to most thinking.
-var polyphemusEffortOrder = []string{"none", "minimal", "low", "medium", "high", "xhigh", "max"}
-
-// polyphemusSupportedEffort maps Telluvian's recommended effort onto one the
-// selected model accepts, per the catalog's trustedrouter.capabilities.
-// reasoning_effort: the strongest supported effort at or below the
-// recommendation, else the weakest above it. A model declaring no efforts
-// gets none. An unknown or malformed declaration, one with no effort we can
-// rank, or a recommendation we cannot rank passes through unchanged.
-func polyphemusSupportedEffort(body []byte, model, effort string) string {
-	effort = strings.ToLower(strings.TrimSpace(effort))
-	if effort == "" {
-		return ""
-	}
-	// Decode only the selected row's declaration, so another model's
-	// malformed capabilities cannot disable the clamp.
-	var catalog struct {
-		Data []struct {
-			ID string `json:"id"`
-			TR struct {
-				Capabilities json.RawMessage `json:"capabilities"`
-			} `json:"trustedrouter"`
-		} `json:"data"`
-	}
-	if err := json.Unmarshal(body, &catalog); err != nil {
-		return effort
-	}
-	var supported *[]string
-	for _, row := range catalog.Data {
-		if row.ID != model {
-			continue
-		}
-		var capabilities struct {
-			ReasoningEffort *[]string `json:"reasoning_effort"`
-		}
-		if err := json.Unmarshal(row.TR.Capabilities, &capabilities); err != nil {
-			return effort
-		}
-		supported = capabilities.ReasoningEffort
-		break
-	}
-	if supported == nil {
-		return effort
-	}
-	if len(*supported) == 0 {
-		return ""
-	}
-	want := slices.Index(polyphemusEffortOrder, effort)
-	if want < 0 {
-		return effort
-	}
-	below, above := "", ""
-	for i, candidate := range polyphemusEffortOrder {
-		if !slices.ContainsFunc(*supported, func(s string) bool { return strings.EqualFold(strings.TrimSpace(s), candidate) }) {
-			continue
-		}
-		if i <= want {
-			below = candidate
-		} else if above == "" {
-			above = candidate
-		}
-	}
-	switch {
-	case below != "":
-		return below
-	case above != "":
-		return above
-	default:
-		return effort // nothing declared that we can rank
-	}
 }

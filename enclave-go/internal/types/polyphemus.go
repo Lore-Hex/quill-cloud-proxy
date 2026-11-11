@@ -17,10 +17,11 @@ const (
 	maxPolyphemusXPerfIDSize = 128
 )
 
-// PolyphemusOptions are the caller's Telluvian routing controls (telluvian.ai/docs/routing).
-// XPerf is the quality bar: a float64 in [MinPolyphemusXPerf, MaxPolyphemusXPerf],
-// or a model id read as "at least as capable as this model". ModelZoo limits the
-// candidates to comma-separated model patterns (`*` wildcards); empty means all.
+// PolyphemusOptions are the former selector's routing controls. They are still
+// validated and accepted so existing clients keep working, but the local
+// classifier ignores them (docs/providers/polyphemus.md).
+// XPerf was a quality bar: a float64 in [MinPolyphemusXPerf, MaxPolyphemusXPerf],
+// or a model id. ModelZoo was comma-separated model patterns (`*` wildcards).
 type PolyphemusOptions struct {
 	XPerf    any    `json:"x_perf,omitempty"`
 	ModelZoo string `json:"model_zoo,omitempty"`

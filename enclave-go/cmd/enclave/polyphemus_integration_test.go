@@ -16,8 +16,9 @@ import (
 	"time"
 
 	"github.com/Lore-Hex/quill-cloud-proxy/enclave-go/internal/auth"
-	"github.com/Lore-Hex/quill-cloud-proxy/enclave-go/internal/llm"
+	"github.com/Lore-Hex/quill-cloud-proxy/enclave-go/internal/polyclass"
 	"github.com/Lore-Hex/quill-cloud-proxy/enclave-go/internal/trustedrouter"
+	"github.com/Lore-Hex/quill-cloud-proxy/enclave-go/internal/types"
 )
 
 func TestServeOnePolyphemusResponses(t *testing.T) {
@@ -39,20 +40,17 @@ func TestServeOnePolyphemusResponses(t *testing.T) {
 			original := enclaveModelSelector
 			t.Cleanup(func() { enclaveModelSelector = original })
 			var mu sync.Mutex
-			enclaveModelSelector = selectionStub(func(_ context.Context, messages string, perf llm.SelectionControls, selectorSessionID string) (*llm.ModelSelection, error) {
+			enclaveModelSelector = classifierStub(func(_ context.Context, text string) (polyclass.Result, error) {
 				mu.Lock()
-				selectorTokens = len(messages) / 4
+				selectorTokens = types.ContentTokenEstimate(text)
 				mu.Unlock()
-				if !strings.Contains(messages, "PRIVATE INPUT") || perf.XPerf != polyphemusXPerf {
-					t.Error("incorrect selection request")
-				}
-				if selectorSessionID != polyphemusSelectorSessionID("test-user-bearer", sessionID) || strings.Contains(messages, "private-conversation-id") {
-					t.Error("session was not scoped or leaked into selector context")
+				if text != "PRIVATE INPUT" {
+					t.Errorf("classifier saw %q", text)
 				}
 				if tc.fallback {
-					return nil, errors.New("selector unavailable")
+					return polyclass.Result{}, errors.New("classifier unavailable")
 				}
-				return &llm.ModelSelection{Model: "gemini-3.8-flash"}, nil
+				return polyclass.Result{Task: "Open QA", DomainKnowledge: 0.3}, nil
 			})
 			admissions, settlements := []string{}, []string{}
 			refunds := 0
@@ -75,9 +73,9 @@ func TestServeOnePolyphemusResponses(t *testing.T) {
 					admissions = append(admissions, route)
 					mu.Unlock()
 					if route == polyphemusSelectRoute {
-						_, _ = fmt.Fprint(w, `{"data":{"authorization_id":"auth_selector","workspace_id":"ws_1","api_key_hash":"key_1","model":"trustedrouter/polyphemus-1.0","endpoint_id":"selector","provider":"telluvian","usage_type":"Credits","limit_usage_type":"Credits","estimated_cost_microdollars":1}}`)
+						_, _ = fmt.Fprint(w, `{"data":{"authorization_id":"auth_selector","workspace_id":"ws_1","api_key_hash":"key_1","model":"trustedrouter/polyphemus-1.0","endpoint_id":"selector","provider":"trustedrouter","usage_type":"Credits","limit_usage_type":"Credits","estimated_cost_microdollars":1}}`)
 					} else {
-						wanted := "google/gemini-3.8-flash"
+						wanted := polyphemusCheapModel
 						if tc.fallback {
 							wanted = "trustedrouter/auto"
 						}
@@ -96,7 +94,7 @@ func TestServeOnePolyphemusResponses(t *testing.T) {
 						if data["actual_input_tokens"] != float64(meteredTokens) || data["actual_output_tokens"] != float64(0) || data["usage_estimated"] != true {
 							t.Errorf("incorrect selector meter: %#v", data)
 						}
-						_, _ = fmt.Fprintf(w, `{"data":{"settled":true,"generation_id":"selection","cost_microdollars":%d,"model":"trustedrouter/polyphemus-1.0","provider":"telluvian"}}`, selectorCost)
+						_, _ = fmt.Fprintf(w, `{"data":{"settled":true,"generation_id":"selection","cost_microdollars":%d,"model":"trustedrouter/polyphemus-1.0","provider":"trustedrouter"}}`, selectorCost)
 					} else {
 						_, _ = fmt.Fprint(w, `{"data":{"settled":true,"generation_id":"generation","cost_microdollars":12,"model":"google/gemini-3.8-flash","provider":"google-ai-studio"}}`)
 					}
@@ -161,8 +159,8 @@ func TestServeOnePolyphemusResponses(t *testing.T) {
 				t.Fatalf("wrong total: %#v", usage)
 			}
 			providerUsage, _ := usage["provider_usage"].(map[string]any)
-			if providerUsage["selector_session_supplied"] != tc.session {
-				t.Fatalf("missing session request metadata: %#v", providerUsage)
+			if providerUsage["selector_provider"] != "trustedrouter" || providerUsage["selector_runs_in_gateway"] != true {
+				t.Fatalf("receipt does not say selection ran in the gateway: %#v", providerUsage)
 			}
 			if providerUsage["selector_cost_microdollars"] != float64(selectorCost) || providerUsage["generation_cost_microdollars"] != float64(12) {
 				t.Fatalf("wrong breakdown: %#v", providerUsage)

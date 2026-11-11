@@ -4,29 +4,37 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"fmt"
-	"reflect"
-	"regexp"
 	"strings"
 	"testing"
 
 	"github.com/Lore-Hex/quill-cloud-proxy/enclave-go/internal/adapter"
-	"github.com/Lore-Hex/quill-cloud-proxy/enclave-go/internal/llm"
+	"github.com/Lore-Hex/quill-cloud-proxy/enclave-go/internal/polyclass"
 	"github.com/Lore-Hex/quill-cloud-proxy/enclave-go/internal/trustedrouter"
 	"github.com/Lore-Hex/quill-cloud-proxy/enclave-go/internal/types"
 )
 
-const selectionTestCatalog = `{"data":[{"id":"google/gemini-3.8-flash","trustedrouter":{"supports_chat":true,"prepaid_available":true}}]}`
+const selectionTestCatalog = `{"data":[` +
+	`{"id":"google/gemini-3.8-flash","trustedrouter":{"supports_chat":true,"prepaid_available":true}},` +
+	`{"id":"anthropic/claude-opus-5.5","trustedrouter":{"supports_chat":true,"prepaid_available":true}},` +
+	`{"id":"deepseek/deepseek-v4.1-flash-1017","trustedrouter":{"supports_chat":true,"prepaid_available":true}},` +
+	`{"id":"moonshotai/kimi-k3.1-pro","trustedrouter":{"supports_chat":true,"prepaid_available":true}}]}`
 
-type selectionStub func(context.Context, string, llm.SelectionControls, string) (*llm.ModelSelection, error)
+type classifierStub func(context.Context, string) (polyclass.Result, error)
 
-func (s selectionStub) Select(ctx context.Context, messages string, perf llm.SelectionControls, sessionID string) (*llm.ModelSelection, error) {
-	return s(ctx, messages, perf, sessionID)
+func (s classifierStub) Classify(ctx context.Context, text string) (polyclass.Result, error) {
+	return s(ctx, text)
+}
+
+func returns(task string, domain float64) classifierStub {
+	return func(context.Context, string) (polyclass.Result, error) {
+		return polyclass.Result{Task: task, DomainKnowledge: domain, Tokens: 5}, nil
+	}
 }
 
 type selectionGatewayStub struct {
 	admitted, settled, refunded   int
 	replay                        bool
+	provider                      string // defaults to "trustedrouter"
 	authErr, settleErr, refundErr error
 	request                       *types.OpenAIChatRequest
 	usage                         trustedrouter.Usage
@@ -45,7 +53,11 @@ func (g *selectionGatewayStub) AuthorizeWithRoute(_ context.Context, _ string, r
 	if route != polyphemusSelectRoute {
 		return nil, errors.New("wrong route")
 	}
-	return &trustedrouter.Authorization{Model: polyphemusModel, Provider: "telluvian", UsageType: "Credits", EndpointID: "selection", IdempotentReplay: g.replay}, g.authErr
+	provider := g.provider
+	if provider == "" {
+		provider = "trustedrouter"
+	}
+	return &trustedrouter.Authorization{Model: polyphemusModel, Provider: provider, UsageType: "Credits", EndpointID: "selection", IdempotentReplay: g.replay}, g.authErr
 }
 func (g *selectionGatewayStub) Settle(_ context.Context, _ *trustedrouter.Authorization, usage trustedrouter.Usage) (*trustedrouter.SettleResult, error) {
 	g.settled++
@@ -61,132 +73,124 @@ func selectionTestRequest() *types.OpenAIChatRequest {
 	return &types.OpenAIChatRequest{Model: polyphemusModel, Response: &types.ResponseRequestMeta{}, Messages: []types.OpenAIChatMessage{{Role: "user", Content: "PRIVATE TASK"}}, IdempotencyKey: "same-root"}
 }
 
-func TestPolyphemusSelectorSessionIsStableOpaqueAndKeyIsolated(t *testing.T) {
-	const session = "private conversation / \u65e5\u672c\u8a9e"
-	first := polyphemusSelectorSessionID("test-key-one", session)
-	// Independently computed HMAC vector pins the namespace, key and UUID bits.
-	if first != "2e7dc99b-4abb-8bfd-869b-7192416a0130" {
-		t.Fatal("stable session derivation changed")
-	}
-	guid := regexp.MustCompile(`^[0-9a-f]{8}-[0-9a-f]{4}-8[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$`)
-	if !guid.MatchString(first) || strings.Contains(first, session) || strings.Contains(first, "test-key") {
-		t.Fatalf("not an opaque UUIDv8: %q", first)
-	}
-	if got := polyphemusSelectorSessionID("test-key-one", session); got != first {
-		t.Fatal("same conversation changed identity")
-	}
-	for _, pair := range [][2]string{{"test-key-two", session}, {"test-key-one", session + "2"}} {
-		if got := polyphemusSelectorSessionID(pair[0], pair[1]); got == first || !guid.MatchString(got) {
-			t.Fatal("different keys or conversations share identity")
+func TestPolyphemusRoutingRule(t *testing.T) {
+	for _, tc := range []struct {
+		task                string
+		domain              float64
+		tools, confidential bool
+		model, tier         string
+	}{
+		{"Open QA", 0.37, false, false, polyphemusCheapModel, "cheap"},
+		{"Summarization", 0.27, false, false, polyphemusCheapModel, "cheap"},
+		{"Text Generation", 0.79, false, false, polyphemusCheapModel, "cheap"},
+		{"Text Generation", 0.80, false, false, polyphemusStrongModel, "strong"},
+		{"Open QA", 0.98, false, false, polyphemusStrongModel, "strong"},
+		{"Code Generation", 0.10, false, false, polyphemusStrongModel, "strong"},
+		{"Chatbot", 0.30, true, false, polyphemusStrongModel, "strong"},
+		{"Open QA", 0.37, false, true, polyphemusConfidentialCheapModel, "cheap"},
+		{"Code Generation", 0.99, false, true, polyphemusConfidentialStrongModel, "strong"},
+		{"Chatbot", 0.30, true, true, polyphemusConfidentialStrongModel, "strong"},
+	} {
+		model, tier := choosePolyphemusModel(polyclass.Result{Task: tc.task, DomainKnowledge: tc.domain}, tc.tools, tc.confidential)
+		if model != tc.model || tier != tc.tier {
+			t.Errorf("%+v: got %s/%s", tc, model, tier)
 		}
 	}
-	for _, pair := range [][2]string{{"test-key-one", ""}, {"", session}, {"", ""}} {
-		if got := polyphemusSelectorSessionID(pair[0], pair[1]); got != "" {
-			t.Fatal("missing caller or session created a shared identity")
-		}
+	if polyphemusStrongModel != "anthropic/claude-opus-5.5" || polyphemusCheapModel != "deepseek/deepseek-v4.1-flash-1017" ||
+		polyphemusConfidentialStrongModel != "moonshotai/kimi-k3.1-pro" || polyphemusConfidentialCheapModel != "deepseek/deepseek-v4.1-flash-1017" {
+		t.Fatal("model pair changed; update the catalog description and docs with it")
 	}
 }
 
-func TestPolyphemusConversationSessionSurvivesNewTurnsAndStageIDs(t *testing.T) {
-	const session = "private-conversation-id"
-	const bearer = "test-key-one"
-	wantSession := polyphemusSelectorSessionID(bearer, session)
-	gateway := &selectionGatewayStub{}
-	calls := 0
-	selector := selectionStub(func(_ context.Context, messages string, _ llm.SelectionControls, sessionID string) (*llm.ModelSelection, error) {
-		calls++
-		if sessionID != wantSession || strings.Contains(messages, session) || strings.Contains(messages, wantSession) {
-			t.Fatal("session changed between turns or entered metered context")
-		}
-		return &llm.ModelSelection{Model: "gemini-3.8-flash", SessionID: "untrusted-echo"}, nil
-	})
-	for turn := 0; turn < 2; turn++ {
+func TestPolyphemusClassifiesOnlyTheLatestUserText(t *testing.T) {
+	messages := []types.OpenAIChatMessage{
+		{Role: "system", Content: "SYSTEM PROMPT"},
+		{Role: "user", Content: "older question"},
+		{Role: "assistant", Content: "answer"},
+		{Role: "user", Content: []any{map[string]any{"type": "text", "text": "part one"}, map[string]any{"type": "text", "text": "part two"}}},
+		{Role: "tool", ToolCallID: "x", Content: "TOOL OUTPUT"},
+	}
+	if got := polyphemusSelectionText(messages); got != "part one\npart two" {
+		t.Fatalf("got %q", got)
+	}
+	if got := polyphemusSelectionText(messages[:1]); got != "" {
+		t.Fatalf("system-only conversation selected %q", got)
+	}
+	blank := []types.OpenAIChatMessage{{Role: "user", Content: "real"}, {Role: "user", Content: "   "}}
+	if got := polyphemusSelectionText(blank); got != "real" {
+		t.Fatalf("blank latest turn: got %q", got)
+	}
+}
+
+func TestPolyphemusConfidentialUsesTheControlPlanesNames(t *testing.T) {
+	for _, name := range []string{"confidential", "trusted", "e2e", "E2EE", " max ", "maximum"} {
 		req := selectionTestRequest()
-		req.SessionID = session
-		req.IdempotencyKey = fmt.Sprintf("turn-%d", turn)
-		req.Messages[0].Content = fmt.Sprintf("Synthetic task turn %d", turn)
-		ctx, err := preparePolyphemus(context.Background(), req, gateway, selector, bearer, "test")
-		if err != nil {
-			t.Fatal(err)
-		}
-		if req.SessionID != session || gateway.usage.SessionID != session || gateway.request.SessionID != session {
-			t.Fatal("changed caller session or ledger attribution")
-		}
-		usage := map[string]any{"cost_microdollars": 10}
-		annotatePolyphemusUsage(ctx, usage)
-		metadata := usage["provider_usage"].(map[string]any)
-		if metadata["selector_session_supplied"] != true || usage["cost_microdollars"] != 11 {
-			t.Fatal("session changed billing or lacks supplied flag")
-		}
-		encoded, _ := json.Marshal(usage)
-		for _, private := range []string{session, wantSession, bearer, "untrusted-echo"} {
-			if strings.Contains(string(encoded), private) {
-				t.Fatal("session identifier or credential leaked to usage")
-			}
+		req.Provider = &types.ProviderRouting{MinPrivacy: name}
+		if !polyphemusConfidential(context.Background(), req) {
+			t.Errorf("%q not confidential", name)
 		}
 	}
-	if calls != 2 || gateway.admitted != 2 || gateway.settled != 2 || gateway.refunded != 0 {
-		t.Fatal("session changed per-turn billing lifecycle")
+	for _, name := range []string{"", "any", "standard", "zdr", "no-store"} {
+		req := selectionTestRequest()
+		req.Provider = &types.ProviderRouting{MinPrivacy: name}
+		if polyphemusConfidential(context.Background(), req) {
+			t.Errorf("%q treated as confidential", name)
+		}
+	}
+	if !polyphemusConfidential(trustedrouter.WithConfidentialOnly(context.Background()), selectionTestRequest()) {
+		t.Error("confidential-only hostname ignored")
 	}
 }
 
 func TestPolyphemusSelectionUsesSharedBillingAndPreservesRequest(t *testing.T) {
 	req := selectionTestRequest()
-	req.Messages[0].Content = "PRIVATE TASK \u65e5\u672c\u8a9e"
+	req.Messages = []types.OpenAIChatMessage{
+		{Role: "system", Content: "PRIVATE SYSTEM"},
+		{Role: "user", Content: "PRIVATE TASK 日本語"},
+	}
 	req.Tools = []any{map[string]any{"type": "function", "function": map[string]any{"name": "read_file", "description": strings.Repeat("large schema ", 1000)}}}
 	gateway := &selectionGatewayStub{}
 	calls := 0
-	selectorTokens := 0
-	selector := selectionStub(func(_ context.Context, messages string, perf llm.SelectionControls, sessionID string) (*llm.ModelSelection, error) {
+	classifier := classifierStub(func(_ context.Context, text string) (polyclass.Result, error) {
 		calls++
 		if gateway.admitted != 1 || gateway.settled != 0 {
-			t.Fatal("provider called before admission")
+			t.Fatal("classified before admission")
 		}
-		if !strings.Contains(messages, "PRIVATE TASK") || !strings.Contains(messages, "read_file") || perf.XPerf != 1.0 || perf.ModelZoo != "" || polyphemusXPerf != 1.0 {
-			t.Fatal("lost selection context")
+		if text != "PRIVATE TASK 日本語" {
+			t.Fatalf("classifier saw %q, want only the latest user text", text)
 		}
-		if sessionID != "" {
-			t.Fatal("one-shot request acquired a session")
-		}
-		selectorTokens = len(messages) / 4
-		out := &llm.ModelSelection{Model: "gemini-3.8-flash"}
-		out.Reasoning.Effort = "high"
-		return out, nil
+		return polyclass.Result{Task: "Open QA", DomainKnowledge: 0.3}, nil
 	})
-	ctx, err := preparePolyphemus(context.Background(), req, gateway, selector, "private-key", "log-1")
+	ctx, err := preparePolyphemus(context.Background(), req, gateway, classifier, "private-key", "log-1")
 	if err != nil {
 		t.Fatal(err)
 	}
 	if calls != 1 || gateway.settled != 1 || gateway.refunded != 0 {
 		t.Fatalf("calls=%d settled=%d refunds=%d", calls, gateway.settled, gateway.refunded)
 	}
-	if gateway.usage.InputTokens != selectorTokens || !gateway.usage.UsageEstimated || gateway.usage.OutputTokens != 0 || gateway.usage.RouteType != polyphemusSelectRoute {
-		t.Fatal("incorrect or undisclosed selector token estimate")
+	wantTokens := types.ContentTokenEstimate("PRIVATE TASK 日本語")
+	if gateway.usage.InputTokens != wantTokens || !gateway.usage.UsageEstimated || gateway.usage.OutputTokens != 0 || gateway.usage.RouteType != polyphemusSelectRoute {
+		t.Fatal("selector fee is not metered on the classified text")
 	}
-	if trustedrouter.EstimateInputTokens(gateway.request) < selectorTokens || len(gateway.request.Tools) != 0 {
-		t.Fatal("selector admission did not cover serialized tools/context")
+	if len(gateway.request.Tools) != 0 || len(gateway.request.Messages) != 1 || trustedrouter.EstimateInputTokens(gateway.request) < wantTokens {
+		t.Fatal("admission does not cover exactly the classified text")
 	}
-	if selectorTokens < 3000 || req.Messages[0].Content != "PRIVATE TASK \u65e5\u672c\u8a9e" {
-		t.Fatal("large tool schema was unmetered or generation context changed")
-	}
-	if req.Model != "google/gemini-3.8-flash" || req.ResponseModel != polyphemusModel || req.ReasoningEffort != "high" || len(req.Tools) != 1 || req.Provider.Usage != "credits" {
+	// Tools make the request strong whatever the classifier says.
+	if req.Model != polyphemusStrongModel || req.ResponseModel != polyphemusModel || len(req.Tools) != 1 || req.Provider.Usage != "credits" || len(req.Messages) != 2 {
 		t.Fatalf("bad continuation: %#v", req)
+	}
+	if req.ReasoningEffort != "" {
+		t.Fatal("selection must not invent a reasoning effort")
 	}
 	if req.IdempotencyKey == gateway.request.IdempotencyKey || gateway.request.RequestFingerprint == "" || strings.Contains(gateway.request.RequestFingerprint, "PRIVATE") {
 		t.Fatal("bad stage binding")
 	}
-	receipt := polyphemusReceiptFromContext(ctx)
-	if receipt == nil || receipt.CostMicrodollars != 1 {
-		t.Fatal("missing fee")
-	}
 	usage := map[string]any{"cost_microdollars": 37, "input_tokens": 10}
 	annotatePolyphemusUsage(ctx, usage)
-	if usage["cost_microdollars"] != 38 || usage["input_tokens"] != 10 {
-		t.Fatalf("wrong total: %#v", usage)
-	}
 	meta := usage["provider_usage"].(map[string]any)
-	if meta["selector_input_tokens"] != selectorTokens || meta["selector_usage_estimated"] != true || meta["selector_upstream_cost_known"] != false {
-		t.Fatal("missing selector metering disclosure", meta)
+	if usage["cost_microdollars"] != 38 || meta["selector_input_tokens"] != wantTokens || meta["selector_provider"] != "trustedrouter" ||
+		meta["selector_runs_in_gateway"] != true || meta["selector_tier"] != "strong" || meta["selector_task"] != "Open QA" || meta["selected_model"] != polyphemusStrongModel {
+		t.Fatalf("receipt: %#v", meta)
 	}
 	encoded, _ := json.Marshal(usage)
 	if strings.Contains(string(encoded), "PRIVATE") || strings.Contains(string(encoded), "private-key") {
@@ -195,39 +199,34 @@ func TestPolyphemusSelectionUsesSharedBillingAndPreservesRequest(t *testing.T) {
 }
 
 func TestPolyphemusFailuresNeverGenerateOrDoubleCharge(t *testing.T) {
-	for _, stage := range []string{"admission", "replay", "settlement"} {
+	for _, stage := range []string{"admission", "replay", "settlement", "wrong_provider"} {
 		t.Run(stage, func(t *testing.T) {
 			gateway := &selectionGatewayStub{}
-			if stage == "admission" {
+			switch stage {
+			case "admission":
 				gateway.authErr = errors.New("denied")
-			}
-			gateway.replay = stage == "replay"
-			if stage == "settlement" {
+			case "replay":
+				gateway.replay = true
+			case "settlement":
 				gateway.settleErr = errors.New("lost response")
+			case "wrong_provider":
+				gateway.provider = "someone-else"
 			}
 			calls := 0
-			selector := selectionStub(func(context.Context, string, llm.SelectionControls, string) (*llm.ModelSelection, error) {
+			classifier := classifierStub(func(context.Context, string) (polyclass.Result, error) {
 				calls++
-				if stage == "selection" {
-					return nil, errors.New("private provider body")
-				}
-				if stage == "resolution" {
-					return &llm.ModelSelection{Model: "trustedrouter/zeus"}, nil
-				}
-				return &llm.ModelSelection{Model: "gemini-3.8-flash"}, nil
+				return polyclass.Result{Task: "Open QA", DomainKnowledge: 0.3}, nil
 			})
 			req := selectionTestRequest()
-			ctx, err := preparePolyphemus(context.Background(), req, gateway, selector, "key", "test")
+			ctx, err := preparePolyphemus(context.Background(), req, gateway, classifier, "key", "test")
 			if err == nil || polyphemusReceiptFromContext(ctx) != nil || req.Model != polyphemusModel {
 				t.Fatal("failure continued to generation")
 			}
-			if (stage == "admission" || stage == "replay") && calls != 0 {
-				t.Fatal("unadmitted upstream call")
+			if stage != "settlement" && calls != 0 {
+				t.Fatal("classified without a valid admission")
 			}
-			if stage == "selection" || stage == "resolution" {
-				if gateway.refunded != 1 || gateway.settled != 0 {
-					t.Fatal("failure not refunded")
-				}
+			if stage == "wrong_provider" && gateway.refunded != 1 {
+				t.Fatal("integrity failure not refunded")
 			}
 			if stage == "settlement" && (gateway.refunded != 0 || gateway.settled != 1) {
 				t.Fatal("ambiguous settlement was refunded/repeated")
@@ -236,35 +235,41 @@ func TestPolyphemusFailuresNeverGenerateOrDoubleCharge(t *testing.T) {
 	}
 }
 
-func TestPolyphemusSelectorFailuresFallBackToAutoWithoutFee(t *testing.T) {
-	for _, stage := range []string{"timeout", "failure", "nil", "unknown_model", "missing_selector", "refund_failure", "cancelled"} {
+func TestPolyphemusAcceptsTheFormerSelectorProviderSlug(t *testing.T) {
+	gateway := &selectionGatewayStub{provider: "telluvian"}
+	if _, err := preparePolyphemus(context.Background(), selectionTestRequest(), gateway, returns("Open QA", 0.3), "key", "test"); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestPolyphemusClassifierFailuresFallBackToAutoWithoutFee(t *testing.T) {
+	for _, stage := range []string{"error", "missing_classifier", "not_in_catalog", "refund_failure", "cancelled"} {
 		t.Run(stage, func(t *testing.T) {
 			gateway := &selectionGatewayStub{}
 			if stage == "refund_failure" {
 				gateway.refundErr = errors.New("unavailable")
 			}
+			if stage == "not_in_catalog" {
+				gateway.catalog = `{"data":[{"id":"google/gemini-3.8-flash","trustedrouter":{"supports_chat":true,"prepaid_available":true}}]}`
+			}
 			ctx, cancel := context.WithCancel(context.Background())
 			defer cancel()
-			var selector modelSelector = selectionStub(func(context.Context, string, llm.SelectionControls, string) (*llm.ModelSelection, error) {
+			var classifier promptClassifier = classifierStub(func(context.Context, string) (polyclass.Result, error) {
 				switch stage {
-				case "timeout":
-					return nil, context.DeadlineExceeded
-				case "nil":
-					return nil, nil
-				case "unknown_model":
-					return &llm.ModelSelection{Model: "trustedrouter/zeus"}, nil
+				case "not_in_catalog":
+					return polyclass.Result{Task: "Open QA", DomainKnowledge: 0.3}, nil
 				case "cancelled":
 					cancel()
 				}
-				return nil, errors.New("PRIVATE PROVIDER ERROR")
+				return polyclass.Result{}, polyclass.ErrUnavailable
 			})
-			if stage == "missing_selector" {
-				selector = nil
+			if stage == "missing_classifier" {
+				classifier = nil
 			}
 			req := selectionTestRequest()
 			req.ReasoningEffort = "low"
 			req.Tools = []any{map[string]any{"type": "function"}}
-			outCtx, err := preparePolyphemus(ctx, req, gateway, selector, "key", "test")
+			outCtx, err := preparePolyphemus(ctx, req, gateway, classifier, "key", "test")
 			if gateway.admitted != 1 || gateway.refunded != 1 || gateway.settled != 0 {
 				t.Fatal("wrong billing sequence", gateway)
 			}
@@ -280,155 +285,87 @@ func TestPolyphemusSelectorFailuresFallBackToAutoWithoutFee(t *testing.T) {
 			if req.Model != "trustedrouter/auto" || req.ResponseModel != polyphemusModel || req.ReasoningEffort != "low" || len(req.Tools) != 1 {
 				t.Fatal("lost fallback request")
 			}
-			if req.IdempotencyKey == gateway.request.IdempotencyKey || req.RequestFingerprint == "" {
-				t.Fatal("missing independent generation admission")
-			}
 			usage := map[string]any{"cost_microdollars": 37}
 			annotatePolyphemusUsage(outCtx, usage)
 			meta := usage["provider_usage"].(map[string]any)
-			if usage["cost_microdollars"] != 37 || meta["selector_cost_microdollars"] != 0 || meta["selector_fallback_model"] != "trustedrouter/auto" {
+			if usage["cost_microdollars"] != 37 || meta["selector_cost_microdollars"] != 0 || meta["selector_fallback_model"] != "trustedrouter/auto" || meta["selector_input_tokens"] != 0 {
 				t.Fatal("charged failed selection", usage)
-			}
-			if meta["selector_input_tokens"] != 0 || meta["selector_usage_estimated"] != true {
-				t.Fatal("billed tokens on selector failure", meta)
-			}
-			encoded, _ := json.Marshal(meta)
-			if strings.Contains(string(encoded), "PRIVATE") {
-				t.Fatal("provider error leaked")
 			}
 		})
 	}
 }
 
-func TestPolyphemusRejectsPrivacyAndByokBeforeAdmission(t *testing.T) {
+func TestPolyphemusAcceptsPrivacyAndConfidentialRequests(t *testing.T) {
 	yes := true
-	for _, provider := range []*types.ProviderRouting{
-		{MinPrivacy: "zdr"}, {MinPrivacy: "no-store"}, {MinPrivacy: "confidential"}, {MinPrivacy: "e2e"}, {ZDR: &yes}, {DataCollection: "deny"}, {Usage: "byok"}, {Billing: "BYOK"},
+	for _, tc := range []struct {
+		provider *types.ProviderRouting
+		want     string
+	}{
+		{&types.ProviderRouting{MinPrivacy: "zdr"}, polyphemusStrongModel},
+		{&types.ProviderRouting{MinPrivacy: "no-store"}, polyphemusStrongModel},
+		{&types.ProviderRouting{ZDR: &yes}, polyphemusStrongModel},
+		{&types.ProviderRouting{DataCollection: "deny"}, polyphemusStrongModel},
+		{&types.ProviderRouting{MinPrivacy: "confidential"}, polyphemusConfidentialStrongModel},
+		{&types.ProviderRouting{MinPrivacy: "e2e"}, polyphemusConfidentialStrongModel},
 	} {
+		req := selectionTestRequest()
+		req.Provider = tc.provider
+		gateway := &selectionGatewayStub{}
+		if _, err := preparePolyphemus(context.Background(), req, gateway, returns("Code Generation", 0.99), "key", "test"); err != nil {
+			t.Fatalf("%+v: %v", tc.provider, err)
+		}
+		if req.Model != tc.want {
+			t.Errorf("%+v routed to %s, want %s", tc.provider, req.Model, tc.want)
+		}
+		// The caller's privacy constraint still governs both admissions.
+		if gateway.request.Provider.MinPrivacy != tc.provider.MinPrivacy || req.Provider.MinPrivacy != tc.provider.MinPrivacy {
+			t.Errorf("%+v: privacy constraint dropped", tc.provider)
+		}
+	}
+}
+
+func TestPolyphemusRejectsByokAndTextlessRequestsBeforeAdmission(t *testing.T) {
+	never := classifierStub(func(context.Context, string) (polyclass.Result, error) {
+		t.Fatal("classified a request that should be refused")
+		return polyclass.Result{}, nil
+	})
+	for _, provider := range []*types.ProviderRouting{{Usage: "byok"}, {Billing: "BYOK"}, {UsageType: "byok"}} {
 		req := selectionTestRequest()
 		req.Provider = provider
 		gateway := &selectionGatewayStub{}
-		_, err := preparePolyphemus(context.Background(), req, gateway, selectionStub(func(context.Context, string, llm.SelectionControls, string) (*llm.ModelSelection, error) {
-			t.Fatal("private context sent")
-			return nil, nil
-		}), "key", "test")
-		if err == nil || gateway.admitted != 0 {
-			t.Fatalf("privacy accepted: %#v", provider)
+		if _, err := preparePolyphemus(context.Background(), req, gateway, never, "key", "test"); err == nil || gateway.admitted != 0 {
+			t.Fatalf("BYOK accepted: %#v", provider)
 		}
+	}
+	req := selectionTestRequest()
+	req.Messages = []types.OpenAIChatMessage{{Role: "system", Content: "only a system prompt"}}
+	gateway := &selectionGatewayStub{}
+	if _, err := preparePolyphemus(context.Background(), req, gateway, never, "key", "test"); err == nil || gateway.admitted != 0 {
+		t.Fatal("textless request admitted")
 	}
 }
 
-func TestPolyphemusResolvesOnlyUniqueConcreteModels(t *testing.T) {
-	for _, name := range []string{"gemini-3.8-flash", "google/gemini-3.8-flash"} {
-		model, _, err := resolveSelectedModel([]byte(selectionTestCatalog), name)
-		if err != nil || model != "google/gemini-3.8-flash" {
-			t.Fatal(model, err)
-		}
+func TestPolyphemusResolvesOnlyExactEligibleModels(t *testing.T) {
+	if err := resolveSelectedModel([]byte(selectionTestCatalog), "google/gemini-3.8-flash"); err != nil {
+		t.Fatal(err)
 	}
-	for _, name := range []string{"Gemini-3.8-flash", "trustedrouter/auto", "https://evil.test/model", "missing", "../gemini-3.8-flash"} {
-		if _, _, err := resolveSelectedModel([]byte(selectionTestCatalog), name); err == nil {
+	for _, name := range []string{"gemini-3.8-flash", "Google/gemini-3.8-flash", "trustedrouter/auto", "missing"} {
+		if resolveSelectedModel([]byte(selectionTestCatalog), name) == nil {
 			t.Fatal("accepted", name)
 		}
 	}
-	ambiguous := strings.Replace(selectionTestCatalog, `]}`, `,{"id":"other/gemini-3.8-flash","trustedrouter":{"supports_chat":true,"prepaid_available":true}}]}`, 1)
-	if _, _, err := resolveSelectedModel([]byte(ambiguous), "gemini-3.8-flash"); err == nil {
-		t.Fatal("ambiguous suffix accepted")
+	duplicate := strings.Replace(selectionTestCatalog, `]}`, `,{"id":"google/gemini-3.8-flash","trustedrouter":{"supports_chat":true,"prepaid_available":true}}]}`, 1)
+	if resolveSelectedModel([]byte(duplicate), "google/gemini-3.8-flash") == nil {
+		t.Fatal("duplicate id accepted")
 	}
-	chatOnly := strings.Replace(selectionTestCatalog, `"supports_chat":true`, `"supports_chat":true,"supports_responses":false`, 1)
-	if _, _, err := resolveSelectedModel([]byte(chatOnly), "gemini-3.8-flash"); err == nil {
-		t.Fatal("explicitly unsupported Responses target accepted")
-	}
-}
-
-func TestPolyphemusResolvesTelluviansDashedAnthropicVersions(t *testing.T) {
-	// The live catalog carries the dashed id as a BYOK-only alias next to the
-	// credit-billed dotted id, so the dashed name alone matches nothing eligible.
-	catalog := `{"data":[` +
-		`{"id":"anthropic/claude-opus-5.5","trustedrouter":{"supports_chat":true,"prepaid_available":true}},` +
-		`{"id":"anthropic/claude-opus-5-5","trustedrouter":{"supports_chat":true,"prepaid_available":false}},` +
-		`{"id":"anthropic/claude-haiku-4.5","trustedrouter":{"supports_chat":true,"prepaid_available":true}},` +
-		`{"id":"anthropic/claude-fable-5.1","trustedrouter":{"supports_chat":true,"prepaid_available":true}},` +
-		`{"id":"google/gemma-2-27b-it","trustedrouter":{"supports_chat":true,"prepaid_available":true}}]}`
-	for name, want := range map[string]string{
-		"anthropic/claude-opus-5-5":           "anthropic/claude-opus-5.5",
-		"claude-opus-5-5":                     "anthropic/claude-opus-5.5",
-		"anthropic/claude-fable-5-1":          "anthropic/claude-fable-5.1",
-		"anthropic/claude-haiku-4-5-20251001": "anthropic/claude-haiku-4.5",
-		"anthropic/claude-opus-5.5":           "anthropic/claude-opus-5.5",
-		"google/gemma-2-27b-it":               "google/gemma-2-27b-it",
-	} {
-		model, _, err := resolveSelectedModel([]byte(catalog), name)
-		if err != nil || model != want {
-			t.Errorf("%s resolved to %q (%v), want %q", name, model, err, want)
+	for _, flags := range []string{`"supports_chat":true,"prepaid_available":false`, `"supports_chat":false,"prepaid_available":true`, `"supports_chat":true,"prepaid_available":true,"supports_responses":false`} {
+		catalog := `{"data":[{"id":"google/gemini-3.8-flash","trustedrouter":{` + flags + `}}]}`
+		if resolveSelectedModel([]byte(catalog), "google/gemini-3.8-flash") == nil {
+			t.Fatalf("ineligible model accepted: %s", flags)
 		}
 	}
-	for _, name := range []string{"anthropic/claude-opus-6-1", "Anthropic/claude-opus-5-5", "anthropic/claude-sonnet-4-6"} {
-		if model, _, err := resolveSelectedModel([]byte(catalog), name); err == nil {
-			t.Errorf("%s resolved to %q, want no match", name, model)
-		}
-	}
-}
-
-func TestPolyphemusDashedVersionFallbackKeepsExactAndUniqueRules(t *testing.T) {
-	entry := func(id string, credits bool) string {
-		return fmt.Sprintf(`{"id":%q,"trustedrouter":{"supports_chat":true,"prepaid_available":%t}}`, id, credits)
-	}
-	catalog := func(entries ...string) []byte { return []byte(`{"data":[` + strings.Join(entries, ",") + `]}`) }
-
-	// An eligible exact dashed id wins over its dotted twin.
-	model, _, err := resolveSelectedModel(catalog(entry("x/model-3-5", true), entry("x/model-3.5", true)), "x/model-3-5")
-	if err != nil || model != "x/model-3-5" {
-		t.Errorf("exact dashed id: got %q (%v)", model, err)
-	}
-	// A bare name that dots to a suffix two providers share is still ambiguous.
-	_, diagnosis, err := resolveSelectedModel(catalog(entry("a/claude-opus-5.5", true), entry("b/claude-opus-5.5", true)), "claude-opus-5-5")
-	if err == nil || diagnosis != "ambiguous" {
-		t.Errorf("ambiguous dotted suffix: diagnosis %q (%v)", diagnosis, err)
-	}
-	// A dated Claude snapshot the catalog carries is kept before the date is dropped.
-	model, _, err = resolveSelectedModel(catalog(entry("anthropic/claude-3.5-sonnet-20240620", true), entry("anthropic/claude-3.5-sonnet", true)), "anthropic/claude-3-5-sonnet-20240620")
-	if err != nil || model != "anthropic/claude-3.5-sonnet-20240620" {
-		t.Errorf("dated snapshot: got %q (%v)", model, err)
-	}
-	// Other vendors' snapshot dates name distinct models and are never dropped.
-	if model, _, err := resolveSelectedModel(catalog(entry("openai/o3", true)), "openai/o3-20250416"); err == nil {
-		t.Errorf("non-Claude date dropped: resolved to %q", model)
-	}
-}
-
-func TestPolyphemusUnresolvedDiagnosisNamesOnlyCatalogIDs(t *testing.T) {
-	catalog := []byte(`{"data":[{"id":"anthropic/claude-opus-5-5","trustedrouter":{"supports_chat":true,"prepaid_available":false}}]}`)
-	_, diagnosis, err := resolveSelectedModel(catalog, "anthropic/claude-opus-5-5")
-	if err == nil || diagnosis != "ineligible:anthropic/claude-opus-5-5" {
-		t.Errorf("BYOK-only pick: diagnosis %q (%v)", diagnosis, err)
-	}
-	// Telluvian sees the prompt; a name it invents must never be echoed.
-	_, diagnosis, err = resolveSelectedModel(catalog, "the-password-is-hunter2")
-	if err == nil || diagnosis != "no_catalog_match" {
-		t.Errorf("unknown pick: diagnosis %q (%v)", diagnosis, err)
-	}
-	if _, diagnosis, err := resolveSelectedModel([]byte("not json"), "x"); err == nil || diagnosis != "" {
-		t.Errorf("unreadable catalog must not be blamed on the selection: %q (%v)", diagnosis, err)
-	}
-}
-
-func TestTelluvianModelNames(t *testing.T) {
-	for name, want := range map[string][]string{
-		"anthropic/claude-opus-5-5":           {"anthropic/claude-opus-5-5", "anthropic/claude-opus-5.5"},
-		"anthropic/claude-haiku-4-5-20251001": {"anthropic/claude-haiku-4-5-20251001", "anthropic/claude-haiku-4.5-20251001", "anthropic/claude-haiku-4.5"},
-		"claude-opus-4-20250514":              {"claude-opus-4-20250514", "claude-opus-4"},
-		"x-1-2-3-4":                           {"x-1-2-3-4", "x-1.2-3.4"},
-		"google/gemma-2-27b-it":               {"google/gemma-2-27b-it"},
-		"deepseek/deepseek-chat-v3-0324":      {"deepseek/deepseek-chat-v3-0324"},
-		"moonshotai/kimi-k2-0905":             {"moonshotai/kimi-k2-0905"},
-		"qwen/qwen-2.5-72b-instruct":          {"qwen/qwen-2.5-72b-instruct"},
-		"openai/gpt-4o-2024-08-06":            {"openai/gpt-4o-2024-08-06"},
-		"openai/o3-20250416":                  {"openai/o3-20250416"},
-		"meta/llama-3-1-8b":                   {"meta/llama-3-1-8b", "meta/llama-3.1-8b"},
-	} {
-		if got := telluvianModelNames(name); !reflect.DeepEqual(got, want) {
-			t.Errorf("telluvianModelNames(%q) = %q, want %q", name, got, want)
-		}
+	if resolveSelectedModel([]byte("not json"), "google/gemini-3.8-flash") == nil {
+		t.Fatal("unreadable catalog accepted")
 	}
 }
 
@@ -443,63 +380,28 @@ func TestPolyphemusRejectsWrongRouteAndImage(t *testing.T) {
 	}
 }
 
-func TestPolyphemusCallerControlsReachTheSelectorOnly(t *testing.T) {
-	for _, tc := range []struct {
-		options  *types.PolyphemusOptions
-		wantPerf any
-		wantZoo  string
-	}{
-		{nil, polyphemusXPerf, ""},
-		{&types.PolyphemusOptions{}, polyphemusXPerf, ""},
-		{&types.PolyphemusOptions{XPerf: 0.5}, 0.5, ""},
-		{&types.PolyphemusOptions{XPerf: "openai/gpt-6-astra", ModelZoo: "openai/*,anthropic/claude-opus*"}, "openai/gpt-6-astra", "openai/*,anthropic/claude-opus*"},
-		{&types.PolyphemusOptions{ModelZoo: "meta/muse*"}, polyphemusXPerf, "meta/muse*"},
-	} {
-		req := selectionTestRequest()
-		req.Polyphemus = tc.options
-		gateway := &selectionGatewayStub{}
-		var got llm.SelectionControls
-		selector := selectionStub(func(_ context.Context, _ string, controls llm.SelectionControls, _ string) (*llm.ModelSelection, error) {
-			got = controls
-			return &llm.ModelSelection{Model: "gemini-3.8-flash"}, nil
-		})
-		if _, err := preparePolyphemus(context.Background(), req, gateway, selector, "key", "test"); err != nil {
-			t.Fatal(err)
-		}
-		if got.XPerf != tc.wantPerf || got.ModelZoo != tc.wantZoo {
-			t.Fatalf("%#v: selector got %#v", tc.options, got)
-		}
-		if gateway.request.Polyphemus != nil || req.Polyphemus != nil {
-			t.Fatal("selector controls leaked into admission or the chosen model's request")
-		}
-	}
-}
-
-func TestPolyphemusControlsAreBoundIntoTheRequestFingerprint(t *testing.T) {
-	fingerprint := func(options *types.PolyphemusOptions) string {
+func TestPolyphemusIgnoresLegacyControlsButBindsThem(t *testing.T) {
+	fingerprint := func(options *types.PolyphemusOptions) (string, string) {
 		req := selectionTestRequest()
 		req.Polyphemus = options
 		gateway := &selectionGatewayStub{}
-		selector := selectionStub(func(context.Context, string, llm.SelectionControls, string) (*llm.ModelSelection, error) {
-			return &llm.ModelSelection{Model: "gemini-3.8-flash"}, nil
-		})
-		if _, err := preparePolyphemus(context.Background(), req, gateway, selector, "key", "test"); err != nil {
+		if _, err := preparePolyphemus(context.Background(), req, gateway, returns("Open QA", 0.3), "key", "test"); err != nil {
 			t.Fatal(err)
 		}
-		return gateway.request.RequestFingerprint
+		if gateway.request.Polyphemus != nil || req.Polyphemus != nil {
+			t.Fatal("controls leaked into admission or the chosen model's request")
+		}
+		return gateway.request.RequestFingerprint, req.Model
 	}
-	// One idempotency key replayed with different controls must not look identical.
-	if fingerprint(nil) == fingerprint(&types.PolyphemusOptions{XPerf: 0.5}) {
-		t.Fatal("changing x_perf did not change the request fingerprint")
-	}
-	if fingerprint(nil) == fingerprint(&types.PolyphemusOptions{ModelZoo: "openai/*"}) {
-		t.Fatal("changing model_zoo did not change the request fingerprint")
-	}
-	if fingerprint(&types.PolyphemusOptions{XPerf: 0.5}) == fingerprint(&types.PolyphemusOptions{XPerf: 0.6}) {
-		t.Fatal("two different x_perf values share a fingerprint")
-	}
-	if fingerprint(&types.PolyphemusOptions{ModelZoo: "openai/*"}) == fingerprint(&types.PolyphemusOptions{ModelZoo: "anthropic/*"}) {
-		t.Fatal("two different model_zoo values share a fingerprint")
+	base, model := fingerprint(nil)
+	for _, options := range []*types.PolyphemusOptions{{XPerf: 0.5}, {XPerf: 0.6}, {ModelZoo: "openai/*"}, {XPerf: "openai/gpt-6-astra"}} {
+		other, otherModel := fingerprint(options)
+		if other == base {
+			t.Fatalf("%+v did not change the request fingerprint", options)
+		}
+		if otherModel != model {
+			t.Fatalf("%+v changed the selection", options)
+		}
 	}
 }
 
@@ -527,10 +429,10 @@ func TestPolyphemusFallbackAlsoClearsCallerControls(t *testing.T) {
 	req := selectionTestRequest()
 	req.Polyphemus = &types.PolyphemusOptions{XPerf: 0.5, ModelZoo: "openai/*"}
 	gateway := &selectionGatewayStub{}
-	selector := selectionStub(func(context.Context, string, llm.SelectionControls, string) (*llm.ModelSelection, error) {
-		return nil, errors.New("selector unavailable")
+	failing := classifierStub(func(context.Context, string) (polyclass.Result, error) {
+		return polyclass.Result{}, polyclass.ErrUnavailable
 	})
-	if _, err := preparePolyphemus(context.Background(), req, gateway, selector, "key", "test"); err != nil {
+	if _, err := preparePolyphemus(context.Background(), req, gateway, failing, "key", "test"); err != nil {
 		t.Fatal(err)
 	}
 	if req.Model != "trustedrouter/auto" || req.Polyphemus != nil {

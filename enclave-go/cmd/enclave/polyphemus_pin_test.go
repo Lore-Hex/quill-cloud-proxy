@@ -6,7 +6,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/Lore-Hex/quill-cloud-proxy/enclave-go/internal/llm"
+	"github.com/Lore-Hex/quill-cloud-proxy/enclave-go/internal/polyclass"
 	"github.com/Lore-Hex/quill-cloud-proxy/enclave-go/internal/types"
 )
 
@@ -45,9 +45,9 @@ func pinnedHistoryRequest(model string) *types.OpenAIChatRequest {
 func TestPolyphemusPinnedConversationSkipsTheSelectorAndItsFee(t *testing.T) {
 	req := pinnedHistoryRequest("google/gemini-3.8-flash")
 	gateway := &selectionGatewayStub{}
-	selector := selectionStub(func(context.Context, string, llm.SelectionControls, string) (*llm.ModelSelection, error) {
-		t.Fatal("a pinned conversation called Telluvian")
-		return nil, nil
+	selector := classifierStub(func(context.Context, string) (polyclass.Result, error) {
+		t.Fatal("a pinned conversation ran the classifier")
+		return polyclass.Result{}, nil
 	})
 	ctx, err := preparePolyphemus(context.Background(), req, gateway, selector, "private-key", "log-1")
 	if err != nil {
@@ -81,12 +81,12 @@ func TestPolyphemusPinToAModelOutsideTheCatalogSelectsAgain(t *testing.T) {
 		req := pinnedHistoryRequest(model)
 		gateway := &selectionGatewayStub{}
 		calls := 0
-		selector := selectionStub(func(_ context.Context, messages string, _ llm.SelectionControls, _ string) (*llm.ModelSelection, error) {
+		selector := classifierStub(func(_ context.Context, text string) (polyclass.Result, error) {
 			calls++
-			if strings.Contains(messages, polyphemusPinPrefix) {
-				t.Error("selector saw pinned ids")
+			if strings.Contains(text, polyphemusPinPrefix) {
+				t.Error("classifier saw pinned ids")
 			}
-			return &llm.ModelSelection{Model: "gemini-3.8-flash"}, nil
+			return polyclass.Result{Task: "Open QA", DomainKnowledge: 0.3}, nil
 		})
 		ctx, err := preparePolyphemus(context.Background(), req, gateway, selector, "private-key", "log-1")
 		if err != nil {

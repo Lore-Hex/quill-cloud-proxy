@@ -44,6 +44,7 @@ import (
 	"github.com/Lore-Hex/quill-cloud-proxy/enclave-go/internal/imagegen"
 	"github.com/Lore-Hex/quill-cloud-proxy/enclave-go/internal/llm"
 	"github.com/Lore-Hex/quill-cloud-proxy/enclave-go/internal/maple"
+	"github.com/Lore-Hex/quill-cloud-proxy/enclave-go/internal/polyclass"
 	"github.com/Lore-Hex/quill-cloud-proxy/enclave-go/internal/privatemode"
 	"github.com/Lore-Hex/quill-cloud-proxy/enclave-go/internal/requesttiming"
 	"github.com/Lore-Hex/quill-cloud-proxy/enclave-go/internal/settleoutbox"
@@ -179,6 +180,9 @@ func main() {
 	if maple.HelperEntrypoint() {
 		return
 	}
+	if polyclass.HelperEntrypoint() {
+		return
+	}
 	startupAt := time.Now()
 	speculationMode, modeErr := shadowobserve.ParseMode(os.Getenv("QUILL_SPECULATIVE_PROVIDER_MODE"))
 	if modeErr != nil {
@@ -254,7 +258,7 @@ func main() {
 	configureFusionPrompts(boot)
 	configureAdvisorPrompts(boot)
 	configureResponsesWebSearch(boot.ExaAPIKey)
-	configureModelSelector(boot.ProviderAPIKeys["telluvian"])
+	configureModelSelector()
 
 	// 2. Build registries. Capture a canonical hash of the device list
 	// so /attestation can include it in the document's UserData — clients
