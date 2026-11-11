@@ -44,6 +44,56 @@ Changes to the dedicated worker are security-sensitive even if the model name
 is unchanged. Provider deployment overlap is still necessary to avoid an
 outage while a new security-sensitive release is reviewed and staged.
 
+## Approved backend update (2026-11-10)
+
+The exact candidate tracked in [review #747](https://github.com/Lore-Hex/quill-cloud-proxy/issues/747)
+replaces the front PCR0 with
+`0cb6ebb04723d420a6e1c6cde213792a3917f1cadfde1143caf4091f45aa7ed8c3e6915787887ca03ad936f07b70f063`.
+It binds source `c499ceba56aa923bd9a99ddc37ce3f9c03d9875f` and the signed
+production approval `d53bd938e47b59b3f3fe882af075970af06e893d`.
+The former `769e8dd0...` measurement is replaced, not retained. Maple's
+intermediate release from `4b917007` (review #744) was never pinned.
+Joseph asked for this update to be reviewed, pinned and deployed on
+November 10, 2026.
+
+The independent credential-free ARM64 build in
+[run 42922835028](https://github.com/Lore-Hex/quill-cloud-proxy/actions/runs/42922835028)
+matches `image.eif`, `pcr.json`, `SHA256SUMS` and `handoff.json` byte for byte.
+EIF SHA-256 is
+`4ad4a297aeea3cf58236f92e871ea4feedf83d9ab6aa780400ce7e051ab4887d`.
+The same run passed exact-source GitHub/Sigstore provenance, the append-only
+P-384 approval history check, a credential-free front attestation against the
+new pin in 172 ms, and a deliberate wrong-pin rejection. No credential or
+inference was sent. The measurement comes from that rebuild, not from the
+live server's advertised value.
+
+The protected tree changes in 40 paths, so this update could not qualify for
+automatic publication. The source diff from `d8fa269c` was reviewed:
+
+- The enclave's build inputs are unchanged: no change to its `flake.nix`,
+  `flake.lock`, `Cargo.toml`, `Cargo.lock`, toolchain, entrypoint or
+  submodule pointers. The image delta is `services/opensecret/src` only.
+- The managed model's route and dedicated worker identity are unchanged. Its
+  catalog entry changes a badge and a picker group. No image hash, CVM
+  version, release tag or host changed, and no fallback was added.
+- No new path sends, logs or stores prompt or completion plaintext. The new
+  upstream-error classifier keeps one boolean; new log lines carry counts,
+  identifiers and timings.
+- Authentication is tightened: password-reset attempt and request limits, an
+  8-64 character password policy, and a paid-plan gate on embeddings. The
+  inference rate limiter is generalized.
+- The Responses compaction path is largely rewritten. Checkpoints are still
+  sealed with a per-user derived key before publication. About 1,900 added and
+  1,300 removed lines there were searched for logging, I/O and persistence rather than read
+  line by line. The managed route uses `/v1/chat/completions`, not Responses.
+- `proxy/Cargo.lock` and `sdk/rust/Cargo.lock` move `crypto-bigint` and
+  `ctutils` to patch releases from crates.io, replacing yanked versions.
+
+The helper's one-model admission restriction is unchanged. Required CI, fresh
+trust verification, measured cloud builds, signed trust publication and
+production canaries remain release gates. Future security-sensitive changes
+must still stop for review.
+
 ## Approved worker identity update (2026-11-09)
 
 The exact candidate tracked in [review #716](https://github.com/Lore-Hex/quill-cloud-proxy/issues/716)

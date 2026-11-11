@@ -3,26 +3,26 @@
   "provider": "maple",
   "backend": "https://enclave.trymaple.ai",
   "model": "deepseek-v4-1-flash-1017-uncensored",
-  "source_commit": "d8fa269c9155d800ab9f6e8f8897c8e154492711",
-  "approval_commit": "cd52297dba7bd2d0718722d89039d3c4cb4132f1",
-  "pcr0": "769e8dd045dad30df5bb13e4fe8ced547c64f906316fc6e8519a0e858cd8cdb2690bdcf66c9dad3ed5e5d0a37768189a",
-  "eif_sha256": "9174c64b51a1948f2d3067e134c6794c8323a4e6978a56edcc475ac1fb1903d6",
-  "security_boundary_sha256": "1c4c4ccd9dddb6a192b0c6631e95061cecf33dea91d1470641646f6a9a90deee",
+  "source_commit": "c499ceba56aa923bd9a99ddc37ce3f9c03d9875f",
+  "approval_commit": "d53bd938e47b59b3f3fe882af075970af06e893d",
+  "pcr0": "0cb6ebb04723d420a6e1c6cde213792a3917f1cadfde1143caf4091f45aa7ed8c3e6915787887ca03ad936f07b70f063",
+  "eif_sha256": "4ad4a297aeea3cf58236f92e871ea4feedf83d9ab6aa780400ce7e051ab4887d",
+  "security_boundary_sha256": "0b3c59afd1817331a13ed2caf9c5a95dacbf08493c49aba78a5f8ecaeb69cda7",
   "history_public_key_der": "MHYwEAYHKoZIzj0CAQYFK4EEACIDYgAEHiUY9kFWK1GqBGzczohhwEwElXzgWLDZa9R6wBx3JOBocgSt9+UIzZlJbPDjYeGBfDUXh7Z62BG2vVsh2NgclLB5S7A2ucBBtb1wd8vSQHP8jpdPhZX1slauPgbnROIP",
-  "review": "https://github.com/Lore-Hex/quill-cloud-proxy/issues/716",
+  "review": "https://github.com/Lore-Hex/quill-cloud-proxy/issues/747",
   "evidence": {
-    "source_commit": "d8fa269c9155d800ab9f6e8f8897c8e154492711",
-    "pcr0": "769e8dd045dad30df5bb13e4fe8ced547c64f906316fc6e8519a0e858cd8cdb2690bdcf66c9dad3ed5e5d0a37768189a",
-    "security_boundary_sha256": "1c4c4ccd9dddb6a192b0c6631e95061cecf33dea91d1470641646f6a9a90deee",
+    "source_commit": "c499ceba56aa923bd9a99ddc37ce3f9c03d9875f",
+    "pcr0": "0cb6ebb04723d420a6e1c6cde213792a3917f1cadfde1143caf4091f45aa7ed8c3e6915787887ca03ad936f07b70f063",
+    "security_boundary_sha256": "0b3c59afd1817331a13ed2caf9c5a95dacbf08493c49aba78a5f8ecaeb69cda7",
     "reproduction_verified": true,
     "provenance_verified": true,
     "history_verified": true,
     "review_only": true,
     "files": {
-      "image.eif": "9174c64b51a1948f2d3067e134c6794c8323a4e6978a56edcc475ac1fb1903d6",
-      "pcr.json": "a9a0f91cce3b713a4c8007ffa4ca015fb759c57f86f2e5b97c647629a3766fc0",
-      "SHA256SUMS": "4c56c2b8e27328a8c3880bb4b5a0b0cf33d421e906d0033ffa0ba9c0dc9b259e",
-      "handoff.json": "41f8537fdb90d0f76b0c37dcfa0bc8c72ab9ff2d5f52d9ce057bd13dd4f4a0bc"
+      "image.eif": "4ad4a297aeea3cf58236f92e871ea4feedf83d9ab6aa780400ce7e051ab4887d",
+      "pcr.json": "f9f270099931ad726411eae0a0007910d1407a16fc8d54907dd2c7dee8833e78",
+      "SHA256SUMS": "2a220b2d1ec22cc02dda787d79adb39ff53e5eaef28f82fc2de50a22a7b6f26f",
+      "handoff.json": "87499f058e2e86fe8c1e5c3e61a4b4540c44a758d3286c2c390e10c7a578b3b4"
     }
   }
 }

@@ -16,13 +16,13 @@
 
 # ─── Builder ────────────────────────────────────────────────────────────────
 #
-# Same pinned Go 1.26.10 builder as the GCP multi image. The history behind
+# Same pinned Go 1.26.11 builder as the GCP multi image. The history behind
 # pinning it (deploy 25592563258, the sidecar module split) is written up in
 # Dockerfile.enclave.gcp.multi and applies unchanged here.
 # Build only the MIT client from pinned source, with our bounded control-plane patch.
 # ACR's dependency scanner requires legacy-compatible Dockerfile syntax.
 # Both stages are native amd64; build.sh verifies the archive before extraction.
-FROM golang:1.27.3-bookworm@sha256:d9b6a1beb9474adc2a1ce842573639b44b2a0dd49b6669f51d3821baf9ec37c9 AS privatemode
+FROM golang:1.27.4-bookworm@sha256:4fa7c968ba93f1635670522dbb01a2c78150443e1385746924566079f36570ea AS privatemode
 ENV CGO_ENABLED=0 GOOS=linux GOARCH=amd64
 WORKDIR /src
 RUN curl --fail --show-error --silent --location --retry 3 --max-time 300 \
@@ -37,7 +37,7 @@ WORKDIR /src
 COPY maple-transport ./
 RUN sh build.sh
 
-FROM golang:1.26.10-bookworm@sha256:ee3901c61e423732605a51f1b8157c849ec01194ea0a274213b5202b2c11e7bf AS builder
+FROM golang:1.26.11-bookworm@sha256:dc40a13b61304647ed7e5d581d246b86413dfc29d63c6d018310feb93cd98fc0 AS builder
 
 RUN apt-get update \
     && apt-get install -y --no-install-recommends ca-certificates \
