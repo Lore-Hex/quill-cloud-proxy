@@ -31,7 +31,7 @@ RUN curl --fail --show-error --silent --location --retry 3 --max-time 300 \
 COPY third_party/privatemode ./third_party/privatemode
 RUN bash third_party/privatemode/build.sh /tmp/privatemode-source.tar.gz /out/privatemode-proxy
 
-FROM rust:1.94.1-alpine@sha256:77237dd363a0b127bb5ef532c2d64c0deb380b738e43a9c4bdac73398d6d0a08 AS maple
+FROM rust:1.99.1-alpine@sha256:44819b27be4c97b0e4d7203bd2e02c4820f97700211b6a37fb4c246a2de59383 AS maple
 RUN apk add --no-cache build-base curl patch
 WORKDIR /src
 COPY maple-transport ./
