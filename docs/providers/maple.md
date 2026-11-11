@@ -81,10 +81,10 @@ automatic publication. The source diff from `d8fa269c` was reviewed:
   identifiers and timings.
 - Authentication is tightened: password-reset attempt and request limits, an
   8-64 character password policy, and a paid-plan gate on embeddings. The
-  inference rate limiter is generalized with the same limits.
+  inference rate limiter is generalized.
 - The Responses compaction path is largely rewritten. Checkpoints are still
-  sealed with a per-user derived key before publication. About 1,400 changed
-  lines there were searched for logging, I/O and persistence rather than read
+  sealed with a per-user derived key before publication. About 1,900 added and
+  1,300 removed lines there were searched for logging, I/O and persistence rather than read
   line by line. The managed route uses `/v1/chat/completions`, not Responses.
 - `proxy/Cargo.lock` and `sdk/rust/Cargo.lock` move `crypto-bigint` and
   `ctutils` to patch releases from crates.io, replacing yanked versions.
