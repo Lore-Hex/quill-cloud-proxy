@@ -5,7 +5,11 @@ attested gateway. No prompt text leaves the gateway to choose a model.
 
 ## How it chooses
 
-1. The gateway takes the latest user message's text, at most 16 KiB.
+1. The gateway takes the conversation's first user message, at most 16 KiB.
+   Every request resends the history, so every turn of a conversation
+   classifies the same text and stays on the same model and its prompt
+   cache, with no state in the gateway. The opening message decides: a
+   conversation that opens with small talk stays on the cheap model.
 2. `/polyphemus-classifier` classifies it. This is a static Rust binary in
    the measured image, run as a child process under its own user ID, with no
    network code. It runs NVIDIA's open prompt task-and-complexity classifier
@@ -60,11 +64,20 @@ model is billed at its normal rates.
   `d9abb6b67d266a712a7f5baea5117bcb8f4be4bec325cf4c7856d35df0fcb953`,
   `tokenizer.json` SHA-256
   `5124ef2ead1a10a717703bc436de7f353da76d6340e4587719b42b1693707964`.
-- The Docker build fetches both files by digest
-  (`Dockerfile.enclave.gcp.multi`, stage `polyphemus-classifier`). Then
-  `polyphemus-classifier --self-test` must reproduce the model card's
-  published example (Code Generation, probability 0.767, domain knowledge
-  0.9803) or the build fails.
+- `enclave-go/Dockerfile.polyphemus-classifier` fetches both files by
+  digest, builds the static binary, and runs `polyphemus-classifier
+  --self-test`, which must reproduce the model card's published example
+  (Code Generation, probability 0.767, domain knowledge 0.9803) or the
+  build fails.
+- That image is built once per source change, not per deploy.
+  `tools/polyphemus-classifier-image.sh` tags it by a hash of the committed
+  classifier source and Dockerfile, builds it via Cloud Build only if the
+  tag is missing, and prints its digest-pinned reference. The deploy passes
+  that as `POLYPHEMUS_CLASSIFIER_IMAGE` to `Dockerfile.enclave.gcp.multi`,
+  which copies the files in. A normal deploy costs one registry lookup.
+  `tools/verify-build.sh` rebuilds the classifier locally instead.
+- CI for the classifier (`.github/workflows/polyphemus-classifier.yml`)
+  runs only when its own files change.
 - Checked against NVIDIA's PyTorch reference on 32 prompts, including a
   full 512-token prompt: identical token ids, logits within 1e-5.
 - About 80 ms per typical prompt on an M-series Mac, about 520 ms at the

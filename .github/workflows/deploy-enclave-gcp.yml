@@ -248,6 +248,14 @@ jobs:
       - name: Configure docker auth (for image describe)
         run: gcloud auth configure-docker "${REGION}-docker.pkg.dev" --quiet
 
+      - name: Ensure Polyphemus classifier image
+        # One registry lookup on a normal deploy; builds only when the
+        # classifier's source changed.
+        run: |
+          set -euo pipefail
+          CLASSIFIER_IMAGE="$(tools/polyphemus-classifier-image.sh --ensure)"
+          echo "POLYPHEMUS_CLASSIFIER_IMAGE=${CLASSIFIER_IMAGE}" >> "$GITHUB_ENV"
+
       - name: Build enclave image via Cloud Build
         working-directory: enclave-go
         # The Dockerfile pins its golang:1.24-bookworm base image to a
@@ -273,6 +281,7 @@ jobs:
                   docker buildx build --platform=linux/amd64 \
                     --file=${_DOCKERFILE} \
                     --build-arg SOURCE_REVISION=${_SOURCE_REVISION} \
+                    --build-arg POLYPHEMUS_CLASSIFIER_IMAGE=${_CLASSIFIER_IMAGE} \
                     --tag=${_IMAGE} \
                     --push \
                     .
@@ -281,7 +290,7 @@ jobs:
           EOF
           BUILD_ID=$(gcloud builds submit \
             --config=/tmp/cloudbuild-enclave.yaml \
-            --substitutions="_IMAGE=${IMAGE_REF},_DOCKERFILE=${DOCKERFILE},_SOURCE_REVISION=${GITHUB_SHA}" \
+            --substitutions="_IMAGE=${IMAGE_REF},_DOCKERFILE=${DOCKERFILE},_SOURCE_REVISION=${GITHUB_SHA},_CLASSIFIER_IMAGE=${POLYPHEMUS_CLASSIFIER_IMAGE}" \
             --project="${PROJECT_ID}" \
             --region="${REGION}" \
             --async \

@@ -103,28 +103,59 @@ func TestPolyphemusRoutingRule(t *testing.T) {
 	}
 }
 
-func TestPolyphemusClassifiesOnlyTheLatestUserText(t *testing.T) {
+func TestPolyphemusClassifiesTheFirstUserTextSoConversationsStick(t *testing.T) {
 	messages := []types.OpenAIChatMessage{
 		{Role: "system", Content: "SYSTEM PROMPT"},
-		{Role: "user", Content: "older question"},
-		{Role: "assistant", Content: "answer"},
 		{Role: "user", Content: []any{map[string]any{"type": "text", "text": "part one"}, map[string]any{"type": "text", "text": "part two"}}},
+		{Role: "assistant", Content: "answer"},
+		{Role: "user", Content: "later question"},
 		{Role: "tool", ToolCallID: "x", Content: "TOOL OUTPUT"},
 	}
 	if got := polyphemusSelectionText(messages); got != "part one\npart two" {
 		t.Fatalf("got %q", got)
 	}
+	// Every later turn of the same conversation classifies the same text.
+	for turn := 2; turn <= len(messages); turn++ {
+		if got := polyphemusSelectionText(messages[:turn]); got != "part one\npart two" {
+			t.Fatalf("turn %d classified %q", turn, got)
+		}
+	}
 	if got := polyphemusSelectionText(messages[:1]); got != "" {
 		t.Fatalf("system-only conversation selected %q", got)
 	}
-	blank := []types.OpenAIChatMessage{{Role: "user", Content: "real"}, {Role: "user", Content: "   "}}
+	blank := []types.OpenAIChatMessage{{Role: "user", Content: "   "}, {Role: "user", Content: "real"}}
 	if got := polyphemusSelectionText(blank); got != "real" {
-		t.Fatalf("blank latest turn: got %q", got)
+		t.Fatalf("blank first turn: got %q", got)
 	}
 	// Text past the classifier's cut does not count: that turn is blank to it.
-	padded := []types.OpenAIChatMessage{{Role: "user", Content: "real"}, {Role: "user", Content: strings.Repeat(" ", polyclass.MaxTextBytes) + "late"}}
+	padded := []types.OpenAIChatMessage{{Role: "user", Content: strings.Repeat(" ", polyclass.MaxTextBytes) + "late"}, {Role: "user", Content: "real"}}
 	if got := polyphemusSelectionText(padded); got != "real" {
 		t.Fatalf("blank after truncation: got %q", got)
+	}
+}
+
+func TestPolyphemusEveryTurnOfAConversationGetsTheSameModel(t *testing.T) {
+	// A conversation that opens with a coding task stays on the strong model
+	// even when a later turn is small talk, and vice versa.
+	classify := classifierStub(func(_ context.Context, text string) (polyclass.Result, error) {
+		if strings.Contains(text, "Rust") {
+			return polyclass.Result{Task: "Code Generation", DomainKnowledge: 0.99}, nil
+		}
+		return polyclass.Result{Task: "Chatbot", DomainKnowledge: 0.3}, nil
+	})
+	for opening, want := range map[string]string{"Write a Rust parser": polyphemusStrongModel, "hi there": polyphemusCheapModel} {
+		history := []types.OpenAIChatMessage{{Role: "user", Content: opening}}
+		for turn, next := range []string{"thanks!", "now explain Rust lifetimes", "ok"} {
+			req := selectionTestRequest()
+			req.Messages = append([]types.OpenAIChatMessage{}, history...)
+			if _, err := preparePolyphemus(context.Background(), req, &selectionGatewayStub{}, classify, "key", "test"); err != nil {
+				t.Fatal(err)
+			}
+			if req.Model != want {
+				t.Fatalf("%q turn %d went to %s, want %s", opening, turn, req.Model, want)
+			}
+			history = append(history, types.OpenAIChatMessage{Role: "assistant", Content: "reply"}, types.OpenAIChatMessage{Role: "user", Content: next})
+		}
 	}
 }
 

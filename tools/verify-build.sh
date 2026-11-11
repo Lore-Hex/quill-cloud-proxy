@@ -73,6 +73,17 @@ if [[ -n "$(git -C "$REPO_ROOT" status --porcelain -- enclave-go)" ]]; then
 fi
 
 LOCAL_TAG="tr-verify-local:$COMMIT"
+CLASSIFIER_TAG="tr-verify-polyphemus-classifier:$COMMIT"
+say "rebuilding the Polyphemus classifier locally (downloads its pinned weights)"
+(
+  cd "$REPO_ROOT/enclave-go"
+  docker buildx build \
+    --platform linux/amd64 \
+    --file Dockerfile.polyphemus-classifier \
+    --tag "$CLASSIFIER_TAG" \
+    --load \
+    . >&2
+)
 say "rebuilding the enclave image locally (linux/amd64; first run can take several minutes)"
 (
   cd "$REPO_ROOT/enclave-go"
@@ -80,6 +91,7 @@ say "rebuilding the enclave image locally (linux/amd64; first run can take sever
     --platform linux/amd64 \
     --file Dockerfile.enclave.gcp.multi \
     --build-arg "SOURCE_REVISION=$(git -C "$REPO_ROOT" rev-parse HEAD)" \
+    --build-arg "POLYPHEMUS_CLASSIFIER_IMAGE=$CLASSIFIER_TAG" \
     --tag "$LOCAL_TAG" \
     --load \
     . >&2

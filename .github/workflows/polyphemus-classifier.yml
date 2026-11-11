@@ -1,0 +1,38 @@
+name: Polyphemus classifier
+
+# Runs only when the classifier's own inputs change, so it never slows
+# other pull requests or deploys.
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - "enclave-go/polyphemus-classifier/**"
+      - "enclave-go/Dockerfile.polyphemus-classifier"
+      - ".github/workflows/polyphemus-classifier.yml"
+  push:
+    branches: [main]
+    paths:
+      - "enclave-go/polyphemus-classifier/**"
+      - "enclave-go/Dockerfile.polyphemus-classifier"
+      - ".github/workflows/polyphemus-classifier.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  classifier:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v7
+      - name: Install pinned Rust toolchain
+        run: rustup toolchain install 1.94.1 --profile minimal --component clippy --component rustfmt
+      - name: Lint and unit-test the classifier (no weights, no network)
+        working-directory: enclave-go/polyphemus-classifier
+        run: |
+          cargo +1.94.1 fmt --check
+          cargo +1.94.1 clippy --locked --all-targets -- -D warnings
+          cargo +1.94.1 test --locked
+      - name: Build the static classifier and self-test the pinned weights
+        working-directory: enclave-go
+        run: docker build --platform linux/amd64 -f Dockerfile.polyphemus-classifier .

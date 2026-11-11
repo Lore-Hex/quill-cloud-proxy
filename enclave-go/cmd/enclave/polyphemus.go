@@ -209,10 +209,13 @@ func polyphemusMessageText(content any) (string, *adapter.AdapterError) {
 	return strings.Join(texts, "\n"), nil
 }
 
-// polyphemusSelectionText is the latest user turn whose first MaxTextBytes
-// contain text: exactly what the classifier sees.
+// polyphemusSelectionText is the conversation's first user turn whose first
+// MaxTextBytes contain text: exactly what the classifier sees. Every request
+// resends the history, so every turn of a conversation classifies the same
+// text and gets the same model, keeping the conversation on one model and
+// its prompt cache without any state in the gateway.
 func polyphemusSelectionText(messages []types.OpenAIChatMessage) string {
-	for i := len(messages) - 1; i >= 0; i-- {
+	for i := range messages {
 		if messages[i].Role != "user" {
 			continue
 		}

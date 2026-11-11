@@ -39,12 +39,14 @@ if gc artifacts docker images describe "$IMAGE_REF" >/dev/null 2>&1; then
   log "image already exists: $IMAGE_REF"
 else
   log "building and pushing $IMAGE_REF"
+  CLASSIFIER_IMAGE="$("$HERE/polyphemus-classifier-image.sh" --ensure)"
   (
     cd "$REPO_ROOT/enclave-go"
     docker buildx build \
       --platform linux/amd64 \
       --file "$DOCKERFILE" \
     --build-arg "SOURCE_REVISION=$(git -C "$REPO_ROOT" rev-parse HEAD)" \
+      --build-arg "POLYPHEMUS_CLASSIFIER_IMAGE=$CLASSIFIER_IMAGE" \
       --tag "$IMAGE_REF" \
       --push \
       .
