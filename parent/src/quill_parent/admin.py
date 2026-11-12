@@ -1,8 +1,12 @@
 """Operator-only /admin/usage endpoint.
 
-Auth: HTTP Basic against an htpasswd file (sha-512 crypt). Operator
-configures the secret out-of-band; the secret is NEVER a device key. Tests
-inject a temporary htpasswd path.
+Auth: HTTP Basic against an htpasswd file with bcrypt entries
+(`htpasswd -nB admin`). Operator configures the secret out-of-band; the
+secret is NEVER a device key. Tests inject a temporary htpasswd path.
+
+Legacy `{SHA}` entries (unsalted SHA-1) are still accepted, with a warning,
+so a host's existing file keeps working until it is regenerated with bcrypt.
+Remove that branch once every host has been regenerated.
 
 Output: aggregate counters per device (today + 30-day average). Reads
 from DynamoDB via UsageWriter.query_device_30d.
@@ -17,13 +21,19 @@ import hmac
 from pathlib import Path
 from typing import Any
 
+import bcrypt
 from fastapi import Request
 
 from quill_parent.config import Settings
+from quill_parent.logging import get_logger
+
+log = get_logger(__name__)
+
+_BCRYPT_PREFIXES = ("$2a$", "$2b$", "$2y$")
 
 
 def _read_htpasswd(path: Path) -> dict[str, str]:
-    """Parse a tiny subset of htpasswd: `user:hash` lines, hash = `{SHA}<b64>`."""
+    """Parse a tiny subset of htpasswd: `user:hash` lines."""
     if not path.exists():
         return {}
     out: dict[str, str] = {}
@@ -36,9 +46,16 @@ def _read_htpasswd(path: Path) -> dict[str, str]:
 
 
 def _check_password(stored_hash: str, given_password: str) -> bool:
-    """Verify a password against `{SHA}<b64-sha1>` (htpasswd-style)."""
+    """Verify a password against a bcrypt or legacy `{SHA}` htpasswd hash."""
+    if stored_hash.startswith(_BCRYPT_PREFIXES):
+        try:
+            return bcrypt.checkpw(given_password.encode("utf-8"), stored_hash.encode("ascii"))
+        except (ValueError, UnicodeEncodeError):
+            # Malformed hash, or a password over bcrypt's 72-byte limit.
+            return False
     if not stored_hash.startswith("{SHA}"):
         return False
+    log.warning("quill.admin_htpasswd_legacy_sha1", hint="regenerate with htpasswd -nB")
     try:
         expected = base64.b64decode(stored_hash[5:])
     except (ValueError, binascii.Error):
