@@ -2350,7 +2350,14 @@ func serveStreaming(
 		if deliveredOutput {
 			return
 		}
-		fmt.Fprintf(os.Stderr, "enclave.transform_stream_failed model=%q err=%v\n", req.Model, errorClass(err))
+		// A failed write to the client (it stopped reading past the write
+		// deadline, or the connection broke) also aborts the provider stream, so
+		// the provider attempt logs a closed pipe. Name the side that failed.
+		failedSide, failedClass := "provider", errorClass(err)
+		if clientErr := statsW.ClientWriteErr(); clientErr != nil {
+			failedSide, failedClass = "client", errorClass(clientErr)
+		}
+		fmt.Fprintf(os.Stderr, "enclave.transform_stream_failed request_log_id=%q model=%q side=%s err=%v bytes_to_client=%d\n", requestLogID, req.Model, failedSide, failedClass, statsW.BytesWritten())
 		status, _ := upstreamErrorResponse(err)
 		if trGateway != nil && trGateway.Enabled() && !settledBeforeTerminal {
 			if stageDController != nil && statsW.BytesWritten() > 0 {

@@ -59,6 +59,7 @@ func TestErrorClassKeepsWhatOperatorsReadItFor(t *testing.T) {
 		"user_model_first_byte_timeout": errors.New("user-model first-byte budget exceeded"),
 		"thinking_budget_exceeded":      errFusionOverthinkingBudget,
 		"attestation_required":          errors.New("tinfoil: complete attestation verification required"),
+		"downstream_closed":             io.ErrClosedPipe,
 	} {
 		if got := errorClass(err); got != want {
 			t.Errorf("errorClass(%v) = %q, want %q", err, got, want)
@@ -75,5 +76,32 @@ func TestErrorClassKeepsWhatOperatorsReadItFor(t *testing.T) {
 	// An error nobody anticipated still says where it came from.
 	if got := errorClass(fmt.Errorf("outer: %w", errors.New("inner"))); got != "other:*fmt.wrapError>*errors.errorString" {
 		t.Errorf("type chain = %q", got)
+	}
+}
+
+type failingWriter struct{ err error }
+
+func (f failingWriter) Write([]byte) (int, error) { return 0, f.err }
+
+// A stream that dies writing to the client must be attributed to the client,
+// not logged as a provider failure.
+func TestStreamStatsWriterRecordsFirstClientWriteError(t *testing.T) {
+	timeout := &net.OpError{Op: "write", Net: "tcp", Err: errors.New("i/o timeout")}
+	w := newStreamStatsWriter(failingWriter{err: timeout})
+	if w.ClientWriteErr() != nil {
+		t.Fatal("error before any write")
+	}
+	_, _ = w.Write([]byte("data: x\n\n"))
+	_, _ = w.Write([]byte("data: y\n\n"))
+	if got := w.ClientWriteErr(); got != timeout {
+		t.Fatalf("ClientWriteErr = %v, want the first write error", got)
+	}
+	if got := errorClass(w.ClientWriteErr()); got != "io_timeout" {
+		t.Fatalf("class = %q", got)
+	}
+	ok := newStreamStatsWriter(io.Discard)
+	_, _ = ok.Write([]byte("data: z\n\n"))
+	if ok.ClientWriteErr() != nil {
+		t.Fatal("successful writes recorded an error")
 	}
 }
