@@ -1,0 +1,58 @@
+# gitleaks configuration, read by .github/workflows/secret-scan.yml.
+#
+# The default ruleset applies in full. Each allowlist below names the rules it
+# was observed to trip and is scoped to those rules only, so a different kind of
+# credential in the same file (a cloud access key, a private key, a provider
+# token) still fails the scan. Prefer an inline `gitleaks:allow` comment, or a
+# fingerprint in .gitleaksignore, for a one-off known-fake value; add a path
+# here only for files that are regenerated wholesale.
+#
+# Baseline: a full-history scan on 2026-11-12 (gitleaks 8.30.1) found only
+# test vectors, digests, signature bundles and public attestation evidence;
+# every entry here and in .gitleaksignore comes from that review.
+
+[extend]
+useDefault = true
+
+[[allowlists]]
+description = """Generated, deterministic test vectors. JWS/JWT strings are \
+signed with keys whose seeds are committed beside them (shared with \
+quill-router's tests/fixtures); the generic-api-key hits are sha256 digests \
+and hash-shaped ids."""
+targetRules = ["jwt", "generic-api-key"]
+paths = [
+  '''^enclave-go/internal/trustedrouter/testdata/''',
+  '''^enclave-go/internal/speculation/testdata/''',
+]
+
+[[allowlists]]
+description = """Sigstore signature bundles for the published trust artifacts. \
+The square-access-token hits are runs inside base64 certificates and Rekor \
+entries; the bundles are public by design."""
+targetRules = ["square-access-token"]
+paths = ['''^trust-page/.+\.bundle$''']
+
+[[allowlists]]
+description = """Generated digest declaration (go test ./internal/byokcache \
+-update-accepted-formats): source file names mapped to sha256 digests."""
+targetRules = ["generic-api-key"]
+paths = ['''^enclave-go/internal/byokcache/accepted_formats\.json$''']
+
+[[allowlists]]
+description = """Azure MAA attestation token captured from a probe container \
+(2026-08-03) as a verifier regression fixture; see \
+tools/test_verify_attestation_maa.py. It is a signed attestation result bound \
+to a fixed probe nonce, not a credential, and expired (the test freezes its \
+clock inside the token's validity window)."""
+targetRules = ["jwt", "generic-api-key"]
+paths = ['''^tools/fixtures/maa_real_sevsnp_token\.jwt$''']
+
+[[allowlists]]
+description = """Privatemode image digests pinned in the reproduction workflow. \
+The image named secret-service makes the entropy rule read its sha256 digest \
+as a key; only bare 64-hex digests in this one file are allowed."""
+targetRules = ["generic-api-key"]
+condition = "AND"
+paths = ['''^\.github/workflows/reproduce-privatemode-v163\.yml$''']
+regexTarget = "secret"
+regexes = ['''^[0-9a-f]{64}$''']
