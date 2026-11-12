@@ -200,9 +200,33 @@ func TestNormalizeImageBytesRejectsHugeDimensionsBeforeDecode(t *testing.T) {
 		t.Fatalf("err = %v, want dimension cap error", err)
 	}
 
-	_, _, err = normalizeImageBytes("image/png", pngHeaderWithDimensions(t, 5000, 5000))
+	_, _, err = normalizeImageBytes("image/png", pngHeaderWithDimensions(t, 6000, 6000))
 	if err == nil || !strings.Contains(err.Error(), "image dimensions too large") {
 		t.Fatalf("err = %v, want pixel cap error", err)
+	}
+	var marker interface{ ClientInputMessage() string }
+	if !errors.As(err, &marker) || !strings.Contains(marker.ClientInputMessage(), "33554432 pixels total") {
+		t.Fatalf("client message does not name the limit: %v", err)
+	}
+}
+
+// Lossless full-page scans (5184x5184, about 26.9M pixels) are accepted by
+// OpenAI "original" detail; the gateway must not reject them first.
+func TestNormalizeImageBytesAcceptsLargePageScanDimensions(t *testing.T) {
+	if err := validateImageConfig(pngHeaderWithDimensions(t, 5184, 5184)); err != nil {
+		t.Fatalf("5184x5184 rejected: %v", err)
+	}
+	if err := validateImageConfig(pngHeaderWithDimensions(t, 5793, 5793)); err == nil {
+		t.Fatal("5793x5793 accepted past the pixel cap")
+	}
+}
+
+func TestOversizedInlineImageNamesTheByteLimit(t *testing.T) {
+	_, _, err := loadImageBytes(t.Context(),
+		"data:image/png;base64,"+base64.StdEncoding.EncodeToString(make([]byte, maxImageBytes+1)))
+	var marker interface{ ClientInputMessage() string }
+	if !errors.As(err, &marker) || !strings.Contains(marker.ClientInputMessage(), "bytes decoded") {
+		t.Fatalf("err = %v, want byte-limit client message", err)
 	}
 }
 
