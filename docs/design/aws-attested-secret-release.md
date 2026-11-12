@@ -50,8 +50,9 @@ After V1.1, on AWS:
    seal operator produced them. The parent can withhold them (denial of
    service) but cannot substitute, forge or downgrade them.
 3. **Releases keep working.** PCR0 is known before a candidate boots, so the
-   key policy and pins can be widened first, with no manual step on the
-   critical path.
+   key policy and pins can be widened first. The key-policy widening is one
+   Terraform variable (`accepted_pcr0`) per release; it needs Joseph's approval
+   like every KMS write unless he pre-approves that one variable for releases.
 
 Non-goals: prompt confidentiality (already enclave-only), the cross-cloud GCS
 ACME cache dependency (see "Related"), and the parent's `/admin/usage`
@@ -76,10 +77,14 @@ signed by KMS, and the parent relays the attestation document, so it knows the
 enclave's public key. It can wrap a data key of its own choosing and encrypt
 any bundle under it, and the enclave could not tell. So:
 
-- A per-region KMS asymmetric key, `alias/quill-enclave-bundle-signer`
+- One KMS asymmetric key, `alias/quill-enclave-bundle-signer`
   (`ECC_NIST_P384`, `SIGN_VERIFY`), with `kms:Sign` for the seal operator only.
+  One key, not one per region: per-region signers would buy nothing, because
+  the enclave cannot authenticate its region (below).
 - Its public key is compiled into the enclave image, so it is measured: a
-  different key means a different PCR0.
+  different key means a different PCR0, and replacing the signer is an enclave
+  release. The key is created before the first image that carries it is built
+  (Phase 0), and CI reads its public half with `kms:GetPublicKey`.
 - The operator signs a manifest: `{region, version, sha384(encrypted_data_key),
   sha384(nonce || ciphertext || tag)}`.
 - The enclave verifies the signature before it uses anything, then checks that
@@ -96,12 +101,19 @@ Every field the enclave trusts moves into the signed bundle, including
 `trustedrouter_base_url`. After cut-over the parent supplies nothing the
 enclave trusts.
 
+**The region is not authenticated.** One EIF, with one PCR0, runs in both
+regions, and the attestation document carries no region. A compromised parent
+in one region can fetch the other region's bundle, release its data key there,
+and claim that region. Both bundles are genuine operator output with the same
+values apart from regional endpoints, so this is accepted. Binding the region
+would need a per-region EIF and a second PCR0 per release; not worth it today.
+
 ### One sealed bundle per region, one KMS call per boot
 
 - **Seal (operator, off-host).** `tools/sync-secrets-to-aws.sh` builds the
   bundle JSON, calls `kms:GenerateDataKey` on the region's attested CMK,
   encrypts the JSON with AES-256-GCM (associated data: region and version),
-  signs the manifest with that region's signer, and writes
+  signs the manifest with the signer, and writes
   `{encrypted_data_key, nonce, ciphertext, manifest, signature}` to Secrets
   Manager.
 - **Per region, not replicated.** `sync-secrets-to-aws.sh` creates new secrets
@@ -129,13 +141,24 @@ mixed pairing during a rollout or rollback. Instead:
 
 - v2 is served on a new vsock port, 9101. The enclave speaks first (the
   attestation document) and the parent answers.
-- A v2 enclave tries 9101 and falls back to 9100 if nothing is listening.
+- The parent binds 9101 before 9100, so an enclave never sees 9100 ready while
+  9101 is still coming up.
+- Until the fallback is removed, a v2 enclave falls back to 9100 on **any**
+  9101 failure: nothing listening, a KMS denial (a release whose PCR0 the key
+  policy has not been widened for yet), no bundle sealed in that region, or a
+  signature or version failure. A downgrade is possible in that window anyway,
+  so falling back costs nothing and keeps every boot working.
+- After the fallback is removed, the enclave retries 9101 within the existing
+  30-second window and fails closed.
 - The parent serves both until cut-over. V1 enclaves keep using 9100, unchanged.
-- Tests cover all four pairings: V1 and v2 enclaves against V1 and v2 parents.
+- Each boot logs which mode it used and why it fell back.
+- Tests cover all four pairings (V1 and v2 enclaves against V1 and v2 parents)
+  and each fallback cause.
 
 The fallback is also a downgrade path: a compromised parent can refuse 9101 and
-serve forged V1 data on 9100. Goal 2 holds only once an enclave release removes
-the fallback (Phase 6).
+serve forged V1 data on 9100. And because the host chooses which EIF to run, it
+can boot any fallback-capable image still in the accepted set. Goal 2 holds only
+once the accepted set contains no fallback-capable image (Phase 6 step 3).
 
 ### Key policy (attested CMK)
 
@@ -158,7 +181,8 @@ signs their documents too.
   key-admin roles.
 - **No root delegation statement.** Key administration goes to a named admin
   role whose statement uses `NotAction` to exclude the cryptographic
-  operations.
+  operations, plus a named break-glass admin principal, so losing one role does
+  not make the key unmanageable. `BypassPolicyLockoutSafetyCheck` is never set.
 - The signer key's policy allows `kms:Sign` for the seal operator only and
   `kms:GetPublicKey` for CI. No one needs `kms:Verify`; the enclave verifies
   locally.
@@ -216,30 +240,35 @@ PCR0.
 The order is chosen so that no state mid-rollout can fail a boot. Each phase is
 reversible until Phase 6.
 
-**Phase 0: Terraform and the wildcard fallback.** Import the parent instance
-role, its inline policy and the existing CMK into Terraform. Remove the
-`key/*` decrypt fallback. No other behavior change. AWS infra today is created
-by `tools/deploy-aws-nitro.sh` with the CLI; there is no AWS Terraform yet.
+**Phase 0: Terraform, the wildcard fallback, the signer.** Import the parent
+instance role, its inline policy and the existing CMK into Terraform. Remove
+the `key/*` decrypt fallback. Create the bundle signer with its policy (it is
+used by nothing until Phase 4, but Phase 3's image must carry its public key).
+No other behavior change. AWS infra today is created by
+`tools/deploy-aws-nitro.sh` with the CLI; there is no AWS Terraform yet.
 
-**Phase 1: Reproducible, published EIF.** As in the section above. Exit when
-one CI-built EIF's PCR0 equals a live instance's attested PCR0 in both regions,
-and hosts run the published EIF.
+**Phase 1: Reproducible, published EIF.** As in the section above. Hosts need
+read access to the EIF's location, an IAM change on the approval list. Exit
+when one CI-built EIF's PCR0 equals a live instance's attested PCR0 in both
+regions, and hosts run the published EIF.
 
 **Phase 2: CI PCR0 in the release flow.** `release-aws-enclave.sh` and the
-runbook widen pins from the CI measurement before the candidate boots. Do one
-full release this way, including the abort path (a wrong expected value stops
-the release and narrows back).
+runbook widen the attestation pins from the CI measurement before the
+candidate boots, and, from Phase 4 on, the key policy's `accepted_pcr0` in the
+same step; narrowing likewise does both. Do one full release this way,
+including the abort path (a wrong expected value stops the release and narrows
+back).
 
-**Phase 3: v2-capable enclave.** Attested client on 9101 with the 9100
-fallback; signature verification against the compiled-in signer public key;
+**Phase 3: v2-capable enclave.** Attested client on 9101 with the fallback
+rules above; signature verification against the compiled-in signer public key;
 minimum bundle version. Unit tests with a fake NSM and fake KMS responses, a
 CMS parsing test against a captured real `CiphertextForRecipient`, fuzzing of
 the CMS and manifest parsers, and the four pairing tests. This is an enclave
 release through Phase 2's flow.
 
-**Phase 4: Keys and the sealed bundles.** Create the attested CMK and the
-signer in each region with the policies above, `accepted_pcr0` set to Phase 3's
-measurement. Extend `sync-secrets-to-aws.sh` to seal and sign per region. V1
+**Phase 4: Keys and the sealed bundles.** Create the attested CMK in each
+region with the policy above, `accepted_pcr0` set to Phase 3's measurement.
+Extend `sync-secrets-to-aws.sh` to seal per region and sign. V1
 secrets stay. Nothing reads the bundles yet. The negative controls in
 "Verification" run here.
 
@@ -251,12 +280,15 @@ in; every instance must report `attested` before Phase 6.
 
 1. Every PCR0 still in the accepted set, including rollback targets, must be a
    Phase 3 or later image. Narrow the set until it is.
-2. Enclave release that removes the 9100 fallback. From here Goal 2 holds.
-3. Parent stops serving 9100 and stops reading V1 secrets.
-4. Remove the parent role's `kms:Decrypt` on `alias/quill-enclave-cmk` and its
+2. Enclave release that removes the 9100 fallback, rolled to every instance.
+3. Narrow both the attestation pins and the key policy's `accepted_pcr0` to
+   images released at or after step 2. **From here Goal 2 holds.** Rollback can
+   only target such images.
+4. Parent stops serving 9100 and stops reading V1 secrets.
+5. Remove the parent role's `kms:Decrypt` on `alias/quill-enclave-cmk` and its
    `secretsmanager:GetSecretValue` on the V1 names, leaving only the bundles.
-5. After a soak, delete the V1 secrets.
-6. Rotate every secret the parent role could ever read: each provider key, the
+6. After a soak, delete the V1 secrets.
+7. Rotate every secret the parent role could ever read: each provider key, the
    GCP SA key, the Cloudflare token, the spend-lease issuer config and the
    synthetic prompts, plus the internal gateway token. That last one is the
    same value Cloud Run uses as `TR_INTERNAL_GATEWAY_TOKEN`, so its rotation is
@@ -264,7 +296,7 @@ in; every instance must report `attested` before Phase 6.
 
 **Phase 7: Disclose.** Add the AWS credential-plane statement to the trust page
 (it has none today), and update the `bootstrap_aws.go`, `types.go` and parent
-comments. Claim parity with GCP and Azure only after Phase 6 step 2. Whether to
+comments. Claim parity with GCP and Azure only after Phase 6 step 3. Whether to
 disclose the current V1 state on the trust page now is a separate decision for
 Joseph.
 
@@ -278,8 +310,9 @@ Joseph.
   refused.
 - **Forgery:** the Phase 3 enclave refuses a bundle with a valid AES-GCM
   ciphertext under a data key the test chose and wrapped to the enclave's
-  public key itself, a bundle with a bad or missing signature, a bundle for the
-  other region, and one below the minimum version.
+  public key itself, a bundle with a bad or missing signature, and one below
+  the minimum version. (Cross-region substitution of genuine bundles is
+  accepted; see "The region is not authenticated".)
 - **Positive:** a published enclave boots and serves on every instance in both
   regions with the V1 secrets unreadable by the parent role.
 
