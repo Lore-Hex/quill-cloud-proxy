@@ -122,7 +122,7 @@ func readLimited(r io.Reader) ([]byte, error) {
 		return nil, fmt.Errorf("llm/image: read failed")
 	}
 	if len(data) > maxImageBytes {
-		return nil, fmt.Errorf("llm/image: image too large")
+		return nil, errImageTooLarge
 	}
 	return data, nil
 }

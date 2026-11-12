@@ -19,8 +19,12 @@ import (
 )
 
 const (
-	maxImageBytes     = 10 << 20
-	maxImagePixels    = 16_777_216
+	maxImageBytes = 10 << 20
+	// 32 MiB of pixels (about 5792x5792). Newer OpenAI models take "original"
+	// detail images well past 4096x4096 (lossless full-page scans), so the old
+	// 16 MiB cap rejected requests the upstream accepts. The 10 MiB request
+	// body cap still bounds how much image data one request can carry.
+	maxImagePixels    = 33_554_432
 	maxImageDimension = 8192
 	maxImageRedirect  = 3
 )
@@ -38,8 +42,22 @@ func (e *imageInputError) Unwrap() error {
 }
 
 func (e *imageInputError) ClientInputMessage() string {
+	if errors.Is(e.err, errImageDimensionsTooLarge) {
+		return fmt.Sprintf(
+			"invalid image input: image dimensions too large (max %d pixels per side, %d pixels total)",
+			maxImageDimension, maxImagePixels,
+		)
+	}
+	if errors.Is(e.err, errImageTooLarge) {
+		return fmt.Sprintf("invalid image input: image too large (max %d bytes decoded)", maxImageBytes)
+	}
 	return "invalid image input"
 }
+
+var (
+	errImageDimensionsTooLarge = errors.New("llm/image: image dimensions too large")
+	errImageTooLarge           = errors.New("llm/image: image too large")
+)
 
 func markImageInputError(err error) error {
 	if err == nil {
@@ -247,7 +265,7 @@ func imageBytesFromDataURL(raw string) (string, []byte, error) {
 		return "", nil, fmt.Errorf("llm/image: invalid data URL image")
 	}
 	if len(data) > maxImageBytes {
-		return "", nil, fmt.Errorf("llm/image: image too large")
+		return "", nil, errImageTooLarge
 	}
 	return mediaType, data, nil
 }
@@ -316,10 +334,10 @@ func validateImageConfig(data []byte) error {
 		return fmt.Errorf("llm/image: invalid image dimensions")
 	}
 	if config.Width > maxImageDimension || config.Height > maxImageDimension {
-		return fmt.Errorf("llm/image: image dimensions too large")
+		return errImageDimensionsTooLarge
 	}
 	if config.Width > maxImagePixels/config.Height {
-		return fmt.Errorf("llm/image: image dimensions too large")
+		return errImageDimensionsTooLarge
 	}
 	return nil
 }
