@@ -2316,6 +2316,9 @@ func serveStreaming(
 		}
 		stageDControl.ToolCallID = polyphemusToolCallStamp(ctx)
 	}
+	if routeType == "chat.completions" {
+		stageDControl = withChatRoutingMetadata(stageDControl, authorization, selectedRoute, invokeOptions)
+	}
 	stageDControl = withInferenceLocation(stageDControl, authorization, selectedRoute)
 	stageDControl = adapter.WithReasoningVisibility(stageDControl, req.ExcludeReasoning)
 	if routeType == "responses" {

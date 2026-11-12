@@ -37,48 +37,7 @@ func annotateSettledResponseMetadata(
 		annotateEstimatedTokenUsage(usage, billedUsage[0])
 	}
 
-	selectedModel := ""
-	if selectedRoute != nil {
-		selectedModel = selectedRoute.Model("", authorization)
-	}
-	if settlement != nil && settlement.Model != "" {
-		selectedModel = settlement.Model
-	}
-	selectedEndpoint := ""
-	selectedProvider := ""
-	if selectedRoute != nil {
-		selectedEndpoint = selectedRoute.Endpoint("", authorization)
-		selectedProvider = selectedRoute.Provider("", authorization)
-	}
-	if settlement != nil && settlement.Provider != "" {
-		selectedProvider = settlement.Provider
-	}
-	if hidesPublicRouteMetadata(authorization) {
-		selectedModel = authorizationResponseModel(selectedModel, authorization)
-		selectedProvider = "trustedrouter"
-		selectedEndpoint = ""
-	}
-	candidateCount := routeCandidateCount(authorization, invokeOptions)
-	attemptCount := 0
-	fallbackCount := 0
-	if selectedRoute != nil {
-		attemptCount = selectedRoute.AttemptCount()
-		fallbackCount = selectedRoute.FallbackCount()
-	}
-	if attemptCount == 0 && candidateCount > 0 {
-		attemptCount = 1
-	}
-
-	routeUsage := map[string]any{
-		"router":                        "direct",
-		"selected_model":                selectedModel,
-		"selected_provider":             selectedProvider,
-		"selected_endpoint":             selectedEndpoint,
-		"fallback_candidate_count":      candidateCount,
-		"upstream_attempt_count":        attemptCount,
-		"fallback_attempt_count":        fallbackCount,
-		"contains_prompt_or_completion": false,
-	}
+	routeUsage := selectedRouteUsage(authorization, settlement, selectedRoute, invokeOptions)
 	cacheRead := 0
 	if result.Usage != nil {
 		cacheRead = result.Usage.CacheReadInputTokens
@@ -123,10 +82,10 @@ func annotateSettledResponseMetadata(
 			routeUsage["usage_type"] = settlement.UsageType
 		}
 	}
-	if region := publicGatewayRegion(authorization); region != "" {
-		routeUsage["gateway_region"] = region
-	}
 	routeUsage = pruneEmptyProviderUsage(routeUsage)
+	selectedEndpoint, _ := routeUsage["selected_endpoint"].(string)
+	selectedProvider, _ := routeUsage["selected_provider"].(string)
+	selectedModel, _ := routeUsage["selected_model"].(string)
 	annotateInferenceLocation(usage, authorization, selectedEndpoint, selectedProvider, selectedModel)
 	usage["provider_usage"] = routeUsage
 	payload["trustedrouter"] = mergeTrustedRouterRouting(payload["trustedrouter"], routeUsage)
@@ -142,6 +101,52 @@ func annotateSettledResponseMetadata(
 		return nil, err
 	}
 	return encoded, nil
+}
+
+// JSON and chat streams share winner attribution and private-route redaction.
+func selectedRouteUsage(authorization *trustedrouter.Authorization, settlement *trustedrouter.SettleResult, selectedRoute *selectedRouteTracker, invokeOptions []llm.InvokeOptions) map[string]any {
+	selectedModel, selectedEndpoint, selectedProvider := "", "", ""
+	if selectedRoute != nil {
+		selectedModel = selectedRoute.Model("", authorization)
+		selectedEndpoint = selectedRoute.Endpoint("", authorization)
+		selectedProvider = selectedRoute.Provider("", authorization)
+	}
+	if settlement != nil {
+		if settlement.Model != "" {
+			selectedModel = settlement.Model
+		}
+		if settlement.Provider != "" {
+			selectedProvider = settlement.Provider
+		}
+	}
+	if hidesPublicRouteMetadata(authorization) {
+		selectedModel = authorizationResponseModel(selectedModel, authorization)
+		selectedProvider = "trustedrouter"
+		selectedEndpoint = ""
+	}
+	candidateCount := routeCandidateCount(authorization, invokeOptions)
+	attemptCount, fallbackCount := 0, 0
+	if selectedRoute != nil {
+		attemptCount = selectedRoute.AttemptCount()
+		fallbackCount = selectedRoute.FallbackCount()
+	}
+	if attemptCount == 0 && candidateCount > 0 {
+		attemptCount = 1
+	}
+	routeUsage := map[string]any{
+		"router":                        "direct",
+		"selected_model":                selectedModel,
+		"selected_provider":             selectedProvider,
+		"selected_endpoint":             selectedEndpoint,
+		"fallback_candidate_count":      candidateCount,
+		"upstream_attempt_count":        attemptCount,
+		"fallback_attempt_count":        fallbackCount,
+		"contains_prompt_or_completion": false,
+	}
+	if region := publicGatewayRegion(authorization); region != "" {
+		routeUsage["gateway_region"] = region
+	}
+	return routeUsage
 }
 
 // annotateSettlementOnlyUsage adds TrustedRouter's integer cost and billing

@@ -177,6 +177,7 @@ func TestAsyncStreamFinalFrameJoinAndPendingMetadata(t *testing.T) {
 			if !gateway.AsyncSettlementNegotiated(auth) {
 				t.Fatal("not negotiated")
 			}
+			auth.GatewayRegion = "us-central1"
 			done := make(chan struct{})
 			streamCtx, cancelStream := context.WithCancel(t.Context())
 			defer cancelStream()
@@ -235,6 +236,15 @@ func TestAsyncStreamFinalFrameJoinAndPendingMetadata(t *testing.T) {
 					fields, ok := chunk["usage"].(map[string]any)
 					if !ok || fields["prompt_tokens"] != float64(2) || fields["completion_tokens"] != float64(2) || fields["total_tokens"] != float64(4) || chunk["created"] == nil || chunk["object"] != "chat.completion.chunk" {
 						t.Fatalf("invalid final metadata chunk: %v", chunk)
+					}
+					routing, _ := fields["provider_usage"].(map[string]any)
+					for key, want := range map[string]any{
+						"selected_model": auth.Model, "selected_provider": auth.Provider, "selected_endpoint": auth.EndpointID,
+						"upstream_attempt_count": float64(1), "fallback_attempt_count": float64(0), "gateway_region": "us-central1",
+					} {
+						if routing[key] != want {
+							t.Errorf("async routing[%q] = %v, want %v", key, routing[key], want)
+						}
 					}
 				}
 			}
