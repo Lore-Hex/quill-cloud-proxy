@@ -14,6 +14,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -229,6 +230,9 @@ func TestShadowProviderStreamPaths(t *testing.T) {
 						if e != nil {
 							t.Fatal(e)
 						}
+						if route == "chat.completions" && tier != "failure" {
+							want = []byte(shadowChatTranscriptWithRouting(t, string(want)))
+						}
 						if transcript != string(want) {
 							t.Fatalf("shadow=%v stream/body differ from frozen main\ngot %s\nwant %s", enabled, transcript, want)
 						}
@@ -237,6 +241,54 @@ func TestShadowProviderStreamPaths(t *testing.T) {
 			}
 		}
 	}
+}
+
+// Keep the pinned main transcripts intact. Only the explicitly expected
+// routing extension and its HTTP chunk length may differ from those bytes.
+func shadowChatTranscriptWithRouting(t *testing.T, frozen string) string {
+	t.Helper()
+	// Clock normalization shortened JSON values without rewriting chunk lengths,
+	// so these frozen transcripts are not directly HTTP-decodable. Retain that
+	// offset and increase only the usage chunk's length by the exact addition.
+	framePattern := regexp.MustCompile(`(?m)^([0-9a-f]+)\r\ndata: (\{[^\r\n]*\})\n\n\r\n`)
+	usageChunks := 0
+	updated := framePattern.ReplaceAllStringFunc(frozen, func(frame string) string {
+		parts := framePattern.FindStringSubmatch(frame)
+		var payload map[string]any
+		if err := json.Unmarshal([]byte(parts[2]), &payload); err != nil {
+			t.Fatal(err)
+		}
+		usage, ok := payload["usage"].(map[string]any)
+		if !ok {
+			return frame
+		}
+		roundTrip, err := json.Marshal(payload)
+		if err != nil || string(roundTrip) != parts[2] {
+			t.Fatal("JSON round trip changed frozen usage bytes")
+		}
+		if _, exists := usage["provider_usage"]; exists {
+			t.Fatal("frozen transcript already has routing metadata")
+		}
+		usage["provider_usage"] = map[string]any{
+			"router": "direct", "selected_model": "openai/billing-v1", "selected_provider": "openai",
+			"selected_endpoint": "openai/billing-v1@openai/prepaid", "fallback_candidate_count": 1,
+			"upstream_attempt_count": 1, "fallback_attempt_count": 0, "contains_prompt_or_completion": false,
+		}
+		encoded, err := json.Marshal(payload)
+		if err != nil {
+			t.Fatal(err)
+		}
+		length, err := strconv.ParseInt(parts[1], 16, 64)
+		if err != nil {
+			t.Fatal(err)
+		}
+		usageChunks++
+		return fmt.Sprintf("%x\r\ndata: %s\n\n\r\n", length+int64(len(encoded)-len(parts[2])), encoded)
+	})
+	if usageChunks != 1 {
+		t.Fatal("frozen usage is not unique")
+	}
+	return updated
 }
 
 func TestShadowStreamOraclePins(t *testing.T) {
