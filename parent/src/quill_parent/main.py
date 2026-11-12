@@ -131,7 +131,9 @@ def _make_router() -> APIRouter:
     ) -> JSONResponse:
         from quill_parent.admin import build_usage_report, check_admin_auth
 
-        if not check_admin_auth(request, settings):
+        # bcrypt is deliberately slow; keep it off the loop that serves /health
+        # and the bootstrap RPC.
+        if not await asyncio.to_thread(check_admin_auth, request, settings):
             raise HTTPException(
                 status_code=status.HTTP_401_UNAUTHORIZED,
                 detail="admin auth required",
