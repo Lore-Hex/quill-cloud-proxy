@@ -87,11 +87,14 @@ class SecretScanWorkflowTest(unittest.TestCase):
         command = re.search(r"gitleaks git .*?\.$", run, re.S)
         self.assertIsNotNone(command)
         flags = command.group(0).split()
-        for flag in ("--redact", "--exit-code", "--config", '--log-opts="$range"'):
+        for flag in ("--redact", "--exit-code", "--config", '--log-opts="--diff-merges=first-parent', '$range"'):
             self.assertIn(flag, flags)
         self.assertEqual(flags[flags.index("--exit-code") + 1], "1")
         self.assertEqual(flags[flags.index("--config") + 1], ".gitleaks.toml")
         self.assertFalse(any(flag.startswith("--redact=") for flag in flags))  # Full redaction only.
+        # Both ends must resolve before the scan, and the count is its own command.
+        self.assertIn('git rev-parse --verify --quiet "${end}^{commit}"', run)
+        self.assertIn('count=$(git rev-list --count "$range")', run)
 
     def test_allowlists_extend_the_default_rules_and_stay_rule_scoped(self):
         config = tomllib.loads((ROOT / ".gitleaks.toml").read_text())
