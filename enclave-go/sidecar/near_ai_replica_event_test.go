@@ -4,12 +4,53 @@ import (
 	"context"
 	"encoding/hex"
 	"encoding/json"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
+
+	tdxpb "github.com/google/go-tdx-guest/proto/tdx"
 )
 
+// The November 12 gpu03 boot has not yet recorded a replica key. Append the
+// two public replica-key events this instance recorded on November 6 so the
+// post-boot rules stay exercised, and re-bind RTMR3 in both quotes.
+func reviewedNearAICaseWithReplicaKeys(t *testing.T) *nearAITestCase {
+	t.Helper()
+	c := reviewedNearAIPoolCase(t, nearAIGPU03Compose)
+	raw, err := os.ReadFile(filepath.Join("testdata", "near-ai-2026-11-06", "a0e3c6f4-events.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var earlier []nearAIRuntimeEvent
+	if err := json.Unmarshal(raw, &earlier); err != nil {
+		t.Fatal(err)
+	}
+	added := 0
+	for _, event := range earlier {
+		if event.IMR == 3 && event.Event == "nearai-replica-report-key-v1" {
+			c.report.EventLog = append(c.report.EventLog, event)
+			added++
+		}
+	}
+	if added != 2 {
+		t.Fatalf("want two replica-key events, got %d", added)
+	}
+	rtmr3, err := replayNearAIRuntimeEvents(c.report.EventLog, nearAIGPU03Compose, c.policy.OSImageHash)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, body := range []*tdxpb.TDQuoteBody{c.modelBody, c.managerBody} {
+		body.Rtmrs[3] = append([]byte{}, rtmr3...)
+	}
+	c.encodeReport(t)
+	if _, err := c.verifier.verify(context.Background(), c.request); err != nil {
+		t.Fatalf("reviewed replica-key events rejected: %v", err)
+	}
+	return c
+}
+
 func TestNearAIReplicaEventRejectsUnreviewedChanges(t *testing.T) {
-	const compose = nearAIGPU03Compose
 	tests := map[string]func(*nearAITestCase){
 		"unknown post-boot event": func(c *nearAITestCase) { c.report.EventLog[len(c.report.EventLog)-1].Event = "unknown" },
 		"post-boot identity": func(c *nearAITestCase) {
@@ -33,7 +74,7 @@ func TestNearAIReplicaEventRejectsUnreviewedChanges(t *testing.T) {
 	}
 	for name, change := range tests {
 		t.Run(name, func(t *testing.T) {
-			c := reviewedNearAIPoolCase(t, compose)
+			c := reviewedNearAICaseWithReplicaKeys(t)
 			change(c)
 			c.encodeReport(t)
 			if _, err := c.verifier.verify(context.Background(), c.request); err == nil {
@@ -44,7 +85,7 @@ func TestNearAIReplicaEventRejectsUnreviewedChanges(t *testing.T) {
 }
 
 func TestNearAIReplicaKeyPayloadValidation(t *testing.T) {
-	c := reviewedNearAIPoolCase(t, nearAIGPU03Compose)
+	c := reviewedNearAICaseWithReplicaKeys(t)
 	payload, err := hex.DecodeString(c.report.EventLog[len(c.report.EventLog)-1].EventPayload)
 	if err != nil {
 		t.Fatal(err)
