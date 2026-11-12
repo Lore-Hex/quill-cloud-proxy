@@ -48,7 +48,8 @@ After V1.1, on AWS:
    remain trusted, as they are on GCP and Azure.
 2. **Integrity.** The enclave accepts secrets and configuration only if the
    seal operator produced them. The parent can withhold them (denial of
-   service) but cannot substitute, forge or downgrade them.
+   service) but cannot substitute or forge them, or downgrade them below the
+   image's minimum bundle version.
 3. **Releases keep working.** PCR0 is known before a candidate boots, so the
    key policy and pins can be widened first. The key-policy widening is one
    Terraform variable (`accepted_pcr0`) per release; it needs Joseph's approval
@@ -177,15 +178,16 @@ signs their documents too.
   the Deny.
 - **Deny** `kms:Encrypt`, `kms:GenerateDataKey*`, `kms:ReEncryptTo`,
   `kms:CreateGrant`, `kms:PutKeyPolicy`, `kms:ScheduleKeyDeletion` and
-  `kms:DisableKey` to every principal except the named seal-operator and
-  key-admin roles.
+  `kms:DisableKey` to every principal except the named seal-operator,
+  key-admin and break-glass admin principals.
 - **No root delegation statement.** Key administration goes to a named admin
   role whose statement uses `NotAction` to exclude the cryptographic
   operations, plus a named break-glass admin principal, so losing one role does
   not make the key unmanageable. `BypassPolicyLockoutSafetyCheck` is never set.
-- The signer key's policy allows `kms:Sign` for the seal operator only and
-  `kms:GetPublicKey` for CI. No one needs `kms:Verify`; the enclave verifies
-  locally.
+- The signer key gets the same guardrails: no root delegation statement, the
+  same named admin and break-glass principals, an explicit Deny of `kms:Sign`
+  to every principal except the seal operator, and `kms:GetPublicKey` for CI.
+  No one needs `kms:Verify`; the enclave verifies locally.
 
 Separately, `tools/deploy-aws-nitro.sh`'s IAM phase grants the parent role
 unconditional `kms:Decrypt` on `arn:aws:kms:<region>:<account>:key/*` in any
@@ -267,7 +269,8 @@ the CMS and manifest parsers, and the four pairing tests. This is an enclave
 release through Phase 2's flow.
 
 **Phase 4: Keys and the sealed bundles.** Create the attested CMK in each
-region with the policy above, `accepted_pcr0` set to Phase 3's measurement.
+region with the policy above, `accepted_pcr0` set to the PCR0 set accepted at
+that point (Phase 3's measurement and any later release).
 Extend `sync-secrets-to-aws.sh` to seal per region and sign. V1
 secrets stay. Nothing reads the bundles yet. The negative controls in
 "Verification" run here.
