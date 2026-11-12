@@ -9,6 +9,7 @@ import subprocess
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 import maple_policy as policy
 from cryptography.exceptions import InvalidSignature
@@ -16,7 +17,7 @@ from cryptography.hazmat.primitives import hashes, serialization
 from cryptography.hazmat.primitives.asymmetric import ec, utils
 
 
-class ReleaseTests(unittest.TestCase):
+class VendorRepo(unittest.TestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
         self.addCleanup(self.temp.cleanup)
@@ -87,6 +88,8 @@ class ReleaseTests(unittest.TestCase):
         self.git("update-ref", "refs/remotes/origin/master", approval)
         return approval
 
+
+class ReleaseTests(VendorRepo):
     def test_app_only_update_is_automatic(self):
         self.write("apps/chat/ui.rs", "UI v2\n")
         source = self.commit()
@@ -219,6 +222,7 @@ class ReleaseTests(unittest.TestCase):
         lib.write_text(original)
         evidence = {
             "source_commit": candidate["source_commit"],
+            "build_commit": candidate["source_commit"],
             "pcr0": candidate["pcr0"],
             "security_boundary_sha256": candidate["security_boundary_sha256"],
             "reproduction_verified": True,
@@ -238,6 +242,11 @@ class ReleaseTests(unittest.TestCase):
         bad = dict(evidence, source_commit="0" * 40)
         with self.assertRaises(policy.Refused):
             policy.stage(self.repo, candidate, bad, root)
+        for build in (None, "0" * 40, self.first):
+            bad = dict(evidence, build_commit=build)
+            with self.subTest(build=build), self.assertRaises(policy.Refused):
+                policy.stage(self.repo, candidate, bad, root)
+            self.assertEqual(lib.read_text(), original)
         policy.stage(self.repo, candidate, evidence, root)
         self.assertIn(candidate["pcr0"], lib.read_text())
         self.assertNotIn(self.baseline["pcr0"], lib.read_text())
@@ -246,6 +255,208 @@ class ReleaseTests(unittest.TestCase):
             updated["security_boundary_sha256"],
             self.baseline["security_boundary_sha256"],
         )
+
+
+class BuildCommitTests(VendorRepo):
+    """The final artifact may be built at a measurement-approval descendant."""
+
+    def setUp(self):
+        super().setUp()
+        self.write("apps/chat/ui.rs", "release\n")
+        self.source = self.commit()
+        self.write("services/opensecret/pcrDev.json", "dev approval")
+        self.write("services/opensecret/pcrDevHistory.json", "[]")
+        self.dev = self.commit()
+        self.write("services/opensecret/pcrProd.json", "prod approval")
+        self.approval = self.approve()
+
+    def release(self, build, *, reproduced_pcr="2" * 96, vendor_pcr="2" * 96):
+        root = Path(tempfile.mkdtemp(prefix="artifacts-", dir=self.temp.name))
+        vendor, rebuilt = root / "vendor", root / "rebuilt"
+        for directory, pcr0 in ((vendor, vendor_pcr), (rebuilt, reproduced_pcr)):
+            pcr = {"PCR0": pcr0, "PCR1": "5" * 96, "PCR2": "6" * 96}
+            handoff = {
+                "environment": "prod",
+                "source_sha": build,
+                "measurements": pcr,
+                "eif_sha256": hashlib.sha256(b"EIF").hexdigest(),
+                "approval_needed": False,
+            }
+            directory.mkdir(parents=True)
+            (directory / "image.eif").write_bytes(b"EIF")
+            (directory / "pcr.json").write_text(json.dumps(pcr))
+            (directory / "handoff.json").write_text(json.dumps(handoff))
+            (directory / "SHA256SUMS").write_text("sums")
+        return vendor, rebuilt
+
+    def provenance(self, digest):
+        cert = {
+            "issuer": "https://token.actions.githubusercontent.com",
+            "subjectAlternativeName": policy.WORKFLOW,
+            "sourceRepositoryURI": "https://github.com/" + policy.VENDOR,
+            "sourceRepositoryDigest": digest,
+            "buildSignerDigest": digest,
+            "sourceRepositoryRef": "refs/heads/master",
+            "sourceRepositoryIdentifier": "923138240",
+            "sourceRepositoryOwnerIdentifier": "322649754",
+        }
+        row = {
+            "verificationResult": {
+                "signature": {"certificate": cert},
+                "verifiedTimestamps": [{"type": "Tlog"}],
+            }
+        }
+        return json.dumps([row]).encode()
+
+    def verify(self, candidate, build, attested=None, **artifacts):
+        vendor, rebuilt = self.release(build, **artifacts)
+        calls = []
+
+        def fake_run(command, **kwargs):
+            if command[:3] == ["gh", "attestation", "verify"]:
+                calls.append(command)
+                return subprocess.CompletedProcess(
+                    command, 0, self.provenance(attested or build), b""
+                )
+            return real_run(command, **kwargs)
+
+        real_run = subprocess.run
+        with patch.object(policy.subprocess, "run", fake_run):
+            result = policy.verify_release(
+                self.repo, candidate, vendor, rebuilt, build, review_only=True
+            )
+        for command in calls:
+            for flag in ("--source-digest", "--signer-digest"):
+                self.assertEqual(command[command.index(flag) + 1], build)
+        self.assertEqual(len(calls), 2)
+        return result
+
+    def test_discover_lists_source_then_approval_descendants(self):
+        candidate = policy.discover(self.repo, self.baseline)
+        self.assertEqual(candidate["source_commit"], self.source)
+        self.assertEqual(
+            candidate["build_commits"], [self.source, self.dev, self.approval]
+        )
+
+    def test_build_at_source_still_verifies(self):
+        candidate = policy.discover(self.repo, self.baseline)
+        policy.verify_build_commit(self.repo, self.source, self.source)
+        result = self.verify(candidate, self.source)
+        self.assertEqual(result["build_commit"], self.source)
+        self.assertEqual(result["source_commit"], self.source)
+
+    def test_measurement_only_descendant_build_verifies(self):
+        candidate = policy.discover(self.repo, self.baseline)
+        for build in (self.dev, self.approval):
+            with self.subTest(build=build):
+                policy.verify_build_commit(self.repo, self.source, build)
+                result = self.verify(candidate, build)
+                self.assertEqual(result["build_commit"], build)
+                self.assertEqual(result["source_commit"], self.source)
+                self.assertEqual(result["pcr0"], "2" * 96)
+
+    def test_descendant_with_any_other_change_refuses(self):
+        for path in (
+            "apps/chat/ui.rs",
+            "README.md",
+            "services/opensecret/src/provider_registry.rs",
+            "services/opensecret/pcrProd.json.bak",
+            "services/opensecret/pcrStaging.json",
+        ):
+            with self.subTest(path=path):
+                self.write(path, "changed " + path)
+                build = self.commit()
+                with self.assertRaisesRegex(policy.Refused, "more than measurement"):
+                    policy.verify_build_commit(self.repo, self.source, build)
+                self.git("reset", "-q", "--hard", self.approval)
+
+    def test_rename_onto_measurement_path_refuses(self):
+        # At the source, pcrDev.json does not exist yet, so git would report
+        # this as a pure rename and print only the measurement path.
+        self.git("checkout", "-q", "-b", "rename", self.source)
+        self.git(
+            "mv", "services/opensecret/Cargo.lock", "services/opensecret/pcrDev.json"
+        )
+        build = self.commit()
+        with self.assertRaisesRegex(policy.Refused, "more than measurement"):
+            policy.verify_build_commit(self.repo, self.source, build)
+
+    def test_non_descendant_build_refuses(self):
+        self.git("checkout", "-q", "-b", "side", self.first)
+        self.write("services/opensecret/pcrDev.json", "side approval")
+        side = self.commit()
+        for build in (side, self.first):
+            with (
+                self.subTest(build=build),
+                self.assertRaisesRegex(policy.Refused, "not a descendant"),
+            ):
+                policy.verify_build_commit(self.repo, self.source, build)
+
+    def test_merge_in_build_chain_refuses(self):
+        self.git("checkout", "-q", "-b", "side", self.source)
+        self.write("services/opensecret/src/provider_registry.rs", "side change")
+        self.commit()
+        self.git("checkout", "-q", "-")
+        self.git(
+            "-c",
+            "user.name=Test",
+            "-c",
+            "user.email=test@example.invalid",
+            "-c",
+            "commit.gpgsign=false",
+            "merge",
+            "-q",
+            "-s",
+            "ours",
+            "--no-edit",
+            "side",
+        )
+        merge = self.git("rev-parse", "HEAD")
+        with self.assertRaisesRegex(policy.Refused, "merge|more than measurement"):
+            policy.verify_build_commit(self.repo, self.source, merge)
+
+    def test_build_outside_candidate_list_refuses(self):
+        candidate = policy.discover(self.repo, self.baseline)
+        candidate["build_commits"] = [self.source]
+        with self.assertRaisesRegex(policy.Refused, "not permitted"):
+            self.verify(candidate, self.approval)
+
+    def test_provenance_bound_to_another_commit_refuses(self):
+        candidate = policy.discover(self.repo, self.baseline)
+        for build, attested in (
+            (self.approval, self.source),
+            (self.approval, self.dev),
+            (self.source, self.approval),
+        ):
+            with (
+                self.subTest(build=build, attested=attested),
+                self.assertRaisesRegex(policy.Refused, "attestation signer"),
+            ):
+                self.verify(candidate, build, attested=attested)
+
+    def test_artifact_naming_a_different_commit_refuses(self):
+        candidate = policy.discover(self.repo, self.baseline)
+        vendor, rebuilt = self.release(self.source)
+        with self.assertRaisesRegex(policy.Refused, "source or environment"):
+            policy.compare_artifacts(vendor, rebuilt, self.approval, "2" * 96)
+        self.assertIn(self.approval, candidate["build_commits"])
+
+    def test_reproduced_pcr_mismatch_refuses(self):
+        candidate = policy.discover(self.repo, self.baseline)
+        with self.assertRaisesRegex(policy.Refused, "reproduction mismatch"):
+            self.verify(candidate, self.approval, reproduced_pcr="7" * 96)
+        with self.assertRaisesRegex(policy.Refused, "measurement mismatch"):
+            self.verify(
+                candidate, self.approval, reproduced_pcr="7" * 96, vendor_pcr="7" * 96
+            )
+
+    def test_review_required_without_review_only_refuses(self):
+        candidate = dict(policy.discover(self.repo, self.baseline), status="review_required")
+        vendor, rebuilt = self.release(self.approval)
+        with self.assertRaisesRegex(policy.Refused, "requires approval"):
+            policy.verify_release(
+                self.repo, candidate, vendor, rebuilt, self.approval
+            )
 
 
 class ArtifactTests(unittest.TestCase):
