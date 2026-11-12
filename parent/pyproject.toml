@@ -11,7 +11,7 @@ dependencies = [
   "structlog>=26.1.0",
   "pydantic>=2.9",
   "pydantic-settings>=2.6",
-  "bcrypt>=4.2",           # /admin/usage htpasswd hashes
+  "bcrypt>=5.0",           # /admin/usage hashes; 5.x rejects >72-byte passwords
 ]
 
 [dependency-groups]
