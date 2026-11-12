@@ -56,7 +56,7 @@ func TestChatStreamReportsSettledCostBeforeDone(t *testing.T) {
 				t.Fatal(err)
 			}
 			req.StreamOptions.IncludeUsage = tc.includeUsage
-			authz := &trustedrouter.Authorization{AuthorizationID: "auth_stream", WorkspaceID: "ws_test", APIKeyHash: "key_test", Model: "test-model", EndpointID: "test-endpoint", Provider: "test", UsageType: "Credits"}
+			authz := &trustedrouter.Authorization{AuthorizationID: "auth_stream", WorkspaceID: "ws_test", APIKeyHash: "key_test", Model: "test-model", EndpointID: "test-endpoint", Provider: "test", UsageType: "Credits", GatewayRegion: "us-central1"}
 			serveStreaming(context.Background(), &out, &fakeStreamingLLM{}, &req, &types.AnthropicMessagesRequest{}, []llm.InvokeOptions{{Model: "test-model", Provider: "test", EndpointID: "test-endpoint"}}, gateway, authz, nil, time.Now(), nil, "chat.completions", "test-stream-cost", "test-model")
 			if settlements != 1 || terminalBeforeSettlement == tc.includeUsage {
 				t.Errorf("settlements=%d terminalBeforeSettlement=%v includeUsage=%v", settlements, terminalBeforeSettlement, tc.includeUsage)
@@ -94,6 +94,15 @@ func TestChatStreamReportsSettledCostBeforeDone(t *testing.T) {
 				}
 				if chunk.Usage["cost_microdollars"] != expectedCost || chunk.Usage["prompt_tokens"] != float64(2) || chunk.Usage["completion_tokens"] != float64(2) {
 					t.Errorf("incorrect final usage: %#v", chunk.Usage)
+				}
+				routing, _ := chunk.Usage["provider_usage"].(map[string]any)
+				for key, want := range map[string]any{
+					"selected_model": "test-model", "selected_provider": "test", "selected_endpoint": "test-endpoint",
+					"upstream_attempt_count": float64(1), "fallback_attempt_count": float64(0), "gateway_region": "us-central1",
+				} {
+					if routing[key] != want {
+						t.Errorf("routing[%q] = %v, want %v", key, routing[key], want)
+					}
 				}
 			}
 			wantUsage := 0
