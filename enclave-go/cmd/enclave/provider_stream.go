@@ -442,6 +442,9 @@ var transportErrorClasses = []struct{ marker, class string }{
 	{"first-byte budget exceeded", "user_model_first_byte_timeout"},
 	{"thinking budget exceeded", "thinking_budget_exceeded"},
 	{"attestation verification required", "attestation_required"},
+	// io.ErrClosedPipe: the gateway stopped reading this provider stream,
+	// usually because the client side failed first. Not a provider failure.
+	{"read/write on closed pipe", "downstream_closed"},
 	{"cert fingerprint mismatch", "cert_fingerprint_mismatch"},
 	{"peer pid mismatch", "sidecar_pid_mismatch"},
 	{"unexpected eof", "unexpected_eof"},
