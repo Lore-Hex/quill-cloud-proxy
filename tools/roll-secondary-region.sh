@@ -67,10 +67,14 @@ fi
 # (tools/gate-hold-lib.sh), so every other step keeps the time it always had.
 forward_deadline_passed() {
   [ -n "${deadline}" ] || return 1
-  local held=0
+  local held=0 budget="${TR_CP_HOLD_BUDGET_SECONDS:-1200}"
   if [ -n "${TR_CP_HOLD_STATE_DIR:-}" ]; then
     held="$(gate_hold_region_spent "${TR_CP_HOLD_STATE_DIR}" "${region}")"
   fi
+  # Never more than the job's hold budget: a hold record that could not be
+  # closed (a failed write) must not extend the deadline forever.
+  [[ "${budget}" =~ ^[0-9]+$ ]] || budget=1200
+  if [ "${held}" -gt "${budget}" ]; then held="${budget}"; fi
   [ "$(date +%s)" -ge "$((deadline + held))" ]
 }
 # Where the rollout job's drain finalizer learns how this region ended:

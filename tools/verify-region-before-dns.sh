@@ -209,6 +209,9 @@ restore_cold_alias() {
 on_exit() {
   local status=$?
   trap - EXIT
+  # The restore below must finish once started: a step timeout or cancel sends
+  # INT and then TERM. Children inherit the ignored dispositions.
+  trap '' TERM INT
   rm -rf "${response_dir}"
   if [ "${status}" -ne 0 ] && [ "${promoted_cold_alias}" = "1" ]; then
     restore_cold_alias || true

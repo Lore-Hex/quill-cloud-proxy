@@ -669,15 +669,18 @@ jobs:
     # GitHub ends a hosted job at 360 minutes; set our own limit below it.
     # Every step below has an enforced limit, and a failed step ends the job,
     # so at most one region recovers. Summed from those limits only, the worst
-    # case is US West failing after the wave: about 351 minutes. That is every
-    # step's timeout on the path, four capped gate attempts with bounded
-    # reads, the wave's 55-minute forward deadline, US West's whole step limit
-    # (its forward deadline, its hold and recovery), and the job-wide
-    # control-plane hold budget (TR_CP_HOLD_BUDGET_SECONDS, 20 minutes) for the
-    # holds before it. A region's forward deadline grows only by the hold time
-    # it spent from that budget (tools/gate-hold-lib.sh).
-    # tools/test_gate_hold.py recomputes it.
-    timeout-minutes: 355
+    # case is US West failing after the wave: about 352 minutes, leaving about
+    # 8 under GitHub's 360. That is every step's timeout on the path, four
+    # capped gate attempts with bounded reads, the wave's 55-minute forward
+    # deadline plus its post-promotion tail (re-adding the region and
+    # reconciling DNS, about 3 minutes, which runs after the deadline check),
+    # US West's whole step limit (its forward deadline, its hold and recovery),
+    # and the job-wide control-plane hold budget (TR_CP_HOLD_BUDGET_SECONDS,
+    # 20 minutes) for the holds before it. A region's forward deadline grows
+    # only by the hold time it spent from that budget (tools/gate-hold-lib.sh).
+    # The limit is GitHub's own: a lower self-imposed one would only take time
+    # from a recovery. tools/test_gate_hold.py recomputes it.
+    timeout-minutes: 360
     # Dedicated heartbeat-capable, local-typed key. Provision the GitHub
     # secret STAGE_D_PROBE_API_KEY in the Stage D pilot workspace; it must not
     # belong to the regional-quota workspace. This workflow never creates it.
@@ -867,7 +870,10 @@ jobs:
         # normal case here on 2026-09-21: us-central1-c had no capacity, and
         # us-central1-f cannot host Intel TDX at all, which leaves zone b for
         # both VMs. The old 15-minute cap only fit two replacements in parallel.
-        timeout-minutes: 45
+        # 40 minutes: the slowest of the last 12 runs took 26.2 (2026-11-13),
+        # so this keeps over 50% headroom and gives the job's worst case its
+        # margin under GitHub's 360-minute limit (see timeout-minutes above).
+        timeout-minutes: 40
         env:
           QUILL_RECONCILE_APPLY: "1"
           QUILL_API_HOST: api.trustedrouter.com

@@ -22,6 +22,7 @@ import tempfile
 import time
 import unittest
 from pathlib import Path
+from typing import Any
 
 import yaml
 
@@ -745,7 +746,7 @@ class Wiring(unittest.TestCase):
         """From enforced limits only: every step's timeout, gate caps, the budget."""
         job = yaml.safe_load(WORKFLOW)["jobs"]["rollout"]
         limit = job["timeout-minutes"]
-        self.assertLess(limit, 360)
+        self.assertLessEqual(limit, 360)  # GitHub's own limit for hosted runners
         untimed = [s.get("name") or s.get("uses") for s in job["steps"] if "timeout-minutes" not in s]
         self.assertEqual(untimed, [])
         budget = int(job["env"]["TR_CP_HOLD_BUDGET_SECONDS"]) / 60
@@ -768,6 +769,10 @@ class Wiring(unittest.TestCase):
 
         always = {"Clear healthy rollout-created canonical drains"}
         runner = 3  # job setup, post steps and the gaps between steps
+        # A region that passes just before its forward deadline still re-adds
+        # itself and reconciles DNS (with re-attestation and the Route 53 sync)
+        # after the last deadline check.
+        tail = 3
 
         def path(until: str, failing: str | None) -> float:
             """Every step up to `until`; `failing` costs its whole limit, the
@@ -777,7 +782,7 @@ class Wiring(unittest.TestCase):
                 if name in primary_recovery and failing != "primary":
                     continue
                 if name in (wave_name, west_name):
-                    total += cost(name, s) if name == failing else forward(s)
+                    total += cost(name, s) if name == failing else forward(s) + tail
                 else:
                     total += cost(name, s)
             for name in always:
@@ -790,7 +795,8 @@ class Wiring(unittest.TestCase):
         west_fails = path(west_name, west_name)
         all_pass = path("Smoke test enclave inference (non-blocking)", None)
         worst = max(primary_fails, wave_fails, west_fails, all_pass)
-        self.assertLessEqual(worst, limit, (primary_fails, wave_fails, west_fails, all_pass))
+        # Keep a margin for what the model cannot see (runner start-up, the gaps).
+        self.assertLessEqual(worst + 5, limit, (primary_fails, wave_fails, west_fails, all_pass))
 
     def test_request_path_failures_carry_the_control_plane_status(self) -> None:
         start = VERIFY.index("verify_streaming_authorization() {")
@@ -855,7 +861,8 @@ class OneRegion(unittest.TestCase):
 
     def roll(self, *, lanes_now: object, pong: str = "0", verify: str = "0", recover: str = "0",
              watchdog: int = 0, status: object | None = None, previous: str = "quill-enclave-tpl-uswest1-1",
-             hold_max: int = 3, deadline_in: int | None = None, slow_attest: int = 0
+             hold_max: int = 3, deadline_in: int | None = None, slow_attest: int = 0,
+             budget: int = 100, stuck_hold: bool = False
              ) -> tuple[subprocess.CompletedProcess[str], str, str]:
         temp = Path(tempfile.mkdtemp(prefix="one-region-"))
         self.addCleanup(shutil.rmtree, temp, ignore_errors=True)
@@ -865,6 +872,9 @@ class OneRegion(unittest.TestCase):
         for name, value in (("pong", pong), ("verify", verify), ("recover", recover)):
             (codes / name).write_text(value)
         (temp / "lanes.json").write_text(json.dumps(lanes_now))
+        if stuck_hold:  # a hold record that was never closed (its write failed)
+            (temp / "hold").mkdir()
+            (temp / "hold" / "holding-us-west1").write_text(f"{int(time.time()) - 100_000}\n")
         (temp / "status.json").write_text(json.dumps(
             status if status is not None else healthy_page("us-west1", at=time.time() + 3600)))
         stubs = {
@@ -894,7 +904,7 @@ class OneRegion(unittest.TestCase):
                  "TR_DEPLOY_MUTEX_OPERATION": "a" * 32, "IMAGE_REF": "registry.example/enclave:new",
                  "IMAGE_DIGEST": "sha256:" + "a" * 64, "TR_ROLLOUT_STATE_DIR": str(state),
                  "TR_CP_HOLD_STATE_DIR": str(temp / "hold"), "TR_CP_HOLD_MAX_SECONDS": str(hold_max),
-                 "TR_CP_HOLD_SLEEP_SECONDS": "1", "TR_CP_HOLD_BUDGET_SECONDS": "100",
+                 "TR_CP_HOLD_SLEEP_SECONDS": "1", "TR_CP_HOLD_BUDGET_SECONDS": str(budget),
                  "SLOW_ATTEST": str(slow_attest),
                  **({"TR_SECONDARY_DEADLINE": str(int(time.time()) + deadline_in)} if deadline_in else {})},
         )
@@ -962,6 +972,15 @@ class OneRegion(unittest.TestCase):
         self.assertEqual(final, "recovered")
         self.assertLess(time.monotonic() - started, 25)
 
+    def test_a_stuck_hold_record_cannot_extend_the_deadline_forever(self) -> None:
+        """Review of #772: the extension is capped at the job's hold budget."""
+        started = time.monotonic()
+        done, commands, final = self.roll(lanes_now=STILL, deadline_in=3, slow_attest=30, budget=2,
+                                          stuck_hold=True)
+        self.assertEqual(done.returncode, 76, done.stderr)
+        self.assertEqual(final, "recovered")
+        self.assertLess(time.monotonic() - started, 25)
+
     def test_recovery_that_meets_a_bad_control_plane_says_so(self) -> None:
         done, commands, final = self.roll(lanes_now=STILL, pong="1", recover="65")
         self.assertNotEqual(done.returncode, 0)
@@ -984,6 +1003,9 @@ case "$*" in
     if [ "${state}" = cname ]; then echo '[{"rrdatas":["api.quillrouter.com."],"ttl":0}]'; else echo '[]'; fi ;;
   *"record-sets list"*"--type=A"*)
     if [ "${state}" = a ]; then echo '[{"rrdatas":["10.0.0.1"],"ttl":60}]'; else echo '[]'; fi ;;
+  *"record-sets transaction start"*)
+    # The restore's first DNS call is slow, so signals can land during it.
+    if [ "${state}" = a ]; then echo restoring >> "${COMMAND_LOG}"; sleep "${RESTORE_SLEEP:-0}"; fi ;;
   *"record-sets transaction execute"*)
     if [ "${state}" = cname ]; then echo a > "${DNS_STATE}"; else echo cname > "${DNS_STATE}"; fi ;;
   *"record-sets transaction"*) ;;
@@ -1004,6 +1026,53 @@ printf '200'
 
 class VerifyColdSwap(unittest.TestCase):
     """Review of #772: a kill after the cold-CNAME swap must restore it."""
+
+    def start(self, temp: Path, **env: str) -> subprocess.Popen[str]:
+        bin_dir = temp / "bin"
+        bin_dir.mkdir()
+        for name, body in (("gcloud", VERIFY_GCLOUD), ("curl", VERIFY_CURL),
+                           ("uv", "#!/bin/bash\nexit 0\n")):
+            (bin_dir / name).write_text(body)
+            (bin_dir / name).chmod(0o755)
+        (temp / "dns").write_text("cname\n")
+        jq = shutil.which("jq")
+        self.assertIsNotNone(jq)
+        return subprocess.Popen(
+            [TEST_BASH, str(ROOT / "tools/verify-region-before-dns.sh"), "us-west1",
+             "quill-enclave-mig-uswest1-", "sha256:" + "a" * 64],
+            cwd=ROOT, start_new_session=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+            env={"PATH": f"{bin_dir}:{Path(jq).parent}:{Path(sys.executable).parent}:/usr/bin:/bin",
+                 "TMPDIR": str(temp), "COMMAND_LOG": str(temp / "commands.log"),
+                 "DNS_STATE": str(temp / "dns"), "STAGE_D_PROBE_API_KEY": "probe-key",
+                 "TRUSTEDROUTER_INTERNAL_TOKEN": "token", "GATE_HOLD_NO_RERUN_MARK": str(temp / "no-rerun"),
+                 **env})
+
+    @staticmethod
+    def wait_for(predicate: Any, seconds: float = 30) -> bool:
+        deadline = time.monotonic() + seconds
+        while time.monotonic() < deadline:
+            if predicate():
+                return True
+            time.sleep(0.1)
+        return False
+
+    def test_int_and_term_during_the_restore_cannot_cut_it_short(self) -> None:
+        """Review of #772: a step timeout or cancel sends INT, then TERM."""
+        temp = Path(tempfile.mkdtemp(prefix="verify-restore-"))
+        self.addCleanup(shutil.rmtree, temp, ignore_errors=True)
+        proc = self.start(temp, RESTORE_SLEEP="3")
+        self.assertTrue(self.wait_for(lambda: (temp / "dns").read_text().strip() == "a"))
+        time.sleep(1)
+        os.killpg(proc.pid, signal.SIGTERM)
+        log = temp / "commands.log"
+        self.assertTrue(self.wait_for(lambda: "restoring" in log.read_text()))
+        os.killpg(proc.pid, signal.SIGINT)
+        time.sleep(0.3)
+        os.killpg(proc.pid, signal.SIGTERM)
+        out, err = proc.communicate(timeout=30)
+        self.assertEqual(proc.returncode, 143, err)
+        self.assertEqual((temp / "dns").read_text().strip(), "cname", err)
+        self.assertIn("restored cold CNAME", err)
 
     def test_term_mid_cold_swap_restores_the_cname_and_marks_no_rerun(self) -> None:
         temp = Path(tempfile.mkdtemp(prefix="verify-cold-"))
