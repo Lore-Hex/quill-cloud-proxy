@@ -62,6 +62,17 @@ if [ -n "${deadline}" ] && ! [[ "${deadline}" =~ ^[0-9]+$ ]]; then
   echo "${region}: TR_SECONDARY_DEADLINE must be epoch seconds" >&2
   exit 2
 fi
+# Time this region spent holding a control-plane-dependent gate does not count
+# against the deadline: the job's hold budget bounds it separately
+# (tools/gate-hold-lib.sh), so every other step keeps the time it always had.
+forward_deadline_passed() {
+  [ -n "${deadline}" ] || return 1
+  local held=0
+  if [ -n "${TR_CP_HOLD_STATE_DIR:-}" ]; then
+    held="$(gate_hold_region_spent "${TR_CP_HOLD_STATE_DIR}" "${region}")"
+  fi
+  [ "$(date +%s)" -ge "$((deadline + held))" ]
+}
 # Where the rollout job's drain finalizer learns how this region ended:
 # started -> promoted | recovered | recovery-failed. A region left at
 # "started" (killed mid-rollout) is never re-added by the finalizer.
@@ -100,7 +111,7 @@ check_not_aborted() {
     echo "${region}: stopping before promotion because $(cat "${abort_file}") failed in this wave" >&2
     exit "${peer_abort_status}"
   fi
-  if [ -n "${deadline}" ] && [ "$(date +%s)" -ge "${deadline}" ]; then
+  if forward_deadline_passed; then
     echo "${region}: rollout deadline passed before promotion; stopping" >&2
     exit "${deadline_status}"
   fi
@@ -115,7 +126,7 @@ interruptible() {
   pid=$!
   set +m
   while kill -0 "${pid}" 2>/dev/null; do
-    if [ "${promoted}" -eq 0 ] && { peer_failed || { [ -n "${deadline}" ] && [ "$(date +%s)" -ge "${deadline}" ]; }; }; then
+    if [ "${promoted}" -eq 0 ] && { peer_failed || forward_deadline_passed; }; then
       kill -TERM -- "-${pid}" 2>/dev/null || kill -TERM "${pid}" 2>/dev/null || true
       wait "${pid}" 2>/dev/null || true
       check_not_aborted
@@ -295,7 +306,7 @@ rollout_step interruptible bash tools/wait-region-attested.sh "${instance_filter
 # in flight or holding stops at once when a peer fails or the deadline passes,
 # exactly as interruptible does.
 gate_should_stop() {
-  [ "${promoted}" -eq 0 ] && { peer_failed || { [ -n "${deadline}" ] && [ "$(date +%s)" -ge "${deadline}" ]; }; }
+  [ "${promoted}" -eq 0 ] && { peer_failed || forward_deadline_passed; }
 }
 GATE_HOLD_STOP=gate_should_stop
 GATE_HOLD_ON_STOP=check_not_aborted

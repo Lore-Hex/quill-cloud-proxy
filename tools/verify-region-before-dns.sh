@@ -156,6 +156,12 @@ replace_cold_alias_with_bootstrap_ip() {
     exit 1
   fi
 
+  # Before any DNS change: tell tools/gate-hold-lib.sh never to re-run this
+  # attempt. A re-run would find the A record, take the existing-region path,
+  # and lose the CNAME.
+  if [ -n "${GATE_HOLD_NO_RERUN_MARK:-}" ]; then
+    : > "${GATE_HOLD_NO_RERUN_MARK}" || true
+  fi
   transaction_dir="$(mktemp -d "${TMPDIR:-/tmp}/tr-region-dns-XXXXXX")"
   transaction_file="${transaction_dir}/transaction.yaml"
   run_dns_transaction start "${transaction_file}"
@@ -214,6 +220,11 @@ on_exit() {
   exit "${status}"
 }
 trap on_exit EXIT
+# Killed (a hold deadline, a peer failure, a step timeout): exit non-zero, so
+# on_exit restores a swapped cold CNAME. Without these, bash runs the EXIT trap
+# with status 0 and skips the restore.
+trap 'exit 143' TERM
+trap 'exit 130' INT
 
 verify_streaming_authorization() {
   local host="$1" ip="$2" stage="$3"

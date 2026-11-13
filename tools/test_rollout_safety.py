@@ -806,9 +806,9 @@ printf '%s\\n' "${GCLOUD_JSON}"
         self.assertEqual(west_args, renamed)
         self.assertIn("          bash tools/roll-secondary-region.sh \\", west)
         for expected in (
-            # The forward deadline (55 minutes plus the job's 45-minute hold
-            # budget) and the 45 minutes recovery keeps.
-            "timeout-minutes: 145",
+            # The 55-minute forward deadline, the job's 20-minute hold budget it
+            # may grow by, and the 45 minutes recovery keeps.
+            "timeout-minutes: 120",
             "            us-west1 \\",
             "            quill-enclave-mig-uswest1 \\",
             "            quill-enclave-mig-uswest1- \\",

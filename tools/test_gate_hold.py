@@ -15,6 +15,7 @@ import json
 import os
 import re
 import shutil
+import signal
 import subprocess
 import sys
 import tempfile
@@ -287,13 +288,18 @@ if len(lines) > 1:
 # Each token of GATE_CODES is one attempt: an exit status, or sN to sleep N
 # seconds and then fail.
 GATE_STUB = r'''#!/bin/bash
-codes="$(cat "${GATE_CODES}")"
+file="${GATE_CODES}"
+if [ -n "${1:-}" ] && [ -f "${GATE_CODES}.$1" ]; then file="${GATE_CODES}.$1"; fi
+codes="$(cat "${file}")"
 code="${codes%% *}"
 rest="${codes#* }"
-[ "${rest}" = "${codes}" ] || printf '%s' "${rest}" > "${GATE_CODES}"
+[ "${rest}" = "${codes}" ] || printf '%s' "${rest}" > "${file}"
 echo "gate $* started_at=${WAIT_UP_STARTED_AT:-unset}" >> "${GATE_LOG}"
 case "${code}" in
   s*) sleep "${code#s}"; exit 1 ;;
+  m*) : > "${GATE_HOLD_NO_RERUN_MARK}"; exit "${code#m}" ;;
+  t) trap 'sleep 3; echo cleaned > "${GATE_LOG}.cleaned"; exit 143' TERM
+     sleep 60 & wait; exit 1 ;;
 esac
 exit "${code}"
 '''
@@ -428,6 +434,45 @@ class Library(unittest.TestCase):
         self.assertIn("rc=1", done.stdout)
         self.assertIn("job's (10s", done.stderr)
         self.assertEqual(len(log), 1)
+
+    def test_overlapping_holds_share_the_budget_as_they_spend_it(self) -> None:
+        """Review of #772: a wave's two holds must not each spend the budget."""
+        (self.temp / "codes.r1").write_text("1 s60")
+        (self.temp / "codes.r2").write_text("1 s60")
+        script = ("gate_hold pong r1 gate r1 & a=$!\n"
+                  "gate_hold pong r2 gate r2 & b=$!\n"
+                  'wait "$a"; echo "r1=$?"; wait "$b"; echo "r2=$?"')
+        started = time.monotonic()
+        done, log = self.run_lib(script, lane_lines=[MOVING], status=self.fresh_page(), hold_max=60,
+                                 env={"TR_CP_HOLD_BUDGET_SECONDS": "10", "GATE_HOLD_KILL_GRACE": "2"})
+        elapsed = time.monotonic() - started
+        self.assertIn("r1=124", done.stdout)
+        self.assertIn("r2=124", done.stdout)
+        held = sum(int(v) for f in self.hold.glob("held-*") for v in f.read_text().split())
+        self.assertLessEqual(held, 10 + 4, held)  # each would have spent ~7 more alone
+        self.assertLess(elapsed, 20)
+
+    def test_a_gate_that_changed_dns_is_never_re_run(self) -> None:
+        done, log = self.run_lib('gate_hold pre-dns us-central1 gate; echo "rc=$?"', codes="m65 0",
+                                 lane_lines=[MOVING], status=self.fresh_page(), hold_max=30)
+        self.assertIn("rc=65", done.stdout)
+        self.assertIn("it is never re-run", done.stderr)
+        self.assertEqual(len(log), 1)
+
+    def test_a_killed_attempt_gets_its_grace_to_clean_up(self) -> None:
+        done, log = self.run_lib('gate_hold pong us-central1 gate; echo "rc=$?"', codes="t",
+                                 status=self.fresh_page(),
+                                 env={"TR_CP_HOLD_ATTEMPT_SECONDS": "2", "GATE_HOLD_KILL_GRACE": "10"})
+        self.assertIn("rc=124", done.stdout)
+        self.assertTrue((self.temp / "gate.log.cleaned").exists())
+
+    def test_region_spend_counts_finished_and_open_holds(self) -> None:
+        self.hold.mkdir()
+        (self.hold / "held-r").write_text("5\n7\n")
+        (self.hold / "holding-r").write_text(f"{int(time.time()) - 3}\n")
+        (self.hold / "held-other").write_text("100\n")
+        done, _ = self.run_lib(f'gate_hold_region_spent "{self.hold}" r')
+        self.assertIn(int(done.stdout.strip()), (15, 16))
 
     def test_the_hold_clock_is_per_gate(self) -> None:
         """An earlier gate's hold does not eat into a later gate's bound."""
@@ -652,15 +697,17 @@ class Wiring(unittest.TestCase):
                       '    status=1\n', VERIFY)
         self.assertIn("if replace_cold_alias_with_bootstrap_ip; then\n  cold_bootstrap=1\n", VERIFY)
 
+    # Outside a hold: the first attempt's two lane reads, status.json and
+    # decide. After it: the final status read and decide, the kill grace
+    # (GATE_HOLD_KILL_GRACE), and the step's own setup (the PONG step triggers
+    # two monitor jobs).
+    READS = (60 + 60 + 15 + 5) + (15 + 5 + 30) + 60
+
     def test_timeouts_cover_each_gates_true_worst_case(self) -> None:
         """Review of #772: a capped attempt, the whole hold, and bounded reads."""
         env = yaml.safe_load(WORKFLOW)["jobs"]["rollout"]["env"]
-        hold = int(env["TR_CP_HOLD_MAX_SECONDS"])
+        hold = min(int(env["TR_CP_HOLD_MAX_SECONDS"]), int(env["TR_CP_HOLD_BUDGET_SECONDS"]))
         budget = int(env["TR_CP_HOLD_BUDGET_SECONDS"])
-        # Outside the hold: the first attempt's two lane reads, status.json and
-        # decide. After it: the final status read and decide, the kill grace,
-        # and the step's own setup (the PONG step triggers two monitor jobs).
-        reads = (60 + 60 + 15 + 5) + (15 + 5 + 10) + 60
         for name in ("Blocking per-instance streaming gate (us-central1)",
                      "Wait for us-central1 synthetic up",
                      "Canary gate — watch us-central1 only (post-stable)",
@@ -669,16 +716,23 @@ class Wiring(unittest.TestCase):
             cap = int(re.search(r'TR_CP_HOLD_ATTEMPT_SECONDS: "(\d+)"', body).group(1))
             minutes = int(re.search(r"timeout-minutes: (\d+)", body).group(1))
             self.assertGreater(cap, 0, name)
-            self.assertGreaterEqual(minutes * 60, cap + min(hold, budget) + reads, name)
-        for name, base in (("Roll Europe and US East GCP MIGs in parallel", 3300),
-                           ("Roll US West GCP MIG", 3300)):
+            self.assertGreaterEqual(minutes * 60, cap + hold + self.READS, name)
+        for name in ("Roll Europe and US East GCP MIGs in parallel", "Roll US West GCP MIG"):
             body = step(name)
             forward = int(re.search(r'(?:TR_SECONDARY_WORKER_TIMEOUT|TR_US_WEST_FORWARD_SECONDS): "(\d+)"',
                                     body).group(1))
             minutes = int(re.search(r"timeout-minutes: (\d+)", body).group(1))
-            self.assertGreaterEqual(forward, base + budget, name)
-            # Recovery keeps its 45 minutes after the forward deadline.
-            self.assertGreaterEqual(minutes * 60, forward + 45 * 60, name)
+            # The forward deadline grows by at most the job budget, and
+            # recovery keeps its 45 minutes after that.
+            self.assertGreaterEqual(minutes * 60, forward + budget + 45 * 60, name)
+
+    def test_a_regions_forward_deadline_grows_only_by_its_own_holds(self) -> None:
+        start = SECONDARY.index("forward_deadline_passed() {")
+        body = SECONDARY[start: SECONDARY.index("\n}\n", start)]
+        self.assertIn('held="$(gate_hold_region_spent "${TR_CP_HOLD_STATE_DIR}" "${region}")"', body)
+        self.assertIn('[ "$(date +%s)" -ge "$((deadline + held))" ]', body)
+        self.assertNotIn('date +%s)" -ge "${deadline}"', SECONDARY)
+        self.assertEqual(SECONDARY.count("forward_deadline_passed"), 4)  # definition and three uses
 
     def test_us_west_has_a_forward_deadline(self) -> None:
         body = step("Roll US West GCP MIG")
@@ -688,35 +742,55 @@ class Wiring(unittest.TestCase):
                         body.index("bash tools/roll-secondary-region.sh"))
 
     def test_the_rollout_job_ends_before_githubs_limit_in_the_worst_case(self) -> None:
+        """From enforced limits only: every step's timeout, gate caps, the budget."""
         job = yaml.safe_load(WORKFLOW)["jobs"]["rollout"]
         limit = job["timeout-minutes"]
         self.assertLess(limit, 360)
-        steps = {s.get("name"): s for s in job["steps"]}
-        budget = int(job["env"]["TR_CP_HOLD_BUDGET_SECONDS"]) // 60
+        untimed = [s.get("name") or s.get("uses") for s in job["steps"] if "timeout-minutes" not in s]
+        self.assertEqual(untimed, [])
+        budget = int(job["env"]["TR_CP_HOLD_BUDGET_SECONDS"]) / 60
+        gates = {"Blocking per-instance streaming gate (us-central1)", "Wait for us-central1 synthetic up",
+                 "Canary gate — watch us-central1 only (post-stable)", "Verify image discovery on attested origin"}
+        wave_name, west_name = "Roll Europe and US East GCP MIGs in parallel", "Roll US West GCP MIG"
+        primary_recovery = {"Refresh AWS credentials for primary recovery",
+                            "Recover us-central1 after any failed rollout step"}
+        steps = [(s.get("name") or s.get("uses"), s) for s in job["steps"]]
+        names = [n for n, _ in steps]
 
-        def cap_minutes(name: str) -> int:
-            return int(steps[name]["env"]["TR_CP_HOLD_ATTEMPT_SECONDS"]) // 60
+        def cost(name: str, s: dict) -> float:
+            if name in gates:  # the attempt and its reads; its hold is in the budget
+                return (int(s["env"]["TR_CP_HOLD_ATTEMPT_SECONDS"]) + self.READS) / 60
+            return float(s["timeout-minutes"])
 
-        primary = (steps["Wait for us-central1 MIG to be stable"]["timeout-minutes"]
-                   + steps["Wait for us-central1 instances to attest healthy"]["timeout-minutes"]
-                   + sum(cap_minutes(n) + 3 for n in (
-                       "Blocking per-instance streaming gate (us-central1)",
-                       "Wait for us-central1 synthetic up",
-                       "Canary gate — watch us-central1 only (post-stable)",
-                       "Verify image discovery on attested origin")))
-        wave = steps["Roll Europe and US East GCP MIGs in parallel"]
-        west = steps["Roll US West GCP MIG"]
-        forward = (int(wave["env"]["TR_SECONDARY_WORKER_TIMEOUT"]) // 60 - budget
-                   + int(west["env"]["TR_US_WEST_FORWARD_SECONDS"]) // 60 - budget)
-        untimed = 30
-        # One region recovers at most: a failed step ends the job. us-central1's
-        # recovery step is untimed (a 40-minute MIG wait plus its gate, about
-        # 55 minutes) and ends the job before the wave; a secondary's recovery
-        # runs inside its step, 45 minutes after the forward deadline.
-        primary_fails = untimed + primary + 55 + budget
-        secondary_fails = untimed + primary + forward + 45 + budget
-        worst = max(primary_fails, secondary_fails)
-        self.assertLessEqual(worst, limit, (primary_fails, secondary_fails))
+        def forward(s: dict) -> float:
+            env = s["env"]
+            return int(env.get("TR_SECONDARY_WORKER_TIMEOUT") or env["TR_US_WEST_FORWARD_SECONDS"]) / 60
+
+        always = {"Clear healthy rollout-created canonical drains"}
+        runner = 3  # job setup, post steps and the gaps between steps
+
+        def path(until: str, failing: str | None) -> float:
+            """Every step up to `until`; `failing` costs its whole limit, the
+            secondaries before it their forward deadlines, plus the budget."""
+            total = runner + budget
+            for name, s in steps[: names.index(until) + 1]:
+                if name in primary_recovery and failing != "primary":
+                    continue
+                if name in (wave_name, west_name):
+                    total += cost(name, s) if name == failing else forward(s)
+                else:
+                    total += cost(name, s)
+            for name in always:
+                if names.index(name) > names.index(until):
+                    total += cost(name, dict(steps)[name])
+            return total
+
+        primary_fails = path("Recover us-central1 after any failed rollout step", "primary")
+        wave_fails = path(wave_name, wave_name)
+        west_fails = path(west_name, west_name)
+        all_pass = path("Smoke test enclave inference (non-blocking)", None)
+        worst = max(primary_fails, wave_fails, west_fails, all_pass)
+        self.assertLessEqual(worst, limit, (primary_fails, wave_fails, west_fails, all_pass))
 
     def test_request_path_failures_carry_the_control_plane_status(self) -> None:
         start = VERIFY.index("verify_streaming_authorization() {")
@@ -756,6 +830,7 @@ pop() {  # pop the next status for this step from its codes file
   return "${code}"
 }
 case "$1" in
+  tools/wait-region-attested.sh) sleep "${SLOW_ATTEST:-0}" ;;
   tools/verify-region-before-dns.sh) pop verify ;;
   tools/wait-region-synthetic-up.sh) pop pong ;;
   tools/recover-gcp-region.sh) pop recover ;;
@@ -780,7 +855,8 @@ class OneRegion(unittest.TestCase):
 
     def roll(self, *, lanes_now: object, pong: str = "0", verify: str = "0", recover: str = "0",
              watchdog: int = 0, status: object | None = None, previous: str = "quill-enclave-tpl-uswest1-1",
-             hold_max: int = 3) -> tuple[subprocess.CompletedProcess[str], str, str]:
+             hold_max: int = 3, deadline_in: int | None = None, slow_attest: int = 0
+             ) -> tuple[subprocess.CompletedProcess[str], str, str]:
         temp = Path(tempfile.mkdtemp(prefix="one-region-"))
         self.addCleanup(shutil.rmtree, temp, ignore_errors=True)
         bin_dir, codes, state = temp / "bin", temp / "codes", temp / "state"
@@ -818,7 +894,9 @@ class OneRegion(unittest.TestCase):
                  "TR_DEPLOY_MUTEX_OPERATION": "a" * 32, "IMAGE_REF": "registry.example/enclave:new",
                  "IMAGE_DIGEST": "sha256:" + "a" * 64, "TR_ROLLOUT_STATE_DIR": str(state),
                  "TR_CP_HOLD_STATE_DIR": str(temp / "hold"), "TR_CP_HOLD_MAX_SECONDS": str(hold_max),
-                 "TR_CP_HOLD_SLEEP_SECONDS": "1", "TR_CP_HOLD_BUDGET_SECONDS": "100"},
+                 "TR_CP_HOLD_SLEEP_SECONDS": "1", "TR_CP_HOLD_BUDGET_SECONDS": "100",
+                 "SLOW_ATTEST": str(slow_attest),
+                 **({"TR_SECONDARY_DEADLINE": str(int(time.time()) + deadline_in)} if deadline_in else {})},
         )
         commands = log.read_text() if log.exists() else ""
         final = (state / "us-west1").read_text().strip() if (state / "us-west1").exists() else ""
@@ -868,12 +946,100 @@ class OneRegion(unittest.TestCase):
         self.assertEqual(commands.count("bash tools/verify-region-before-dns.sh us-west1"), 2)
         self.assertEqual(final, "promoted")
 
+    def test_holding_extends_the_forward_deadline_by_exactly_the_hold(self) -> None:
+        """Review of #772: hold time is the budget's, not the deadline's."""
+        done, commands, final = self.roll(lanes_now=MOVING, pong="1 1 1 1 1 1 1 1 0", hold_max=60,
+                                          deadline_in=12)
+        self.assertEqual(done.returncode, 0, done.stderr)
+        self.assertEqual(final, "promoted")
+        self.assertEqual(commands.count("bash tools/wait-region-synthetic-up.sh us-west1"), 9)
+
+    def test_work_outside_a_hold_keeps_the_base_deadline(self) -> None:
+        started = time.monotonic()
+        done, commands, final = self.roll(lanes_now=STILL, deadline_in=3, slow_attest=30)
+        self.assertEqual(done.returncode, 76, done.stderr)
+        self.assertIn("rollout deadline passed before promotion", done.stderr)
+        self.assertEqual(final, "recovered")
+        self.assertLess(time.monotonic() - started, 25)
+
     def test_recovery_that_meets_a_bad_control_plane_says_so(self) -> None:
         done, commands, final = self.roll(lanes_now=STILL, pong="1", recover="65")
         self.assertNotEqual(done.returncode, 0)
         self.assertEqual(final, "recovery-failed")
         self.assertIn("re-run tools/recover-gcp-region.sh for us-west1", done.stderr)
         self.assertNotIn("--clear-drain-region us-west1", commands)
+
+
+# The real pre-DNS gate, killed mid cold swap -------------------------------------
+
+VERIFY_GCLOUD = r'''#!/bin/bash
+echo "gcloud $*" >> "${COMMAND_LOG}"
+state="$(cat "${DNS_STATE}")"
+case "$*" in
+  *"instance-groups managed describe"*) echo "https://example.invalid/instanceTemplates/tpl" ;;
+  *"instance-templates describe"*)
+    echo '{"properties":{"metadata":{"items":[{"key":"tee-env-QUILL_USAGE_HEARTBEAT","value":"off"}]}}}' ;;
+  *"compute instances list"*) printf '10.0.0.1\n10.0.0.2\n' ;;
+  *"record-sets list"*"--type=CNAME"*)
+    if [ "${state}" = cname ]; then echo '[{"rrdatas":["api.quillrouter.com."],"ttl":0}]'; else echo '[]'; fi ;;
+  *"record-sets list"*"--type=A"*)
+    if [ "${state}" = a ]; then echo '[{"rrdatas":["10.0.0.1"],"ttl":60}]'; else echo '[]'; fi ;;
+  *"record-sets transaction execute"*)
+    if [ "${state}" = cname ]; then echo a > "${DNS_STATE}"; else echo cname > "${DNS_STATE}"; fi ;;
+  *"record-sets transaction"*) ;;
+  *) echo "unexpected gcloud: $*" >&2; exit 1 ;;
+esac
+'''
+
+VERIFY_CURL = r'''#!/bin/bash
+out=""
+while [ "$#" -gt 0 ]; do
+  [ "$1" = "--output" ] && out="$2"
+  shift
+done
+[ -n "${out}" ] && echo '{"choices":[{"message":{"role":"assistant","content":"PONG"}}]}' > "${out}"
+printf '200'
+'''
+
+
+class VerifyColdSwap(unittest.TestCase):
+    """Review of #772: a kill after the cold-CNAME swap must restore it."""
+
+    def test_term_mid_cold_swap_restores_the_cname_and_marks_no_rerun(self) -> None:
+        temp = Path(tempfile.mkdtemp(prefix="verify-cold-"))
+        self.addCleanup(shutil.rmtree, temp, ignore_errors=True)
+        bin_dir = temp / "bin"
+        bin_dir.mkdir()
+        for name, body in (("gcloud", VERIFY_GCLOUD), ("curl", VERIFY_CURL),
+                           ("uv", "#!/bin/bash\nexit 0\n")):
+            (bin_dir / name).write_text(body)
+            (bin_dir / name).chmod(0o755)
+        (temp / "dns").write_text("cname\n")
+        log, mark = temp / "commands.log", temp / "no-rerun"
+        jq = shutil.which("jq")
+        self.assertIsNotNone(jq)
+        proc = subprocess.Popen(
+            [TEST_BASH, str(ROOT / "tools/verify-region-before-dns.sh"), "us-west1",
+             "quill-enclave-mig-uswest1-", "sha256:" + "a" * 64],
+            cwd=ROOT, start_new_session=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+            env={"PATH": f"{bin_dir}:{Path(jq).parent}:{Path(sys.executable).parent}:/usr/bin:/bin",
+                 "TMPDIR": str(temp), "COMMAND_LOG": str(log), "DNS_STATE": str(temp / "dns"),
+                 "STAGE_D_PROBE_API_KEY": "probe-key", "TRUSTEDROUTER_INTERNAL_TOKEN": "token",
+                 "GATE_HOLD_NO_RERUN_MARK": str(mark)},
+        )
+        deadline = time.monotonic() + 30
+        while time.monotonic() < deadline and (temp / "dns").read_text().strip() != "a":
+            time.sleep(0.2)
+        self.assertEqual((temp / "dns").read_text().strip(), "a", "the cold swap never happened")
+        time.sleep(1)  # inside the propagation wait
+        os.killpg(proc.pid, signal.SIGTERM)  # what gate_hold does at a deadline
+        out, err = proc.communicate(timeout=30)
+        self.assertEqual(proc.returncode, 143, err)
+        self.assertTrue(mark.exists(), "a cold swap must mark the attempt as never re-run")
+        self.assertEqual((temp / "dns").read_text().strip(), "cname", err)
+        self.assertIn("restored cold CNAME", err)
+        executes = [line for line in log.read_text().splitlines() if "transaction execute" in line]
+        self.assertEqual(len(executes), 2)
 
 
 # The gateway side of the interleavings table ---------------------------------------

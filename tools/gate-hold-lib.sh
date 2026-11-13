@@ -13,18 +13,31 @@
 # Time limits, all hard (an attempt in flight is killed at them):
 #   TR_CP_HOLD_ATTEMPT_SECONDS  cap on any one attempt (0: none; default 0)
 #   TR_CP_HOLD_MAX_SECONDS      per gate: how long one gate may hold, from its
-#                               first inconclusive verdict (default 1800). The
+#                               first inconclusive verdict (default 1200). The
 #                               clock is per gate; a gate that passed leaves
 #                               nothing behind for the next one.
 #   TR_CP_HOLD_BUDGET_SECONDS   per job: total seconds held by all gates of all
 #                               regions sharing TR_CP_HOLD_STATE_DIR (default
-#                               2700). It keeps the job's worst case inside
+#                               1200). It keeps the job's worst case inside
 #                               GitHub's six-hour limit. Concurrent holds both
 #                               count, so a wave spends it twice as fast.
 #   TR_CP_HOLD_SLEEP_SECONDS    pause between attempts while holding (60)
 # A gate's worst case is therefore one capped attempt, its hold (at most the
 # smaller of the two bounds), and two bounded journal reads plus one status
 # read (GATE_HOLD_READ_SECONDS each, default 60; status.json 15).
+#
+# While a gate holds, the job budget is re-read on every poll, so holds that
+# overlap (a wave's two regions) stop when their combined spend reaches it.
+# A killed attempt gets GATE_HOLD_KILL_GRACE seconds (default 30) after TERM to
+# run its own cleanup (verify-region-before-dns.sh restores a cold CNAME).
+#
+# A gate that writes the file named by GATE_HOLD_NO_RERUN_MARK (exported for
+# each attempt) is never re-run: verify-region-before-dns.sh does when it
+# swaps a first deployment's cold CNAME.
+#
+# gate_hold_region_spent <dir> <region> prints the seconds that region has held
+# (finished plus open); roll-secondary-region.sh adds it to its forward
+# deadline, so holding never eats the time its other steps are allowed.
 #
 # GATE_HOLD_STOP names a function that returns 0 when the gate must stop now
 # (a peer region failed, the forward deadline passed). The attempt is then
@@ -70,26 +83,32 @@ gate_hold_curl_status() {
 # group. Kill the group at the deadline (status 124) or when GATE_HOLD_STOP
 # says so (then GATE_HOLD_ON_STOP runs; status 75 if it returns).
 gate_hold_run() {
-  local deadline="$1" pid status=0
+  local deadline="$1" pid status=0 grace polls=0 cut
   shift
+  grace="$(gate_hold_number GATE_HOLD_KILL_GRACE 30)" || return 2
   set -m
   "$@" &
   pid=$!
   set +m
   while kill -0 "${pid}" 2>/dev/null; do
-    if { [ -n "${deadline}" ] && [ "$(date +%s)" -ge "${deadline}" ]; } \
-        || { [ -n "${GATE_HOLD_STOP:-}" ] && "${GATE_HOLD_STOP}"; }; then
+    cut=0
+    if [ -n "${deadline}" ] && [ "$(date +%s)" -ge "${deadline}" ]; then cut=1; fi
+    # Overlapping holds spend the job budget together: re-read it every second.
+    if [ "${cut}" -eq 0 ] && [ -n "${_gh_budget_state:-}" ] && [ $((polls % 5)) -eq 0 ] \
+        && [ "$(gate_hold_spent "${_gh_budget_state}")" -ge "${_gh_budget}" ]; then cut=1; fi
+    polls=$((polls + 1))
+    if [ "${cut}" -eq 1 ] || { [ -n "${GATE_HOLD_STOP:-}" ] && "${GATE_HOLD_STOP}"; }; then
       if ! kill -0 "${pid}" 2>/dev/null; then
         break  # it finished on its own just now: its status stands
       fi
       kill -TERM -- "-${pid}" 2>/dev/null || kill -TERM "${pid}" 2>/dev/null || true
-      for _ in 1 2 3 4 5 6 7 8 9 10; do
+      for _ in $(seq 1 "${grace}"); do
         kill -0 "${pid}" 2>/dev/null || break
         sleep 1
       done
       kill -KILL -- "-${pid}" 2>/dev/null || true
       wait "${pid}" 2>/dev/null || true
-      if [ -n "${deadline}" ] && [ "$(date +%s)" -ge "${deadline}" ]; then
+      if [ "${cut}" -eq 1 ]; then
         return "${GATE_HOLD_TIMEOUT_STATUS}"
       fi
       return 75
@@ -129,6 +148,18 @@ gate_hold_spent() {
   printf '%s\n' "${total}"
 }
 
+gate_hold_region_spent() {
+  local dir="$1" region="$2" total=0 value
+  if [ -f "${dir}/held-${region}" ]; then
+    while IFS= read -r value; do
+      [[ "${value}" =~ ^[0-9]+$ ]] && total=$((total + value))
+    done < "${dir}/held-${region}"
+  fi
+  value="$(cat "${dir}/holding-${region}" 2>/dev/null || true)"
+  [[ "${value}" =~ ^[0-9]+$ ]] && total=$((total + $(date +%s) - value))
+  printf '%s\n' "${total}"
+}
+
 gate_hold_open() {
   local dir="$1" region="$2"
   mkdir -p "${dir}" 2>/dev/null && printf '%s\n' "$(date +%s)" > "${dir}/holding-${region}" 2>/dev/null
@@ -163,12 +194,12 @@ gate_hold_write() {
 gate_hold() {
   local kind="$1" region="$2" max pause cap budget monitors state own_state=0 work
   local since attempt_deadline cut_deadline hold_deadline="" status=1 decision remaining
-  local status_after_pause
+  local status_after_pause _gh_budget_state="" _gh_budget
   shift 2
-  max="$(gate_hold_number TR_CP_HOLD_MAX_SECONDS 1800)" || return 2
+  max="$(gate_hold_number TR_CP_HOLD_MAX_SECONDS 1200)" || return 2
   pause="$(gate_hold_number TR_CP_HOLD_SLEEP_SECONDS 60)" || return 2
   cap="$(gate_hold_number TR_CP_HOLD_ATTEMPT_SECONDS 0 zero)" || return 2
-  budget="$(gate_hold_number TR_CP_HOLD_BUDGET_SECONDS 2700)" || return 2
+  budget="$(gate_hold_number TR_CP_HOLD_BUDGET_SECONDS 1200)" || return 2
   monitors="$(gate_hold_monitors)" || return 2
   state="${TR_CP_HOLD_STATE_DIR:-}"
   if [ -z "${state}" ]; then
@@ -176,6 +207,7 @@ gate_hold() {
     own_state=1
   fi
   work="$(mktemp -d "${TMPDIR:-/tmp}/tr-gate-hold-XXXXXX")" || return 1
+  _gh_budget="${budget}"
   while true; do
     since="$(date +%s)"
     attempt_deadline=""
@@ -199,9 +231,9 @@ gate_hold() {
     gate_hold_lanes "${work}/before.json" "${attempt_deadline}"
     status=0
     # The PONG gate and the classifier judge the same window.
-    export WAIT_UP_STARTED_AT="${since}"
+    export WAIT_UP_STARTED_AT="${since}" GATE_HOLD_NO_RERUN_MARK="${work}/no-rerun"
     gate_hold_run "${attempt_deadline}" "$@" || status=$?
-    unset WAIT_UP_STARTED_AT
+    unset WAIT_UP_STARTED_AT GATE_HOLD_NO_RERUN_MARK
     if [ "${status}" -eq 75 ] && [ -n "${GATE_HOLD_STOP:-}" ]; then
       gate_hold_close "${state}" "${region}" || true
       rm -rf "${work}"
@@ -209,8 +241,16 @@ gate_hold() {
       "${GATE_HOLD_ON_STOP:-:}"
       return 75
     fi
-    if [ -n "${cut_deadline}" ] && [ "${status}" -eq "${GATE_HOLD_TIMEOUT_STATUS}" ] \
-        && [ "$(date +%s)" -ge "${cut_deadline}" ]; then
+    if [ -e "${work}/no-rerun" ] && [ "${status}" -ne 0 ]; then
+      echo "::error::${region}: ${kind} gate failed after changing DNS (a first deployment's bootstrap); it is never re-run" >&2
+      gate_hold_close "${state}" "${region}" || true
+      rm -rf "${work}"
+      [ "${own_state}" -eq 1 ] && rm -rf "${state}"
+      return "${status}"
+    fi
+    if [ -n "${hold_deadline}" ] && [ "${status}" -eq "${GATE_HOLD_TIMEOUT_STATUS}" ] \
+        && { [ "$(date +%s)" -ge "${cut_deadline}" ] \
+             || [ "$(gate_hold_spent "${state}")" -ge "${budget}" ]; }; then
       echo "::error::${region}: ${kind} gate still inconclusive at its hold deadline; the attempt in flight was stopped; failing closed" >&2
       gate_hold_close "${state}" "${region}" || true
       rm -rf "${work}"
@@ -251,6 +291,7 @@ gate_hold() {
             return 1
           fi
           hold_deadline=$(( $(date +%s) + max ))
+          _gh_budget_state="${state}"
         fi
         status_after_pause=0
         gate_hold_pause "${region}" "${kind} gate inconclusive: ${decision#inconclusive:}" \
@@ -297,6 +338,8 @@ gate_hold_pause() {
   for _ in $(seq 1 "${pause}"); do
     if [ -n "${GATE_HOLD_STOP:-}" ] && "${GATE_HOLD_STOP}"; then return 75; fi
     [ "$(date +%s)" -ge "${deadline}" ] && break
+    # Another region's hold may spend the rest of the budget meanwhile.
+    [ "$(gate_hold_spent "${state}")" -ge "${budget}" ] && break
     sleep 1
   done
   return 0
@@ -309,9 +352,9 @@ gate_hold_pause() {
 # Its hold counts against the job budget like any gate's.
 gate_status_presence() {
   local region="$1" mode="${2:-hold}" body max pause budget state deadline="" result
-  max="$(gate_hold_number TR_CP_HOLD_MAX_SECONDS 1800)" || { echo unreadable; return 0; }
+  max="$(gate_hold_number TR_CP_HOLD_MAX_SECONDS 1200)" || { echo unreadable; return 0; }
   pause="$(gate_hold_number TR_CP_HOLD_SLEEP_SECONDS 60)" || { echo unreadable; return 0; }
-  budget="$(gate_hold_number TR_CP_HOLD_BUDGET_SECONDS 2700)" || { echo unreadable; return 0; }
+  budget="$(gate_hold_number TR_CP_HOLD_BUDGET_SECONDS 1200)" || { echo unreadable; return 0; }
   state="${TR_CP_HOLD_STATE_DIR:-$(mktemp -d "${TMPDIR:-/tmp}/tr-cp-hold-XXXXXX")}"
   while true; do
     if body="$(curl -fsS --max-time 15 -H 'Cache-Control: no-cache' -H 'Pragma: no-cache' \
