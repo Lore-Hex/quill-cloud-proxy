@@ -55,10 +55,12 @@ on:
       - "tools/provider_probe_status.py"
       - "tools/watchdog.py"
       - "tools/roll-secondary-region.sh"
+      - "tools/roll-secondary-wave.sh"
       - "tools/recover-gcp-region.sh"
       - "tools/enclave-rollout-drain-lib.sh"
       - "tools/cleanup-enclave-rollout-drains.sh"
       - "tools/verify-gcp-runtime-secret-access.py"
+      - "tools/superseded_rollout.py"
       - ".github/workflows/deploy-enclave-gcp.yml"
       # Note: trust-page/** is intentionally NOT in this list. Trust
       # artifacts are *output* of this workflow, not input — listing them
@@ -145,8 +147,8 @@ jobs:
       run:
         working-directory: enclave-go
     steps:
-      - uses: actions/checkout@v7
-      - uses: actions/setup-go@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
           go-version: "1.26.11"
       - name: Test Stage D publication and streaming gates (offline)
@@ -159,8 +161,45 @@ jobs:
           tools/tests/test-enclave-rollout-drains.sh
       - run: go test -tags 'cloud_gcp,llm_multi' ./...
 
+  # Release train. Each rollout holds the shared gcp lease for about 2.5 h,
+  # so a run that reaches the head of this queue first asks whether a newer
+  # push run is already queued behind it for a descendant commit that is
+  # still on main with green CI (or has already rolled one out). If so, it
+  # skips green before building or touching the trust page, and the newer run
+  # ships both. If that newer run then fails or is cancelled before its
+  # rollout succeeds, its rescue-skipped job re-runs the newest skipped run.
+  # Manual dispatches never skip. Unclear evidence proceeds.
+  # Bot trust-artifact commits never start a run: trust-page/** is not in the
+  # push paths above (tools/test_superseded_rollout.py checks both).
+  train:
+    needs: gate-on-ci
+    runs-on: ubuntu-latest
+    # All waiting for a successor's CI shares one 30-minute deadline.
+    timeout-minutes: 40
+    permissions:
+      actions: read
+      contents: read
+    outputs:
+      proceed: ${{ steps.train.outputs.proceed }}
+    env:
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          sparse-checkout: tools/superseded_rollout.py
+          sparse-checkout-cone-mode: false
+      - name: Skip if a newer queued run deploys this commit too
+        id: train
+        run: >-
+          python3 tools/superseded_rollout.py decide
+          --repo "${GITHUB_REPOSITORY}"
+          --run-id "${GITHUB_RUN_ID}"
+          --sha "${GITHUB_SHA}"
+          --event "${{ github.event_name }}"
+
   build-and-release:
-    needs: [test, gate-on-ci]
+    needs: [test, gate-on-ci, train]
+    if: ${{ needs.train.outputs.proceed == 'true' }}
     runs-on: ubuntu-latest
     outputs:
       image_ref: ${{ steps.set-vars.outputs.image_ref }}
@@ -169,7 +208,7 @@ jobs:
       accepted_references: ${{ steps.write-trust.outputs.accepted_references }}
       stage_d_policy_sha256: ${{ steps.stage-d-transition.outputs.policy_sha256 }}
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0   # need history for the auto-commit + push back
           # Trust-artifact commits push directly to protected main. The
@@ -195,12 +234,12 @@ jobs:
           } >> "$GITHUB_ENV"
 
       - name: Authenticate to GCP via WIF
-        uses: google-github-actions/auth@v3
+        uses: Lore-Hex/quill-cloud-proxy/.github/actions/gcp-auth@582cbdee7b7023cfeb915b62a7f635aa1e4662b1 # main 2026-11-13
         with:
           workload_identity_provider: projects/44325983244/locations/global/workloadIdentityPools/github-actions/providers/github
           service_account: tr-deploy@quill-cloud-proxy.iam.gserviceaccount.com
 
-      - uses: google-github-actions/setup-gcloud@v3
+      - uses: Lore-Hex/quill-cloud-proxy/.github/actions/setup-gcloud@582cbdee7b7023cfeb915b62a7f635aa1e4662b1 # main 2026-11-13
 
       # The installer downloads cosign from GitHub Releases once, with no
       # retry; on 2026-11-09 that download failed in three runs within 16
@@ -208,14 +247,14 @@ jobs:
       # after a pause. The retry has no continue-on-error, so a second failure
       # still fails the job (tools/test_check_trust_signatures.py checks this).
       - id: cosign-install
-        uses: sigstore/cosign-installer@v3
+        uses: Lore-Hex/quill-cloud-proxy/.github/actions/cosign-install@582cbdee7b7023cfeb915b62a7f635aa1e4662b1 # main 2026-11-13
         continue-on-error: true
         with:
           cosign-release: v2.6.5
       - if: steps.cosign-install.outcome == 'failure'
         run: sleep 30
       - if: steps.cosign-install.outcome == 'failure'
-        uses: sigstore/cosign-installer@v3
+        uses: Lore-Hex/quill-cloud-proxy/.github/actions/cosign-install@582cbdee7b7023cfeb915b62a7f635aa1e4662b1 # main 2026-11-13
         with:
           cosign-release: v2.6.5
 
@@ -524,7 +563,7 @@ jobs:
     needs: build-and-release
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: main
       # The installer downloads cosign from GitHub Releases once, with no
@@ -533,14 +572,14 @@ jobs:
       # after a pause. The retry has no continue-on-error, so a second failure
       # still fails the job (tools/test_check_trust_signatures.py checks this).
       - id: cosign-install
-        uses: sigstore/cosign-installer@v3
+        uses: Lore-Hex/quill-cloud-proxy/.github/actions/cosign-install@582cbdee7b7023cfeb915b62a7f635aa1e4662b1 # main 2026-11-13
         continue-on-error: true
         with:
           cosign-release: v2.6.5
       - if: steps.cosign-install.outcome == 'failure'
         run: sleep 30
       - if: steps.cosign-install.outcome == 'failure'
-        uses: sigstore/cosign-installer@v3
+        uses: Lore-Hex/quill-cloud-proxy/.github/actions/cosign-install@582cbdee7b7023cfeb915b62a7f635aa1e4662b1 # main 2026-11-13
         with:
           cosign-release: v2.6.5
       - name: Wait for exact signed public transitional Stage D policy
@@ -565,7 +604,7 @@ jobs:
     runs-on: ubuntu-latest
     environment: batch-release
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: Require explicit Batch storage activation
         env:
           TR_BATCH_STORAGE_ENABLED: ${{ vars.TR_BATCH_STORAGE_ENABLED }}
@@ -575,11 +614,11 @@ jobs:
             exit 1
           fi
       - name: Authenticate isolated Batch release identity
-        uses: google-github-actions/auth@v3
+        uses: Lore-Hex/quill-cloud-proxy/.github/actions/gcp-auth@582cbdee7b7023cfeb915b62a7f635aa1e4662b1 # main 2026-11-13
         with:
           workload_identity_provider: projects/44325983244/locations/global/workloadIdentityPools/github-actions/providers/github
           service_account: tr-batch-release@quill-cloud-proxy.iam.gserviceaccount.com
-      - uses: google-github-actions/setup-gcloud@v3
+      - uses: Lore-Hex/quill-cloud-proxy/.github/actions/setup-gcloud@582cbdee7b7023cfeb915b62a7f635aa1e4662b1 # main 2026-11-13
       - name: Grant only the new measured enclave digest
         env:
           IMAGE_DIGEST: ${{ needs.build-and-release.outputs.image_digest }}
@@ -603,12 +642,12 @@ jobs:
     outputs:
       operation: ${{ steps.admit.outputs.TR_DEPLOY_MUTEX_OPERATION }}
     steps:
-      - uses: actions/checkout@v7
-      - uses: google-github-actions/auth@v3
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: Lore-Hex/quill-cloud-proxy/.github/actions/gcp-auth@582cbdee7b7023cfeb915b62a7f635aa1e4662b1 # main 2026-11-13
         with:
           workload_identity_provider: projects/44325983244/locations/global/workloadIdentityPools/github-actions/providers/github
           service_account: tr-deploy@quill-cloud-proxy.iam.gserviceaccount.com
-      - uses: google-github-actions/setup-gcloud@v3
+      - uses: Lore-Hex/quill-cloud-proxy/.github/actions/setup-gcloud@582cbdee7b7023cfeb915b62a7f635aa1e4662b1 # main 2026-11-13
       - name: Reserve GCP across both repositories
         id: admit
         env:
@@ -634,7 +673,7 @@ jobs:
       GH_TOKEN: ${{ secrets.TRUST_PUSH_TOKEN }}
       STAGE_D_PROBE_API_KEY: ${{ secrets.STAGE_D_PROBE_API_KEY }}
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           # Match the image source, not a newer main containing runtime envs
           # that the built Confidential Space image does not allow. Trust
@@ -642,22 +681,22 @@ jobs:
           ref: ${{ github.sha }}
           persist-credentials: false
       - name: Authenticate to GCP via WIF
-        uses: google-github-actions/auth@v3
+        uses: Lore-Hex/quill-cloud-proxy/.github/actions/gcp-auth@582cbdee7b7023cfeb915b62a7f635aa1e4662b1 # main 2026-11-13
         with:
           workload_identity_provider: projects/44325983244/locations/global/workloadIdentityPools/github-actions/providers/github
           service_account: tr-deploy@quill-cloud-proxy.iam.gserviceaccount.com
-      - uses: google-github-actions/setup-gcloud@v3
+      - uses: Lore-Hex/quill-cloud-proxy/.github/actions/setup-gcloud@582cbdee7b7023cfeb915b62a7f635aa1e4662b1 # main 2026-11-13
         with:
           # MIG minReadySec is still exposed through the beta command group.
           # Install it explicitly so a non-interactive runner never pauses to
           # ask whether it may install the component mid-rollout.
           install_components: beta
-      - uses: astral-sh/setup-uv@v7
+      - uses: Lore-Hex/quill-cloud-proxy/.github/actions/setup-uv@582cbdee7b7023cfeb915b62a7f635aa1e4662b1 # main 2026-11-13
 
       - name: Verify shared cloud reservation before mutations
         run: python3 tools/cloud-rollout.py assert --cloud gcp
       - name: Authenticate to AWS for backup-domain DNS
-        uses: aws-actions/configure-aws-credentials@v6
+        uses: Lore-Hex/quill-cloud-proxy/.github/actions/aws-credentials@582cbdee7b7023cfeb915b62a7f635aa1e4662b1 # main 2026-11-13
         with:
           role-to-assume: ${{ secrets.AWS_DEPLOY_ROLE_ARN }}
           aws-region: us-east-1
@@ -879,7 +918,7 @@ jobs:
       # close to that, and the restore below writes Route 53.
       - name: Refresh AWS credentials before restoring us-central1
         if: ${{ steps.canary_us.outcome == 'success' }}
-        uses: aws-actions/configure-aws-credentials@v6
+        uses: Lore-Hex/quill-cloud-proxy/.github/actions/aws-credentials@582cbdee7b7023cfeb915b62a7f635aa1e4662b1 # main 2026-11-13
         with:
           role-to-assume: ${{ secrets.AWS_DEPLOY_ROLE_ARN }}
           aws-region: us-east-1
@@ -911,7 +950,7 @@ jobs:
 
       - name: Refresh AWS credentials for primary recovery
         if: ${{ always() && (failure() || steps.canary_us.outcome == 'failure') }}
-        uses: aws-actions/configure-aws-credentials@v6
+        uses: Lore-Hex/quill-cloud-proxy/.github/actions/aws-credentials@582cbdee7b7023cfeb915b62a7f635aa1e4662b1 # main 2026-11-13
         with:
           role-to-assume: ${{ secrets.AWS_DEPLOY_ROLE_ARN }}
           aws-region: us-east-1
@@ -935,68 +974,73 @@ jobs:
 
       # AWS OIDC credentials are temporary and cannot refresh in place. Each
       # secondary rollout can legitimately take 30+ minutes, so authenticate
-      # immediately before every region instead of reusing the session created
+      # immediately before every wave instead of reusing the session created
       # near the start of this long-running job.
-      - name: Refresh AWS credentials for Europe backup-domain DNS
-        uses: aws-actions/configure-aws-credentials@v6
+      - name: Refresh AWS credentials for the Europe and US East wave
+        uses: Lore-Hex/quill-cloud-proxy/.github/actions/aws-credentials@582cbdee7b7023cfeb915b62a7f635aa1e4662b1 # main 2026-11-13
         with:
           role-to-assume: ${{ secrets.AWS_DEPLOY_ROLE_ARN }}
           aws-region: us-east-1
 
-      - name: Roll Europe GCP MIG
-        timeout-minutes: 55
+      # Europe and US East roll at the same time (measured serial cost 27.6 +
+      # 40.1 minutes; parallel about 40). Each region runs the unchanged
+      # tools/roll-secondary-region.sh: its own drain, stable, attested,
+      # per-instance, synthetic and per-region watchdog gates, and its own
+      # recovery. tools/roll-secondary-wave.sh shares one DNS lock between
+      # them and stops the other region from promoting once one fails.
+      # At most two secondaries are ever out of canonical DNS, so us-central1
+      # (two VMs, both in zone b) and us-west1 (zones a and b) keep serving
+      # from two regions and three zones; draining all three at once would
+      # leave one zone. Capacity numbers: docs/design/gateway-secondary-waves.md.
+      # TR_SECONDARY_WORKER_TIMEOUT is a forward-only deadline for each
+      # region's rollout steps; recovery is never bounded by it and has the
+      # rest of this step's cap (it waits up to 40 minutes for the MIG).
+      - name: Roll Europe and US East GCP MIGs in parallel
+        timeout-minutes: 100
         env:
           IMAGE_REF: ${{ needs.build-and-release.outputs.image_ref }}
           IMAGE_DIGEST: ${{ needs.build-and-release.outputs.image_digest }}
-          QUILL_USAGE_HEARTBEAT: "on"
-          QUILL_TERMINATE_AT_CAP: "on"
-          PREV_TEMPLATE: ${{ steps.prev.outputs.europe_west4_template }}
-          PREV_DRAIN_STATE: ${{ steps.prev.outputs.europe_west4_drain_state }}
-          PREV_DRAIN_ORIGIN: ${{ steps.prev.outputs.europe_west4_drain_origin }}
+          # Stage D flags stay per region: the wave hands each worker only its
+          # own region's pair (tools/tests/test-stage-d-gates.sh checks them).
+          EUROPE_WEST4_QUILL_USAGE_HEARTBEAT: "on"
+          EUROPE_WEST4_QUILL_TERMINATE_AT_CAP: "on"
+          US_EAST4_QUILL_USAGE_HEARTBEAT: "on"
+          US_EAST4_QUILL_TERMINATE_AT_CAP: "on"
+          TR_SECONDARY_WORKER_TIMEOUT: "3300"
+          TR_ROLLOUT_STATE_DIR: ${{ runner.temp }}/tr-rollout-state
+          EUROPE_WEST4_PREV_TEMPLATE: ${{ steps.prev.outputs.europe_west4_template }}
+          EUROPE_WEST4_PREV_DRAIN_STATE: ${{ steps.prev.outputs.europe_west4_drain_state }}
+          EUROPE_WEST4_PREV_DRAIN_ORIGIN: ${{ steps.prev.outputs.europe_west4_drain_origin }}
+          US_EAST4_PREV_TEMPLATE: ${{ steps.prev.outputs.us_east4_template }}
+          US_EAST4_PREV_DRAIN_STATE: ${{ steps.prev.outputs.us_east4_drain_state }}
+          US_EAST4_PREV_DRAIN_ORIGIN: ${{ steps.prev.outputs.us_east4_drain_origin }}
         run: |
-          bash tools/roll-secondary-region.sh \
+          bash tools/roll-secondary-wave.sh \
+            -- \
             europe-west4 \
             quill-enclave-mig-eu \
             quill-enclave-mig-eu- \
             eu \
             api.quillrouter.com,api-europe-west4.quillrouter.com,api.trustedrouter.com,api.allyrouter.com,api.uptimerouter.com,api.nytokenexchange.com \
-            "${PREV_TEMPLATE}" \
+            "${EUROPE_WEST4_PREV_TEMPLATE}" \
             c3-standard-4 \
             TDX \
-            "${PREV_DRAIN_STATE}" \
-            "${PREV_DRAIN_ORIGIN}"
-
-      - name: Refresh AWS credentials for US East backup-domain DNS
-        uses: aws-actions/configure-aws-credentials@v6
-        with:
-          role-to-assume: ${{ secrets.AWS_DEPLOY_ROLE_ARN }}
-          aws-region: us-east-1
-
-      - name: Roll US East GCP MIG
-        timeout-minutes: 55
-        env:
-          IMAGE_REF: ${{ needs.build-and-release.outputs.image_ref }}
-          IMAGE_DIGEST: ${{ needs.build-and-release.outputs.image_digest }}
-          QUILL_USAGE_HEARTBEAT: "on"
-          QUILL_TERMINATE_AT_CAP: "on"
-          PREV_TEMPLATE: ${{ steps.prev.outputs.us_east4_template }}
-          PREV_DRAIN_STATE: ${{ steps.prev.outputs.us_east4_drain_state }}
-          PREV_DRAIN_ORIGIN: ${{ steps.prev.outputs.us_east4_drain_origin }}
-        run: |
-          bash tools/roll-secondary-region.sh \
+            "${EUROPE_WEST4_PREV_DRAIN_STATE}" \
+            "${EUROPE_WEST4_PREV_DRAIN_ORIGIN}" \
+            -- \
             us-east4 \
             quill-enclave-mig-useast4 \
             quill-enclave-mig-useast4- \
             useast4 \
             api.quillrouter.com,api-us-east4.quillrouter.com,api.trustedrouter.com,api.allyrouter.com,api.uptimerouter.com,api.nytokenexchange.com \
-            "${PREV_TEMPLATE}" \
+            "${US_EAST4_PREV_TEMPLATE}" \
             c3-standard-4 \
             TDX \
-            "${PREV_DRAIN_STATE}" \
-            "${PREV_DRAIN_ORIGIN}"
+            "${US_EAST4_PREV_DRAIN_STATE}" \
+            "${US_EAST4_PREV_DRAIN_ORIGIN}"
 
       - name: Refresh AWS credentials for US West backup-domain DNS
-        uses: aws-actions/configure-aws-credentials@v6
+        uses: Lore-Hex/quill-cloud-proxy/.github/actions/aws-credentials@582cbdee7b7023cfeb915b62a7f635aa1e4662b1 # main 2026-11-13
         with:
           role-to-assume: ${{ secrets.AWS_DEPLOY_ROLE_ARN }}
           aws-region: us-east-1
@@ -1021,6 +1065,7 @@ jobs:
           # three zones chosen without regard to that: us-central1 got zone f,
           # which has no TDX hosts at all.
           MIG_ZONES: us-west1-a,us-west1-b
+          TR_ROLLOUT_STATE_DIR: ${{ runner.temp }}/tr-rollout-state
         run: |
           bash tools/roll-secondary-region.sh \
             us-west1 \
@@ -1103,6 +1148,9 @@ jobs:
       - name: Clear healthy rollout-created canonical drains
         if: always()
         env:
+          TR_ROLLOUT_STATE_DIR: ${{ runner.temp }}/tr-rollout-state
+          # Rolled by tools/roll-secondary-region.sh, which records each one.
+          TR_ROLLOUT_SECONDARY_REGIONS: "europe-west4 us-east4 us-west1"
           QUILL_API_HOST: api.trustedrouter.com
           QUILL_DNS_ZONE: trustedrouter-com
           QUILL_PUBLISH_REGIONAL: "1"
@@ -1121,7 +1169,7 @@ jobs:
     outputs:
       stage_d_policy_sha256: ${{ steps.finalize.outputs.policy_sha256 }}
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: main
           fetch-depth: 0
@@ -1182,7 +1230,7 @@ jobs:
     needs: [build-and-release, finalize-trust-artifacts]
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: main
       # The installer downloads cosign from GitHub Releases once, with no
@@ -1191,14 +1239,14 @@ jobs:
       # after a pause. The retry has no continue-on-error, so a second failure
       # still fails the job (tools/test_check_trust_signatures.py checks this).
       - id: cosign-install
-        uses: sigstore/cosign-installer@v3
+        uses: Lore-Hex/quill-cloud-proxy/.github/actions/cosign-install@582cbdee7b7023cfeb915b62a7f635aa1e4662b1 # main 2026-11-13
         continue-on-error: true
         with:
           cosign-release: v2.6.5
       - if: steps.cosign-install.outcome == 'failure'
         run: sleep 30
       - if: steps.cosign-install.outcome == 'failure'
-        uses: sigstore/cosign-installer@v3
+        uses: Lore-Hex/quill-cloud-proxy/.github/actions/cosign-install@582cbdee7b7023cfeb915b62a7f635aa1e4662b1 # main 2026-11-13
         with:
           cosign-release: v2.6.5
       - name: Wait for exact signed public final Stage D policy
@@ -1224,12 +1272,12 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
-      - uses: actions/checkout@v7
-      - uses: google-github-actions/auth@v3
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: Lore-Hex/quill-cloud-proxy/.github/actions/gcp-auth@582cbdee7b7023cfeb915b62a7f635aa1e4662b1 # main 2026-11-13
         with:
           workload_identity_provider: projects/44325983244/locations/global/workloadIdentityPools/github-actions/providers/github
           service_account: tr-deploy@quill-cloud-proxy.iam.gserviceaccount.com
-      - uses: google-github-actions/setup-gcloud@v3
+      - uses: Lore-Hex/quill-cloud-proxy/.github/actions/setup-gcloud@582cbdee7b7023cfeb915b62a7f635aa1e4662b1 # main 2026-11-13
       - name: Release only after attestation and regional completion
         env:
           GH_TOKEN: ${{ secrets.TRUST_PUSH_TOKEN }}
@@ -1246,3 +1294,34 @@ jobs:
             echo '::error::GCP reservation retained pending verified recovery.'
             exit 1
           fi
+
+  # A run that others skipped for (see the train job) must not lose their
+  # commits when it fails before promoting any region: re-run the newest
+  # older run that yielded to this very run since the last rollout of any
+  # run. That re-run decides again, finds this run did not roll out, and
+  # deploys its own commit, which contains every older one that yielded
+  # here. A cancelled run rescues nothing, so one cancel stops the chain.
+  rescue-skipped:
+    needs: [train, rollout]
+    if: ${{ !cancelled() && github.event_name == 'push' && github.repository == 'Lore-Hex/quill-cloud-proxy' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      actions: write
+      contents: read
+    env:
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          sparse-checkout: tools/superseded_rollout.py
+          sparse-checkout-cone-mode: false
+      - name: Re-run the newest run that skipped for this one, if this one did not roll out
+        run: >-
+          python3 tools/superseded_rollout.py rescue
+          --repo "${GITHUB_REPOSITORY}"
+          --run-id "${GITHUB_RUN_ID}"
+          --sha "${GITHUB_SHA}"
+          --event "${{ github.event_name }}"
+          --train-proceed "${{ needs.train.outputs.proceed }}"
+          --rollout-result "${{ needs.rollout.result }}"

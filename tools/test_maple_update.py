@@ -198,6 +198,123 @@ class TransportTests(unittest.TestCase):
                 self.assertIn("--match-head-commit", merges[0])
                 self.assertNotIn("--admin", merges[0])
 
+    def test_download_prefers_source_then_final_approval_build(self):
+        source, dev, approval = ("a" * 40, "b" * 40, "c" * 40)
+        candidate = {"source_commit": source, "build_commits": [source, dev, approval]}
+        for available, expected_calls in (
+            ({source, approval}, [source]),
+            ({dev, approval}, [source, approval]),
+            ({dev}, [source, approval, dev]),
+        ):
+            calls = []
+
+            def fake(build, destination, calls=calls, available=available):
+                calls.append(build)
+                if build in available:
+                    return {"vendor_run_id": 7, "build_commit": build}
+                return None
+
+            with (
+                self.subTest(available=sorted(available)),
+                patch.object(update, "download_build", fake),
+            ):
+                result = update.download(candidate, Path("unused"))
+            self.assertEqual(calls, expected_calls)
+            self.assertEqual(
+                result,
+                {
+                    "vendor_run_id": 7,
+                    "build_commit": expected_calls[-1],
+                    "source_commit": source,
+                },
+            )
+        with (
+            patch.object(update, "download_build", return_value=None),
+            self.assertRaisesRegex(policy.Refused, "no successful production build"),
+        ):
+            update.download(candidate, Path("unused"))
+
+    def test_download_refuses_malformed_build_list_before_network(self):
+        source = "a" * 40
+        for builds in (
+            [],
+            ["b" * 40],
+            ["b" * 40, source],
+            [source, source],
+            [source, "not-a-commit"],
+            [source, "B" * 40],
+            "a" * 40,
+            [source] + [f"{index:040x}" for index in range(1, 34)],
+        ):
+            with (
+                self.subTest(builds=builds),
+                patch.object(update, "download_build") as fetch,
+                self.assertRaises(policy.Refused),
+            ):
+                update.download(
+                    {"source_commit": source, "build_commits": builds}, Path("unused")
+                )
+            fetch.assert_not_called()
+
+    def test_download_build_binds_artifact_name_run_and_provenance(self):
+        build = "c" * 40
+        queried, verified = [], []
+
+        def fake_api(path):
+            queried.append(path)
+            if "/workflows/" in path:
+                return {
+                    "workflow_runs": [
+                        {
+                            "id": 5,
+                            "head_sha": "d" * 40,
+                            "head_branch": "master",
+                            "event": "workflow_dispatch",
+                            "conclusion": "success",
+                        },
+                        {
+                            "id": 9,
+                            "head_sha": build,
+                            "head_branch": "master",
+                            "event": "workflow_dispatch",
+                            "conclusion": "success",
+                        },
+                    ]
+                }
+            return {
+                "artifacts": [
+                    {
+                        "id": 11,
+                        "name": "opensecret-eif-prod-" + build[:12],
+                        "expired": False,
+                        "size_in_bytes": 10,
+                    }
+                ]
+            }
+
+        def fake_run(command, stdout=None, **kwargs):
+            with zipfile.ZipFile(stdout, "w") as bundle:
+                for name in update.FILES:
+                    bundle.writestr(name, b"fixture")
+            return subprocess.CompletedProcess(command, 0)
+
+        with tempfile.TemporaryDirectory() as directory:
+            destination = Path(directory) / "vendor"
+            with (
+                patch.object(update, "api", fake_api),
+                patch.object(update.subprocess, "run", fake_run),
+                patch.object(
+                    policy,
+                    "verify_provenance",
+                    lambda path, commit: verified.append((path, commit)),
+                ),
+            ):
+                result = update.download_build(build, destination)
+            self.assertEqual(result, {"vendor_run_id": 9, "build_commit": build})
+            self.assertEqual(verified, [(destination, build)])
+            self.assertIn("head_sha=" + build, queried[0])
+            self.assertTrue(queried[1].endswith("/runs/9/artifacts?per_page=100"))
+
     def test_sandbox_script_checks_actual_directory_and_strips_credentials(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

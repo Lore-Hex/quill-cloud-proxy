@@ -261,6 +261,9 @@ type streamStatsWriter struct {
 	w         io.Writer
 	bytes     int
 	firstByte time.Time
+	// writeErr is the first error writing to the client. A stream that fails
+	// here failed on the client's side of the connection, not the provider's.
+	writeErr error
 }
 
 func newStreamStatsWriter(w io.Writer) *streamStatsWriter {
@@ -273,7 +276,15 @@ func (w *streamStatsWriter) Write(p []byte) (int, error) {
 	}
 	n, err := w.w.Write(p)
 	w.bytes += n
+	if err != nil && w.writeErr == nil {
+		w.writeErr = err
+	}
 	return n, err
+}
+
+// ClientWriteErr reports the first failed write to the client, if any.
+func (w *streamStatsWriter) ClientWriteErr() error {
+	return w.writeErr
 }
 
 func (w *streamStatsWriter) BytesWritten() int {

@@ -1,0 +1,25 @@
+name: ecr-login
+description: >-
+  Log docker in to the account's private Amazon ECR registry with the AWS
+  credentials already in the environment, as aws-actions/amazon-ecr-login@v2
+  did: aws ecr get-login-password piped to docker login --password-stdin.
+  Output registry is <account>.dkr.ecr.<region>.amazonaws.com.
+outputs:
+  registry:
+    description: The ECR registry host.
+    value: ${{ steps.login.outputs.registry }}
+runs:
+  using: composite
+  steps:
+    - id: login
+      shell: bash
+      run: |
+        set -euo pipefail
+        region="${AWS_REGION:-${AWS_DEFAULT_REGION:-}}"
+        [ -n "$region" ] || { echo "::error::ecr-login: AWS_REGION is not set; run aws-credentials first"; exit 1; }
+        account="$(aws sts get-caller-identity --query Account --output text)"
+        registry="${account}.dkr.ecr.${region}.amazonaws.com"
+        password="$(aws ecr get-login-password --region "$region")"
+        echo "::add-mask::${password}"
+        printf '%s' "$password" | docker login --username AWS --password-stdin "$registry"
+        echo "registry=${registry}" >> "$GITHUB_OUTPUT"

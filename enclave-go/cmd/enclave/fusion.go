@@ -50,6 +50,7 @@ const trustedRouterOpenPatcherS3Model = "trustedrouter/openpatcher-s3"
 const trustedRouterLiberty10Model = "trustedrouter/liberty-1.0"
 const trustedRouterLiberty101MModel = "trustedrouter/liberty-1.0-1m"
 const trustedRouterLiberty40Model = "trustedrouter/liberty-4.0"
+const trustedRouterLiberty41Model = "trustedrouter/liberty-4.1"
 const trustedRouterFusionModel = "trustedrouter/fusion"
 const trustedRouterFusionCodeModel = "trustedrouter/fusion-code"
 const trustedRouterSelectorModel = "trustedrouter/selector"
@@ -314,6 +315,30 @@ var fusionLiberty40Fusers = []string{
 	fusionNemotron3Ultra,
 }
 
+// Liberty 4.1 is Liberty 4.0 with Thinking Machines' Inkling 2 Small (its
+// weights went public under Apache-2.0 on 2026-11-12) as a fourth panel
+// member and as the first fuser: Inkling 2 Small fuses, then Muse Spark,
+// Beam and Nemotron take over in Liberty 4.0's order, with the same
+// failover. As in Liberty 4.0, where Muse Spark both answers and fuses, a
+// model may sit on the panel and in the fuser list. Inkling 2 Small runs on
+// Cloudflare Workers AI's US 1M route, so it serves Liberty's full window
+// and is never dropped for length.
+var fusionLiberty41Panel = []string{
+	fusionNemotron3Ultra,
+	"reflection/beam-1.0",
+	"meta-models/muse-spark-open",
+	fusionInkling2Small,
+}
+
+var fusionLiberty41Fusers = []string{
+	fusionInkling2Small,
+	"meta-models/muse-spark-open",
+	"reflection/beam-1.0",
+	fusionNemotron3Ultra,
+}
+
+const fusionInkling2Small = "thinkingmachines/inkling-2-small"
+
 const fusionNemotron3Ultra = "nvidia/nemotron-3-ultra-550b-a55b"
 
 // fusionShortWindowMembers are built-in panel members and fusers whose window
@@ -435,6 +460,7 @@ func isFusionModel(model string) bool {
 		trustedRouterLiberty10Model,
 		trustedRouterLiberty101MModel,
 		trustedRouterLiberty40Model,
+		trustedRouterLiberty41Model,
 		trustedRouterFusionModel,
 		trustedRouterFusionCodeModel,
 		trustedRouterSelectorModel,
@@ -515,6 +541,8 @@ func fusionPresetPanelForModel(model string) (string, []string, bool) {
 		return "liberty-1.0-1m", append([]string(nil), fusionLiberty101MPanel...), true
 	case trustedRouterLiberty40Model:
 		return "liberty-4.0", append([]string(nil), fusionLiberty40Panel...), true
+	case trustedRouterLiberty41Model:
+		return "liberty-4.1", append([]string(nil), fusionLiberty41Panel...), true
 	default:
 		return "", nil, false
 	}
@@ -560,6 +588,8 @@ func fusionPresetFinalModelsForModel(model string) ([]string, bool) {
 		return []string{"nvidia/nemotron-3-ultra-550b-a55b"}, true
 	case trustedRouterLiberty40Model:
 		return append([]string(nil), fusionLiberty40Fusers...), true
+	case trustedRouterLiberty41Model:
+		return append([]string(nil), fusionLiberty41Fusers...), true
 	default:
 		return nil, false
 	}
@@ -606,6 +636,8 @@ func fusionPresetJudgeModelsForModel(model string) ([]string, bool) {
 		return []string{"nvidia/nemotron-3-ultra-550b-a55b"}, true
 	case trustedRouterLiberty40Model:
 		return append([]string(nil), fusionLiberty40Fusers...), true
+	case trustedRouterLiberty41Model:
+		return append([]string(nil), fusionLiberty41Fusers...), true
 	default:
 		return nil, false
 	}
@@ -1037,7 +1069,7 @@ func fusionConfigForRequest(req *types.OpenAIChatRequest) (fusionConfig, bool, e
 	switch strings.ToLower(strings.TrimSpace(req.Model)) {
 	case trustedRouterOpenPatcherS1Model:
 		config.ProviderJurisdiction = providerJurisdictionUS
-	case trustedRouterLiberty40Model:
+	case trustedRouterLiberty40Model, trustedRouterLiberty41Model:
 		config.ProviderJurisdiction = providerJurisdictionUS
 		config.FuserFailover = true
 	}

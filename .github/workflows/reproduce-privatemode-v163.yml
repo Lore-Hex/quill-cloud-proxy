@@ -29,7 +29,7 @@ jobs:
       SOURCE_SHA256: d76de0050c7e3d16a0938bdc4d2f87f4008ed67fd2e2312b587f0d340540da5d
       MANIFEST_SHA256: 5fa927e3b864738da35d427c10ba8e49ebeeb1531e49618899cf95f654d240c1
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
       - name: Acquire immutable public source
@@ -91,11 +91,10 @@ jobs:
           (root / 'policy-comparison.json').write_text(json.dumps(evidence, indent=2) + '\n')
           print(json.dumps(evidence))
           PY
-      - uses: DeterminateSystems/nix-installer-action@c5a866b6ab867e88becbed4467b93592bce69f8a # v21
+      - uses: Lore-Hex/quill-cloud-proxy/.github/actions/nix-installer@582cbdee7b7023cfeb915b62a7f635aa1e4662b1 # main 2026-11-13
         if: matrix.kind == 'images'
         with:
           source-tag: v3.23.3
-          github-token: ""
       - name: Rebuild all five security-component images without vendor caches
         if: matrix.kind == 'images'
         run: |
@@ -147,7 +146,7 @@ jobs:
           (root / 'pm-evidence/image-comparison.json').write_text(json.dumps(found, indent=2) + '\n')
           print(json.dumps(found, indent=2))
           PY
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         if: always()
         with:
           name: privatemode-v163-${{ matrix.kind }}-${{ github.run_id }}

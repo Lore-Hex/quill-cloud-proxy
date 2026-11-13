@@ -13,6 +13,7 @@ import hashlib
 import json
 import re
 import subprocess
+import sys
 from pathlib import Path
 
 REPO = Path(__file__).resolve().parents[1]
@@ -69,6 +70,39 @@ def blob(repo: Path, source: str, path: str) -> bytes:
     return git(repo, "show", f"{source}:{path}")
 
 
+def changed_paths(repo: Path, before: str, after: str) -> list[str]:
+    """Every path whose tree entry differs, independent of repository config.
+
+    Porcelain `git diff` honors `submodule.<name>.ignore` from .gitmodules at
+    the clone's HEAD (and diff.ignoreSubmodules / rename detection), so a later
+    vendor commit could hide a gitlink change. Plumbing diff-tree with explicit
+    flags reports every changed entry, gitlinks included, with no renames.
+    """
+    raw = git(
+        repo,
+        "diff-tree",
+        "-r",
+        "-z",
+        "--no-renames",
+        "--ignore-submodules=none",
+        "--name-only",
+        before,
+        after,
+    )
+    return [path.decode("utf-8") for path in raw.split(b"\0") if path]
+
+
+def tree_entries(repo: Path, commit: str) -> dict[str, bytes]:
+    """Full recursive tree listing: path -> b"mode type object-id"."""
+    entries = {}
+    for entry in git(repo, "ls-tree", "-rz", "--full-tree", commit).split(b"\0"):
+        if not entry:
+            continue
+        metadata, name = entry.split(b"\t", 1)
+        entries[name.decode("utf-8")] = metadata
+    return entries
+
+
 def protected(path: str) -> bool:
     # Only application/UI and documentation trees known not to enter the
     # enclave build are exempt. New paths and every build/auth/routing change
@@ -120,14 +154,8 @@ def classify(repo: Path, source: str, baseline: dict) -> dict:
         timeout=30,
     )
     observed = boundary(repo, source)
-    changed = git(
-        repo, "diff", "--name-only", "-z", baseline["source_commit"], source
-    ).split(b"\0")
-    sensitive = sorted(
-        path.decode("utf-8")
-        for path in changed
-        if path and protected(path.decode("utf-8"))
-    )
+    changed = changed_paths(repo, baseline["source_commit"], source)
+    sensitive = sorted(path for path in changed if protected(path))
     return {
         "source_commit": source,
         "security_boundary_sha256": observed,
@@ -148,9 +176,9 @@ def verify_history(
         measurement_source(repo, approval) == source,
         "approval is not descended from the attested source through approvals only",
     )
-    changed = git(repo, "diff", "--name-only", "-z", source, approval).split(b"\0")
+    changed = changed_paths(repo, source, approval)
     require(
-        all(not path or path.decode("utf-8") in MEASUREMENTS for path in changed),
+        all(path in MEASUREMENTS for path in changed),
         "approval commit also changes source",
     )
     before = strict_json(blob(repo, source, HISTORY))
@@ -265,6 +293,95 @@ def verify_provenance(directory: Path, source: str) -> None:
         verify_provenance_result(strict_json(output), source)
 
 
+def same_tree_except_measurements(repo: Path, before: str, after: str) -> None:
+    """Config-independent check that only measurement files differ.
+
+    Every non-measurement entry (mode, type and object id, gitlinks included)
+    must be identical, and measurement paths may only be regular files.
+    """
+    old, new = tree_entries(repo, before), tree_entries(repo, after)
+    for entries in (old, new):
+        for path in MEASUREMENTS & entries.keys():
+            require(
+                entries[path].split(b" ")[:2] == [b"100644", b"blob"],
+                "measurement path is not a regular file",
+            )
+    require(
+        {path: item for path, item in old.items() if path not in MEASUREMENTS}
+        == {path: item for path, item in new.items() if path not in MEASUREMENTS},
+        "build commit changes more than measurement approvals",
+    )
+
+
+def verify_build_commit(repo: Path, source: str, build: str) -> None:
+    """Allow a release artifact built at a measurement-approval descendant.
+
+    Maple may build the final deployment artifact from the commit that records
+    the approved measurements rather than from the measured source itself. That
+    is acceptable only when every commit between them is a single-parent commit
+    that touches nothing but the same MEASUREMENTS files measurement_source()
+    already skips. Trees are compared entry by entry (gitlinks included) without
+    rename detection or any .gitmodules/diff config, so neither a rename onto a
+    measurement path nor an ignored submodule change can hide a source change.
+    """
+    require(bool(SOURCE_RE.fullmatch(source)), "invalid source commit")
+    require(bool(SOURCE_RE.fullmatch(build)), "invalid build commit")
+    if build == source:
+        return
+    ancestry = subprocess.run(
+        ["git", "-C", str(repo), "merge-base", "--is-ancestor", source, build],
+        capture_output=True,
+        timeout=30,
+    )
+    require(
+        ancestry.returncode == 0, "build commit is not a descendant of measured source"
+    )
+    commits = git(repo, "rev-list", f"{source}..{build}").decode().split()
+    require(0 < len(commits) <= 32, "build commit chain is empty or exceeds bound")
+    for commit in commits:
+        lineage = git(repo, "rev-list", "--parents", "-n", "1", commit).decode().split()
+        require(len(lineage) == 2, "build commit chain contains a merge or root")
+        require(
+            all(path in MEASUREMENTS for path in changed_paths(repo, lineage[1], commit)),
+            "build commit chain changes more than measurement approvals",
+        )
+        same_tree_except_measurements(repo, lineage[1], commit)
+    require(
+        all(path in MEASUREMENTS for path in changed_paths(repo, source, build)),
+        "build commit changes more than measurement approvals",
+    )
+    same_tree_except_measurements(repo, source, build)
+    require(
+        boundary(repo, build) == boundary(repo, source),
+        "build commit changes the protected source tree",
+    )
+
+
+def build_commits(repo: Path, source: str, approval: str) -> list[str]:
+    """The measured source first, then each permitted approval descendant."""
+    # Failures here only shorten the list: the build at the measured source is
+    # validated by discover's own checks, which still refuse on any error.
+    allowed = [source]
+    try:
+        chain = (
+            git(repo, "rev-list", "--reverse", f"{source}..{approval}").decode().split()
+        )
+        if len(chain) > 32:
+            return allowed
+        for commit in chain:
+            verify_build_commit(repo, source, commit)
+            allowed.append(commit)
+    except Refused:
+        pass
+    except (subprocess.SubprocessError, UnicodeDecodeError, ValueError) as error:
+        print(
+            f"maple_policy: build commit walk stopped after {allowed[-1]}: "
+            f"{type(error).__name__}",
+            file=sys.stderr,
+        )
+    return allowed
+
+
 def discover(repo: Path, baseline: dict) -> dict:
     approval = (
         git(repo, "log", "-1", "--format=%H", "origin/master", "--", HISTORY)
@@ -275,7 +392,11 @@ def discover(repo: Path, baseline: dict) -> dict:
     pcr = strict_json(blob(repo, approval, HISTORY))[-1]["PCR0"]
     verify_history(repo, source, approval, pcr, baseline)
     result = classify(repo, source, baseline)
-    result.update(approval_commit=approval, pcr0=pcr)
+    result.update(
+        approval_commit=approval,
+        pcr0=pcr,
+        build_commits=build_commits(repo, source, approval),
+    )
     result["status"] = (
         "unchanged"
         if source == baseline["source_commit"] and pcr == baseline["pcr0"]
@@ -300,8 +421,8 @@ def measurement_source(repo: Path, approval: str) -> str:
             require(current != approval, "approval has no parent source")
             return current
         parent = lineage[1]
-        paths = git(repo, "diff", "--name-only", "-z", parent, current).split(b"\0")
-        if not all(not path or path.decode("utf-8") in MEASUREMENTS for path in paths):
+        paths = changed_paths(repo, parent, current)
+        if not all(path in MEASUREMENTS for path in paths):
             require(current != approval, "approval commit also changes source")
             return current
         current = parent
@@ -336,6 +457,10 @@ def stage(
         "incomplete release evidence",
     )
     require(
+        evidence.get("build_commit") in candidate["build_commits"],
+        "evidence build commit is not a permitted build of the candidate",
+    )
+    require(
         SHA_RE.fullmatch(evidence["files"]["image.eif"]) is not None,
         "invalid reproduced image hash",
     )
@@ -357,6 +482,44 @@ def stage(
     (root / BASELINE.relative_to(REPO)).write_text(json.dumps(updated, indent=2) + "\n")
 
 
+def verify_release(
+    repo: Path,
+    candidate: dict,
+    artifacts: Path,
+    reproduced: Path,
+    build: str,
+    *,
+    review_only: bool = False,
+) -> dict:
+    """Bind vendor bytes, the credential-free rebuild and provenance to one build.
+
+    The build commit is either the measured source or a measurement-approval
+    descendant of it. Both artifacts must name that commit, be byte-identical,
+    carry the signed approved PCR0, and be attested by Maple's release workflow
+    at that exact commit.
+    """
+    require(
+        candidate["status"] == "automatic" or review_only,
+        "security-sensitive update requires approval",
+    )
+    source = candidate["source_commit"]
+    require(build in candidate["build_commits"], "build commit is not permitted")
+    verify_build_commit(repo, source, build)
+    files = compare_artifacts(artifacts, reproduced, build, candidate["pcr0"])
+    verify_provenance(artifacts, build)
+    return {
+        "source_commit": source,
+        "build_commit": build,
+        "pcr0": candidate["pcr0"],
+        "security_boundary_sha256": candidate["security_boundary_sha256"],
+        "reproduction_verified": True,
+        "provenance_verified": True,
+        "history_verified": True,
+        "review_only": review_only,
+        "files": files,
+    }
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
@@ -364,6 +527,10 @@ def main() -> None:
     )
     parser.add_argument("--vendor", type=Path, required=True)
     parser.add_argument("--source")
+    parser.add_argument(
+        "--build",
+        help="commit the vendor artifact was built and reproduced at (required for verify)",
+    )
     parser.add_argument("--candidate", type=Path)
     parser.add_argument("--artifacts", type=Path)
     parser.add_argument("--reproduced", type=Path)
@@ -391,29 +558,17 @@ def main() -> None:
         )
         result = {"staged": True, "review_only": args.review_only}
     else:
+        require(args.build is not None, "verify requires --build")
         candidate = strict_json(args.candidate.read_bytes())
         require(candidate == discover(args.vendor, baseline), "candidate is stale")
-        require(
-            candidate["status"] == "automatic" or args.review_only,
-            "security-sensitive update requires approval",
-        )
-        files = compare_artifacts(
+        result = verify_release(
+            args.vendor,
+            candidate,
             args.artifacts,
             args.reproduced,
-            candidate["source_commit"],
-            candidate["pcr0"],
+            args.build,
+            review_only=args.review_only,
         )
-        verify_provenance(args.artifacts, candidate["source_commit"])
-        result = {
-            "source_commit": candidate["source_commit"],
-            "pcr0": candidate["pcr0"],
-            "security_boundary_sha256": candidate["security_boundary_sha256"],
-            "reproduction_verified": True,
-            "provenance_verified": True,
-            "history_verified": True,
-            "review_only": args.review_only,
-            "files": files,
-        }
     encoded = json.dumps(result, indent=2) + "\n"
     if args.output:
         args.output.write_text(encoded)
