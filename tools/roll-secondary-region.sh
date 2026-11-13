@@ -30,6 +30,8 @@ restore_drain_operation="$(rollout_restore_drain_operation \
 : "${GITHUB_RUN_ID:?GITHUB_RUN_ID is required}"
 source "$(dirname "${BASH_SOURCE[0]}")/cloud-rollout-guard.sh"
 require_cloud_rollout gcp
+# shellcheck source=tools/gate-hold-lib.sh
+source "$(dirname "${BASH_SOURCE[0]}")/gate-hold-lib.sh"
 
 # Run alone, this script owns a private lock directory. Run by
 # tools/roll-secondary-wave.sh, every region in the wave shares one directory:
@@ -283,7 +285,11 @@ rollout_step interruptible bash tools/wait-canonical-drained.sh "${region}"
 rollout_step bash tools/deploy-gcp-mig.sh "${region}"
 rollout_step wait_region_stable_with_dns_refresh "${mig}" "${region}"
 rollout_step interruptible bash tools/wait-region-attested.sh "${instance_filter}" "${region}"
-rollout_step bash tools/verify-region-before-dns.sh \
+# Gates that go through the control plane hold, never pass, while it may be
+# the cause, and fail closed after the region's hold bound (tools/gate_hold.py).
+# Holding stops at once when a peer fails or the deadline passes.
+GATE_HOLD_BETWEEN=check_not_aborted
+rollout_step gate_hold pre-dns "${region}" bash tools/verify-region-before-dns.sh \
   "${region}" "${instance_filter}" "${IMAGE_DIGEST}"
 
 # A first-time region still has a cold CNAME. Only this post-canary reconcile
@@ -291,14 +297,15 @@ rollout_step bash tools/verify-region-before-dns.sh \
 QUILL_ALLOW_DRAINED_REGIONAL_PROMOTION_REGIONS="${region}" \
   rollout_step reconcile_dns
 
-if curl -fsS --max-time 15 https://trustedrouter.com/status.json | \
-    jq -e --arg region "${region}" \
-      '[.. | objects | select(.target_region? == $region)] | length > 0' \
-      >/dev/null; then
+presence_mode=hold
+if [ -z "${previous_template}" ]; then presence_mode=once; fi
+presence="$(gate_status_presence "${region}" "${presence_mode}")"
+check_not_aborted
+if [ "${presence}" = present ]; then
   trigger_synthetic_workers
   WAIT_UP_SLEEP=10 WAIT_UP_ROUNDS=72 \
-    rollout_step interruptible bash tools/wait-region-synthetic-up.sh "${region}" "${region}"
-  if ! interruptible python3 tools/watchdog.py \
+    rollout_step gate_hold pong "${region}" interruptible bash tools/wait-region-synthetic-up.sh "${region}" "${region}"
+  if ! gate_hold canary "${region}" interruptible python3 tools/watchdog.py \
       --regions "${region}" \
       --duration-min 3 \
       --rollback-after 3 \
@@ -309,8 +316,11 @@ if curl -fsS --max-time 15 https://trustedrouter.com/status.json | \
   check_not_aborted
 elif [ -z "${previous_template}" ]; then
   echo "${region}: first deployment has no synthetic target yet; direct per-instance attestation + PONG is the bootstrap gate"
-else
+elif [ "${presence}" = missing ]; then
   echo "${region}: existing region is missing from synthetic status; failing closed" >&2
+  exit 1
+else
+  echo "${region}: status.json stayed unreadable through the hold bound; failing closed" >&2
   exit 1
 fi
 

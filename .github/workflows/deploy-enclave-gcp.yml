@@ -52,6 +52,8 @@ on:
       - "tools/testdata/stage-d-evidence-lookup.json"
       - "tools/wait-region-synthetic-up.sh"
       - "tools/synthetic_gate_status.py"
+      - "tools/gate-hold-lib.sh"
+      - "tools/gate_hold.py"
       - "tools/provider_probe_status.py"
       - "tools/watchdog.py"
       - "tools/roll-secondary-region.sh"
@@ -876,9 +878,16 @@ jobs:
         # by recover-gcp-region.sh against the previous template. The verifier
         # reads QUILL_USAGE_HEARTBEAT from that selected template: on requires
         # positive Stage D evidence; off requires plain terminal streaming.
-        timeout-minutes: 12
+        # tools/gate-hold-lib.sh holds (never passes) a request-path failure
+        # while the control plane may be its cause, for at most
+        # TR_CP_HOLD_MAX_SECONDS per region; the gate itself is unchanged.
+        # The timeout is the gate's 12 minutes plus that bound.
+        timeout-minutes: 45
+        env:
+          TR_CP_HOLD_STATE_DIR: ${{ runner.temp }}/tr-cp-hold
         run: |
-          bash tools/verify-region-before-dns.sh \
+          source tools/gate-hold-lib.sh
+          gate_hold pre-dns us-central1 bash tools/verify-region-before-dns.sh \
             us-central1 quill-enclave-mig-us- \
             "${{ needs.build-and-release.outputs.image_digest }}"
 
@@ -897,21 +906,32 @@ jobs:
         # re-probed this freshly-rolled region as up so the canary measures
         # steady state, not the post-roll boot transient (the regional endpoint
         # is briefly unreachable mid-replace -> false down -> false rollback).
-        timeout-minutes: 12
+        # The gate's 12 minutes plus the region's hold bound (see above).
+        timeout-minutes: 45
         env:
           WAIT_UP_SLEEP: "10"
           WAIT_UP_ROUNDS: "72"
+          TR_CP_HOLD_STATE_DIR: ${{ runner.temp }}/tr-cp-hold
         run: |
           gcloud scheduler jobs run trusted-router-synthetic-us-central1-every-three-minutes \
             --location=us-central1 --project=quill-cloud-proxy || true
           gcloud scheduler jobs run trusted-router-synthetic-europe-west4-every-three-minutes \
             --location=europe-west4 --project=quill-cloud-proxy || true
-          bash tools/wait-region-synthetic-up.sh us-central1 us-central1
+          source tools/gate-hold-lib.sh
+          gate_hold pong us-central1 bash tools/wait-region-synthetic-up.sh us-central1 us-central1
 
       - name: Canary gate — watch us-central1 only (post-stable)
         id: canary_us
         continue-on-error: true
-        run: python3 tools/watchdog.py --regions us-central1 --duration-min 3 --rollback-after 3 --skip-baseline --initial-grace-sec 60
+        # A canary that passed while the control plane moved must also have
+        # seen fresh enclave-only rows from every monitor; otherwise it re-runs
+        # within the hold bound and then fails closed (tools/gate_hold.py).
+        timeout-minutes: 40
+        env:
+          TR_CP_HOLD_STATE_DIR: ${{ runner.temp }}/tr-cp-hold
+        run: |
+          source tools/gate-hold-lib.sh
+          gate_hold canary us-central1 python3 tools/watchdog.py --regions us-central1 --duration-min 3 --rollback-after 3 --skip-baseline --initial-grace-sec 60
 
       # The session from the start of this job is an hour old at most. With the
       # stable wait now allowed two readiness holds, the primary phase can come
@@ -996,7 +1016,9 @@ jobs:
       # region's rollout steps; recovery is never bounded by it and has the
       # rest of this step's cap (it waits up to 40 minutes for the MIG).
       - name: Roll Europe and US East GCP MIGs in parallel
-        timeout-minutes: 100
+        # 100 minutes plus the 30-minute control-plane hold bound, which the
+        # worker deadline below also carries (tools/gate-hold-lib.sh).
+        timeout-minutes: 130
         env:
           IMAGE_REF: ${{ needs.build-and-release.outputs.image_ref }}
           IMAGE_DIGEST: ${{ needs.build-and-release.outputs.image_digest }}
@@ -1006,8 +1028,9 @@ jobs:
           EUROPE_WEST4_QUILL_TERMINATE_AT_CAP: "on"
           US_EAST4_QUILL_USAGE_HEARTBEAT: "on"
           US_EAST4_QUILL_TERMINATE_AT_CAP: "on"
-          TR_SECONDARY_WORKER_TIMEOUT: "3300"
+          TR_SECONDARY_WORKER_TIMEOUT: "5100"
           TR_ROLLOUT_STATE_DIR: ${{ runner.temp }}/tr-rollout-state
+          TR_CP_HOLD_STATE_DIR: ${{ runner.temp }}/tr-cp-hold
           EUROPE_WEST4_PREV_TEMPLATE: ${{ steps.prev.outputs.europe_west4_template }}
           EUROPE_WEST4_PREV_DRAIN_STATE: ${{ steps.prev.outputs.europe_west4_drain_state }}
           EUROPE_WEST4_PREV_DRAIN_ORIGIN: ${{ steps.prev.outputs.europe_west4_drain_origin }}
@@ -1050,7 +1073,8 @@ jobs:
       # and a first-time region must not be able to hold up the three that
       # already serve.
       - name: Roll US West GCP MIG
-        timeout-minutes: 55
+        # 55 minutes plus the 30-minute control-plane hold bound.
+        timeout-minutes: 85
         env:
           IMAGE_REF: ${{ needs.build-and-release.outputs.image_ref }}
           IMAGE_DIGEST: ${{ needs.build-and-release.outputs.image_digest }}
@@ -1066,6 +1090,7 @@ jobs:
           # which has no TDX hosts at all.
           MIG_ZONES: us-west1-a,us-west1-b
           TR_ROLLOUT_STATE_DIR: ${{ runner.temp }}/tr-rollout-state
+          TR_CP_HOLD_STATE_DIR: ${{ runner.temp }}/tr-cp-hold
         run: |
           bash tools/roll-secondary-region.sh \
             us-west1 \
@@ -1095,24 +1120,31 @@ jobs:
       # canary alone is the right gate.
 
       - name: Verify image discovery on attested origin
+        # Every region is already promoted here; a hold changes no traffic.
+        timeout-minutes: 40
+        env:
+          TR_CP_HOLD_STATE_DIR: ${{ runner.temp }}/tr-cp-hold
         run: |
-          for attempt in $(seq 1 6); do
-            models=$(curl -fsS --max-time 20 \
-              https://api.trustedrouter.com/v1/images/models || true)
-            if python3 -c 'import json,sys; rows=json.load(sys.stdin)["data"]; assert any(row["id"] == "google/gemini-3.1-flash-image" and row["architecture"]["output_modalities"] == ["image"] for row in rows)' <<<"${models}"; then
-              endpoints=$(curl -fsS --max-time 20 \
-                https://api.trustedrouter.com/v1/images/models/google/gemini-3.1-flash-image/endpoints || true)
-              if python3 -c 'import json,sys; assert json.load(sys.stdin)["endpoints"]' <<<"${endpoints}"; then
-                echo "image discovery smoke ok on attested origin"
-                break
+          image_discovery() {
+            local attempt models endpoints
+            for attempt in $(seq 1 6); do
+              models=$(curl -fsS --max-time 20 \
+                https://api.trustedrouter.com/v1/images/models || true)
+              if python3 -c 'import json,sys; rows=json.load(sys.stdin)["data"]; assert any(row["id"] == "google/gemini-3.1-flash-image" and row["architecture"]["output_modalities"] == ["image"] for row in rows)' <<<"${models}"; then
+                endpoints=$(curl -fsS --max-time 20 \
+                  https://api.trustedrouter.com/v1/images/models/google/gemini-3.1-flash-image/endpoints || true)
+                if python3 -c 'import json,sys; assert json.load(sys.stdin)["endpoints"]' <<<"${endpoints}"; then
+                  echo "image discovery smoke ok on attested origin"
+                  return 0
+                fi
               fi
-            fi
-            if [ "${attempt}" = 6 ]; then
-              echo "image discovery did not become healthy" >&2
-              exit 1
-            fi
-            sleep 5
-          done
+              sleep 5
+            done
+            echo "image discovery did not become healthy" >&2
+            return 1
+          }
+          source tools/gate-hold-lib.sh
+          gate_hold discovery all image_discovery
 
       - name: Smoke test enclave inference (non-blocking)
         # Non-blocking: MIG health checks gate the rollout. This smoke
