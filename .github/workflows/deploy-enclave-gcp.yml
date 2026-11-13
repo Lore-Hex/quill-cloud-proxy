@@ -52,6 +52,8 @@ on:
       - "tools/testdata/stage-d-evidence-lookup.json"
       - "tools/wait-region-synthetic-up.sh"
       - "tools/synthetic_gate_status.py"
+      - "tools/gate-hold-lib.sh"
+      - "tools/gate_hold.py"
       - "tools/provider_probe_status.py"
       - "tools/watchdog.py"
       - "tools/roll-secondary-region.sh"
@@ -664,6 +666,21 @@ jobs:
     needs: [build-and-release, grant-batch-image-access, verify-transition-trust-page, admit-cloud]
     if: ${{ needs.grant-batch-image-access.result == 'success' && needs.verify-transition-trust-page.result == 'success' }}
     runs-on: ubuntu-latest
+    # GitHub ends a hosted job at 360 minutes; set our own limit below it.
+    # Every step below has an enforced limit, and a failed step ends the job,
+    # so at most one region recovers. Summed from those limits only, the worst
+    # case is US West failing after the wave: about 352 minutes, leaving about
+    # 8 under GitHub's 360. That is every step's timeout on the path, four
+    # capped gate attempts with bounded reads, the wave's 55-minute forward
+    # deadline plus its post-promotion tail (re-adding the region and
+    # reconciling DNS, about 3 minutes, which runs after the deadline check),
+    # US West's whole step limit (its forward deadline, its hold and recovery),
+    # and the job-wide control-plane hold budget (TR_CP_HOLD_BUDGET_SECONDS,
+    # 20 minutes) for the holds before it. A region's forward deadline grows
+    # only by the hold time it spent from that budget (tools/gate-hold-lib.sh).
+    # The limit is GitHub's own: a lower self-imposed one would only take time
+    # from a recovery. tools/test_gate_hold.py recomputes it.
+    timeout-minutes: 360
     # Dedicated heartbeat-capable, local-typed key. Provision the GitHub
     # secret STAGE_D_PROBE_API_KEY in the Stage D pilot workspace; it must not
     # belong to the regional-quota workspace. This workflow never creates it.
@@ -672,8 +689,14 @@ jobs:
       TR_DEPLOY_MUTEX_CLOUD: gcp
       GH_TOKEN: ${{ secrets.TRUST_PUSH_TOKEN }}
       STAGE_D_PROBE_API_KEY: ${{ secrets.STAGE_D_PROBE_API_KEY }}
+      # Control-plane holds (tools/gate-hold-lib.sh): per gate, and per job.
+      # Sized by GitHub's 360-minute job limit (see timeout-minutes above): a
+      # control-plane fault that outlasts them fails the gateway closed.
+      TR_CP_HOLD_MAX_SECONDS: "1200"
+      TR_CP_HOLD_BUDGET_SECONDS: "1200"
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        timeout-minutes: 2
         with:
           # Match the image source, not a newer main containing runtime envs
           # that the built Confidential Space image does not allow. Trust
@@ -681,27 +704,33 @@ jobs:
           ref: ${{ github.sha }}
           persist-credentials: false
       - name: Authenticate to GCP via WIF
+        timeout-minutes: 2
         uses: Lore-Hex/quill-cloud-proxy/.github/actions/gcp-auth@582cbdee7b7023cfeb915b62a7f635aa1e4662b1 # main 2026-11-13
         with:
           workload_identity_provider: projects/44325983244/locations/global/workloadIdentityPools/github-actions/providers/github
           service_account: tr-deploy@quill-cloud-proxy.iam.gserviceaccount.com
       - uses: Lore-Hex/quill-cloud-proxy/.github/actions/setup-gcloud@582cbdee7b7023cfeb915b62a7f635aa1e4662b1 # main 2026-11-13
+        timeout-minutes: 3
         with:
           # MIG minReadySec is still exposed through the beta command group.
           # Install it explicitly so a non-interactive runner never pauses to
           # ask whether it may install the component mid-rollout.
           install_components: beta
       - uses: Lore-Hex/quill-cloud-proxy/.github/actions/setup-uv@582cbdee7b7023cfeb915b62a7f635aa1e4662b1 # main 2026-11-13
+        timeout-minutes: 2
 
       - name: Verify shared cloud reservation before mutations
+        timeout-minutes: 3
         run: python3 tools/cloud-rollout.py assert --cloud gcp
       - name: Authenticate to AWS for backup-domain DNS
+        timeout-minutes: 2
         uses: Lore-Hex/quill-cloud-proxy/.github/actions/aws-credentials@582cbdee7b7023cfeb915b62a7f635aa1e4662b1 # main 2026-11-13
         with:
           role-to-assume: ${{ secrets.AWS_DEPLOY_ROLE_ARN }}
           aws-region: us-east-1
 
       - name: Reconcile enclave DNS
+        timeout-minutes: 3
         env:
           QUILL_RECONCILE_APPLY: "1"
           QUILL_API_HOST: api.trustedrouter.com
@@ -718,6 +747,7 @@ jobs:
         # to remember which one was bound before the rollout started.
         # If the watchdog trips, the rollback step points the MIG back
         # at this template and recreates instances on it.
+        timeout-minutes: 2
         id: prev
         run: |
           if ! drains="$(
@@ -789,6 +819,7 @@ jobs:
       # Confidential VM capacity for a blue/green primary-region deploy.
 
       - name: Drain us-central1 from canonical API DNS
+        timeout-minutes: 8
         env:
           QUILL_RECONCILE_APPLY: "1"
           QUILL_API_HOST: api.trustedrouter.com
@@ -806,6 +837,7 @@ jobs:
           bash tools/wait-canonical-drained.sh us-central1
 
       - name: Roll the GCP MIG (us-central1)
+        timeout-minutes: 4
         env:
           IMAGE_REF: ${{ needs.build-and-release.outputs.image_ref }}
           IMAGE_DIGEST: ${{ needs.build-and-release.outputs.image_digest }}
@@ -838,7 +870,10 @@ jobs:
         # normal case here on 2026-09-21: us-central1-c had no capacity, and
         # us-central1-f cannot host Intel TDX at all, which leaves zone b for
         # both VMs. The old 15-minute cap only fit two replacements in parallel.
-        timeout-minutes: 45
+        # 40 minutes: the slowest of the last 12 runs took 26.2 (2026-11-13),
+        # so this keeps over 50% headroom and gives the job's worst case its
+        # margin under GitHub's 360-minute limit (see timeout-minutes above).
+        timeout-minutes: 40
         env:
           QUILL_RECONCILE_APPLY: "1"
           QUILL_API_HOST: api.trustedrouter.com
@@ -876,13 +911,22 @@ jobs:
         # by recover-gcp-region.sh against the previous template. The verifier
         # reads QUILL_USAGE_HEARTBEAT from that selected template: on requires
         # positive Stage D evidence; off requires plain terminal streaming.
-        timeout-minutes: 12
+        # tools/gate-hold-lib.sh holds (never passes) a request-path failure
+        # while the control plane may be its cause; the gate itself is
+        # unchanged. Worst case: one 12-minute attempt (the old step limit),
+        # the 20-minute hold, and bounded reads (about 3.5 minutes).
+        timeout-minutes: 40
+        env:
+          TR_CP_HOLD_STATE_DIR: ${{ runner.temp }}/tr-cp-hold
+          TR_CP_HOLD_ATTEMPT_SECONDS: "720"
         run: |
-          bash tools/verify-region-before-dns.sh \
+          source tools/gate-hold-lib.sh
+          gate_hold pre-dns us-central1 bash tools/verify-region-before-dns.sh \
             us-central1 quill-enclave-mig-us- \
             "${{ needs.build-and-release.outputs.image_digest }}"
 
       - name: Reconcile DNS before us-central1 canary
+        timeout-minutes: 3
         env:
           QUILL_RECONCILE_APPLY: "1"
           QUILL_API_HOST: api.trustedrouter.com
@@ -897,26 +941,41 @@ jobs:
         # re-probed this freshly-rolled region as up so the canary measures
         # steady state, not the post-roll boot transient (the regional endpoint
         # is briefly unreachable mid-replace -> false down -> false rollback).
-        timeout-minutes: 12
+        # A 12-minute attempt, the 20-minute hold, bounded reads (see above).
+        timeout-minutes: 40
         env:
           WAIT_UP_SLEEP: "10"
           WAIT_UP_ROUNDS: "72"
+          TR_CP_HOLD_STATE_DIR: ${{ runner.temp }}/tr-cp-hold
+          TR_CP_HOLD_ATTEMPT_SECONDS: "720"
         run: |
           gcloud scheduler jobs run trusted-router-synthetic-us-central1-every-three-minutes \
             --location=us-central1 --project=quill-cloud-proxy || true
           gcloud scheduler jobs run trusted-router-synthetic-europe-west4-every-three-minutes \
             --location=europe-west4 --project=quill-cloud-proxy || true
-          bash tools/wait-region-synthetic-up.sh us-central1 us-central1
+          source tools/gate-hold-lib.sh
+          gate_hold pong us-central1 bash tools/wait-region-synthetic-up.sh us-central1 us-central1
 
       - name: Canary gate — watch us-central1 only (post-stable)
         id: canary_us
         continue-on-error: true
-        run: python3 tools/watchdog.py --regions us-central1 --duration-min 3 --rollback-after 3 --skip-baseline --initial-grace-sec 60
+        # A canary that passed while the control plane moved must also have
+        # seen fresh enclave-only rows from every monitor; otherwise it re-runs
+        # within the hold bound and then fails closed (tools/gate_hold.py).
+        # A 10-minute attempt, the 20-minute hold, bounded reads.
+        timeout-minutes: 38
+        env:
+          TR_CP_HOLD_STATE_DIR: ${{ runner.temp }}/tr-cp-hold
+          TR_CP_HOLD_ATTEMPT_SECONDS: "600"
+        run: |
+          source tools/gate-hold-lib.sh
+          gate_hold canary us-central1 python3 tools/watchdog.py --regions us-central1 --duration-min 3 --rollback-after 3 --skip-baseline --initial-grace-sec 60
 
       # The session from the start of this job is an hour old at most. With the
       # stable wait now allowed two readiness holds, the primary phase can come
       # close to that, and the restore below writes Route 53.
       - name: Refresh AWS credentials before restoring us-central1
+        timeout-minutes: 2
         if: ${{ steps.canary_us.outcome == 'success' }}
         uses: Lore-Hex/quill-cloud-proxy/.github/actions/aws-credentials@582cbdee7b7023cfeb915b62a7f635aa1e4662b1 # main 2026-11-13
         with:
@@ -924,6 +983,7 @@ jobs:
           aws-region: us-east-1
 
       - name: Restore us-central1 canonical drain state
+        timeout-minutes: 5
         if: ${{ steps.canary_us.outcome == 'success' }}
         env:
           PREV_DRAIN_STATE: ${{ steps.prev.outputs.us_central1_drain_state }}
@@ -949,6 +1009,7 @@ jobs:
           python3 tools/sync-route53-api-aliases.py --apply
 
       - name: Refresh AWS credentials for primary recovery
+        timeout-minutes: 2
         if: ${{ always() && (failure() || steps.canary_us.outcome == 'failure') }}
         uses: Lore-Hex/quill-cloud-proxy/.github/actions/aws-credentials@582cbdee7b7023cfeb915b62a7f635aa1e4662b1 # main 2026-11-13
         with:
@@ -956,6 +1017,7 @@ jobs:
           aws-region: us-east-1
 
       - name: Recover us-central1 after any failed rollout step
+        timeout-minutes: 80
         if: ${{ always() && (failure() || steps.canary_us.outcome == 'failure') }}
         env:
           PREV_US: ${{ steps.prev.outputs.us_central1_template }}
@@ -977,6 +1039,7 @@ jobs:
       # immediately before every wave instead of reusing the session created
       # near the start of this long-running job.
       - name: Refresh AWS credentials for the Europe and US East wave
+        timeout-minutes: 2
         uses: Lore-Hex/quill-cloud-proxy/.github/actions/aws-credentials@582cbdee7b7023cfeb915b62a7f635aa1e4662b1 # main 2026-11-13
         with:
           role-to-assume: ${{ secrets.AWS_DEPLOY_ROLE_ARN }}
@@ -996,7 +1059,10 @@ jobs:
       # region's rollout steps; recovery is never bounded by it and has the
       # rest of this step's cap (it waits up to 40 minutes for the MIG).
       - name: Roll Europe and US East GCP MIGs in parallel
-        timeout-minutes: 100
+        # The 55-minute forward deadline (TR_SECONDARY_WORKER_TIMEOUT), which
+        # grows only by the hold time the region spent from the job's 20-minute
+        # budget, then the 45 minutes recovery keeps.
+        timeout-minutes: 120
         env:
           IMAGE_REF: ${{ needs.build-and-release.outputs.image_ref }}
           IMAGE_DIGEST: ${{ needs.build-and-release.outputs.image_digest }}
@@ -1008,6 +1074,7 @@ jobs:
           US_EAST4_QUILL_TERMINATE_AT_CAP: "on"
           TR_SECONDARY_WORKER_TIMEOUT: "3300"
           TR_ROLLOUT_STATE_DIR: ${{ runner.temp }}/tr-rollout-state
+          TR_CP_HOLD_STATE_DIR: ${{ runner.temp }}/tr-cp-hold
           EUROPE_WEST4_PREV_TEMPLATE: ${{ steps.prev.outputs.europe_west4_template }}
           EUROPE_WEST4_PREV_DRAIN_STATE: ${{ steps.prev.outputs.europe_west4_drain_state }}
           EUROPE_WEST4_PREV_DRAIN_ORIGIN: ${{ steps.prev.outputs.europe_west4_drain_origin }}
@@ -1040,6 +1107,7 @@ jobs:
             "${US_EAST4_PREV_DRAIN_ORIGIN}"
 
       - name: Refresh AWS credentials for US West backup-domain DNS
+        timeout-minutes: 2
         uses: Lore-Hex/quill-cloud-proxy/.github/actions/aws-credentials@582cbdee7b7023cfeb915b62a7f635aa1e4662b1 # main 2026-11-13
         with:
           role-to-assume: ${{ secrets.AWS_DEPLOY_ROLE_ARN }}
@@ -1050,7 +1118,10 @@ jobs:
       # and a first-time region must not be able to hold up the three that
       # already serve.
       - name: Roll US West GCP MIG
-        timeout-minutes: 55
+        # Like the wave: a 55-minute forward deadline that grows only by the
+        # hold time this region spent from the job's budget, then 45 minutes
+        # that recovery keeps, so the step limit never cuts a recovery short.
+        timeout-minutes: 120
         env:
           IMAGE_REF: ${{ needs.build-and-release.outputs.image_ref }}
           IMAGE_DIGEST: ${{ needs.build-and-release.outputs.image_digest }}
@@ -1066,7 +1137,13 @@ jobs:
           # which has no TDX hosts at all.
           MIG_ZONES: us-west1-a,us-west1-b
           TR_ROLLOUT_STATE_DIR: ${{ runner.temp }}/tr-rollout-state
+          TR_CP_HOLD_STATE_DIR: ${{ runner.temp }}/tr-cp-hold
+          TR_US_WEST_FORWARD_SECONDS: "3300"
         run: |
+          # roll-secondary-region.sh stops forward steps at this deadline and
+          # then recovers; recovery is never bounded by it.
+          TR_SECONDARY_DEADLINE="$(( $(date +%s) + TR_US_WEST_FORWARD_SECONDS ))"
+          export TR_SECONDARY_DEADLINE
           bash tools/roll-secondary-region.sh \
             us-west1 \
             quill-enclave-mig-uswest1 \
@@ -1095,24 +1172,33 @@ jobs:
       # canary alone is the right gate.
 
       - name: Verify image discovery on attested origin
+        # Every region is already promoted here; a hold changes no traffic.
+        # A 6-minute attempt, the 20-minute hold, bounded reads.
+        timeout-minutes: 32
+        env:
+          TR_CP_HOLD_STATE_DIR: ${{ runner.temp }}/tr-cp-hold
+          TR_CP_HOLD_ATTEMPT_SECONDS: "360"
         run: |
-          for attempt in $(seq 1 6); do
-            models=$(curl -fsS --max-time 20 \
-              https://api.trustedrouter.com/v1/images/models || true)
-            if python3 -c 'import json,sys; rows=json.load(sys.stdin)["data"]; assert any(row["id"] == "google/gemini-3.1-flash-image" and row["architecture"]["output_modalities"] == ["image"] for row in rows)' <<<"${models}"; then
-              endpoints=$(curl -fsS --max-time 20 \
-                https://api.trustedrouter.com/v1/images/models/google/gemini-3.1-flash-image/endpoints || true)
-              if python3 -c 'import json,sys; assert json.load(sys.stdin)["endpoints"]' <<<"${endpoints}"; then
-                echo "image discovery smoke ok on attested origin"
-                break
+          image_discovery() {
+            local attempt models endpoints
+            for attempt in $(seq 1 6); do
+              models=$(curl -fsS --max-time 20 \
+                https://api.trustedrouter.com/v1/images/models || true)
+              if python3 -c 'import json,sys; rows=json.load(sys.stdin)["data"]; assert any(row["id"] == "google/gemini-3.1-flash-image" and row["architecture"]["output_modalities"] == ["image"] for row in rows)' <<<"${models}"; then
+                endpoints=$(curl -fsS --max-time 20 \
+                  https://api.trustedrouter.com/v1/images/models/google/gemini-3.1-flash-image/endpoints || true)
+                if python3 -c 'import json,sys; assert json.load(sys.stdin)["endpoints"]' <<<"${endpoints}"; then
+                  echo "image discovery smoke ok on attested origin"
+                  return 0
+                fi
               fi
-            fi
-            if [ "${attempt}" = 6 ]; then
-              echo "image discovery did not become healthy" >&2
-              exit 1
-            fi
-            sleep 5
-          done
+              sleep 5
+            done
+            echo "image discovery did not become healthy" >&2
+            return 1
+          }
+          source tools/gate-hold-lib.sh
+          gate_hold discovery all image_discovery
 
       - name: Smoke test enclave inference (non-blocking)
         # Non-blocking: MIG health checks gate the rollout. This smoke
@@ -1121,6 +1207,7 @@ jobs:
         # provider cannot pin the deploy job indefinitely.
         # The blocking gate selects its key according to the template flag.
         # This redundant diagnostic runs only after the dedicated key lands.
+        timeout-minutes: 5
         continue-on-error: true
         run: |
           if [ -z "${STAGE_D_PROBE_API_KEY}" ]; then
@@ -1146,6 +1233,7 @@ jobs:
           # exit 0 — non-blocking
 
       - name: Clear healthy rollout-created canonical drains
+        timeout-minutes: 5
         if: always()
         env:
           TR_ROLLOUT_STATE_DIR: ${{ runner.temp }}/tr-rollout-state

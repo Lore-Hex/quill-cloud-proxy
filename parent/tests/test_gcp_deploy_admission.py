@@ -25,7 +25,7 @@ COORDINATOR_PIN = REPO_ROOT / "tools" / "cloud-rollout-source.json"
 
 # MAX_ADMISSION_WAIT_SECONDS of scripts/deploy/cloud_rollout.py in quill-router at
 # the pinned commit (raised from two hours in quill-router #1481, 2026-10-02;
-# unchanged by the FIFO admission coordinator, quill-router #2557).
+# unchanged by FIFO admission, #2557, and by schema v3, #2568).
 PINNED_COORDINATOR_CAP_SECONDS = 4 * 3600
 # The coordinator's maximum lease TTL (`60 <= ttl <= 43_200`), and GitHub's
 # default job timeout, which bounds the rollout job that holds the lease.
@@ -62,11 +62,12 @@ def test_the_coordinator_pin_names_the_commit_whose_cap_the_wait_assumes() -> No
     assert set(pin) == {"commit", "sha256"}
     assert re.fullmatch(r"[a-f0-9]{40}", pin["commit"])
     assert re.fullmatch(r"[a-f0-9]{64}", pin["sha256"])
-    # quill-router 11ae458f (2026-11-13, #2557): FIFO admission across both
-    # repositories, keeping the four hour cap and 12 h maximum TTL that the
-    # wait and TTL above assume (MAX_ADMISSION_WAIT_SECONDS = 4 * 3600 and
-    # 60 <= ttl <= 43_200 at that commit). The content digest is the file's
-    # sha256 at that commit, which tools/cloud-rollout.py re-checks before
-    # every use.
-    assert pin["commit"] == "11ae458f0f833be38170a4f7044bee6d89f9c63d"
-    assert pin["sha256"] == "0f7b668b1f359b4f49c8f468f01f6e20b4949dc01d432b8295858b985c4cf032"
+    # quill-router 3784922d (2026-11-13, #2568 merged): schema v3 component leases
+    # and the read-only `lanes` command tools/gate_hold.py reads, on top of
+    # FIFO admission (#2557). It keeps the four hour cap and 12 h maximum TTL
+    # that the wait and TTL above assume (MAX_ADMISSION_WAIT_SECONDS = 4 * 3600
+    # and 60 <= ttl <= 43_200 at that commit). The content digest is the
+    # file's sha256 at that commit, which tools/cloud-rollout.py re-checks
+    # before every use.
+    assert pin["commit"] == "3784922d4ff87e6ee1475962fc12f3ccc5f7b7c6"
+    assert pin["sha256"] == "4d3812b356cb68aad3647d183e5cb9d257bf066e62febd217468a9e97c411703"

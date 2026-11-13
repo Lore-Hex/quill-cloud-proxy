@@ -80,6 +80,10 @@ echo "python3 $*" >> "${COMMAND_LOG}"
 ''' + WAIT_FOR + '''
 case "$*" in
   "tools/watchdog.py --regions "*) touch "${MARKS}/watchdog-done-$3" ;;
+  # tools/gate_hold.py with a still control plane: a pass stands, a failure
+  # is the gateway's (tools/test_gate_hold.py covers the classifier itself).
+  *"gate_hold.py decide "*"--status 0 "*) echo pass ;;
+  *"gate_hold.py decide "*) echo "gateway:stubbed classifier" ;;
 esac
 exit 0
 '''

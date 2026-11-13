@@ -30,6 +30,8 @@ restore_drain_operation="$(rollout_restore_drain_operation \
 : "${GITHUB_RUN_ID:?GITHUB_RUN_ID is required}"
 source "$(dirname "${BASH_SOURCE[0]}")/cloud-rollout-guard.sh"
 require_cloud_rollout gcp
+# shellcheck source=tools/gate-hold-lib.sh
+source "$(dirname "${BASH_SOURCE[0]}")/gate-hold-lib.sh"
 
 # Run alone, this script owns a private lock directory. Run by
 # tools/roll-secondary-wave.sh, every region in the wave shares one directory:
@@ -60,6 +62,21 @@ if [ -n "${deadline}" ] && ! [[ "${deadline}" =~ ^[0-9]+$ ]]; then
   echo "${region}: TR_SECONDARY_DEADLINE must be epoch seconds" >&2
   exit 2
 fi
+# Time this region spent holding a control-plane-dependent gate does not count
+# against the deadline: the job's hold budget bounds it separately
+# (tools/gate-hold-lib.sh), so every other step keeps the time it always had.
+forward_deadline_passed() {
+  [ -n "${deadline}" ] || return 1
+  local held=0 budget="${TR_CP_HOLD_BUDGET_SECONDS:-1200}"
+  if [ -n "${TR_CP_HOLD_STATE_DIR:-}" ]; then
+    held="$(gate_hold_region_spent "${TR_CP_HOLD_STATE_DIR}" "${region}")"
+  fi
+  # Never more than the job's hold budget: a hold record that could not be
+  # closed (a failed write) must not extend the deadline forever.
+  [[ "${budget}" =~ ^[0-9]+$ ]] || budget=1200
+  if [ "${held}" -gt "${budget}" ]; then held="${budget}"; fi
+  [ "$(date +%s)" -ge "$((deadline + held))" ]
+}
 # Where the rollout job's drain finalizer learns how this region ended:
 # started -> promoted | recovered | recovery-failed. A region left at
 # "started" (killed mid-rollout) is never re-added by the finalizer.
@@ -98,7 +115,7 @@ check_not_aborted() {
     echo "${region}: stopping before promotion because $(cat "${abort_file}") failed in this wave" >&2
     exit "${peer_abort_status}"
   fi
-  if [ -n "${deadline}" ] && [ "$(date +%s)" -ge "${deadline}" ]; then
+  if forward_deadline_passed; then
     echo "${region}: rollout deadline passed before promotion; stopping" >&2
     exit "${deadline_status}"
   fi
@@ -113,7 +130,7 @@ interruptible() {
   pid=$!
   set +m
   while kill -0 "${pid}" 2>/dev/null; do
-    if [ "${promoted}" -eq 0 ] && { peer_failed || { [ -n "${deadline}" ] && [ "$(date +%s)" -ge "${deadline}" ]; }; }; then
+    if [ "${promoted}" -eq 0 ] && { peer_failed || forward_deadline_passed; }; then
       kill -TERM -- "-${pid}" 2>/dev/null || kill -TERM "${pid}" 2>/dev/null || true
       wait "${pid}" 2>/dev/null || true
       check_not_aborted
@@ -145,14 +162,19 @@ on_exit() {
     else
       echo "${region}: rollout failed; restoring and verifying the previous template" >&2
     fi
-    if bash tools/recover-gcp-region.sh \
+    local recovery_status=0
+    bash tools/recover-gcp-region.sh \
       "${region}" "${mig}" "${instance_filter}" "${api_hosts}" \
       "${previous_template}" "${prior_drain_state}" \
-      "${prior_drain_origin}"; then
+      "${prior_drain_origin}" || recovery_status=$?
+    if [ "${recovery_status}" -eq 0 ]; then
       record_state recovered
     else
       record_state recovery-failed
       echo "${region}: automatic recovery failed; region remains drained" >&2
+      if [ "${recovery_status}" -eq 65 ]; then
+        echo "::error::${region}: the previous template is restored and attested, but its request-path check (inference, streaming or settled evidence through trustedrouter.com) failed, which a control-plane fault causes as readily as a gateway one. The region stays out of canonical DNS. Once trustedrouter.com is healthy, re-run tools/recover-gcp-region.sh for ${region} to verify and re-add it." >&2
+      fi
     fi
   fi
   if [ "${owns_lock_dir}" -eq 1 ]; then
@@ -283,22 +305,40 @@ rollout_step interruptible bash tools/wait-canonical-drained.sh "${region}"
 rollout_step bash tools/deploy-gcp-mig.sh "${region}"
 rollout_step wait_region_stable_with_dns_refresh "${mig}" "${region}"
 rollout_step interruptible bash tools/wait-region-attested.sh "${instance_filter}" "${region}"
-rollout_step bash tools/verify-region-before-dns.sh \
-  "${region}" "${instance_filter}" "${IMAGE_DIGEST}"
+# Gates that go through the control plane hold, never pass, while it may be
+# the cause, and fail closed at hard deadlines (tools/gate-hold-lib.sh). A gate
+# in flight or holding stops at once when a peer fails or the deadline passes,
+# exactly as interruptible does.
+gate_should_stop() {
+  [ "${promoted}" -eq 0 ] && { peer_failed || forward_deadline_passed; }
+}
+GATE_HOLD_STOP=gate_should_stop
+GATE_HOLD_ON_STOP=check_not_aborted
+if [ -z "${previous_template}" ]; then
+  # A first deployment's gate swaps the cold CNAME, waits for propagation and
+  # mints a certificate: never re-run it. It fails as it always did.
+  rollout_step bash tools/verify-region-before-dns.sh \
+    "${region}" "${instance_filter}" "${IMAGE_DIGEST}"
+else
+  TR_CP_HOLD_ATTEMPT_SECONDS=720 \
+    rollout_step gate_hold pre-dns "${region}" bash tools/verify-region-before-dns.sh \
+      "${region}" "${instance_filter}" "${IMAGE_DIGEST}"
+fi
 
 # A first-time region still has a cold CNAME. Only this post-canary reconcile
 # may promote it to a region-only A record while canonical traffic stays drained.
 QUILL_ALLOW_DRAINED_REGIONAL_PROMOTION_REGIONS="${region}" \
   rollout_step reconcile_dns
 
-if curl -fsS --max-time 15 https://trustedrouter.com/status.json | \
-    jq -e --arg region "${region}" \
-      '[.. | objects | select(.target_region? == $region)] | length > 0' \
-      >/dev/null; then
+presence_mode=hold
+if [ -z "${previous_template}" ]; then presence_mode=once; fi
+presence="$(gate_status_presence "${region}" "${presence_mode}")"
+check_not_aborted
+if [ "${presence}" = present ]; then
   trigger_synthetic_workers
-  WAIT_UP_SLEEP=10 WAIT_UP_ROUNDS=72 \
-    rollout_step interruptible bash tools/wait-region-synthetic-up.sh "${region}" "${region}"
-  if ! interruptible python3 tools/watchdog.py \
+  WAIT_UP_SLEEP=10 WAIT_UP_ROUNDS=72 TR_CP_HOLD_ATTEMPT_SECONDS=1500 \
+    rollout_step gate_hold pong "${region}" bash tools/wait-region-synthetic-up.sh "${region}" "${region}"
+  if ! TR_CP_HOLD_ATTEMPT_SECONDS=600 gate_hold canary "${region}" python3 tools/watchdog.py \
       --regions "${region}" \
       --duration-min 3 \
       --rollback-after 3 \
@@ -309,8 +349,11 @@ if curl -fsS --max-time 15 https://trustedrouter.com/status.json | \
   check_not_aborted
 elif [ -z "${previous_template}" ]; then
   echo "${region}: first deployment has no synthetic target yet; direct per-instance attestation + PONG is the bootstrap gate"
-else
+elif [ "${presence}" = missing ]; then
   echo "${region}: existing region is missing from synthetic status; failing closed" >&2
+  exit 1
+else
+  echo "${region}: status.json stayed unreadable through the hold bound; failing closed" >&2
   exit 1
 fi
 

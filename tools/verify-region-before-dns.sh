@@ -41,6 +41,16 @@ REGIONAL_CERT_RETRY_SLEEP="${REGIONAL_CERT_RETRY_SLEEP:-15}"
 MIG="${FILTER%-}"
 AUTHORIZATION_LOOKUP_BASE_URL="${STAGE_D_AUTHORIZATION_LOOKUP_BASE_URL:-https://trustedrouter.com}"
 STAGE_D_MISSING_EVIDENCE_ROUTE_WARNED=0
+# Exit status when a request-path check failed: inference, streaming or the
+# settled-evidence lookup, which all traverse the control plane (authorize and
+# settle at TR_CONTROL_PLANE_BASE_URL, evidence at the lookup URL above).
+# tools/gate_hold.py may hold the region on it while the control plane moves.
+# Every other failure (attestation, image, instance count, DNS) is the
+# gateway's alone and keeps its ordinary status.
+CP_DEPENDENT_STATUS=65
+# Set once this run swaps a first deployment's cold CNAME. Such a run has DNS
+# and certificate side effects, so its failures are never offered for a re-run.
+cold_bootstrap=0
 # IPs can be reused across workflow retries and rollback boots. Keep retries
 # within this invocation idempotent, but require fresh evidence for each gate.
 CANARY_RUN_ID="${GITHUB_RUN_ID:-manual}-${GITHUB_RUN_ATTEMPT:-1}-$(python3 -c 'import uuid; print(uuid.uuid4().hex)')"
@@ -146,6 +156,12 @@ replace_cold_alias_with_bootstrap_ip() {
     exit 1
   fi
 
+  # Before any DNS change: tell tools/gate-hold-lib.sh never to re-run this
+  # attempt. A re-run would find the A record, take the existing-region path,
+  # and lose the CNAME.
+  if [ -n "${GATE_HOLD_NO_RERUN_MARK:-}" ]; then
+    : > "${GATE_HOLD_NO_RERUN_MARK}" || true
+  fi
   transaction_dir="$(mktemp -d "${TMPDIR:-/tmp}/tr-region-dns-XXXXXX")"
   transaction_file="${transaction_dir}/transaction.yaml"
   run_dns_transaction start "${transaction_file}"
@@ -193,13 +209,25 @@ restore_cold_alias() {
 on_exit() {
   local status=$?
   trap - EXIT
+  # The restore below must finish once started: a step timeout or cancel sends
+  # INT and then TERM. Children inherit the ignored dispositions.
+  trap '' TERM INT
   rm -rf "${response_dir}"
   if [ "${status}" -ne 0 ] && [ "${promoted_cold_alias}" = "1" ]; then
     restore_cold_alias || true
   fi
+  if [ "${status}" -eq "${CP_DEPENDENT_STATUS}" ] && [ "${cold_bootstrap}" = "1" ]; then
+    echo "${REGION}: first-deployment bootstrap failed on the request path; not offered for a re-run" >&2
+    status=1
+  fi
   exit "${status}"
 }
 trap on_exit EXIT
+# Killed (a hold deadline, a peer failure, a step timeout): exit non-zero, so
+# on_exit restores a swapped cold CNAME. Without these, bash runs the EXIT trap
+# with status 0 and skips the restore.
+trap 'exit 143' TERM
+trap 'exit 130' INT
 
 verify_streaming_authorization() {
   local host="$1" ip="$2" stage="$3"
@@ -240,7 +268,7 @@ verify_streaming_authorization() {
     -d '{"model":"trustedrouter/monitor","messages":[{"role":"user","content":"reply exactly PONG"}],"max_tokens":32,"stream":true}' \
     "https://${host}/v1/chat/completions")"; then
     echo "${REGION}: ${stage} streaming canary on ${ip} had a transport failure" >&2
-    return 1
+    return "${CP_DEPENDENT_STATUS}"
   fi
   if [ "${code}" != "200" ]; then
     python3 "${TOOLS_DIR}/provider_probe_status.py" "${code}" "${stream}" || classification=$?
@@ -249,22 +277,22 @@ verify_streaming_authorization() {
       echo "WARNING: ${REGION}: ${stage} provider failure (HTTP ${code}); checking durable authorization evidence" >&2
     else
       echo "${REGION}: ${stage} streaming canary on ${ip} returned HTTP ${code}" >&2
-      return 1
+      return "${CP_DEPENDENT_STATUS}"
     fi
   fi
   if [ "${provider_failure}" != "1" ]; then
     content_type="$(tr -d '\r' <"${headers}" | awk -F ': *' 'tolower($1) == "content-type" { value=tolower($2) } END { print value }')"
     if [[ "${content_type}" != text/event-stream* ]]; then
       echo "${REGION}: ${stage} streaming canary on ${ip} was not text/event-stream" >&2
-      return 1
+      return "${CP_DEPENDENT_STATUS}"
     fi
-    python3 tools/verify-stage-d-stream.py stream "${stream}"
+    python3 tools/verify-stage-d-stream.py stream "${stream}" || return "${CP_DEPENDENT_STATUS}"
   fi
 
   request_log_id="$(tr -d '\r' <"${headers}" | awk -F ': *' 'tolower($1) == "x-request-id" { value=$2 } END { print value }')"
   if ! [[ "${request_log_id}" =~ ^rlog_[0-9a-f]{32}$ ]]; then
     echo "${REGION}: ${stage} stream returned no valid x-request-id" >&2
-    return 1
+    return "${CP_DEPENDENT_STATUS}"
   fi
   lookup_url="${AUTHORIZATION_LOOKUP_BASE_URL}/internal/gateway/authorizations/by-gateway-request-id/${request_log_id}"
   timeout_seconds="${STAGE_D_EVIDENCE_TIMEOUT_SECONDS:-60}"
@@ -290,7 +318,7 @@ verify_streaming_authorization() {
         "${evidence}" "${request_log_id}" "${HEARTBEAT_FLAG}" \
         "${expected_boot_kid}" "${STAGE_D_PROBE_KEY_IN_USE}")"; then
         echo "${REGION}: ${stage} stream on ${ip} returned invalid settled authorization evidence" >&2
-        return 1
+        return "${CP_DEPENDENT_STATUS}"
       fi
       if [ "${evidence_state}" = "valid" ]; then
         authorization_kind="$(jq -er '.data.authorization_kind' "${evidence}")"
@@ -317,7 +345,7 @@ verify_streaming_authorization() {
     fi
   done
   echo "${REGION}: ${stage} stream on ${ip} did not settle within ${timeout_seconds}s" >&2
-  return 1
+  return "${CP_DEPENDENT_STATUS}"
 }
 
 verify_instance() {
@@ -375,7 +403,7 @@ verify_instance() {
   done
   if [ "${completed}" != "1" ]; then
     echo "${REGION}: ${stage} direct inference canary on ${ip} did not succeed" >&2
-    return 1
+    return "${CP_DEPENDENT_STATUS}"
   fi
   if [ "${stage}" = "regional" ]; then
     verify_streaming_authorization "${host}" "${ip}" "${stage}"
@@ -389,6 +417,7 @@ for ip in "${ips[@]}"; do
 done
 
 if replace_cold_alias_with_bootstrap_ip; then
+  cold_bootstrap=1
   # Do not trigger ACME while recursive resolvers may still follow the old
   # CNAME. A failed authorization is rate-limited; waiting once is cheaper and
   # more reliable than retrying a challenge against stale DNS.
