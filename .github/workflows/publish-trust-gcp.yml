@@ -41,7 +41,7 @@ jobs:
   sign:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           # Match the attested release workflow's protected-main publisher.
           # Signing still uses this workflow's separate OIDC identity.
@@ -52,14 +52,14 @@ jobs:
       # after a pause. The retry has no continue-on-error, so a second failure
       # still fails the job (tools/test_check_trust_signatures.py checks this).
       - id: cosign-install
-        uses: sigstore/cosign-installer@v3
+        uses: Lore-Hex/quill-cloud-proxy/.github/actions/cosign-install@PINSHA # main 2026-11-13
         continue-on-error: true
         with:
           cosign-release: v2.6.5
       - if: steps.cosign-install.outcome == 'failure'
         run: sleep 30
       - if: steps.cosign-install.outcome == 'failure'
-        uses: sigstore/cosign-installer@v3
+        uses: Lore-Hex/quill-cloud-proxy/.github/actions/cosign-install@PINSHA # main 2026-11-13
         with:
           cosign-release: v2.6.5
       - name: Sign the GCP Confidential Space record

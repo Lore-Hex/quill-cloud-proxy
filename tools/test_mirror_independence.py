@@ -177,11 +177,11 @@ class MirrorIndependence(unittest.TestCase):
         # Both workflows install cosign before the step that needs it, and Pages
         # checks the signatures before it uploads anything.
         self.assertLess(
-            _step(publisher, "sigstore/cosign-installer"), _step(publisher, "bash tools/publish-trust-s3.sh")
+            _step(publisher, "Lore-Hex/quill-cloud-proxy/.github/actions/cosign-install@"), _step(publisher, "bash tools/publish-trust-s3.sh")
         )
         pages = workflows[".github/workflows/publish-trust-page.yml"]
         self.assertLess(
-            _step(pages, "sigstore/cosign-installer"),
+            _step(pages, "Lore-Hex/quill-cloud-proxy/.github/actions/cosign-install@"),
             _step(pages, "python3 tools/check-trust-signatures.py trust-page"),
         )
         self.assertLess(
@@ -192,15 +192,15 @@ class MirrorIndependence(unittest.TestCase):
         # and the one retry that may follow a failed first install, are checked
         # in tools/test_check_trust_signatures.py.
         for workflow, command in (
-            (publisher, "sigstore/cosign-installer"),
+            (publisher, "Lore-Hex/quill-cloud-proxy/.github/actions/cosign-install@"),
             (publisher, "bash tools/publish-trust-s3.sh"),
-            (pages, "sigstore/cosign-installer"),
+            (pages, "Lore-Hex/quill-cloud-proxy/.github/actions/cosign-install@"),
             (pages, "python3 tools/check-trust-signatures.py trust-page"),
         ):
             (job,) = workflow["jobs"].values()
             step = job["steps"][_step(workflow, command)]
             self.assertNotIn("if", step, command)
-            if command != "sigstore/cosign-installer":
+            if command != "Lore-Hex/quill-cloud-proxy/.github/actions/cosign-install@":
                 self.assertFalse(step.get("continue-on-error"), command)
 
 
