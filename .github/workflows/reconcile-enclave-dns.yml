@@ -29,24 +29,24 @@ jobs:
       queue: max
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Authenticate to GCP via WIF
-        uses: google-github-actions/auth@v3
+        uses: Lore-Hex/quill-cloud-proxy/.github/actions/gcp-auth@582cbdee7b7023cfeb915b62a7f635aa1e4662b1 # main 2026-11-13
         with:
           workload_identity_provider: projects/44325983244/locations/global/workloadIdentityPools/github-actions/providers/github
           service_account: tr-deploy@quill-cloud-proxy.iam.gserviceaccount.com
 
       - name: Authenticate to AWS for backup-domain DNS
-        uses: aws-actions/configure-aws-credentials@v6
+        uses: Lore-Hex/quill-cloud-proxy/.github/actions/aws-credentials@582cbdee7b7023cfeb915b62a7f635aa1e4662b1 # main 2026-11-13
         with:
           role-to-assume: ${{ secrets.AWS_DEPLOY_ROLE_ARN }}
           aws-region: us-east-1
 
-      - uses: google-github-actions/setup-gcloud@v3
+      - uses: Lore-Hex/quill-cloud-proxy/.github/actions/setup-gcloud@582cbdee7b7023cfeb915b62a7f635aa1e4662b1 # main 2026-11-13
 
       - name: Install uv
-        uses: astral-sh/setup-uv@v7
+        uses: Lore-Hex/quill-cloud-proxy/.github/actions/setup-uv@582cbdee7b7023cfeb915b62a7f635aa1e4662b1 # main 2026-11-13
 
       - name: Reconcile canonical and regional DNS
         env:
