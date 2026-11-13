@@ -9,6 +9,7 @@ inject a peer failure at an exact point.
 from __future__ import annotations
 
 import os
+import re
 import shutil
 import signal
 import subprocess
@@ -319,6 +320,53 @@ class DeadlineAndSignalTests(unittest.TestCase):
         wait_for(self.h.marks / "recovered-us-east4", 15)
         self.assertEqual((self.state / "us-east4").read_text(), "recovered\n")
 
+    def test_group_signal_before_recovery_still_recovers(self):
+        # A group TERM reaches the worker and the wave at once; the wave then
+        # forwards a second TERM. That second TERM used to land inside on_exit
+        # before its ignore and skip the recovery (5 of 12 runs in review).
+        # Here a storm of TERMs to the whole group makes that landing certain.
+        for attempt in range(3):
+            with self.subTest(attempt=attempt):
+                for mark in self.h.marks.iterdir():
+                    mark.unlink()
+                proc = self.start(USE, MIG_NEVER_STABLE="1", SLOW_RECOVERY="1")
+                wait_for(self.h.marks / "deployed-us-east4")
+                deadline = time.monotonic() + 3
+                while time.monotonic() < deadline and not (self.h.marks / "recovering-us-east4").exists():
+                    try:
+                        os.killpg(proc.pid, signal.SIGTERM)
+                    except ProcessLookupError:
+                        break
+                    time.sleep(0.005)
+                proc.communicate(timeout=60)
+                wait_for(self.h.marks / "recovered-us-east4", 15)
+                self.assertEqual((self.state / "us-east4").read_text(), "recovered\n")
+
+    def test_a_second_signal_after_the_first_cannot_abort_the_exit_path(self):
+        # Deterministic form of the race above: the worker's own TERM/INT
+        # handlers (taken verbatim from the script) run while the EXIT path is
+        # still before its own ignore, and a second TERM arrives then.
+        script = (ROOT / "tools/roll-secondary-region.sh").read_text()
+        handlers = [line for line in script.splitlines() if re.match(r"^trap .* (TERM|INT)$", line)]
+        self.assertEqual(len(handlers), 2, handlers)
+        out = self.h.temp / "exit-path"
+        harness = "\n".join([
+            f'trap \'sleep 1; echo recovered > "{out}"\' EXIT',
+            *handlers,
+            "while true; do sleep 0.05; done",
+        ])
+        for first in (signal.SIGTERM, signal.SIGINT):
+            with self.subTest(first=first.name):
+                if out.exists():
+                    out.unlink()
+                proc = subprocess.Popen(["/bin/bash", "-c", harness])
+                time.sleep(0.3)
+                proc.send_signal(first)
+                time.sleep(0.3)
+                proc.send_signal(signal.SIGTERM)  # the wave's forwarded TERM
+                proc.wait(timeout=10)
+                self.assertTrue(out.exists(), "a second signal aborted the exit path")
+
     def test_peer_failure_cuts_the_mig_wait_short(self):
         started = time.monotonic()
         proc = self.start(EU, USE, MIG_NEVER_STABLE="1",
@@ -370,18 +418,20 @@ class DeadlineAndSignalTests(unittest.TestCase):
 class FinalizerTests(unittest.TestCase):
     """The drain finalizer never re-adds a region that did not finish."""
 
-    def run_cleanup(self, state: str | None) -> tuple[int, str]:
+    def run_cleanup(self, state: str | None, secondaries: str = "europe-west4 us-east4 us-west1",
+                    region: str = "us-east4") -> tuple[int, str]:
         with tempfile.TemporaryDirectory() as directory:
             temp = Path(directory)
             h = Harness(temp)
             (h.bin / "uv").write_text(
                 '#!/bin/bash\necho "uv $*" >> "${COMMAND_LOG}"\n'
-                'case "$*" in *--list-drain-regions*) printf "us-east4\\trollout:33807667585\\n" ;; esac\n')
+                'case "$*" in *--list-drain-regions*) printf "%s\\trollout:33807667585\\n" "${DRAIN_REGION}" ;; esac\n')
             state_dir = temp / "state"
             state_dir.mkdir()
             if state is not None:
-                (state_dir / "us-east4").write_text(state + "\n")
-            env = h.env(TR_ROLLOUT_STATE_DIR=str(state_dir), QUILL_GCP_ENCLAVE_PENDING_INVENTORY=str(temp / "none"))
+                (state_dir / region).write_text(state + "\n")
+            env = h.env(TR_ROLLOUT_STATE_DIR=str(state_dir), QUILL_GCP_ENCLAVE_PENDING_INVENTORY=str(temp / "none"),
+                        TR_ROLLOUT_SECONDARY_REGIONS=secondaries, DRAIN_REGION=region)
             result = subprocess.run(["/bin/bash", str(ROOT / "tools/cleanup-enclave-rollout-drains.sh")], cwd=ROOT,
                                     env=env, capture_output=True, text=True, timeout=30)
             return result.returncode, h.commands()
@@ -394,10 +444,32 @@ class FinalizerTests(unittest.TestCase):
                 self.assertNotIn("--clear-drain-region us-east4", log)
 
     def test_finished_region_is_cleared(self):
-        for state in ("promoted", "recovered", None):
+        for state in ("promoted", "recovered"):
             with self.subTest(state=state):
                 code, log = self.run_cleanup(state)
                 self.assertIn("--clear-drain-region us-east4", log)
+
+    def test_secondary_without_a_record_keeps_its_drain(self):
+        # "Re-run failed jobs" lands on a fresh runner with the same run id:
+        # the record of the earlier attempt is gone.
+        code, log = self.run_cleanup(None)
+        self.assertEqual(code, 1)
+        self.assertNotIn("--clear-drain-region us-east4", log)
+
+    def test_primary_without_a_record_is_still_cleared_when_healthy(self):
+        # us-central1 is drained and restored by its own workflow steps.
+        code, log = self.run_cleanup(None, region="us-central1")
+        self.assertIn("--clear-drain-region us-central1", log)
+
+    def test_workflow_names_every_region_the_secondary_script_rolls(self):
+        workflow = (ROOT / ".github/workflows/deploy-enclave-gcp.yml").read_text()
+        step = workflow[workflow.index("      - name: Clear healthy rollout-created canonical drains"):]
+        listed = re.search(r'TR_ROLLOUT_SECONDARY_REGIONS: "([a-z0-9 -]+)"', step)
+        self.assertIsNotNone(listed)
+        rolled = set(re.findall(r"(?:roll-secondary-region\.sh|--) \\\n            ([a-z]+-[a-z]+[0-9]+) \\$",
+                                workflow, re.MULTILINE))
+        self.assertEqual(set(listed[1].split()), rolled)
+        self.assertNotIn("us-central1", listed[1].split())
 
 
 class WorkerTests(unittest.TestCase):

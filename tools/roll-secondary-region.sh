@@ -161,8 +161,11 @@ on_exit() {
   exit "${status}"
 }
 trap on_exit EXIT
-trap 'exit 130' INT
-trap 'exit 143' TERM
+# Ignore further signals before exiting, not only inside on_exit: a group
+# TERM followed at once by the wave's forwarded TERM must not land in on_exit
+# before its own ignore and skip the recovery.
+trap "trap '' TERM INT PIPE; exit 130" INT
+trap "trap '' TERM INT PIPE; exit 143" TERM
 
 reconcile_dns() {
   local lock="${lock_dir}/dns-reconcile.lock"

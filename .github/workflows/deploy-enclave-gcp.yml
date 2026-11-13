@@ -1149,6 +1149,8 @@ jobs:
         if: always()
         env:
           TR_ROLLOUT_STATE_DIR: ${{ runner.temp }}/tr-rollout-state
+          # Rolled by tools/roll-secondary-region.sh, which records each one.
+          TR_ROLLOUT_SECONDARY_REGIONS: "europe-west4 us-east4 us-west1"
           QUILL_API_HOST: api.trustedrouter.com
           QUILL_DNS_ZONE: trustedrouter-com
           QUILL_PUBLISH_REGIONAL: "1"
