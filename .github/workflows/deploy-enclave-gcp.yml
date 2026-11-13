@@ -35,6 +35,7 @@ on:
       - "tools/gcp-enclave-migs.txt"
       - "tools/gcp-enclave-migs-pending.txt"
       - "tools/gcp_enclave_inventory.py"
+      - "tools/gcp_template_quota.py"
       - "tools/stage-d-heartbeat-regions.txt"
       - "tools/stage-d-terminate-regions.txt"
       - "tools/reconcile-enclave-dns.py"
@@ -283,6 +284,9 @@ jobs:
           # change the MIG set while this job runs: deploys and the stockout
           # workflow share one concurrency group.
           echo "GCP_ENCLAVE_MIGS_ACTUAL=${actual_migs}" >> "$GITHUB_ENV"
+
+      - name: Verify gateway template quota before build
+        run: python3 tools/gcp_template_quota.py --project="${PROJECT_ID}"
 
       - name: Configure docker auth (for image describe)
         run: gcloud auth configure-docker "${REGION}-docker.pkg.dev" --quiet

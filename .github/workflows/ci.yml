@@ -187,6 +187,7 @@ jobs:
           python3 tools/test_secondary_wave.py
           python3 tools/test_superseded_rollout.py
           python3 tools/test_gcp_enclave_inventory.py
+          python3 tools/test_gcp_template_quota.py
           python3 tools/test_verify_gcp_runtime_secret_access.py
           python3 tools/test_verify_pcr0_build_args.py
           python3 tools/test_go_toolchain_pins.py
