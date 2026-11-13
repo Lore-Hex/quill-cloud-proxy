@@ -163,15 +163,21 @@ jobs:
   # Release train. Each rollout holds the shared gcp lease for about 2.5 h,
   # so a run that reaches the head of this queue first asks whether a newer
   # push run is already queued behind it for a descendant commit that is
-  # still on main with green CI (or has already delivered one). If so, it
+  # still on main with green CI (or has already rolled one out). If so, it
   # skips green before building or touching the trust page, and the newer run
-  # ships both. Manual dispatches never skip. Unreadable evidence proceeds.
+  # ships both. If that newer run then fails or is cancelled before its
+  # rollout succeeds, its rescue-skipped job re-runs the newest skipped run.
+  # Manual dispatches never skip. Unclear evidence proceeds.
   # Bot trust-artifact commits never start a run: trust-page/** is not in the
   # push paths above (tools/test_superseded_rollout.py checks both).
   train:
     needs: gate-on-ci
     runs-on: ubuntu-latest
+    # All waiting for a successor's CI shares one 30-minute deadline.
     timeout-minutes: 40
+    permissions:
+      actions: read
+      contents: read
     outputs:
       proceed: ${{ steps.train.outputs.proceed }}
     env:
@@ -184,7 +190,7 @@ jobs:
       - name: Skip if a newer queued run deploys this commit too
         id: train
         run: >-
-          python3 tools/superseded_rollout.py
+          python3 tools/superseded_rollout.py decide
           --repo "${GITHUB_REPOSITORY}"
           --run-id "${GITHUB_RUN_ID}"
           --sha "${GITHUB_SHA}"
@@ -1278,3 +1284,33 @@ jobs:
             echo '::error::GCP reservation retained pending verified recovery.'
             exit 1
           fi
+
+  # A run that others skipped for (see the train job) must not lose their
+  # commits when it fails or is cancelled before its rollout succeeds: re-run
+  # the newest older run that skipped in its favor since the last rollout.
+  # That re-run decides again, finds this run failed, and deploys its own
+  # commit, which contains every older skipped one.
+  rescue-skipped:
+    needs: [train, rollout]
+    if: ${{ always() && github.event_name == 'push' && github.repository == 'Lore-Hex/quill-cloud-proxy' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      actions: write
+      contents: read
+    env:
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          sparse-checkout: tools/superseded_rollout.py
+          sparse-checkout-cone-mode: false
+      - name: Re-run the newest run that skipped for this one, if this one did not roll out
+        run: >-
+          python3 tools/superseded_rollout.py rescue
+          --repo "${GITHUB_REPOSITORY}"
+          --run-id "${GITHUB_RUN_ID}"
+          --sha "${GITHUB_SHA}"
+          --event "${{ github.event_name }}"
+          --train-proceed "${{ needs.train.outputs.proceed }}"
+          --rollout-result "${{ needs.rollout.result }}"

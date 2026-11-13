@@ -25,19 +25,39 @@ def run(run_id, number, sha, status="pending", conclusion=None, event="push", br
             "conclusion": conclusion, "event": event, "head_branch": branch}
 
 
-class FakeGitHub:
-    """Commit graph A -> B -> C on main unless told otherwise."""
+ROLLED = {"train": "success", "build-and-release": "success", "rollout": "success"}
+SKIPPED = {"train": "success", "build-and-release": "skipped", "rollout": "skipped"}
 
-    def __init__(self, runs, ci=None, order=(A, B, C), main=C, fail=None):
-        self.listing, self.ci_states = runs, ci or {}
+
+class FakeGitHub:
+    """Commit graph A -> B -> C on main unless told otherwise.
+
+    `runs` may be a list of listings, returned in turn (the last repeats), to
+    model the run list changing between passes. `jobs` maps run id to job
+    conclusions; a completed run without an entry is a failed rollout.
+    """
+
+    def __init__(self, runs, ci=None, order=(A, B, C), main=C, fail=None, jobs=None):
+        self.listings = runs if runs and isinstance(runs[0], list) else [runs]
+        self.ci_states = ci or {}
         self.order, self.main, self.fail = list(order), main, fail
+        self.job_map = jobs or {}
         self.calls = []
+        self.reruns = []
 
     def runs(self, workflow):
         self.calls.append(("runs", workflow))
         if self.fail == "runs":
             raise train.Unknown("listing failed")
-        return self.listing
+        if self.fail == "keyerror":
+            raise KeyError("workflow_runs")
+        return self.listings.pop(0) if len(self.listings) > 1 else self.listings[0]
+
+    def jobs(self, run_id):
+        self.calls.append(("jobs", run_id))
+        if self.fail == "typeerror":
+            raise TypeError("'NoneType' object is not subscriptable")
+        return self.job_map.get(run_id, {"rollout": "failure"})
 
     def compare(self, base, head):
         self.calls.append(("compare", base, head))
@@ -56,15 +76,22 @@ class FakeGitHub:
             return states.pop(0) if len(states) > 1 else states[0]
         return states
 
+    def rerun(self, run_id):
+        self.reruns.append(run_id)
 
-def decide(github, sha=A, event="push", run_id=10, **kwargs):
-    clock = [0.0]
+
+def decide(github, sha=A, event="push", run_id=10, clock=None, **kwargs):
+    clock = clock if clock is not None else [0.0]
 
     def sleep(seconds):
         clock[0] += seconds
 
     return train.decide(github, "deploy-enclave-gcp.yml", run_id, sha, event,
                         sleep=sleep, monotonic=lambda: clock[0], **kwargs)
+
+
+def rescue(github, sha=C, run_id=12, event="push", proceed="true", rollout="failure"):
+    return train.rescue(github, "deploy-enclave-gcp.yml", run_id, sha, event, proceed, rollout)
 
 
 class TrainTests(unittest.TestCase):
@@ -76,7 +103,7 @@ class TrainTests(unittest.TestCase):
 
     def test_newest_run_proceeds_and_carries_the_train(self):
         github = FakeGitHub([run(12, 3, C, "in_progress"), run(11, 2, B, "completed", "success"),
-                             run(10, 1, A, "completed", "success")])
+                             run(10, 1, A, "completed", "success")], jobs={11: SKIPPED, 10: SKIPPED})
         self.assertTrue(decide(github, sha=C, run_id=12).proceed)
 
     def test_manual_dispatch_never_skips(self):
@@ -113,6 +140,25 @@ class TrainTests(unittest.TestCase):
         github = FakeGitHub([run(12, 3, C), run(10, 1, A, "in_progress")], ci={C: None})
         self.assertTrue(decide(github, ci_wait=60).proceed)
 
+    def test_all_ci_waiting_shares_one_deadline(self):
+        # Review probe S2: two successors with pending CI used to wait 30 min each.
+        d = "d" * 40
+        clock = [0.0]
+        github = FakeGitHub([run(13, 4, d), run(12, 3, C), run(10, 1, A, "in_progress")],
+                            ci={d: ("in_progress", None), C: ("in_progress", None)},
+                            order=(A, B, C, d), main=d)
+        decision = decide(github, clock=clock, ci_wait=1800)
+        self.assertTrue(decision.proceed)
+        self.assertLessEqual(clock[0], 1800)
+
+    def test_run_list_is_reread_after_waiting_for_ci(self):
+        # Review probe S3: a successor cancelled during the wait was still yielded to.
+        github = FakeGitHub([[run(12, 3, C), run(10, 1, A, "in_progress")],
+                             [run(12, 3, C, "completed", "cancelled"), run(10, 1, A, "in_progress")]],
+                            ci={C: [("in_progress", None), ("completed", "success")]})
+        self.assertTrue(decide(github).proceed)
+        self.assertEqual(sum(1 for call in github.calls if call[0] == "runs"), 2)
+
     def test_non_descendant_newer_run_is_not_a_successor(self):
         # A newer run for an ancestor of this commit (still on main) would not
         # ship this commit, so it cannot carry the train.
@@ -125,12 +171,24 @@ class TrainTests(unittest.TestCase):
         github = FakeGitHub([run(12, 3, C), run(10, 1, A, "in_progress")], main=B)
         self.assertTrue(decide(github).proceed)
 
-    def test_newer_delivered_descendant_prevents_a_rollback(self):
+    def test_newer_rolled_out_descendant_prevents_a_rollback(self):
         github = FakeGitHub([run(12, 3, C, "completed", "success", event="workflow_dispatch"),
-                             run(10, 1, A, "in_progress")])
+                             run(10, 1, A, "in_progress")], jobs={12: ROLLED})
         decision = decide(github)
         self.assertFalse(decision.proceed)
         self.assertIn("roll the gateway back", decision.reason)
+
+    def test_rolled_out_but_failed_later_is_still_a_rollback_risk(self):
+        github = FakeGitHub([run(12, 3, C, "completed", "failure"), run(10, 1, A, "in_progress")],
+                            jobs={12: {**ROLLED, "finalize-trust-artifacts": "failure"}})
+        self.assertFalse(decide(github).proceed)
+
+    def test_train_skipped_newer_run_is_not_delivered(self):
+        # Review probe S1: a skipped run concludes success but shipped nothing.
+        github = FakeGitHub([run(12, 3, C, "completed", "failure"), run(11, 2, B, "completed", "success"),
+                             run(10, 1, A, "in_progress")], jobs={11: SKIPPED, 12: {"rollout": "failure"}})
+        decision = decide(github)
+        self.assertTrue(decision.proceed, decision.reason)
 
     def test_failed_or_cancelled_newer_runs_are_not_successors(self):
         github = FakeGitHub([run(12, 3, C, "completed", "failure"), run(11, 2, B, "completed", "cancelled"),
@@ -145,15 +203,85 @@ class TrainTests(unittest.TestCase):
         github = FakeGitHub([run(12, 3, C, branch="feature"), run(10, 1, A, "in_progress")])
         self.assertTrue(decide(github).proceed)
 
-    def test_unreadable_evidence_means_proceed(self):
-        for fail in ("runs", "compare"):
+    def test_unreadable_or_unexpected_evidence_means_proceed(self):
+        for fail in ("runs", "compare", "keyerror", "typeerror"):
             with self.subTest(fail=fail):
-                github = FakeGitHub([run(12, 3, C), run(10, 1, A, "in_progress")], fail=fail)
+                github = FakeGitHub([run(12, 3, C, "completed", "success"), run(10, 1, A, "in_progress")],
+                                    fail=fail)
                 self.assertTrue(decide(github).proceed)
 
     def test_own_run_missing_from_listing_means_proceed(self):
         github = FakeGitHub([run(12, 3, C)])
         self.assertTrue(decide(github).proceed)
+
+
+class RescueTests(unittest.TestCase):
+    """The run others skipped for re-runs the newest of them if it did not roll out."""
+
+    def listing(self):
+        runs = [run(12, 3, C, "in_progress"), run(11, 2, B, "completed", "success"),
+                run(10, 1, A, "completed", "success"), run(9, 0, "e" * 40, "completed", "success")]
+        return runs
+
+    def github(self, jobs=None, **kwargs):
+        return FakeGitHub(self.listing(), order=("e" * 40, A, B, C),
+                          jobs=jobs or {11: SKIPPED, 10: SKIPPED, 9: ROLLED}, **kwargs)
+
+    def test_successor_failing_anywhere_before_rollout_reruns_the_newest_skipped_run(self):
+        # Build, trust publication, Batch grant and admission failures all leave
+        # rollout skipped; a canary failure fails it; cancellation cancels it.
+        for result in ("skipped", "failure", "cancelled", ""):
+            with self.subTest(rollout=result):
+                github = self.github()
+                self.assertIn("re-ran run 11", rescue(github, rollout=result))
+                self.assertEqual(github.reruns, [11])
+
+    def test_rolled_out_run_rescues_nothing(self):
+        github = self.github()
+        rescue(github, rollout="success")
+        self.assertEqual(github.reruns, [])
+
+    def test_a_run_that_was_itself_skipped_rescues_nothing(self):
+        github = self.github()
+        rescue(github, proceed="false", rollout="skipped")
+        self.assertEqual(github.reruns, [])
+
+    def test_dispatch_rescues_nothing(self):
+        github = self.github()
+        rescue(github, event="workflow_dispatch")
+        self.assertEqual(github.reruns, [])
+
+    def test_stops_at_the_last_rollout(self):
+        github = self.github(jobs={11: ROLLED, 10: SKIPPED, 9: ROLLED})
+        self.assertIn("rolled out", rescue(github))
+        self.assertEqual(github.reruns, [])
+
+    def test_failed_older_runs_are_passed_over_for_an_older_skipped_one(self):
+        github = self.github(jobs={11: {"train": "success", "build-and-release": "failure"}, 10: SKIPPED, 9: ROLLED})
+        github.listings[0][1]["conclusion"] = "failure"
+        self.assertIn("re-ran run 10", rescue(github))
+        self.assertEqual(github.reruns, [10])
+
+    def test_older_run_already_queued_again_is_left_to_decide(self):
+        github = self.github()
+        github.listings[0][1]["status"] = "queued"
+        self.assertIn("queued or running", rescue(github))
+        self.assertEqual(github.reruns, [])
+
+    def test_skipped_run_that_is_not_an_ancestor_is_ignored(self):
+        # Run 11 is older but built a commit newer than this run's (still on
+        # main): re-running it would not ship what skipped for this run.
+        f = "f" * 40
+        github = FakeGitHub([run(12, 3, C, "in_progress"), run(11, 2, f, "completed", "success"),
+                             run(10, 1, A, "completed", "success")], order=(A, C, f), main=f,
+                            jobs={11: SKIPPED, 10: SKIPPED})
+        self.assertIn("re-ran run 10", rescue(github))
+
+    def test_the_rerun_then_deploys_its_own_commit(self):
+        # After the rescue, run 11 decides again: run 12 failed, so it proceeds.
+        github = FakeGitHub([run(12, 3, C, "completed", "failure"), run(11, 2, B, "queued"),
+                             run(10, 1, A, "completed", "success")], jobs={12: {"rollout": "failure"}, 10: SKIPPED})
+        self.assertTrue(decide(github, sha=B, run_id=11).proceed)
 
 
 def glob_regex(pattern):
@@ -234,6 +362,21 @@ class WorkflowTests(unittest.TestCase):
             self.assertNotIn("always()", str(self.jobs[name].get("if", "")), name)
         # The lease release still runs only for a run that actually reserved.
         self.assertIn("needs.admit-cloud.result == 'success'", self.jobs["finalize-cloud"]["if"])
+
+    def test_train_job_can_only_read(self):
+        self.assertEqual(self.jobs["train"]["permissions"], {"actions": "read", "contents": "read"})
+        self.assertIn("superseded_rollout.py decide", self.jobs["train"]["steps"][-1]["run"])
+
+    def test_rescue_job_runs_after_any_outcome_of_a_push(self):
+        rescue_job = self.jobs["rescue-skipped"]
+        self.assertEqual(rescue_job["needs"], ["train", "rollout"])
+        self.assertIn("always()", rescue_job["if"])
+        self.assertIn("github.event_name == 'push'", rescue_job["if"])
+        self.assertEqual(rescue_job["permissions"], {"actions": "write", "contents": "read"})
+        script = rescue_job["steps"][-1]["run"]
+        for arg in ("superseded_rollout.py rescue", '--train-proceed "${{ needs.train.outputs.proceed }}"',
+                    '--rollout-result "${{ needs.rollout.result }}"', "--run-id", "--sha", "--event"):
+            self.assertIn(arg, script)
 
     def test_queue_retains_every_pending_release(self):
         concurrency = self.workflow["concurrency"]
