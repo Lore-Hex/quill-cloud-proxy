@@ -101,7 +101,9 @@ stop_readers() {
 # only it): pass TERM to every worker, whose own trap then restores its
 # region with further signals ignored, and wait for those recoveries.
 forward_term() {
-  trap - TERM INT
+  # Ignore, not reset: a second TERM or INT (a group signal, a repeated
+  # cancel) must not kill the wave while its workers are still recovering.
+  trap '' TERM INT
   echo "secondary wave interrupted; stopping workers so each can recover" >&2
   for pid in ${pids[@]+"${pids[@]}"}; do
     kill -TERM "${pid}" 2>/dev/null || true

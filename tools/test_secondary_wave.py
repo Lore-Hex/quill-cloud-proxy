@@ -20,6 +20,9 @@ import unittest
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
+# CI runs Linux bash 5; macOS /bin/bash is 3.2. TR_TEST_BASH runs the scripts
+# under test with another bash (for example Homebrew's) to match CI locally.
+TEST_BASH = os.environ.get("TR_TEST_BASH", "/bin/bash")
 EU = ["europe-west4", "quill-enclave-mig-eu", "quill-enclave-mig-eu-", "eu",
       "api.quillrouter.com,api-europe-west4.quillrouter.com", "quill-enclave-tpl-eu-100",
       "c3-standard-4", "TDX", "active", "none"]
@@ -156,7 +159,7 @@ class Harness:
         args: list[str] = []
         for region in regions:
             args += ["--", *region]
-        return subprocess.run(["/bin/bash", str(ROOT / "tools/roll-secondary-wave.sh"), *args],
+        return subprocess.run([TEST_BASH, str(ROOT / "tools/roll-secondary-wave.sh"), *args],
                               cwd=ROOT, env=self.env(**extra), capture_output=True, text=True, timeout=60)
 
     def commands(self) -> str:
@@ -253,7 +256,7 @@ class WaveTests(unittest.TestCase):
 
     def test_duplicate_region_and_malformed_arguments_are_refused(self):
         self.assertEqual(self.h.wave(EU, EU).returncode, 2)
-        bad = subprocess.run(["/bin/bash", str(ROOT / "tools/roll-secondary-wave.sh"), "--", *EU[:9]],
+        bad = subprocess.run([TEST_BASH, str(ROOT / "tools/roll-secondary-wave.sh"), "--", *EU[:9]],
                              cwd=ROOT, env=self.h.env(), capture_output=True, text=True, timeout=10)
         self.assertEqual(bad.returncode, 2)
         self.assertEqual(self.h.commands(), "")
@@ -265,6 +268,18 @@ def wait_for(path: Path, seconds: float = 20) -> None:
         if time.monotonic() > deadline:
             raise AssertionError(f"timed out waiting for {path}")
         time.sleep(0.05)
+
+
+def final_state(path: Path, seconds: float = 20) -> str:
+    """The worker's recorded outcome once it is final (it is written after recovery returns)."""
+    deadline = time.monotonic() + seconds
+    while True:
+        value = path.read_text().strip() if path.exists() else ""
+        if value in {"promoted", "recovered", "recovery-failed"}:
+            return value
+        if time.monotonic() > deadline:
+            raise AssertionError(f"{path} never reached a final state (last: {value!r})")
+        time.sleep(0.02)
 
 
 class DeadlineAndSignalTests(unittest.TestCase):
@@ -283,7 +298,7 @@ class DeadlineAndSignalTests(unittest.TestCase):
         for region in regions:
             args += ["--", *region]
         env = self.h.env(TR_ROLLOUT_STATE_DIR=str(self.state), **extra)
-        return subprocess.Popen(["/bin/bash", str(ROOT / "tools/roll-secondary-wave.sh"), *args], cwd=ROOT, env=env,
+        return subprocess.Popen([TEST_BASH, str(ROOT / "tools/roll-secondary-wave.sh"), *args], cwd=ROOT, env=env,
                                 stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, start_new_session=True)
 
     def test_deadline_stops_the_mig_wait_and_a_slow_recovery_still_completes(self):
@@ -294,7 +309,7 @@ class DeadlineAndSignalTests(unittest.TestCase):
         self.assertEqual(proc.returncode, 1, out + err)
         self.assertTrue((self.h.marks / "recovered-us-east4").exists(), out)
         self.assertIn("us-east4: FAILED: its rollout deadline passed before promotion", out)
-        self.assertEqual((self.state / "us-east4").read_text(), "recovered\n")
+        self.assertEqual(final_state(self.state / "us-east4"), "recovered")
         # Deadline (3 s) + at most one MIG round + the 4 s recovery, not 120 rounds.
         self.assertLess(elapsed, 30)
         self.assertGreaterEqual(elapsed, 7)
@@ -308,7 +323,7 @@ class DeadlineAndSignalTests(unittest.TestCase):
         self.assertEqual(proc.returncode, 143, out + err)
         for region in ("europe-west4", "us-east4"):
             self.assertTrue((self.h.marks / f"recovered-{region}").exists(), out + err)
-            self.assertEqual((self.state / region).read_text(), "recovered\n")
+            self.assertEqual(final_state(self.state / region), "recovered")
 
     def test_group_signal_during_recovery_cannot_cut_it_short(self):
         # A group-wide TERM (what GNU timeout and a cancelling runner send)
@@ -318,7 +333,7 @@ class DeadlineAndSignalTests(unittest.TestCase):
         os.killpg(proc.pid, signal.SIGTERM)
         proc.communicate(timeout=60)
         wait_for(self.h.marks / "recovered-us-east4", 15)
-        self.assertEqual((self.state / "us-east4").read_text(), "recovered\n")
+        self.assertEqual(final_state(self.state / "us-east4"), "recovered")
 
     def test_group_signal_before_recovery_still_recovers(self):
         # A group TERM reaches the worker and the wave at once; the wave then
@@ -340,7 +355,7 @@ class DeadlineAndSignalTests(unittest.TestCase):
                     time.sleep(0.005)
                 proc.communicate(timeout=60)
                 wait_for(self.h.marks / "recovered-us-east4", 15)
-                self.assertEqual((self.state / "us-east4").read_text(), "recovered\n")
+                self.assertEqual(final_state(self.state / "us-east4"), "recovered")
 
     def test_a_second_signal_after_the_first_cannot_abort_the_exit_path(self):
         # Deterministic form of the race above: the worker's own TERM/INT
@@ -359,13 +374,26 @@ class DeadlineAndSignalTests(unittest.TestCase):
             with self.subTest(first=first.name):
                 if out.exists():
                     out.unlink()
-                proc = subprocess.Popen(["/bin/bash", "-c", harness])
+                proc = subprocess.Popen([TEST_BASH, "-c", harness])
                 time.sleep(0.3)
                 proc.send_signal(first)
                 time.sleep(0.3)
                 proc.send_signal(signal.SIGTERM)  # the wave's forwarded TERM
                 proc.wait(timeout=10)
                 self.assertTrue(out.exists(), "a second signal aborted the exit path")
+
+    def test_the_wave_outlives_a_second_term_until_its_workers_recover(self):
+        proc = self.start(USE, MIG_NEVER_STABLE="1", SLOW_RECOVERY="3")
+        wait_for(self.h.marks / "deployed-us-east4")
+        os.kill(proc.pid, signal.SIGTERM)
+        wait_for(self.h.marks / "recovering-us-east4")
+        os.kill(proc.pid, signal.SIGTERM)  # a second TERM while the worker recovers
+        time.sleep(1)
+        self.assertIsNone(proc.poll(), "the wave died before its worker finished recovering")
+        out, err = proc.communicate(timeout=60)
+        self.assertEqual(proc.returncode, 143, out + err)
+        # The worker wrote its outcome before the wave exited.
+        self.assertEqual((self.state / "us-east4").read_text().strip(), "recovered")
 
     def test_peer_failure_cuts_the_mig_wait_short(self):
         started = time.monotonic()
@@ -412,7 +440,7 @@ class DeadlineAndSignalTests(unittest.TestCase):
             os.kill(pid, signal.SIGKILL)
         proc.communicate(timeout=60)
         self.assertTrue((self.h.marks / "recovered-us-east4").exists())
-        self.assertEqual((self.state / "us-east4").read_text(), "recovered\n")
+        self.assertEqual(final_state(self.state / "us-east4"), "recovered")
 
 
 class FinalizerTests(unittest.TestCase):
@@ -432,7 +460,7 @@ class FinalizerTests(unittest.TestCase):
                 (state_dir / region).write_text(state + "\n")
             env = h.env(TR_ROLLOUT_STATE_DIR=str(state_dir), QUILL_GCP_ENCLAVE_PENDING_INVENTORY=str(temp / "none"),
                         TR_ROLLOUT_SECONDARY_REGIONS=secondaries, DRAIN_REGION=region)
-            result = subprocess.run(["/bin/bash", str(ROOT / "tools/cleanup-enclave-rollout-drains.sh")], cwd=ROOT,
+            result = subprocess.run([TEST_BASH, str(ROOT / "tools/cleanup-enclave-rollout-drains.sh")], cwd=ROOT,
                                     env=env, capture_output=True, text=True, timeout=30)
             return result.returncode, h.commands()
 
@@ -484,7 +512,7 @@ class WorkerTests(unittest.TestCase):
         extra = {"QUILL_USAGE_HEARTBEAT": "on", "QUILL_TERMINATE_AT_CAP": "on"}
         if wave_dir is not None:
             extra["TR_SECONDARY_WAVE_DIR"] = str(wave_dir)
-        return subprocess.run(["/bin/bash", str(ROOT / "tools/roll-secondary-region.sh"), *USE],
+        return subprocess.run([TEST_BASH, str(ROOT / "tools/roll-secondary-region.sh"), *USE],
                               cwd=ROOT, env=self.h.env(**extra), capture_output=True, text=True, timeout=30)
 
     def test_region_is_untouched_when_a_peer_already_failed(self):
@@ -506,7 +534,7 @@ class WorkerTests(unittest.TestCase):
         env_fail = "tools/wait-region-attested.sh quill-enclave-mig-useast4- us-east4"
         extra = {"QUILL_USAGE_HEARTBEAT": "on", "QUILL_TERMINATE_AT_CAP": "on",
                  "TR_SECONDARY_WAVE_DIR": str(wave), "FAIL_STEP": env_fail}
-        result = subprocess.run(["/bin/bash", str(ROOT / "tools/roll-secondary-region.sh"), *USE],
+        result = subprocess.run([TEST_BASH, str(ROOT / "tools/roll-secondary-region.sh"), *USE],
                                 cwd=ROOT, env=self.h.env(**extra), capture_output=True, text=True, timeout=30)
         self.assertEqual(result.returncode, 1, result.stderr)
         self.assertEqual((wave / "abort").read_text(), "us-east4\n")
@@ -539,7 +567,7 @@ class RecoveryLockTests(unittest.TestCase):
                 'section() { echo "start $1" >> "$LOG"; sleep 0.3; echo "end $1" >> "$LOG"; }\n'
                 'with_wave_dns_lock section "$1"\n')
             env = {"PATH": h.path, "TR_SECONDARY_WAVE_DIR": str(wave), "LOG": str(log)}
-            procs = [subprocess.Popen(["/bin/bash", "-c", script, "x", name], env=env) for name in "ab"]
+            procs = [subprocess.Popen([TEST_BASH, "-c", script, "x", name], env=env) for name in "ab"]
             for proc in procs:
                 self.assertEqual(proc.wait(timeout=20), 0)
             events = log.read_text().splitlines()
