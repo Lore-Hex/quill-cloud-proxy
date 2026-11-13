@@ -175,6 +175,7 @@ jobs:
           python3 tools/test_aws_fargate_pins.py
           python3 tools/test_check_trust_copies.py
           python3 tools/test_check_trust_signatures.py
+          python3 tools/test_workflow_action_policy.py
           python3 tools/test_wait_stage_d_policy.py
           python3 tools/test_reconcile_enclave_dns.py
           python3 tools/test_nyte_acme_iam.py
