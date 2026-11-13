@@ -25,8 +25,8 @@ COORDINATOR_PIN = REPO_ROOT / "tools" / "cloud-rollout-source.json"
 
 # MAX_ADMISSION_WAIT_SECONDS of scripts/deploy/cloud_rollout.py in quill-router at
 # the pinned commit (raised from two hours in quill-router #1481, 2026-10-02;
-# unchanged by FIFO admission, #2557, by schema v3, #2568, and by the holdback
-# lease-over check, #2573).
+# unchanged by FIFO admission, #2557, by schema v3, #2568, by the holdback
+# lease-over check, #2573, and by the control-plane probe's limiter fix, #2581).
 PINNED_COORDINATOR_CAP_SECONDS = 4 * 3600
 # The coordinator's maximum lease TTL (`60 <= ttl <= 43_200`), and GitHub's
 # default job timeout, which bounds the rollout job that holds the lease.
@@ -105,17 +105,31 @@ def test_the_coordinator_pin_names_the_commit_whose_cap_the_wait_assumes() -> No
     assert set(pin) == {"commit", "sha256"}
     assert re.fullmatch(r"[a-f0-9]{40}", pin["commit"])
     assert re.fullmatch(r"[a-f0-9]{64}", pin["sha256"])
-    # quill-router 90dfc68a (2026-11-13, #2573 merged): a grant that leases the
-    # protected cloud first reads that cloud's release evidence, and refuses
-    # when it is readable and differs or is invalid. That sits on top of
-    # schema v3 component leases with the read-only `lanes` command
-    # tools/gate_hold.py reads (#2568) and FIFO admission (#2557). It keeps
-    # the four hour cap and 12 h maximum TTL that the wait and TTL above
-    # assume (MAX_ADMISSION_WAIT_SECONDS = 4 * 3600 and 60 <= ttl <= 43_200 at
-    # that commit). The new read runs only inside a grant, so in this workflow
-    # only the admit-cloud job above can reach it: the rollout job and its
-    # finalizer run `assert`, `lanes` and `release`, which never do. The
-    # content digest is the file's sha256 at that commit, which
-    # tools/cloud-rollout.py re-checks before every use.
-    assert pin["commit"] == "90dfc68ac587ef39b9baa449d8b7dd9405ecd627"
-    assert pin["sha256"] == "85037e7f5176e599ffc44213e19824ba2595acc416a6cc89624b79dfd3a18f94"
+    # quill-router bba69ab4, the head of #2581 (draft). RE-PIN BEFORE MERGE:
+    # this must name #2581's merge commit on quill-router main, and the digest
+    # must be recomputed there (it stays the same unless cloud_rollout.py
+    # changes again before that merge).
+    #
+    # #2581: the v3 release probe of a control-plane lease passes the
+    # application's own source limiter 429, matched byte for byte, so outside
+    # traffic that spends the shared unauthenticated bucket can no longer hold
+    # a finished control-plane lease. fetch converts a Retry-After only when it
+    # is one to nine ASCII digits, so a decimal past Python's 4300 digit limit
+    # or superscript digits give up as the HTTP error instead of refusing a
+    # grant. That sits on top of the holdback lease-over check (#2573), schema
+    # v3 component leases with the read-only `lanes` command tools/gate_hold.py
+    # reads (#2568) and FIFO admission (#2557). It keeps the four hour cap and
+    # 12 h maximum TTL that the wait and TTL above assume
+    # (MAX_ADMISSION_WAIT_SECONDS = 4 * 3600 and 60 <= ttl <= 43_200 at that
+    # commit), and a fetch still sleeps at most 5 s between attempts, so the
+    # admission attempt above is unchanged. The holdback read (#2573) runs
+    # only inside a grant, so in this workflow only the admit-cloud job above
+    # can reach it: the rollout job and its finalizer run `assert`, `lanes`
+    # and `release`, which never do. The probe change runs only in `release`
+    # and `recover` of a v3 control-plane lease, which this workflow never
+    # holds: it reserves as the gateway, and under the v2 journal production
+    # runs today `release` probes the whole cloud. The content digest is the
+    # file's sha256 at that commit, which tools/cloud-rollout.py re-checks
+    # before every use.
+    assert pin["commit"] == "bba69ab41f5e7f23992ead168cb50f8c24223cb0"
+    assert pin["sha256"] == "21e5ccf9853be7658b3b0838f4df60acca6ab381082bc784277af9d7de3b5e14"
