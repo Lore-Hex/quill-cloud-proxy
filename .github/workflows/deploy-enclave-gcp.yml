@@ -640,7 +640,15 @@ jobs:
     # next router run had taken the freed lease. Four hours is the pinned
     # coordinator's cap (MAX_ADMISSION_WAIT_SECONDS) and the router's own wait
     # for the mirror case, a gateway rollout holding the lease about 2 h 20 min.
-    timeout-minutes: 250
+    # The job limit covers that wait and one whole admission attempt after it:
+    # the last attempt starts as the wait ends, and may be the one granted. At
+    # the pinned coordinator's own limits an attempt takes under 12 minutes
+    # (it probes the other clouds, and since quill-router #2573 first reads
+    # the protected cloud's release evidence), and what runs before the wait
+    # under 7. A job that ended inside the attempt could be killed with the
+    # journal write in flight, leaving a lease that no job holds or releases.
+    # parent/tests/test_gcp_deploy_admission.py recomputes the sum.
+    timeout-minutes: 260
     outputs:
       operation: ${{ steps.admit.outputs.TR_DEPLOY_MUTEX_OPERATION }}
     steps:
