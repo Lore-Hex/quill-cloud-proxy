@@ -48,6 +48,9 @@ STAGE_D_MISSING_EVIDENCE_ROUTE_WARNED=0
 # Every other failure (attestation, image, instance count, DNS) is the
 # gateway's alone and keeps its ordinary status.
 CP_DEPENDENT_STATUS=65
+# Set once this run swaps a first deployment's cold CNAME. Such a run has DNS
+# and certificate side effects, so its failures are never offered for a re-run.
+cold_bootstrap=0
 # IPs can be reused across workflow retries and rollback boots. Keep retries
 # within this invocation idempotent, but require fresh evidence for each gate.
 CANARY_RUN_ID="${GITHUB_RUN_ID:-manual}-${GITHUB_RUN_ATTEMPT:-1}-$(python3 -c 'import uuid; print(uuid.uuid4().hex)')"
@@ -203,6 +206,10 @@ on_exit() {
   rm -rf "${response_dir}"
   if [ "${status}" -ne 0 ] && [ "${promoted_cold_alias}" = "1" ]; then
     restore_cold_alias || true
+  fi
+  if [ "${status}" -eq "${CP_DEPENDENT_STATUS}" ] && [ "${cold_bootstrap}" = "1" ]; then
+    echo "${REGION}: first-deployment bootstrap failed on the request path; not offered for a re-run" >&2
+    status=1
   fi
   exit "${status}"
 }
@@ -396,6 +403,7 @@ for ip in "${ips[@]}"; do
 done
 
 if replace_cold_alias_with_bootstrap_ip; then
+  cold_bootstrap=1
   # Do not trigger ACME while recursive resolvers may still follow the old
   # CNAME. A failed authorization is rate-limited; waiting once is cheaper and
   # more reliable than retrying a challenge against stale DNS.

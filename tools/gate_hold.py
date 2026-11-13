@@ -12,25 +12,29 @@ one of those gates must not read as a gateway failure.
 
 Each gate runs unchanged. The rules for its verdict:
 
-  * A pass is a pass, as before, with one addition: a canary that passed while
-    the control plane moved must also have fresh gateway-only evidence from
-    every monitor, because a stalled ingest path otherwise shows the canary
-    only old rows.
+  * A pass is a pass, as before, with one addition. A canary that passed
+    while the control plane moved (or while its lanes were unreadable) also
+    needs the latest fresh `tls_health` and `attestation_nonce` row for the
+    region from every monitor to be up. The canary reads an unreachable
+    status page as `unknown` and passes; a failing latest row then makes it
+    the gateway's failure, and a missing or not-up row makes it inconclusive.
   * A failure counts against the gateway, at once and as before, when the gate
     failed on something the control plane does not touch, or when the control
     plane was provably still and healthy over the gate's window: no
     control-plane or public-surface lease at either end of the window, no
-    lease granted during it (lane epochs unchanged), status.json readable,
-    no fresh control-plane probe down, and every monitor ingesting.
+    lease granted during it (lane epochs and the journal id unchanged),
+    status.json readable, no fresh control-plane probe down, and every
+    monitor ingesting.
   * Otherwise the result is inconclusive. The region stays as the gate left
     it (out of canonical DNS), nothing is promoted, and the whole gate runs
-    again with a fresh window. When a region has been held for
-    TR_CP_HOLD_MAX_SECONDS in total, the gate fails closed, exactly as it
-    would have failed before.
+    again with a fresh window, until a hard deadline: the gate's own hold
+    bound (TR_CP_HOLD_MAX_SECONDS, a clock per gate) or the job's budget for
+    all holds (TR_CP_HOLD_BUDGET_SECONDS), whichever comes first. An attempt
+    in flight at the deadline is stopped, and the gate fails closed.
 
 So a gate passes only when the underlying gate passes; a control-plane
-failure can delay the gateway's verdict by at most the bound, never turn it
-into a pass.
+failure can delay the gateway's verdict by a bounded time, never turn it into
+a pass.
 
 The loop, the hold clock and the status.json fetch live in
 tools/gate-hold-lib.sh, which runs each gate command exactly as before. This
@@ -59,6 +63,11 @@ MONITOR_REGIONS = "us-central1,europe-west4"
 # control plane. Its other failures (attestation, image, instance count, DNS)
 # are the gateway's alone.
 CP_DEPENDENT_STATUS = 65
+# tools/gate-hold-lib.sh reports an attempt it stopped at its time cap with
+# this status. A pre-DNS attempt that ran out of time may have been waiting on
+# the control plane (the settled-evidence lookup), so it counts as a
+# request-path failure.
+TIMEOUT_STATUS = 124
 # The monitor's own probes of the control plane, sent straight to
 # trustedrouter.com without any enclave (quill-router synthetic/probes.py).
 CONTROL_PLANE_PROBES = frozenset(
@@ -107,6 +116,9 @@ def _fresh(row: Mapping[str, Any], since: float) -> bool:
 def valid_lanes(snapshot: object) -> bool:
     if not isinstance(snapshot, Mapping) or snapshot.get("schema_version") not in (2, 3):
         return False
+    if snapshot["schema_version"] == 3 and not (
+            isinstance(snapshot.get("journal_id"), str) and len(snapshot["journal_id"]) == 32):
+        return False
     lanes = snapshot.get("lanes")
     if not isinstance(lanes, Mapping):
         return False
@@ -132,6 +144,9 @@ def control_plane_moved(before: object, after: object) -> str | None:
     assert isinstance(before, Mapping) and isinstance(after, Mapping)
     if before["schema_version"] != after["schema_version"]:
         return "the journal format changed during the window"
+    if before.get("journal_id") != after.get("journal_id"):
+        # A downgrade and upgrade in between: the epochs are not comparable.
+        return "the journal was re-created during the window"
     for lane in MOVING_LANES:
         for snapshot in (before, after):
             entry = snapshot["lanes"][lane]
@@ -148,6 +163,8 @@ def control_plane_unhealthy(payload: object, since: float, monitors: Iterable[st
     if rows is None:
         return "status.json is unreadable (the control plane serves it)"
     expected = {m.strip() for m in monitors if m.strip()}
+    if not expected:
+        return "no monitor regions are configured"
     ingesting: set[str] = set()
     for row in rows:
         if not _fresh(row, since):
@@ -186,21 +203,39 @@ def gateway_only_failure(payload: object, region: str, since: float,
     return None
 
 
-def canary_evidence_missing(payload: object, region: str, since: float,
-                            monitors: Iterable[str]) -> str | None:
-    """Why a canary that passed saw no fresh gateway evidence, or None."""
+def canary_evidence(payload: object, region: str, since: float,
+                    monitors: Iterable[str]) -> tuple[str, str] | None:
+    """Whether fresh enclave-only rows confirm a canary that passed blind.
+
+    The canary (tools/watchdog.py) reads status.json, and reads an unreachable
+    page as `unknown`, never `down`. So while the control plane moves, its
+    pass stands only if the latest fresh `tls_health` and `attestation_nonce`
+    row for this region from every monitor is up. Returns None when they are,
+    ('gateway', why) when one is failing, and ('inconclusive', why) otherwise.
+    """
     rows = _rows(payload)
     if rows is None:
-        return "status.json is unreadable"
+        return "inconclusive", "status.json is unreadable"
     expected = {(m.strip(), p) for m in monitors if m.strip() for p in GATEWAY_ONLY_PROBES}
-    seen = {
-        (str(row.get("monitor_region") or ""), str(row.get("probe_type") or ""))
-        for row in rows
-        if row.get("target_region") == region and _fresh(row, since)
-    }
-    missing = sorted(expected - seen)
+    if not expected:
+        return "inconclusive", "no monitor regions are configured"
+    latest: dict[tuple[str, str], tuple[float, str]] = {}
+    for row in rows:
+        key = (str(row.get("monitor_region") or ""), str(row.get("probe_type") or ""))
+        created = _timestamp(row.get("created_at"))
+        if row.get("target_region") != region or key not in expected or created is None or created < since:
+            continue
+        if key not in latest or created > latest[key][0]:
+            latest[key] = (created, _status(row))
+    for (monitor, probe), (_, status) in sorted(latest.items()):
+        if status in FAILING:
+            return "gateway", f"the latest {probe} from {monitor} read {status}"
+    missing = sorted(expected - latest.keys())
     if missing:
-        return "no fresh " + ", ".join(f"{p} from {m}" for m, p in missing)
+        return "inconclusive", "no fresh " + ", ".join(f"{p} from {m}" for m, p in missing)
+    not_up = sorted(f"{p} from {m} read {s or 'nothing'}" for (m, p), (_, s) in latest.items() if s != "up")
+    if not_up:
+        return "inconclusive", ", ".join(not_up)
     return None
 
 
@@ -210,7 +245,7 @@ def classify(kind: str, status: int, region: str, since: float, before: object, 
     monitors = list(monitors)
     if kind == "canary":
         return "gateway", "the canary reads only enclave-answered probes"
-    if kind == "pre-dns" and status != CP_DEPENDENT_STATUS:
+    if kind == "pre-dns" and status not in (CP_DEPENDENT_STATUS, TIMEOUT_STATUS):
         return "gateway", f"a check the control plane does not touch failed (exit {status})"
     if kind == "pong":
         own = gateway_only_failure(payload, region, since, monitors)
@@ -242,10 +277,11 @@ def decide(kind: str, region: str, status: int, since: float, before: object, af
         moved = control_plane_moved(before, after)
         if moved is None:
             return "pass"
-        missing = canary_evidence_missing(payload, region, since, monitors)
-        if missing is None:
+        evidence = canary_evidence(payload, region, since, monitors)
+        if evidence is None:
             return "pass"
-        return f"inconclusive:the canary passed while {moved}, but saw {missing}"
+        verdict, reason = evidence
+        return f"{verdict}:the canary passed while {moved}, but {reason}"
     verdict, reason = classify(kind, status, region, since, before, after, payload, monitors)
     return f"{verdict}:{reason}"
 
@@ -262,8 +298,12 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--status-json", required=True)
     parser.add_argument("--monitors", default=os.environ.get("WAIT_UP_MONITOR_REGIONS", MONITOR_REGIONS))
     args = parser.parse_args(argv)
+    monitors = [m.strip() for m in args.monitors.split(",") if m.strip()]
+    if not monitors:
+        # Every rule would pass vacuously over an empty monitor set.
+        parser.error("WAIT_UP_MONITOR_REGIONS names no monitor region")
     print(decide(args.kind, args.region, args.status, args.since, _load(args.before), _load(args.after),
-                 _load(args.status_json), args.monitors.split(",")))
+                 _load(args.status_json), monitors))
     return 0
 
 

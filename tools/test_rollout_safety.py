@@ -806,8 +806,9 @@ printf '%s\\n' "${GCLOUD_JSON}"
         self.assertEqual(west_args, renamed)
         self.assertIn("          bash tools/roll-secondary-region.sh \\", west)
         for expected in (
-            # 55 minutes plus the 30-minute control-plane hold bound.
-            "timeout-minutes: 85",
+            # The forward deadline (55 minutes plus the job's 45-minute hold
+            # budget) and the 45 minutes recovery keeps.
+            "timeout-minutes: 145",
             "            us-west1 \\",
             "            quill-enclave-mig-uswest1 \\",
             "            quill-enclave-mig-uswest1- \\",
@@ -1339,8 +1340,8 @@ esac
             # Gates that go through the control plane run under gate_hold,
             # which runs them unchanged (tools/test_gate_hold.py).
             'rollout_step gate_hold pre-dns "${region}" bash tools/verify-region-before-dns.sh',
-            'rollout_step gate_hold pong "${region}" interruptible bash tools/wait-region-synthetic-up.sh',
-            'gate_hold canary "${region}" interruptible python3 tools/watchdog.py',
+            'rollout_step gate_hold pong "${region}" bash tools/wait-region-synthetic-up.sh',
+            'gate_hold canary "${region}" python3 tools/watchdog.py',
             'rollout_step update_drain clear "${region}"',
         ):
             self.assertIn(command, function)

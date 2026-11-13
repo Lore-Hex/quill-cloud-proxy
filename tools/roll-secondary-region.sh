@@ -147,14 +147,19 @@ on_exit() {
     else
       echo "${region}: rollout failed; restoring and verifying the previous template" >&2
     fi
-    if bash tools/recover-gcp-region.sh \
+    local recovery_status=0
+    bash tools/recover-gcp-region.sh \
       "${region}" "${mig}" "${instance_filter}" "${api_hosts}" \
       "${previous_template}" "${prior_drain_state}" \
-      "${prior_drain_origin}"; then
+      "${prior_drain_origin}" || recovery_status=$?
+    if [ "${recovery_status}" -eq 0 ]; then
       record_state recovered
     else
       record_state recovery-failed
       echo "${region}: automatic recovery failed; region remains drained" >&2
+      if [ "${recovery_status}" -eq 65 ]; then
+        echo "::error::${region}: the previous template is restored and attested, but its request-path check (inference, streaming or settled evidence through trustedrouter.com) failed, which a control-plane fault causes as readily as a gateway one. The region stays out of canonical DNS. Once trustedrouter.com is healthy, re-run tools/recover-gcp-region.sh for ${region} to verify and re-add it." >&2
+      fi
     fi
   fi
   if [ "${owns_lock_dir}" -eq 1 ]; then
@@ -286,11 +291,24 @@ rollout_step bash tools/deploy-gcp-mig.sh "${region}"
 rollout_step wait_region_stable_with_dns_refresh "${mig}" "${region}"
 rollout_step interruptible bash tools/wait-region-attested.sh "${instance_filter}" "${region}"
 # Gates that go through the control plane hold, never pass, while it may be
-# the cause, and fail closed after the region's hold bound (tools/gate_hold.py).
-# Holding stops at once when a peer fails or the deadline passes.
-GATE_HOLD_BETWEEN=check_not_aborted
-rollout_step gate_hold pre-dns "${region}" bash tools/verify-region-before-dns.sh \
-  "${region}" "${instance_filter}" "${IMAGE_DIGEST}"
+# the cause, and fail closed at hard deadlines (tools/gate-hold-lib.sh). A gate
+# in flight or holding stops at once when a peer fails or the deadline passes,
+# exactly as interruptible does.
+gate_should_stop() {
+  [ "${promoted}" -eq 0 ] && { peer_failed || { [ -n "${deadline}" ] && [ "$(date +%s)" -ge "${deadline}" ]; }; }
+}
+GATE_HOLD_STOP=gate_should_stop
+GATE_HOLD_ON_STOP=check_not_aborted
+if [ -z "${previous_template}" ]; then
+  # A first deployment's gate swaps the cold CNAME, waits for propagation and
+  # mints a certificate: never re-run it. It fails as it always did.
+  rollout_step bash tools/verify-region-before-dns.sh \
+    "${region}" "${instance_filter}" "${IMAGE_DIGEST}"
+else
+  TR_CP_HOLD_ATTEMPT_SECONDS=720 \
+    rollout_step gate_hold pre-dns "${region}" bash tools/verify-region-before-dns.sh \
+      "${region}" "${instance_filter}" "${IMAGE_DIGEST}"
+fi
 
 # A first-time region still has a cold CNAME. Only this post-canary reconcile
 # may promote it to a region-only A record while canonical traffic stays drained.
@@ -303,9 +321,9 @@ presence="$(gate_status_presence "${region}" "${presence_mode}")"
 check_not_aborted
 if [ "${presence}" = present ]; then
   trigger_synthetic_workers
-  WAIT_UP_SLEEP=10 WAIT_UP_ROUNDS=72 \
-    rollout_step gate_hold pong "${region}" interruptible bash tools/wait-region-synthetic-up.sh "${region}" "${region}"
-  if ! gate_hold canary "${region}" interruptible python3 tools/watchdog.py \
+  WAIT_UP_SLEEP=10 WAIT_UP_ROUNDS=72 TR_CP_HOLD_ATTEMPT_SECONDS=1500 \
+    rollout_step gate_hold pong "${region}" bash tools/wait-region-synthetic-up.sh "${region}" "${region}"
+  if ! TR_CP_HOLD_ATTEMPT_SECONDS=600 gate_hold canary "${region}" python3 tools/watchdog.py \
       --regions "${region}" \
       --duration-min 3 \
       --rollback-after 3 \
