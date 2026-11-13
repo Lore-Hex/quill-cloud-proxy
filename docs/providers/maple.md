@@ -44,6 +44,83 @@ Changes to the dedicated worker are security-sensitive even if the model name
 is unchanged. Provider deployment overlap is still necessary to avoid an
 outage while a new security-sensitive release is reviewed and staged.
 
+## Reviewed backend update (2026-11-12)
+
+The exact candidate tracked in [review #762](https://github.com/Lore-Hex/quill-cloud-proxy/issues/762)
+replaces the front PCR0 with
+`4d867ac23d7a42b46a458452fe59f2f2c831b0c553d768287c9ca01f2015b177272b9e807ad585b498ff8a5f3b4141c2`.
+It binds source `bcca93e3c336c4b9eb07a651926f62ea1b8b80e6` and the signed
+production approval `9604dc8f345bbd08882ce35aa8c254d581240540`. Maple built the
+release artifact at the approval commit; the chain `bcca93e3 -> f19e2f96 ->
+9604dc8f` changes only the dev and prod measurement files, which the verifier
+checks entry by entry (#761). The former `0cb6ebb0...` measurement is replaced,
+not retained. Maple's intermediate release from `9d05fef5` (PCR0 `99eb8e5c...`,
+review #753) was never pinned and is superseded.
+
+Maple production already serves this measurement. On November 13 (UTC), six
+fresh-nonce attestation documents from `https://enclave.trymaple.ai` all
+reported this PCR0 from one Nitro module, and the
+`maple/dealignai/deepseek-v4.1-flash-1017-uncensored` route-availability probe
+has failed against the old pin since 2026-11-12 07:01 UTC (QUILL-ROUTER-DX).
+The pin below comes from the rebuild, not from those live values.
+
+The independent credential-free ARM64 build in
+[run 43368509587](https://github.com/Lore-Hex/quill-cloud-proxy/actions/runs/43368509587)
+matches `image.eif`, `pcr.json`, `SHA256SUMS` and `handoff.json` byte for byte.
+EIF SHA-256 is
+`41b84cf9d85c7594659e718e71c5c106a09d83d9996e7cf8bb10c98224e62346`.
+The same run passed exact-commit GitHub/Sigstore provenance, the append-only
+P-384 approval history check (175 entries, the new PCR0 last, signed by the
+pinned history key), a credential-free front attestation against the new pin
+in 146 ms, and a deliberate wrong-pin rejection. A local repeat passed in
+214 ms and rejected the wrong pin; the history signature was also checked
+locally and fails over the previous measurement. No credential or inference
+was sent.
+
+The protected tree changes in 68 paths, so this update could not qualify for
+automatic publication. The source diff from `c499ceba` (29 commits) was
+reviewed:
+
+- The enclave's build inputs are unchanged: no change to
+  `services/opensecret/flake.nix`, `flake.lock`, `Cargo.toml`, `Cargo.lock`,
+  toolchain, `scripts/ci/build_opensecret_eif.sh` or submodule pointers. The
+  EIF source filter admits only `src/` trees, Cargo manifests and one test
+  fixture, so the image delta is `services/opensecret/src` only.
+- 27 paths are outside the image: the root `flake.nix` (adds `patchelf` and
+  `stdenv.cc` to a CI-scripts check), desktop AppImage CI under `scripts/ci/`
+  (`build_opensecret_eif.sh` does not source `_common.sh`), a Windows CI
+  action, agent skill files, the Rust and TypeScript SDKs, two docs, one test
+  script and four SQL migrations, which the source filter excludes. This
+  helper vendors the SDK from its own hash-pinned revision, so the SDK changes
+  do not reach it.
+- 20 image paths change only test code: 9 test-only files and 11 production
+  files whose hunks are all inside `#[cfg(test)]` modules.
+- The managed model's route, dedicated worker identity and
+  `routing-v2-maple-instances-v9` policy are unchanged. Kimi K3 is retired:
+  its route, catalog entry and image-description fallback are removed, and
+  K3.1 Pro becomes Auto Powerful's fallback. GLM 5.3 buckets move from 75/25
+  to 99/1 Continuum/Tinfoil. None of these selects the managed model.
+- Attestation routes, `encrypt.rs`, the Transport V2 core, `jwt.rs`,
+  `private_key.rs`, `log_redaction.rs`, `maple_inference.rs`, the provider
+  client and proxy configuration are unchanged.
+- The main change is opt-in recovery codes with a seed-preserving password
+  reset. A 256-bit code from the enclave RNG wraps the existing seed through
+  the same `encrypt_seed_v1` AEAD path, with a new `recovery` credential kind
+  and domain-separated auth binding. Enrollment, rotation and disablement
+  require a valid JWT, Transport V2 and the current password. A preserving
+  reset also requires the emailed reset proof, and each failed code consumes
+  that reset request. Codes are returned only in encrypted responses, are
+  zeroized and redacted from `Debug`, and are never emailed or logged; the new
+  log lines carry user IDs and outcomes. The new notification emails use the
+  existing provider and contain only fixed text.
+- `migrations.rs` changes the Maple settings verify URL and sending addresses
+  from `trymaple.ai` to `maple.ai`. The backend host is unchanged.
+
+The helper's one-model admission restriction is unchanged. Required CI, fresh
+trust verification, measured cloud builds, signed trust publication and
+production canaries remain release gates. Future security-sensitive changes
+must still stop for review.
+
 ## Approved backend update (2026-11-10)
 
 The exact candidate tracked in [review #747](https://github.com/Lore-Hex/quill-cloud-proxy/issues/747)
