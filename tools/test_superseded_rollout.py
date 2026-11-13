@@ -26,6 +26,16 @@ def run(run_id, number, sha, status="pending", conclusion=None, event="push", br
 
 
 ROLLED = {"train": "success", "build-and-release": "success", "rollout": "success"}
+# Promoted us-central1, then a later region failed: the newer commit serves.
+PARTIAL = {"train": "success", "build-and-release": "success",
+           "rollout": {"conclusion": "failure", "steps": [
+               {"name": "Canary gate — watch us-central1 only (post-stable)", "conclusion": "success"},
+               {"name": train.PRIMARY_PROMOTION_STEP, "conclusion": "success"},
+               {"name": "Roll Europe GCP MIG", "conclusion": "failure"}]}}
+# Failed its us-central1 canary: recovered, nothing promoted.
+CANARY_FAILED = {"train": "success", "build-and-release": "success",
+                 "rollout": {"conclusion": "failure", "steps": [
+                     {"name": train.PRIMARY_PROMOTION_STEP, "conclusion": "skipped"}]}}
 SKIPPED = {"train": "success", "build-and-release": "skipped", "rollout": "skipped"}
 
 
@@ -33,15 +43,19 @@ class FakeGitHub:
     """Commit graph A -> B -> C on main unless told otherwise.
 
     `runs` may be a list of listings, returned in turn (the last repeats), to
-    model the run list changing between passes. `jobs` maps run id to job
-    conclusions; a completed run without an entry is a failed rollout.
+    model the run list changing between passes. `jobs` maps run id to its job
+    conclusions, or to a list of them, one per attempt; a value may be a dict
+    with `conclusion` and `steps`. A completed run without an entry is a
+    failed rollout. `yields` maps a run id to the run its train skipped for.
     """
 
-    def __init__(self, runs, ci=None, order=(A, B, C), main=C, fail=None, jobs=None):
+    def __init__(self, runs, ci=None, order=(A, B, C), main=C, fail=None, jobs=None, yields=None):
         self.listings = runs if runs and isinstance(runs[0], list) else [runs]
         self.ci_states = ci or {}
         self.order, self.main, self.fail = list(order), main, fail
         self.job_map = jobs or {}
+        self.yields = yields or {}
+        self.job_runs = {}
         self.calls = []
         self.reruns = []
 
@@ -57,7 +71,23 @@ class FakeGitHub:
         self.calls.append(("jobs", run_id))
         if self.fail == "typeerror":
             raise TypeError("'NoneType' object is not subscriptable")
-        return self.job_map.get(run_id, {"rollout": "failure"})
+        spec = self.job_map.get(run_id, {"rollout": "failure"})
+        jobs = []
+        for attempt, conclusions in enumerate(spec if isinstance(spec, list) else [spec], 1):
+            for name, value in conclusions.items():
+                job_id = run_id * 1000 + len(jobs)
+                self.job_runs[job_id] = run_id
+                if isinstance(value, dict):
+                    jobs.append({"id": job_id, "name": name, "run_attempt": attempt,
+                                 "conclusion": value["conclusion"], "steps": value.get("steps", [])})
+                else:
+                    jobs.append({"id": job_id, "name": name, "run_attempt": attempt, "conclusion": value, "steps": []})
+        return jobs
+
+    def job_log(self, job_id):
+        run_id = self.job_runs[job_id]
+        target = self.yields.get(run_id)
+        return "superseded: ...\n" + (f"train-yielded-to-run={target}\n" if target else "")
 
     def compare(self, base, head):
         self.calls.append(("compare", base, head))
@@ -215,6 +245,29 @@ class TrainTests(unittest.TestCase):
         self.assertTrue(decide(github).proceed)
 
 
+class GitHubClientTests(unittest.TestCase):
+    def test_jobs_reads_every_attempt_across_pages(self):
+        import json as _json
+        import subprocess as _subprocess
+        from unittest import mock
+        pages = {1: {"total_count": 3, "jobs": [{"name": "rollout", "run_attempt": 1, "conclusion": "success"},
+                                                {"name": "rollout", "run_attempt": 2, "conclusion": "cancelled"}]},
+                 2: {"total_count": 3, "jobs": [{"name": "train", "run_attempt": 2, "conclusion": "success"}]}}
+        paths = []
+
+        def fake_run(args, **kwargs):
+            path = args[-1]
+            paths.append(path)
+            page = int(path.rsplit("page=", 1)[1])
+            return _subprocess.CompletedProcess(args, 0, _json.dumps(pages[page]), "")
+
+        with mock.patch.object(train.subprocess, "run", side_effect=fake_run):
+            jobs = train.GitHub("Lore-Hex/quill-cloud-proxy").jobs(8)
+        self.assertEqual(len(jobs), 3)
+        self.assertTrue(all("filter=all" in path for path in paths))
+        self.assertTrue(train.rolled_out(type("G", (), {"jobs": lambda self, _id: jobs})(), 8))
+
+
 class RescueTests(unittest.TestCase):
     """The run others skipped for re-runs the newest of them if it did not roll out."""
 
@@ -223,14 +276,15 @@ class RescueTests(unittest.TestCase):
                 run(10, 1, A, "completed", "success"), run(9, 0, "e" * 40, "completed", "success")]
         return runs
 
-    def github(self, jobs=None, **kwargs):
+    def github(self, jobs=None, yields=None, **kwargs):
         return FakeGitHub(self.listing(), order=("e" * 40, A, B, C),
-                          jobs=jobs or {11: SKIPPED, 10: SKIPPED, 9: ROLLED}, **kwargs)
+                          jobs=jobs or {11: SKIPPED, 10: SKIPPED, 9: ROLLED, 12: CANARY_FAILED},
+                          yields=yields or {11: 12, 10: 12}, **kwargs)
 
-    def test_successor_failing_anywhere_before_rollout_reruns_the_newest_skipped_run(self):
-        # Build, trust publication, Batch grant and admission failures all leave
-        # rollout skipped; a canary failure fails it; cancellation cancels it.
-        for result in ("skipped", "failure", "cancelled", ""):
+    def test_successor_failing_before_any_promotion_reruns_the_newest_run_that_yielded(self):
+        # Build, trust publication, Batch grant and admission failures leave
+        # rollout skipped; a failed us-central1 canary fails it.
+        for result in ("skipped", "failure", ""):
             with self.subTest(rollout=result):
                 github = self.github()
                 self.assertIn("re-ran run 11", rescue(github, rollout=result))
@@ -252,12 +306,13 @@ class RescueTests(unittest.TestCase):
         self.assertEqual(github.reruns, [])
 
     def test_stops_at_the_last_rollout(self):
-        github = self.github(jobs={11: ROLLED, 10: SKIPPED, 9: ROLLED})
+        github = self.github(jobs={11: ROLLED, 10: SKIPPED, 9: ROLLED, 12: CANARY_FAILED})
         self.assertIn("rolled out", rescue(github))
         self.assertEqual(github.reruns, [])
 
     def test_failed_older_runs_are_passed_over_for_an_older_skipped_one(self):
-        github = self.github(jobs={11: {"train": "success", "build-and-release": "failure"}, 10: SKIPPED, 9: ROLLED})
+        github = self.github(jobs={11: {"train": "success", "build-and-release": "failure"}, 10: SKIPPED, 9: ROLLED,
+                                   12: CANARY_FAILED})
         github.listings[0][1]["conclusion"] = "failure"
         self.assertIn("re-ran run 10", rescue(github))
         self.assertEqual(github.reruns, [10])
@@ -274,8 +329,53 @@ class RescueTests(unittest.TestCase):
         f = "f" * 40
         github = FakeGitHub([run(12, 3, C, "in_progress"), run(11, 2, f, "completed", "success"),
                              run(10, 1, A, "completed", "success")], order=(A, C, f), main=f,
-                            jobs={11: SKIPPED, 10: SKIPPED})
+                            jobs={11: SKIPPED, 10: SKIPPED}, yields={11: 12, 10: 12})
         self.assertIn("re-ran run 10", rescue(github))
+
+    def test_a_cancelled_run_rescues_nothing_so_one_cancel_stops_the_chain(self):
+        # Review P1: cancelling a rescued re-run used to re-run the next older
+        # run, so an operator had to cancel once per skipped run.
+        github = self.github()
+        self.assertIn("cancelled", rescue(github, rollout="cancelled"))
+        self.assertEqual(github.reruns, [])
+        rescue_job = yaml.safe_load(WORKFLOW.read_text())["jobs"]["rescue-skipped"]
+        self.assertIn("!cancelled()", rescue_job["if"])
+        self.assertNotIn("always()", rescue_job["if"])
+
+    def test_only_a_run_that_yielded_to_this_run_is_rerun(self):
+        # Run 11 skipped for some other run; run 10 skipped for this one.
+        github = self.github(yields={11: 99, 10: 12})
+        self.assertIn("re-ran run 10", rescue(github))
+        self.assertEqual(github.reruns, [10])
+        nobody = self.github(yields={11: 99, 10: 98})
+        self.assertIn("run 9 rolled out", rescue(nobody))
+        self.assertEqual(nobody.reruns, [])
+
+    def test_a_dispatch_rollout_ends_the_walk(self):
+        github = self.github(jobs={11: ROLLED, 10: SKIPPED, 9: ROLLED, 12: CANARY_FAILED})
+        github.listings[0][1]["event"] = "workflow_dispatch"
+        self.assertIn("run 11 rolled out", rescue(github))
+        self.assertEqual(github.reruns, [])
+
+    def test_rollout_in_an_earlier_attempt_still_counts(self):
+        # Review P2: B rolled out in attempt 1; an operator re-ran it and
+        # attempt 2 was cancelled. The latest-attempt view called B "not rolled
+        # out", so rescue re-ran A and A's decide deployed it over live B.
+        github = FakeGitHub([run(8, 2, B, "completed", "cancelled"), run(7, 1, A, "completed", "success")],
+                            jobs={8: [ROLLED, {"train": "success", "build-and-release": "cancelled",
+                                               "rollout": "skipped"}], 7: SKIPPED},
+                            yields={7: 8}, main=B)
+        self.assertIn("promoted at least one region", rescue(github, sha=B, run_id=8, rollout="skipped"))
+        self.assertEqual(github.reruns, [])
+        self.assertFalse(decide(github, sha=A, run_id=7).proceed)
+
+    def test_a_partial_rollout_counts_as_rolled_out(self):
+        # us-central1 promoted on B before Europe failed: never rescue A over it.
+        github = self.github(jobs={11: SKIPPED, 10: SKIPPED, 9: ROLLED, 12: PARTIAL})
+        self.assertIn("promoted at least one region", rescue(github, rollout="failure"))
+        self.assertEqual(github.reruns, [])
+        older = FakeGitHub([run(12, 3, C, "completed", "failure"), run(10, 1, A, "in_progress")], jobs={12: PARTIAL})
+        self.assertFalse(decide(older).proceed)
 
     def test_the_rerun_then_deploys_its_own_commit(self):
         # After the rescue, run 11 decides again: run 12 failed, so it proceeds.
@@ -363,6 +463,13 @@ class WorkflowTests(unittest.TestCase):
         # The lease release still runs only for a run that actually reserved.
         self.assertIn("needs.admit-cloud.result == 'success'", self.jobs["finalize-cloud"]["if"])
 
+    def test_primary_promotion_step_name_matches_the_workflow(self):
+        steps = [step.get("name") for step in self.jobs["rollout"]["steps"]]
+        self.assertIn(train.PRIMARY_PROMOTION_STEP, steps)
+        # It is the first promotion: no secondary rolls before it.
+        first_secondary = next(i for i, name in enumerate(steps) if name and name.startswith("Roll ") and "us-central1" not in name)
+        self.assertLess(steps.index(train.PRIMARY_PROMOTION_STEP), first_secondary)
+
     def test_train_job_can_only_read(self):
         self.assertEqual(self.jobs["train"]["permissions"], {"actions": "read", "contents": "read"})
         self.assertIn("superseded_rollout.py decide", self.jobs["train"]["steps"][-1]["run"])
@@ -370,7 +477,7 @@ class WorkflowTests(unittest.TestCase):
     def test_rescue_job_runs_after_any_outcome_of_a_push(self):
         rescue_job = self.jobs["rescue-skipped"]
         self.assertEqual(rescue_job["needs"], ["train", "rollout"])
-        self.assertIn("always()", rescue_job["if"])
+        self.assertIn("!cancelled()", rescue_job["if"])
         self.assertIn("github.event_name == 'push'", rescue_job["if"])
         self.assertEqual(rescue_job["permissions"], {"actions": "write", "contents": "read"})
         script = rescue_job["steps"][-1]["run"]

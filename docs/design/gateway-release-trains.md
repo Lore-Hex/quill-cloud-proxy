@@ -22,10 +22,10 @@ skips this run (green, nothing built, no trust commit, no lease) when either:
 - a newer **push** run of the same workflow is queued for a strict descendant
   of this commit that is still on main, and that commit's `ci.yml` run is
   green, so the newer run ships this commit too; or
-- a newer run for a descendant still on main has **rolled out** (its `rollout`
-  job succeeded, even if a later job failed), so deploying this commit would
-  roll the gateway back. A train-skipped run concludes success but never
-  counts as rolled out.
+- a newer run for a descendant still on main has **rolled out** in any
+  attempt (its `rollout` job succeeded, or it promoted us-central1 before a
+  later failure), so deploying this commit would roll the gateway back. A
+  train-skipped run concludes success but never counts as rolled out.
 
 Every pass re-reads the run list; all waiting for a successor's CI shares one
 30-minute deadline (the job allows 40). Otherwise it proceeds. Manual
@@ -36,19 +36,28 @@ behavior before this change. The decision is taken before
 would advertise a digest that never ran. Each run still builds and attests
 exactly its own commit.
 
-## A skipped commit always ships
+## A skipped commit still ships
 
-A skip trusts a run that has not happened yet. If that run then fails at
-build, trust publication, the Batch grant, admission or a canary, or is
-cancelled, its `rescue-skipped` job (always run on pushes, `actions: write`)
-calls `superseded_rollout.py rescue`: when this run did not skip and its
-`rollout` job did not succeed, it re-runs the newest older run that skipped in
-its favor since the last rollout (an ancestor of this commit still on main),
-unless such a run is already queued again. The re-run decides afresh, finds
-the failed run is no successor, and deploys its own commit, which contains
-every older skipped one. If that also fails, its own rescue continues with
-the next older skipped run, stopping at the last rollout. A rescue that cannot
-read GitHub fails red, naming the manual step.
+A skip trusts a run that has not happened yet. If that run then fails before
+promoting any region (at build, trust publication, the Batch grant,
+admission or its us-central1 canary), its `rescue-skipped` job
+(`actions: write`, runs on pushes unless the run was cancelled) calls
+`superseded_rollout.py rescue`. It re-runs the newest older run that yielded
+to **this** run (each skip logs `train-yielded-to-run=<id>`), walking back
+only to the last run of any kind, dispatches included, that rolled out. The
+re-run decides afresh, finds this run did not roll out, and deploys its own
+commit, which contains every older commit that yielded here.
+
+"Rolled out" is judged across **every attempt** of a run (the jobs API is
+read with `filter=all`), and a rollout that promoted us-central1 back into
+canonical DNS counts even if a later region failed. So a commit already
+serving anywhere is never replaced by an older one, by `decide` or by a
+rescue, and a run that promoted any region rescues nothing.
+
+A cancelled run rescues nothing, so one cancel stops the chain during an
+incident; a commit that yielded to a cancelled run ships with the next push
+or dispatch. A rescue that cannot read GitHub fails red, naming the manual
+step.
 
 ## Bot commits
 

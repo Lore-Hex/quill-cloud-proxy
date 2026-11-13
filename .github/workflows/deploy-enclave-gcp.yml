@@ -1286,13 +1286,14 @@ jobs:
           fi
 
   # A run that others skipped for (see the train job) must not lose their
-  # commits when it fails or is cancelled before its rollout succeeds: re-run
-  # the newest older run that skipped in its favor since the last rollout.
-  # That re-run decides again, finds this run failed, and deploys its own
-  # commit, which contains every older skipped one.
+  # commits when it fails before promoting any region: re-run the newest
+  # older run that yielded to this very run since the last rollout of any
+  # run. That re-run decides again, finds this run did not roll out, and
+  # deploys its own commit, which contains every older one that yielded
+  # here. A cancelled run rescues nothing, so one cancel stops the chain.
   rescue-skipped:
     needs: [train, rollout]
-    if: ${{ always() && github.event_name == 'push' && github.repository == 'Lore-Hex/quill-cloud-proxy' }}
+    if: ${{ !cancelled() && github.event_name == 'push' && github.repository == 'Lore-Hex/quill-cloud-proxy' }}
     runs-on: ubuntu-latest
     timeout-minutes: 10
     permissions:
