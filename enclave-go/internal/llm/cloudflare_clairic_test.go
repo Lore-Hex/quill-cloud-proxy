@@ -50,12 +50,12 @@ func TestClairicNativeExtractionAndExactUsage(t *testing.T) {
 		t.Fatal(err)
 	}
 	result, err := adapter.CollectAnthropicText(bytes.NewReader(out.Bytes()))
-	if err != nil || result.Text != clairicResult || result.Usage.InputTokens != 308 || result.Usage.OutputTokens != 0 {
+	if err != nil || result.Text != clairicResult || result.Usage == nil || result.Usage.InputTokens != 308 || result.Usage.OutputTokens != 0 || !result.Usage.ZeroOutputReported {
 		t.Fatalf("lost native result or metering: %#v %v", result, err)
 	}
 	var streamed bytes.Buffer
 	captured, err := adapter.TransformStreamCaptureWithOptions(bytes.NewReader(out.Bytes()), &streamed, "test", clairicModel, true)
-	if err != nil || captured.Usage.InputTokens != 308 || captured.Usage.OutputTokens != 0 || !strings.Contains(streamed.String(), "[DONE]") {
+	if err != nil || captured.Usage == nil || captured.Usage.InputTokens != 308 || captured.Usage.OutputTokens != 0 || !captured.Usage.ZeroOutputReported || !strings.Contains(streamed.String(), "[DONE]") {
 		t.Fatalf("stream lost metering: %v", err)
 	}
 	if !InputOnlyModel(clairicModel) || InputOnlyModel(clairicModel+"-other") {

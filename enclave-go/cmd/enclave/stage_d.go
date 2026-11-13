@@ -381,7 +381,7 @@ func (c *stageDController) terminalUsage(terminal adapter.StreamTerminal, reques
 	heartbeatLost := c.heartbeatLost
 	c.mu.Unlock()
 	input, output, estimated := meteredInput, meteredOutput, true
-	providerExact := terminal.Result.Usage != nil && terminal.Result.Usage.OutputTokens > 0
+	providerExact := terminal.Result.Usage != nil && (terminal.Result.Usage.OutputTokens > 0 || (terminal.Result.Usage.OutputTokens == 0 && terminal.Result.Usage.ZeroOutputReported))
 	if terminal.Result.Usage != nil && terminal.Result.Usage.InputTokens > 0 && terminal.Result.Usage.OutputTokens == 0 && llm.InputOnlyModel(selectedModel) {
 		providerExact = true
 	}
