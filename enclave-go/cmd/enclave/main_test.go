@@ -6669,6 +6669,15 @@ func TestNamedOrchestrationPresetsReturnNonEmptyThroughLocalGateway(t *testing.T
 				"meta-models/muse-spark-open",
 			},
 		},
+		{
+			model: trustedRouterLiberty41Model,
+			componentModels: []string{
+				"nvidia/nemotron-3-ultra-550b-a55b",
+				"reflection/beam-1.0",
+				"meta-models/muse-spark-open",
+				"thinkingmachines/inkling-2-small",
+			},
+		},
 	}
 
 	for _, tt := range tests {

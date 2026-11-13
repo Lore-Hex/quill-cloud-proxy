@@ -33,6 +33,11 @@ var longContextComboProviders = map[string][]string{
 	// is excluded from every combo). fusionWithoutOverlongMembers drops it from
 	// Liberty requests above that.
 	fusionNemotron3Ultra: {"fireworks", "nvidia-nim"},
+	// Liberty 4.1's fourth member, reviewed 2026-11-12: Cloudflare Workers AI
+	// is US-headquartered and serves it at 1M. Not used: Nebius (not
+	// US-headquartered), Thinking Machines' Tinker (256K, and held on TR's key),
+	// and DeepInfra, which every combo excludes.
+	fusionInkling2Small: {"cloudflare-workers-ai"},
 }
 
 func isLongContextCombo(model string) bool {
@@ -41,7 +46,7 @@ func isLongContextCombo(model string) bool {
 		trustedRouterZeusModel, trustedRouterZeus30Model,
 		trustedRouterPlatoModel, trustedRouterPlato40Model,
 		trustedRouterSocratesModel, trustedRouterSocrates30Model,
-		trustedRouterLiberty40Model:
+		trustedRouterLiberty40Model, trustedRouterLiberty41Model:
 		return true
 	default:
 		return false
