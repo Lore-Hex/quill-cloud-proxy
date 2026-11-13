@@ -17,7 +17,7 @@ import (
 	"github.com/Lore-Hex/quill-cloud-proxy/enclave-go/internal/types"
 )
 
-func TestLiberty41IsLiberty40PlusInkling2SmallOnThePanel(t *testing.T) {
+func TestLiberty41AddsInkling2SmallToThePanelAndFusesWithItFirst(t *testing.T) {
 	if _, ok := advisorPresetForModel(trustedRouterLiberty41Model); ok {
 		t.Fatal("Liberty 4.1 must be a fusion, not an advisor combo")
 	}
@@ -29,8 +29,8 @@ func TestLiberty41IsLiberty40PlusInkling2SmallOnThePanel(t *testing.T) {
 	if !ok || preset != "liberty-4.1" || !reflect.DeepEqual(panel, wantPanel) {
 		t.Fatalf("panel = %q %#v, want liberty-4.1 %#v", preset, panel, wantPanel)
 	}
-	// The fusers and their order are Liberty 4.0's; Inkling 2 Small only answers.
-	wantFusers := []string{"meta-models/muse-spark-open", "reflection/beam-1.0", fusionNemotron3Ultra}
+	// Inkling 2 Small fuses first, then Liberty 4.0's fusers in their order.
+	wantFusers := []string{fusionInkling2Small, "meta-models/muse-spark-open", "reflection/beam-1.0", fusionNemotron3Ultra}
 	judges, err := fusionJudgeModels(fusionConfig{}, trustedRouterLiberty41Model)
 	if err != nil || !reflect.DeepEqual(judges, wantFusers) {
 		t.Fatalf("judge models = %#v (%v), want %#v", judges, err, wantFusers)
@@ -76,62 +76,92 @@ func TestLiberty41IsLiberty40PlusInkling2SmallOnThePanel(t *testing.T) {
 		}
 	}
 
-	// Liberty 4.0 keeps its three-member panel.
+	// Liberty 4.0 keeps its three-member panel and its fusers.
 	_, panel40, _ := fusionPresetPanelForModel(trustedRouterLiberty40Model)
 	if want := []string{fusionNemotron3Ultra, "reflection/beam-1.0", "meta-models/muse-spark-open"}; !reflect.DeepEqual(panel40, want) {
 		t.Fatalf("Liberty 4.0 panel = %#v, want unchanged %#v", panel40, want)
 	}
+	finals40, err := fusionFinalModels(fusionConfig{}, trustedRouterLiberty40Model, panel40[0])
+	if want := []string{"meta-models/muse-spark-open", "reflection/beam-1.0", fusionNemotron3Ultra}; err != nil || !reflect.DeepEqual(finals40, want) {
+		t.Fatalf("Liberty 4.0 fusers = %#v (%v), want unchanged %#v", finals40, err, want)
+	}
 }
 
 func TestLiberty41CallsEveryMemberOnItsUSRouteThroughLocalGateway(t *testing.T) {
-	trGateway, recorder, closeGateway := newFusionGatewayRecorder(t)
-	defer closeGateway()
-	streamer := &fusionEchoLLM{failModels: map[string]bool{"meta-models/muse-spark-open": true}}
-	status, body := postLibertyModelContent(t, trGateway, streamer, trustedRouterLiberty41Model, "Reply with a short local test answer.")
-	if status != http.StatusOK {
-		t.Fatalf("status = %d body=%s", status, body)
+	tests := []struct {
+		name       string
+		failModels map[string]bool
+		wantFinal  string
+		wantCalls  map[string]int
+	}{
+		{
+			name:      "Inkling 2 Small answers on the panel, then fuses",
+			wantFinal: fusionInkling2Small,
+			wantCalls: map[string]int{fusionInkling2Small: 3, "meta-models/muse-spark-open": 1, "reflection/beam-1.0": 1, fusionNemotron3Ultra: 1},
+		},
+		{
+			name:       "Inkling 2 Small down: Muse Spark fuses",
+			failModels: map[string]bool{fusionInkling2Small: true},
+			wantFinal:  "meta-models/muse-spark-open",
+			wantCalls:  map[string]int{fusionInkling2Small: 3, "meta-models/muse-spark-open": 3, "reflection/beam-1.0": 1, fusionNemotron3Ultra: 1},
+		},
+		{
+			name:       "Inkling 2 Small and Muse Spark down: Beam fuses",
+			failModels: map[string]bool{fusionInkling2Small: true, "meta-models/muse-spark-open": true},
+			wantFinal:  "reflection/beam-1.0",
+			wantCalls:  map[string]int{fusionInkling2Small: 3, "meta-models/muse-spark-open": 3, "reflection/beam-1.0": 3, fusionNemotron3Ultra: 1},
+		},
 	}
-	if !strings.Contains(body, "final answer from reflection/beam-1.0") {
-		t.Fatalf("Beam must take over fusing when Muse Spark is down: %s", body)
-	}
-	streamer.mu.Lock()
-	gotCalls := map[string]int{}
-	for _, call := range streamer.calls {
-		gotCalls[call.Model]++
-	}
-	streamer.mu.Unlock()
-	// Inkling 2 Small answers once on the panel and never fuses.
-	want := map[string]int{"meta-models/muse-spark-open": 3, "reflection/beam-1.0": 3, fusionNemotron3Ultra: 1, fusionInkling2Small: 1}
-	if !reflect.DeepEqual(gotCalls, want) {
-		t.Fatalf("calls per model = %#v, want %#v", gotCalls, want)
-	}
-
-	recorder.mu.Lock()
-	authorize := append([]map[string]any(nil), recorder.authorize...)
-	recorder.mu.Unlock()
-	sawInkling := false
-	for _, payload := range authorize {
-		model, _ := payload["model"].(string)
-		policy, _ := payload["provider"].(map[string]any)
-		if policy == nil || policy["jurisdiction"] != providerJurisdictionUS {
-			t.Fatalf("%s authorized without the US pin: %#v", model, payload["provider"])
-		}
-		only, _ := policy["only"].([]any)
-		wantOnly := longContextComboProviders[model]
-		if len(only) != len(wantOnly) {
-			t.Fatalf("%s provider.only = %#v, want %#v", model, only, wantOnly)
-		}
-		for i := range wantOnly {
-			if only[i] != wantOnly[i] {
-				t.Fatalf("%s provider.only = %#v, want %#v", model, only, wantOnly)
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			trGateway, recorder, closeGateway := newFusionGatewayRecorder(t)
+			defer closeGateway()
+			streamer := &fusionEchoLLM{failModels: tt.failModels}
+			status, body := postLibertyModelContent(t, trGateway, streamer, trustedRouterLiberty41Model, "Reply with a short local test answer.")
+			if status != http.StatusOK {
+				t.Fatalf("status = %d body=%s", status, body)
 			}
-		}
-		if model == fusionInkling2Small {
-			sawInkling = true
-		}
-	}
-	if !sawInkling {
-		t.Fatal("Inkling 2 Small was never authorized")
+			if !strings.Contains(body, "final answer from "+tt.wantFinal) {
+				t.Fatalf("final answer was not written by %s: %s", tt.wantFinal, body)
+			}
+			streamer.mu.Lock()
+			gotCalls := map[string]int{}
+			for _, call := range streamer.calls {
+				gotCalls[call.Model]++
+			}
+			streamer.mu.Unlock()
+			if !reflect.DeepEqual(gotCalls, tt.wantCalls) {
+				t.Fatalf("calls per model = %#v, want %#v", gotCalls, tt.wantCalls)
+			}
+
+			recorder.mu.Lock()
+			authorize := append([]map[string]any(nil), recorder.authorize...)
+			recorder.mu.Unlock()
+			sawInkling := false
+			for _, payload := range authorize {
+				model, _ := payload["model"].(string)
+				policy, _ := payload["provider"].(map[string]any)
+				if policy == nil || policy["jurisdiction"] != providerJurisdictionUS {
+					t.Fatalf("%s authorized without the US pin: %#v", model, payload["provider"])
+				}
+				only, _ := policy["only"].([]any)
+				wantOnly := longContextComboProviders[model]
+				if len(only) != len(wantOnly) {
+					t.Fatalf("%s provider.only = %#v, want %#v", model, only, wantOnly)
+				}
+				for i := range wantOnly {
+					if only[i] != wantOnly[i] {
+						t.Fatalf("%s provider.only = %#v, want %#v", model, only, wantOnly)
+					}
+				}
+				if model == fusionInkling2Small {
+					sawInkling = true
+				}
+			}
+			if !sawInkling {
+				t.Fatal("Inkling 2 Small was never authorized")
+			}
+		})
 	}
 }
 
@@ -148,8 +178,28 @@ func TestLiberty41LongRequestsKeepInkling2SmallAndDropOnlyUltra(t *testing.T) {
 		called[call.Model]++
 	}
 	streamer.mu.Unlock()
-	if status != http.StatusOK || called[fusionNemotron3Ultra] != 0 || called[fusionInkling2Small] != 1 || called["reflection/beam-1.0"] == 0 {
+	// Inkling 2 Small answers on the panel and still fuses; Ultra sits out.
+	if status != http.StatusOK || called[fusionNemotron3Ultra] != 0 || called[fusionInkling2Small] != 3 || called["reflection/beam-1.0"] != 1 {
 		t.Fatalf("status=%d calls=%#v body=%.300s", status, called, body)
+	}
+	if !strings.Contains(body, "final answer from "+fusionInkling2Small) {
+		t.Fatalf("Inkling 2 Small must fuse long requests: %.300s", body)
+	}
+}
+
+func TestLiberty41KeepsInkling2SmallWhereverItsWindowFits(t *testing.T) {
+	_, panel, _ := fusionPresetPanelForModel(trustedRouterLiberty41Model)
+	fusers := append([]string(nil), fusionLiberty41Fusers...)
+	req := &types.OpenAIChatRequest{Model: trustedRouterLiberty41Model, Messages: []types.OpenAIChatMessage{{Role: "user", Content: strings.Repeat("a", 2_400_000)}}}
+	// ~600K tokens: past Ultra's 256K on every stage, inside Inkling's 1M.
+	gotPanel, gotFinals, gotJudges := fusionBuiltInsThatFit(req, fusionConfig{}, true, panel, fusers, fusers)
+	wantPanel := []string{"reflection/beam-1.0", "meta-models/muse-spark-open", fusionInkling2Small}
+	wantFusers := []string{fusionInkling2Small, "meta-models/muse-spark-open", "reflection/beam-1.0"}
+	if !reflect.DeepEqual(gotPanel, wantPanel) || !reflect.DeepEqual(gotFinals, wantFusers) || !reflect.DeepEqual(gotJudges, wantFusers) {
+		t.Fatalf("panel=%v finals=%v judges=%v, want %v %v %v", gotPanel, gotFinals, gotJudges, wantPanel, wantFusers, wantFusers)
+	}
+	if !reflect.DeepEqual(fusers, fusionLiberty41Fusers) {
+		t.Fatal("dropping a member must not mutate the preset")
 	}
 }
 
