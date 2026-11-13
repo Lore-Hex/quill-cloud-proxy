@@ -248,7 +248,16 @@ for flag, declared in declared_by_flag.items():
         step = steps.get(number)
         require(step is not None, f"{flag}: line {number + 1}: flag outside a named step")
         start, indent, name = step
+        # A secondary wave step rolls several regions in one step, so each of
+        # its flags carries the region key it belongs to (EUROPE_WEST4_...),
+        # which must match that step's own <KEY>_PREV_TEMPLATE region.
+        wave = re.fullmatch(r"Roll .+ GCP MIGs in parallel", name) is not None
         value = re.fullmatch(r' {%d}%s: "(on|off)"' % (indent + 4, flag), line)
+        prefixed = re.fullmatch(r' {%d}([A-Z][A-Z0-9_]*)_%s: "(on|off)"' % (indent + 4, flag), line)
+        if wave and value is None and prefixed is not None:
+            value = re.fullmatch(r'.*: "(on|off)"', line)
+        else:
+            prefixed = None
         require(value is not None, f"{flag}: line {number + 1}: flag must be a literal step env")
         parent = next((prior for prior in reversed(lines[start:number])
                        if prior.strip() and not prior.lstrip().startswith("#")
@@ -262,6 +271,11 @@ for flag, declared in declared_by_flag.items():
         templates = re.findall(
             r"^ {%d}PREV_TEMPLATE: \$\{\{ steps\.prev\.outputs\.([a-z0-9_]+)_template \}\}$"
             % (indent + 4), block, re.MULTILINE)
+        if prefixed is not None:
+            templates = [key for key in re.findall(
+                r"^ {%d}%s_PREV_TEMPLATE: \$\{\{ steps\.prev\.outputs\.([a-z0-9_]+)_template \}\}$"
+                % (indent + 4, re.escape(prefixed[1])), block, re.MULTILINE)
+                if key.upper() == prefixed[1]]
         regions.update(region.replace("_", "-") for region in templates)
         require(name.startswith("Roll ") and "GCP MIG" in name and len(regions) == 1,
                 f"{flag}: {name}: cannot determine a unique rollout region")

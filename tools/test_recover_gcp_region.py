@@ -16,6 +16,7 @@ class RecoverGCPRegionTests(unittest.TestCase):
         self,
         *,
         fail_verify: bool = False,
+        fail_backup_sync: bool = False,
         final_drain_state: str = "active",
         final_drain_origin: str | None = None,
     ) -> tuple[subprocess.CompletedProcess[str], str]:
@@ -48,6 +49,10 @@ class RecoverGCPRegionTests(unittest.TestCase):
                 "python3": r"""
                     #!/bin/bash
                     echo "python3 $*" >> "${COMMAND_LOG}"
+                    if [[ "${FAIL_BACKUP_SYNC:-0}" == "1" && "$*" == *"sync-route53-api-aliases.py"* ]]; then
+                      echo "ExpiredToken: the security token included in the request is expired" >&2
+                      exit 1
+                    fi
                 """,
                 "bash": r"""
                     #!/bin/bash
@@ -67,6 +72,7 @@ class RecoverGCPRegionTests(unittest.TestCase):
                 {
                     "COMMAND_LOG": str(command_log),
                     "FAIL_VERIFY": "1" if fail_verify else "0",
+                    "FAIL_BACKUP_SYNC": "1" if fail_backup_sync else "0",
                     "GITHUB_RUN_ID": "33807667585",
                     "PATH": f"{bin_dir}:/usr/bin:/bin",
                 }
@@ -125,6 +131,18 @@ class RecoverGCPRegionTests(unittest.TestCase):
             commands.index("verify-region-before-dns.sh"),
             commands.index("--clear-drain-region europe-west4"),
         )
+
+    def test_expired_aws_session_does_not_fail_a_verified_recovery(self) -> None:
+        # A wave's recovery can outlive the AWS session refreshed before it.
+        completed, commands = self.run_recovery(fail_backup_sync=True)
+
+        self.assertEqual(completed.returncode, 0, completed.stderr)
+        self.assertIn("--clear-drain-region europe-west4", commands)
+        self.assertEqual(commands.count("sync-route53-api-aliases.py --apply"), 2)
+        self.assertIn("backup names keep excluding europe-west4", completed.stderr)
+        # The GCP drain state is restored before the last backup sync.
+        self.assertLess(commands.index("--clear-drain-region europe-west4"),
+                        commands.rindex("sync-route53-api-aliases.py --apply"))
 
     def test_failed_verification_preserves_drain(self) -> None:
         completed, commands = self.run_recovery(fail_verify=True)

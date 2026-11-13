@@ -55,6 +55,7 @@ on:
       - "tools/provider_probe_status.py"
       - "tools/watchdog.py"
       - "tools/roll-secondary-region.sh"
+      - "tools/roll-secondary-wave.sh"
       - "tools/recover-gcp-region.sh"
       - "tools/enclave-rollout-drain-lib.sh"
       - "tools/cleanup-enclave-rollout-drains.sh"
@@ -973,65 +974,70 @@ jobs:
 
       # AWS OIDC credentials are temporary and cannot refresh in place. Each
       # secondary rollout can legitimately take 30+ minutes, so authenticate
-      # immediately before every region instead of reusing the session created
+      # immediately before every wave instead of reusing the session created
       # near the start of this long-running job.
-      - name: Refresh AWS credentials for Europe backup-domain DNS
+      - name: Refresh AWS credentials for the Europe and US East wave
         uses: aws-actions/configure-aws-credentials@v6
         with:
           role-to-assume: ${{ secrets.AWS_DEPLOY_ROLE_ARN }}
           aws-region: us-east-1
 
-      - name: Roll Europe GCP MIG
-        timeout-minutes: 55
+      # Europe and US East roll at the same time (measured serial cost 27.6 +
+      # 40.1 minutes; parallel about 40). Each region runs the unchanged
+      # tools/roll-secondary-region.sh: its own drain, stable, attested,
+      # per-instance, synthetic and per-region watchdog gates, and its own
+      # recovery. tools/roll-secondary-wave.sh shares one DNS lock between
+      # them and stops the other region from promoting once one fails.
+      # At most two secondaries are ever out of canonical DNS, so us-central1
+      # (two VMs, both in zone b) and us-west1 (zones a and b) keep serving
+      # from two regions and three zones; draining all three at once would
+      # leave one zone. Capacity numbers: docs/design/gateway-secondary-waves.md.
+      # TR_SECONDARY_WORKER_TIMEOUT is a forward-only deadline for each
+      # region's rollout steps; recovery is never bounded by it and has the
+      # rest of this step's cap (it waits up to 40 minutes for the MIG).
+      - name: Roll Europe and US East GCP MIGs in parallel
+        timeout-minutes: 100
         env:
           IMAGE_REF: ${{ needs.build-and-release.outputs.image_ref }}
           IMAGE_DIGEST: ${{ needs.build-and-release.outputs.image_digest }}
-          QUILL_USAGE_HEARTBEAT: "on"
-          QUILL_TERMINATE_AT_CAP: "on"
-          PREV_TEMPLATE: ${{ steps.prev.outputs.europe_west4_template }}
-          PREV_DRAIN_STATE: ${{ steps.prev.outputs.europe_west4_drain_state }}
-          PREV_DRAIN_ORIGIN: ${{ steps.prev.outputs.europe_west4_drain_origin }}
+          # Stage D flags stay per region: the wave hands each worker only its
+          # own region's pair (tools/tests/test-stage-d-gates.sh checks them).
+          EUROPE_WEST4_QUILL_USAGE_HEARTBEAT: "on"
+          EUROPE_WEST4_QUILL_TERMINATE_AT_CAP: "on"
+          US_EAST4_QUILL_USAGE_HEARTBEAT: "on"
+          US_EAST4_QUILL_TERMINATE_AT_CAP: "on"
+          TR_SECONDARY_WORKER_TIMEOUT: "3300"
+          TR_ROLLOUT_STATE_DIR: ${{ runner.temp }}/tr-rollout-state
+          EUROPE_WEST4_PREV_TEMPLATE: ${{ steps.prev.outputs.europe_west4_template }}
+          EUROPE_WEST4_PREV_DRAIN_STATE: ${{ steps.prev.outputs.europe_west4_drain_state }}
+          EUROPE_WEST4_PREV_DRAIN_ORIGIN: ${{ steps.prev.outputs.europe_west4_drain_origin }}
+          US_EAST4_PREV_TEMPLATE: ${{ steps.prev.outputs.us_east4_template }}
+          US_EAST4_PREV_DRAIN_STATE: ${{ steps.prev.outputs.us_east4_drain_state }}
+          US_EAST4_PREV_DRAIN_ORIGIN: ${{ steps.prev.outputs.us_east4_drain_origin }}
         run: |
-          bash tools/roll-secondary-region.sh \
+          bash tools/roll-secondary-wave.sh \
+            -- \
             europe-west4 \
             quill-enclave-mig-eu \
             quill-enclave-mig-eu- \
             eu \
             api.quillrouter.com,api-europe-west4.quillrouter.com,api.trustedrouter.com,api.allyrouter.com,api.uptimerouter.com,api.nytokenexchange.com \
-            "${PREV_TEMPLATE}" \
+            "${EUROPE_WEST4_PREV_TEMPLATE}" \
             c3-standard-4 \
             TDX \
-            "${PREV_DRAIN_STATE}" \
-            "${PREV_DRAIN_ORIGIN}"
-
-      - name: Refresh AWS credentials for US East backup-domain DNS
-        uses: aws-actions/configure-aws-credentials@v6
-        with:
-          role-to-assume: ${{ secrets.AWS_DEPLOY_ROLE_ARN }}
-          aws-region: us-east-1
-
-      - name: Roll US East GCP MIG
-        timeout-minutes: 55
-        env:
-          IMAGE_REF: ${{ needs.build-and-release.outputs.image_ref }}
-          IMAGE_DIGEST: ${{ needs.build-and-release.outputs.image_digest }}
-          QUILL_USAGE_HEARTBEAT: "on"
-          QUILL_TERMINATE_AT_CAP: "on"
-          PREV_TEMPLATE: ${{ steps.prev.outputs.us_east4_template }}
-          PREV_DRAIN_STATE: ${{ steps.prev.outputs.us_east4_drain_state }}
-          PREV_DRAIN_ORIGIN: ${{ steps.prev.outputs.us_east4_drain_origin }}
-        run: |
-          bash tools/roll-secondary-region.sh \
+            "${EUROPE_WEST4_PREV_DRAIN_STATE}" \
+            "${EUROPE_WEST4_PREV_DRAIN_ORIGIN}" \
+            -- \
             us-east4 \
             quill-enclave-mig-useast4 \
             quill-enclave-mig-useast4- \
             useast4 \
             api.quillrouter.com,api-us-east4.quillrouter.com,api.trustedrouter.com,api.allyrouter.com,api.uptimerouter.com,api.nytokenexchange.com \
-            "${PREV_TEMPLATE}" \
+            "${US_EAST4_PREV_TEMPLATE}" \
             c3-standard-4 \
             TDX \
-            "${PREV_DRAIN_STATE}" \
-            "${PREV_DRAIN_ORIGIN}"
+            "${US_EAST4_PREV_DRAIN_STATE}" \
+            "${US_EAST4_PREV_DRAIN_ORIGIN}"
 
       - name: Refresh AWS credentials for US West backup-domain DNS
         uses: aws-actions/configure-aws-credentials@v6
@@ -1059,6 +1065,7 @@ jobs:
           # three zones chosen without regard to that: us-central1 got zone f,
           # which has no TDX hosts at all.
           MIG_ZONES: us-west1-a,us-west1-b
+          TR_ROLLOUT_STATE_DIR: ${{ runner.temp }}/tr-rollout-state
         run: |
           bash tools/roll-secondary-region.sh \
             us-west1 \
@@ -1141,6 +1148,9 @@ jobs:
       - name: Clear healthy rollout-created canonical drains
         if: always()
         env:
+          TR_ROLLOUT_STATE_DIR: ${{ runner.temp }}/tr-rollout-state
+          # Rolled by tools/roll-secondary-region.sh, which records each one.
+          TR_ROLLOUT_SECONDARY_REGIONS: "europe-west4 us-east4 us-west1"
           QUILL_API_HOST: api.trustedrouter.com
           QUILL_DNS_ZONE: trustedrouter-com
           QUILL_PUBLISH_REGIONAL: "1"
