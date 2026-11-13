@@ -54,30 +54,52 @@ Not measured: memory (no agent metric), concurrent in-flight streams per VM
 and provider-side per-region limits. Load concentration in a wave is 1.5 times
 today's (4 serving VMs instead of 6).
 
-## What stays exactly as strict
+## What stays as strict, and what changes
 
-Each region in a wave runs the unchanged `tools/roll-secondary-region.sh`:
-drain and wait one TTL, deploy, MIG stable, attested, per-instance verify
+Each region in a wave runs `tools/roll-secondary-region.sh` with every gate it
+had: drain and wait one TTL, deploy, MIG stable, attested, per-instance verify
 before DNS, synthetic wait for that region, the per-region three-minute
-watchdog (`--regions <region>`), and its own automatic recovery to the previous
-template and drain state. Every gate reads only its own region, so each
-verdict is attributable; output lines are prefixed `[region]` and the wave
-prints one verdict per region.
+watchdog (`--regions <region>`), and its own automatic recovery to the
+previous template and drain state. Every gate reads only its own region, so
+each verdict is attributable; each worker writes its own log, tailed with a
+`[region]` prefix, and the wave prints one verdict per region (promoted;
+stopped by a peer; deadline passed; or its own failure).
 
-`tools/roll-secondary-wave.sh` adds two things:
+The script does change in a wave (run alone, it behaves as before):
 
 - **One DNS lock** for the wave, shared by the regions and their recoveries
   (`recover-gcp-region.sh` takes it too). The persistent drain is a
   read-modify-write of one TXT record with no compare-and-swap, so two regions
   updating it at once could lose each other's drain.
 - **An abort file.** The first region to fail records itself, under that lock,
-  before its recovery. Every other region checks it after each step and,
-  under the same lock, immediately before re-entering canonical DNS (or
-  restoring an operator drain). A region that has not promoted stops, restores
-  its previous template and drain state, and reports "not promoted: X failed
-  first"; a region not yet started is left untouched; a region that already
-  promoted keeps the new image. That is the serial rollout's end state: a
-  failure meant later regions never changed and earlier ones kept the release.
+  before its recovery. Every other region checks it between steps, every MIG
+  wait round, every second of its long read-only waits (which are stopped at
+  once), and under the same lock immediately before re-entering canonical DNS.
+  A region that has not promoted stops, restores its previous template and
+  drain state, and reports "stopped by a peer"; a region not yet started is
+  left untouched; a region that already promoted keeps the release.
+- **This is not the serial end state.** Serially, a failure left later
+  regions untouched. In a wave, a peer that was still rolling is rolled back
+  even if it was healthy: if US East fails before Europe promotes, Europe is
+  restored too. The fleet still never serves an image that failed a gate.
+- **A forward-only deadline.** `TR_SECONDARY_WORKER_TIMEOUT` (55 minutes)
+  stops a region's rollout steps (exit 76) and starts its recovery. Recovery
+  is never bounded by it: once recovery starts it ignores TERM, INT and
+  SIGPIPE, so a wave TERM, a group signal or a dead log reader cannot cut it
+  short. The wave step allows 100 minutes so recovery (up to 40 minutes of MIG
+  wait) can finish, which the old 55-minute per-region step could not.
+- **Cancels.** A TERM to the wave alone is forwarded to every worker, and the
+  wave waits for their recoveries. A GitHub cancel or step timeout kills the
+  whole tree within seconds, so a region can be left mid-rollout, possibly on
+  the new template. Each region records `started`, then `promoted`,
+  `recovered` or `recovery-failed`, and the drain finalizer
+  (`cleanup-enclave-rollout-drains.sh`) refuses to re-add a region this run
+  left at `started` or `recovery-failed`; it stays drained for an operator.
+- **AWS session.** Credentials are refreshed before each wave (one hour). A
+  recovery that outlives them can no longer fail on its final backup-domain
+  sync: that sync is now tolerant, which leaves the backup names still
+  excluding the region (synced when it was drained) until the next sync. The
+  GCP drain state is restored either way.
 
 Stage D flags stay per region: the wave step carries
 `<REGION_KEY>_QUILL_USAGE_HEARTBEAT` and `<REGION_KEY>_QUILL_TERMINATE_AT_CAP`,
@@ -85,14 +107,10 @@ the runner refuses a wave-wide flag and hands each worker only its own pair,
 and `tools/tests/test-stage-d-gates.sh` holds the keyed flags to the same
 region bijection, matching each key to that step's own `<KEY>_PREV_TEMPLATE`.
 
-A worker times out at 55 minutes with TERM, which runs its recovery; the wave
-step allows 100 minutes so that recovery (up to 40 minutes of MIG wait) can
-finish, which the old 55-minute per-region step could not.
-
 ## Not verified
 
 No production run has used a wave. The tests run the real wave runner and
-workers with real advisory locking and every cloud call stubbed. AWS session
-length is unchanged: credentials are refreshed before each wave, and a wave
-recovery that runs past an hour can still fail its final Route 53 sync, as a
-late serial recovery could.
+workers with real advisory locking, real deadlines and real signals, with
+every cloud call stubbed (recovery is a slow stub that must run to the end).
+A runner SIGKILL during a cancel still cannot be survived; the finalizer only
+keeps such a region out of canonical DNS.

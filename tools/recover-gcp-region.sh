@@ -170,6 +170,11 @@ else
   update_drain clear
 fi
 reconcile_gcp_dns
-sync_backup_dns
+# A wave's recovery can outlive the one-hour AWS session refreshed before the
+# wave. Backup domains were synced when the region was drained, so a failed
+# sync here leaves them still excluding this region: less capacity on the
+# backup names, never an unverified image. The next rollout's sync, or the
+# finalizer's reconcile, re-adds it.
+sync_backup_dns || echo "::warning::${region}: backup-domain DNS sync failed after recovery; backup names keep excluding ${region} until the next sync" >&2
 recovery_complete=1
 echo "${region}: previous template restored, attested, and drain state restored to ${final_drain_state}/${final_drain_origin}"

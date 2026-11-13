@@ -8,10 +8,13 @@ inject a peer failure at an exact point.
 """
 from __future__ import annotations
 
+import os
 import shutil
+import signal
 import subprocess
 import sys
 import tempfile
+import time
 import unittest
 from pathlib import Path
 
@@ -35,7 +38,16 @@ echo "bash $* heartbeat=${QUILL_USAGE_HEARTBEAT:-<unset>} terminate=${QUILL_TERM
 ''' + WAIT_FOR + '''
 case "$*" in
   "tools/deploy-gcp-mig.sh "*) touch "${MARKS}/deployed-$2" ;;
+  "tools/recover-gcp-region.sh "*)
+    # A real, slow recovery: it must run to completion once started.
+    touch "${MARKS}/recovering-$2"
+    sleep "${SLOW_RECOVERY:-0}"
+    touch "${MARKS}/recovered-$2"
+    exit 0 ;;
 esac
+if [ -n "${SLOW_STEP:-}" ] && [ "$*" = "${SLOW_STEP}" ]; then
+  sleep 30
+fi
 if [ -n "${BLOCK_UNTIL_PEER_DEPLOYED:-}" ]; then
   case "$*" in
     "tools/wait-region-attested.sh quill-enclave-mig-eu- europe-west4") wait_for "${MARKS}/deployed-us-east4" || exit 9 ;;
@@ -48,6 +60,10 @@ fi
 if [ -n "${FAIL_STEP:-}" ] && [ "$*" = "${FAIL_STEP}" ]; then
   echo "stub failing: $*" >&2
   exit 1
+fi
+if [ -n "${ABORT_AFTER_STEP:-}" ] && [ "$*" = "${ABORT_AFTER_STEP}" ]; then
+  # A peer's failure lands the moment this step finishes.
+  printf 'europe-west4\n' > "${TR_SECONDARY_WAVE_DIR}/abort"
 fi
 if [ -n "${BLOCK_UNTIL_ABORT:-}" ] && [ "$*" = "${BLOCK_UNTIL_ABORT}" ]; then
   wait_for "${TR_SECONDARY_WAVE_DIR}/abort" || exit 9
@@ -109,7 +125,8 @@ class Harness:
             "python3": PYTHON_STUB,
             "uv": ('#!/bin/bash\necho "uv $*" >> "${COMMAND_LOG}"\n'
                    'for a in "$@"; do [ "$prev" = "--clear-drain-region" ] && touch "${MARKS}/promoted-$a"; prev="$a"; done\n'),
-            "gcloud": '#!/bin/bash\necho "gcloud $*" >> "${COMMAND_LOG}"\n',
+            "gcloud": ('#!/bin/bash\necho "gcloud $*" >> "${COMMAND_LOG}"\n'
+                       'case "$*" in *wait-until*) [ -n "${MIG_NEVER_STABLE:-}" ] && exit 1 ;; esac\nexit 0\n'),
             "curl": ("#!/bin/bash\necho '{\"checks\": [{\"target_region\": \"europe-west4\"}, "
                      "{\"target_region\": \"us-east4\"}]}'\n"),
             "flock": flock_stub(),
@@ -183,7 +200,7 @@ class WaveTests(unittest.TestCase):
         self.assertIn("recover-gcp-region.sh europe-west4 quill-enclave-mig-eu ", log)
         self.assertIn("recover-gcp-region.sh us-east4 quill-enclave-mig-useast4 ", log)
         self.assertIn("  europe-west4: FAILED (exit 1)", result.stdout)
-        self.assertIn("  us-east4: not promoted: europe-west4 failed first", result.stdout)
+        self.assertIn("  us-east4: not promoted: stopped by a peer, europe-west4 failed first", result.stdout)
         self.assertIn("[us-east4] us-east4: stopping before promotion because europe-west4 failed", result.stdout)
         self.assertIn("[europe-west4] europe-west4: rollout failed; restoring", result.stdout)
         self.assertIn("[us-east4] us-east4: not promoted; restoring", result.stdout)
@@ -198,7 +215,7 @@ class WaveTests(unittest.TestCase):
         self.assertIn("watchdog.py --regions us-east4", log)
         self.assertNotIn("--clear-drain-region us-east4", log)
         self.assertIn("recover-gcp-region.sh us-east4 quill-enclave-mig-useast4 ", log)
-        self.assertIn("  us-east4: not promoted: europe-west4 failed first", result.stdout)
+        self.assertIn("  us-east4: not promoted: stopped by a peer, europe-west4 failed first", result.stdout)
 
     def test_promoted_region_is_not_rolled_back_by_a_later_peer_failure(self):
         # Europe re-enters canonical DNS; only then does US East fail. Like a
@@ -239,6 +256,148 @@ class WaveTests(unittest.TestCase):
                              cwd=ROOT, env=self.h.env(), capture_output=True, text=True, timeout=10)
         self.assertEqual(bad.returncode, 2)
         self.assertEqual(self.h.commands(), "")
+
+
+def wait_for(path: Path, seconds: float = 20) -> None:
+    deadline = time.monotonic() + seconds
+    while not path.exists():
+        if time.monotonic() > deadline:
+            raise AssertionError(f"timed out waiting for {path}")
+        time.sleep(0.05)
+
+
+class DeadlineAndSignalTests(unittest.TestCase):
+    """Recovery really runs and finishes under deadlines, TERM and group signals."""
+
+    def setUp(self) -> None:
+        self._dir = tempfile.TemporaryDirectory()
+        self.h = Harness(Path(self._dir.name))
+        self.state = self.h.temp / "state"
+
+    def tearDown(self) -> None:
+        self._dir.cleanup()
+
+    def start(self, *regions, **extra):
+        args = []
+        for region in regions:
+            args += ["--", *region]
+        env = self.h.env(TR_ROLLOUT_STATE_DIR=str(self.state), **extra)
+        return subprocess.Popen(["/bin/bash", str(ROOT / "tools/roll-secondary-wave.sh"), *args], cwd=ROOT, env=env,
+                                stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, start_new_session=True)
+
+    def test_deadline_stops_the_mig_wait_and_a_slow_recovery_still_completes(self):
+        started = time.monotonic()
+        proc = self.start(USE, MIG_NEVER_STABLE="1", TR_SECONDARY_WORKER_TIMEOUT="3", SLOW_RECOVERY="4")
+        out, err = proc.communicate(timeout=60)
+        elapsed = time.monotonic() - started
+        self.assertEqual(proc.returncode, 1, out + err)
+        self.assertTrue((self.h.marks / "recovered-us-east4").exists(), out)
+        self.assertIn("us-east4: FAILED: its rollout deadline passed before promotion", out)
+        self.assertEqual((self.state / "us-east4").read_text(), "recovered\n")
+        # Deadline (3 s) + at most one MIG round + the 4 s recovery, not 120 rounds.
+        self.assertLess(elapsed, 30)
+        self.assertGreaterEqual(elapsed, 7)
+
+    def test_term_to_the_wave_waits_for_every_recovery(self):
+        proc = self.start(EU, USE, MIG_NEVER_STABLE="1", SLOW_RECOVERY="3")
+        wait_for(self.h.marks / "deployed-us-east4")
+        wait_for(self.h.marks / "deployed-europe-west4")
+        os.kill(proc.pid, signal.SIGTERM)  # the wave alone, as an operator would
+        out, err = proc.communicate(timeout=60)
+        self.assertEqual(proc.returncode, 143, out + err)
+        for region in ("europe-west4", "us-east4"):
+            self.assertTrue((self.h.marks / f"recovered-{region}").exists(), out + err)
+            self.assertEqual((self.state / region).read_text(), "recovered\n")
+
+    def test_group_signal_during_recovery_cannot_cut_it_short(self):
+        # A group-wide TERM (what GNU timeout and a cancelling runner send)
+        # arrives while recovery runs; the log readers die too.
+        proc = self.start(USE, MIG_NEVER_STABLE="1", TR_SECONDARY_WORKER_TIMEOUT="2", SLOW_RECOVERY="4")
+        wait_for(self.h.marks / "recovering-us-east4")
+        os.killpg(proc.pid, signal.SIGTERM)
+        proc.communicate(timeout=60)
+        wait_for(self.h.marks / "recovered-us-east4", 15)
+        self.assertEqual((self.state / "us-east4").read_text(), "recovered\n")
+
+    def test_peer_failure_cuts_the_mig_wait_short(self):
+        started = time.monotonic()
+        proc = self.start(EU, USE, MIG_NEVER_STABLE="1",
+                          FAIL_STEP="tools/deploy-gcp-mig.sh europe-west4")
+        out, err = proc.communicate(timeout=60)
+        elapsed = time.monotonic() - started
+        self.assertEqual(proc.returncode, 1, out + err)
+        self.assertIn("  us-east4: not promoted: stopped by a peer, europe-west4 failed first", out)
+        self.assertTrue((self.h.marks / "recovered-us-east4").exists())
+        self.assertLess(elapsed, 20)
+
+    def test_peer_failure_cuts_a_long_read_only_wait_short(self):
+        started = time.monotonic()
+        proc = self.start(EU, USE,
+                          FAIL_STEP="tools/wait-region-attested.sh quill-enclave-mig-eu- europe-west4",
+                          SLOW_STEP="tools/wait-region-attested.sh quill-enclave-mig-useast4- us-east4")
+        out, err = proc.communicate(timeout=60)
+        elapsed = time.monotonic() - started
+        self.assertEqual(proc.returncode, 1, out + err)
+        self.assertIn("  us-east4: not promoted: stopped by a peer", out)
+        self.assertLess(elapsed, 20)  # the stubbed wait would take 30 s
+
+
+    def test_peer_failure_between_steps_stops_before_the_next_step(self):
+        # The abort lands as the attested wait returns: the per-instance
+        # verify (and the regional DNS promotion after it) must never start.
+        proc = self.start(USE, ABORT_AFTER_STEP="tools/wait-region-attested.sh quill-enclave-mig-useast4- us-east4")
+        out, err = proc.communicate(timeout=60)
+        log = self.h.commands()
+        self.assertEqual(proc.returncode, 1, out + err)
+        self.assertNotIn("verify-region-before-dns.sh us-east4", log)
+        self.assertNotIn("QUILL_ALLOW", log)
+        self.assertTrue((self.h.marks / "recovered-us-east4").exists())
+
+    def test_dead_log_readers_cannot_kill_a_worker(self):
+        proc = self.start(USE, MIG_NEVER_STABLE="1", TR_SECONDARY_WORKER_TIMEOUT="8", SLOW_RECOVERY="1")
+        wait_for(self.h.marks / "deployed-us-east4")
+        listing = subprocess.run(["ps", "-A", "-o", "pid=,pgid=,comm="], capture_output=True, text=True).stdout
+        readers = [int(parts[0]) for parts in (line.split() for line in listing.splitlines())
+                   if len(parts) >= 3 and int(parts[1]) == proc.pid and Path(parts[2]).name in {"tail", "awk"}]
+        self.assertTrue(readers, listing)
+        for pid in readers:
+            os.kill(pid, signal.SIGKILL)
+        proc.communicate(timeout=60)
+        self.assertTrue((self.h.marks / "recovered-us-east4").exists())
+        self.assertEqual((self.state / "us-east4").read_text(), "recovered\n")
+
+
+class FinalizerTests(unittest.TestCase):
+    """The drain finalizer never re-adds a region that did not finish."""
+
+    def run_cleanup(self, state: str | None) -> tuple[int, str]:
+        with tempfile.TemporaryDirectory() as directory:
+            temp = Path(directory)
+            h = Harness(temp)
+            (h.bin / "uv").write_text(
+                '#!/bin/bash\necho "uv $*" >> "${COMMAND_LOG}"\n'
+                'case "$*" in *--list-drain-regions*) printf "us-east4\\trollout:33807667585\\n" ;; esac\n')
+            state_dir = temp / "state"
+            state_dir.mkdir()
+            if state is not None:
+                (state_dir / "us-east4").write_text(state + "\n")
+            env = h.env(TR_ROLLOUT_STATE_DIR=str(state_dir), QUILL_GCP_ENCLAVE_PENDING_INVENTORY=str(temp / "none"))
+            result = subprocess.run(["/bin/bash", str(ROOT / "tools/cleanup-enclave-rollout-drains.sh")], cwd=ROOT,
+                                    env=env, capture_output=True, text=True, timeout=30)
+            return result.returncode, h.commands()
+
+    def test_region_left_mid_rollout_keeps_its_drain(self):
+        for state in ("started", "recovery-failed"):
+            with self.subTest(state=state):
+                code, log = self.run_cleanup(state)
+                self.assertEqual(code, 1)
+                self.assertNotIn("--clear-drain-region us-east4", log)
+
+    def test_finished_region_is_cleared(self):
+        for state in ("promoted", "recovered", None):
+            with self.subTest(state=state):
+                code, log = self.run_cleanup(state)
+                self.assertIn("--clear-drain-region us-east4", log)
 
 
 class WorkerTests(unittest.TestCase):

@@ -75,6 +75,24 @@ while IFS=$'\t' read -r region origin extra; do
     continue
   fi
 
+  # A secondary rolled by this run records how it ended. One still at
+  # "started" was killed mid-rollout (for example a runner SIGKILL during a
+  # cancel), possibly on the new template without passing its gates; one at
+  # "recovery-failed" could not prove its old template. Stable and attested is
+  # not enough for either, so keep the drain for an operator.
+  state_file="${TR_ROLLOUT_STATE_DIR:-}/${region}"
+  if [ -n "${TR_ROLLOUT_STATE_DIR:-}" ] && [ "${origin}" = "rollout:${current_run_id}" ] && \
+      [ -f "${state_file}" ]; then
+    case "$(cat "${state_file}")" in
+      promoted|recovered) ;;
+      *)
+        echo "::error::${region} did not finish its rollout or recovery in this run ($(cat "${state_file}")); keeping its drain"
+        report_uncleared "${region}" "${origin}"
+        continue
+        ;;
+    esac
+  fi
+
   if ! mapping="$(region_mig "${region}")"; then
     report_uncleared "${region}" "${origin}"
     continue

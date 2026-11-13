@@ -1331,12 +1331,12 @@ esac
         for command in (
             'rollout_step update_drain set "${region}"',
             "rollout_step reconcile_dns",
-            'rollout_step bash tools/wait-canonical-drained.sh "${region}"',
+            'rollout_step interruptible bash tools/wait-canonical-drained.sh "${region}"',
             'rollout_step bash tools/deploy-gcp-mig.sh "${region}"',
             "rollout_step wait_region_stable_with_dns_refresh",
-            "rollout_step bash tools/wait-region-attested.sh",
+            "rollout_step interruptible bash tools/wait-region-attested.sh",
             "rollout_step bash tools/verify-region-before-dns.sh",
-            "rollout_step bash tools/wait-region-synthetic-up.sh",
+            "rollout_step interruptible bash tools/wait-region-synthetic-up.sh",
             'rollout_step update_drain clear "${region}"',
         ):
             self.assertIn(command, function)

@@ -954,8 +954,9 @@ jobs:
       # (two VMs, both in zone b) and us-west1 (zones a and b) keep serving
       # from two regions and three zones; draining all three at once would
       # leave one zone. Capacity numbers: docs/design/gateway-secondary-waves.md.
-      # The worker timeout signals TERM so a hung region still recovers inside
-      # this step's longer cap (recovery waits up to 40 minutes).
+      # TR_SECONDARY_WORKER_TIMEOUT is a forward-only deadline for each
+      # region's rollout steps; recovery is never bounded by it and has the
+      # rest of this step's cap (it waits up to 40 minutes for the MIG).
       - name: Roll Europe and US East GCP MIGs in parallel
         timeout-minutes: 100
         env:
@@ -968,6 +969,7 @@ jobs:
           US_EAST4_QUILL_USAGE_HEARTBEAT: "on"
           US_EAST4_QUILL_TERMINATE_AT_CAP: "on"
           TR_SECONDARY_WORKER_TIMEOUT: "3300"
+          TR_ROLLOUT_STATE_DIR: ${{ runner.temp }}/tr-rollout-state
           EUROPE_WEST4_PREV_TEMPLATE: ${{ steps.prev.outputs.europe_west4_template }}
           EUROPE_WEST4_PREV_DRAIN_STATE: ${{ steps.prev.outputs.europe_west4_drain_state }}
           EUROPE_WEST4_PREV_DRAIN_ORIGIN: ${{ steps.prev.outputs.europe_west4_drain_origin }}
@@ -1025,6 +1027,7 @@ jobs:
           # three zones chosen without regard to that: us-central1 got zone f,
           # which has no TDX hosts at all.
           MIG_ZONES: us-west1-a,us-west1-b
+          TR_ROLLOUT_STATE_DIR: ${{ runner.temp }}/tr-rollout-state
         run: |
           bash tools/roll-secondary-region.sh \
             us-west1 \
@@ -1107,6 +1110,7 @@ jobs:
       - name: Clear healthy rollout-created canonical drains
         if: always()
         env:
+          TR_ROLLOUT_STATE_DIR: ${{ runner.temp }}/tr-rollout-state
           QUILL_API_HOST: api.trustedrouter.com
           QUILL_DNS_ZONE: trustedrouter-com
           QUILL_PUBLISH_REGIONAL: "1"

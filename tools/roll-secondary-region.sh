@@ -51,9 +51,27 @@ fi
 abort_file="${lock_dir}/abort"
 # Exit status reserved for "stopped because a peer region failed".
 peer_abort_status=75
+# Exit status for "this region's own deadline passed before promotion".
+deadline_status=76
+# Forward-only deadline (epoch seconds) for the rollout itself, set by the
+# wave. It stops rollout steps; it never bounds the recovery that follows.
+deadline="${TR_SECONDARY_DEADLINE:-}"
+if [ -n "${deadline}" ] && ! [[ "${deadline}" =~ ^[0-9]+$ ]]; then
+  echo "${region}: TR_SECONDARY_DEADLINE must be epoch seconds" >&2
+  exit 2
+fi
+# Where the rollout job's drain finalizer learns how this region ended:
+# started -> promoted | recovered | recovery-failed. A region left at
+# "started" (killed mid-rollout) is never re-added by the finalizer.
+state_dir="${TR_ROLLOUT_STATE_DIR:-}"
 drain_started=0
 rollout_complete=0
 promoted=0
+
+record_state() {
+  [ -n "${state_dir}" ] || return 0
+  mkdir -p "${state_dir}" && printf '%s\n' "$1" > "${state_dir}/${region}"
+}
 echo "${region}: pre-rollout canonical drain state is ${prior_drain_state}"
 
 # Record the first failing region in the wave. Peers check it before every
@@ -75,16 +93,45 @@ peer_failed() {
 check_not_aborted() {
   # Once this region is back in canonical DNS a later peer failure cannot
   # undo it, exactly as a later region's failure could not in the serial run.
-  if [ "${promoted}" -eq 1 ] || ! peer_failed; then
-    return 0
+  [ "${promoted}" -eq 1 ] && return 0
+  if peer_failed; then
+    echo "${region}: stopping before promotion because $(cat "${abort_file}") failed in this wave" >&2
+    exit "${peer_abort_status}"
   fi
-  echo "${region}: stopping before promotion because $(cat "${abort_file}") failed in this wave" >&2
-  exit "${peer_abort_status}"
+  if [ -n "${deadline}" ] && [ "$(date +%s)" -ge "${deadline}" ]; then
+    echo "${region}: rollout deadline passed before promotion; stopping" >&2
+    exit "${deadline_status}"
+  fi
+}
+
+# Run a long, read-only wait in its own process group and stop it as soon as
+# a peer fails or the deadline passes, instead of at the next step boundary.
+interruptible() {
+  local pid status
+  set -m
+  "$@" &
+  pid=$!
+  set +m
+  while kill -0 "${pid}" 2>/dev/null; do
+    if [ "${promoted}" -eq 0 ] && { peer_failed || { [ -n "${deadline}" ] && [ "$(date +%s)" -ge "${deadline}" ]; }; }; then
+      kill -TERM -- "-${pid}" 2>/dev/null || kill -TERM "${pid}" 2>/dev/null || true
+      wait "${pid}" 2>/dev/null || true
+      check_not_aborted
+    fi
+    sleep 1
+  done
+  status=0
+  wait "${pid}" || status=$?
+  return "${status}"
 }
 
 on_exit() {
   local status="$?"
   trap - EXIT
+  # Recovery must finish once started: no TERM/INT (a wave's forward, a peer)
+  # and no SIGPIPE (a dead log reader) may cut it short. Children inherit the
+  # ignored dispositions. A runner's SIGKILL still can; see the finalizer.
+  trap '' TERM INT PIPE
   local aborted_by_peer=0
   if [ "${status}" -eq "${peer_abort_status}" ] && peer_failed; then
     aborted_by_peer=1
@@ -98,10 +145,13 @@ on_exit() {
     else
       echo "${region}: rollout failed; restoring and verifying the previous template" >&2
     fi
-    if ! bash tools/recover-gcp-region.sh \
+    if bash tools/recover-gcp-region.sh \
       "${region}" "${mig}" "${instance_filter}" "${api_hosts}" \
       "${previous_template}" "${prior_drain_state}" \
       "${prior_drain_origin}"; then
+      record_state recovered
+    else
+      record_state recovery-failed
       echo "${region}: automatic recovery failed; region remains drained" >&2
     fi
   fi
@@ -175,6 +225,9 @@ wait_region_stable_with_dns_refresh() {
   # while remaining below the workflow step's 55-minute timeout.
   local wait_rounds=120
   for i in $(seq 1 "${wait_rounds}"); do
+    # The longest wait in a rollout (about 25 minutes): a peer's failure or
+    # this region's deadline ends it within one round.
+    check_not_aborted
     if gcloud compute instance-groups managed wait-until "${target_mig}" \
       --region="${target_region}" --project=quill-cloud-proxy \
       --stable --timeout=10; then
@@ -194,6 +247,9 @@ rollout_step() {
   "$@" || {
     step_status=$?
     if [ "${step_status}" -eq "${peer_abort_status}" ] && peer_failed; then
+      check_not_aborted
+    fi
+    if [ "${step_status}" -eq "${deadline_status}" ]; then
       check_not_aborted
     fi
     echo "${region} rollout step failed (${step_status}): $*" >&2
@@ -216,13 +272,14 @@ echo "::group::secondary rollout ${region}"
 # A region whose peer already failed is never touched.
 check_not_aborted
 echo "draining ${region} from canonical API DNS"
+record_state started
 drain_started=1
 rollout_step update_drain set "${region}" rollout
 rollout_step reconcile_dns
-rollout_step bash tools/wait-canonical-drained.sh "${region}"
+rollout_step interruptible bash tools/wait-canonical-drained.sh "${region}"
 rollout_step bash tools/deploy-gcp-mig.sh "${region}"
 rollout_step wait_region_stable_with_dns_refresh "${mig}" "${region}"
-rollout_step bash tools/wait-region-attested.sh "${instance_filter}" "${region}"
+rollout_step interruptible bash tools/wait-region-attested.sh "${instance_filter}" "${region}"
 rollout_step bash tools/verify-region-before-dns.sh \
   "${region}" "${instance_filter}" "${IMAGE_DIGEST}"
 
@@ -237,8 +294,8 @@ if curl -fsS --max-time 15 https://trustedrouter.com/status.json | \
       >/dev/null; then
   trigger_synthetic_workers
   WAIT_UP_SLEEP=10 WAIT_UP_ROUNDS=72 \
-    rollout_step bash tools/wait-region-synthetic-up.sh "${region}" "${region}"
-  if ! python3 tools/watchdog.py \
+    rollout_step interruptible bash tools/wait-region-synthetic-up.sh "${region}" "${region}"
+  if ! interruptible python3 tools/watchdog.py \
       --regions "${region}" \
       --duration-min 3 \
       --rollback-after 3 \
@@ -264,5 +321,6 @@ fi
 promoted=1
 rollout_step reconcile_dns
 rollout_complete=1
+record_state promoted
 echo "${region} rollout healthy"
 echo "::endgroup::"
