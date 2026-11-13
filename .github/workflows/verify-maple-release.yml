@@ -81,6 +81,8 @@ jobs:
     if: needs.discover.outputs.status == 'automatic' || (inputs.review_only && needs.discover.outputs.status == 'review_required')
     runs-on: ubuntu-latest
     timeout-minutes: 10
+    outputs:
+      build: ${{ steps.download.outputs.build }}
     steps:
       - uses: actions/checkout@v7
         with:
@@ -93,11 +95,24 @@ jobs:
           python-version: "3.12"
       - run: python3 -m pip install cryptography==50.0.2
       - name: Download and authenticate without executing vendor code
+        id: download
         env:
           # Cross-repository Actions artifacts require an authenticated reader.
           # This clean job never runs the vendor build or SDK.
           GH_TOKEN: ${{ secrets.TRUST_PUSH_TOKEN }}
-        run: python3 tools/maple_update.py download --candidate candidate.json --destination "$RUNNER_TEMP/vendor-artifacts"
+        run: |
+          python3 tools/maple_update.py download --candidate candidate.json --destination "$RUNNER_TEMP/vendor-artifacts" --output acquired.json
+          # The build commit is the measured source or a permitted
+          # measurement-approval descendant listed in the candidate. verify
+          # re-checks it against the vendor repository.
+          python3 - <<'PY'
+          import json, os, re
+          candidate = json.load(open('candidate.json'))
+          build = json.load(open('acquired.json'))['build_commit']
+          assert re.fullmatch(r'[a-f0-9]{40}', build) and build in candidate['build_commits']
+          with open(os.environ['GITHUB_OUTPUT'], 'a') as out:
+              out.write('build=' + build + '\n')
+          PY
       - uses: actions/upload-artifact@v4
         with:
           name: maple-vendor-artifacts
@@ -122,14 +137,18 @@ jobs:
           github-token: ""
       - name: Obtain exact source without deployment credentials
         env:
-          SOURCE: ${{ needs.discover.outputs.source }}
+          # Reproduce at the artifact's build commit. Its only differences
+          # from the measured source are measurement-approval JSON files, and
+          # handoff.json records the checked-out commit, so only this checkout
+          # can match the vendor bytes exactly.
+          SOURCE: ${{ needs.acquire.outputs.build }}
         run: |
           git clone --filter=blob:none --no-checkout https://github.com/MaplePrivacyLabs/Maple.git "$RUNNER_TEMP/maple"
           git -C "$RUNNER_TEMP/maple" checkout --detach "$SOURCE"
           git -C "$RUNNER_TEMP/maple" submodule update --init --recursive
       - name: Independently reproduce with no provider cache or credentials
         env:
-          SOURCE: ${{ needs.discover.outputs.source }}
+          SOURCE: ${{ needs.acquire.outputs.build }}
         run: bash tools/reproduce-maple.sh "$RUNNER_TEMP/maple" "$SOURCE" "$RUNNER_TEMP/reproduced"
       - uses: actions/upload-artifact@v4
         with:
@@ -165,12 +184,14 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           REVIEW_ONLY: ${{ inputs.review_only }}
+          BUILD: ${{ needs.acquire.outputs.build }}
         run: |
           git clone --filter=blob:none --no-checkout https://github.com/MaplePrivacyLabs/Maple.git "$RUNNER_TEMP/maple"
           args=()
           if [ "$REVIEW_ONLY" = true ]; then args+=(--review-only); fi
           python3 tools/maple_policy.py verify --vendor "$RUNNER_TEMP/maple" --candidate candidate.json \
-            --artifacts "$RUNNER_TEMP/vendor-artifacts" --reproduced "$RUNNER_TEMP/reproduced" --output evidence.json "${args[@]}"
+            --build "$BUILD" --artifacts "$RUNNER_TEMP/vendor-artifacts" --reproduced "$RUNNER_TEMP/reproduced" \
+            --output evidence.json "${args[@]}"
       - uses: actions/upload-artifact@v4
         with:
           name: maple-reproduction

@@ -63,6 +63,30 @@ def unpack(archive: Path, destination: Path) -> None:
 def download(candidate: dict, destination: Path) -> dict:
     source = candidate["source_commit"]
     policy.require(bool(policy.SOURCE_RE.fullmatch(source)), "invalid source commit")
+    builds = candidate["build_commits"]
+    policy.require(
+        isinstance(builds, list)
+        and 0 < len(builds) <= 33
+        and builds[0] == source
+        and len(set(builds)) == len(builds)
+        and all(
+            isinstance(item, str) and policy.SOURCE_RE.fullmatch(item)
+            for item in builds
+        ),
+        "invalid permitted build commits",
+    )
+    # A build at the measured source itself is preferred, exactly as before.
+    # Otherwise use the final approval-containing build, then earlier ones.
+    # policy.verify_build_commit re-checks the chosen commit against the
+    # vendor repository before any evidence is produced.
+    for build in [source, *reversed(builds[1:])]:
+        result = download_build(build, destination)
+        if result is not None:
+            return dict(result, source_commit=source)
+    raise policy.Refused("no successful production build artifact for approved source")
+
+
+def download_build(source: str, destination: Path) -> dict | None:
     runs = api(
         f"repos/{policy.VENDOR}/actions/workflows/opensecret-eif-release.yml/runs"
         f"?head_sha={source}&status=success&per_page=30"
@@ -112,8 +136,8 @@ def download(candidate: dict, destination: Path) -> dict:
                 )
             unpack(archive, destination)
         policy.verify_provenance(destination, source)
-        return {"vendor_run_id": run_id, "source_commit": source}
-    raise policy.Refused("no successful production build artifact for approved source")
+        return {"vendor_run_id": run_id, "build_commit": source}
+    return None
 
 
 def report_review(candidate: dict) -> str:
@@ -365,6 +389,7 @@ def main():
     parser.add_argument("--evidence", type=Path)
     parser.add_argument("--vendor", type=Path)
     parser.add_argument("--checks", type=Path)
+    parser.add_argument("--output", type=Path)
     args = parser.parse_args()
     if args.command == "cleanup":
         print(json.dumps({"deleted_temporary_artifacts": cleanup_artifacts()}))
@@ -372,7 +397,10 @@ def main():
     policy.require(args.candidate is not None, "candidate is required")
     candidate = policy.strict_json(args.candidate.read_bytes())
     if args.command == "download":
-        print(json.dumps(download(candidate, args.destination)))
+        result = download(candidate, args.destination)
+        if args.output:
+            args.output.write_text(json.dumps(result) + "\n")
+        print(json.dumps(result))
     elif args.command == "report-review":
         print(report_review(candidate))
     else:
