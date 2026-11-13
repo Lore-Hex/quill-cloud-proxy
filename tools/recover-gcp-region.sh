@@ -29,7 +29,26 @@ restore_drain_operation="$(rollout_restore_drain_operation \
   "${region}" "${final_drain_state}" "${final_drain_origin}")" || exit $?
 : "${GITHUB_RUN_ID:?GITHUB_RUN_ID is required}"
 
+# Inside a secondary wave (tools/roll-secondary-wave.sh) several regions, and
+# their recoveries, run at once. The persistent drain is a read-modify-write of
+# one TXT record, so every drain change and DNS reconcile takes the wave's
+# shared lock. Run alone, nothing changes.
+with_wave_dns_lock() {
+  if [ -n "${TR_SECONDARY_WAVE_DIR:-}" ]; then
+    (
+      flock 9
+      "$@"
+    ) 9>"${TR_SECONDARY_WAVE_DIR}/dns-reconcile.lock"
+  else
+    "$@"
+  fi
+}
+
 update_drain() {
+  with_wave_dns_lock update_drain_unlocked "$@"
+}
+
+update_drain_unlocked() {
   local operation="$1"
   local origin="${2:-rollout}"
   local -a drain_args
@@ -46,6 +65,10 @@ update_drain() {
 }
 
 reconcile_gcp_dns() {
+  with_wave_dns_lock reconcile_gcp_dns_unlocked
+}
+
+reconcile_gcp_dns_unlocked() {
   QUILL_RECONCILE_APPLY=1 \
   QUILL_API_HOST="${primary_host}" \
   QUILL_DNS_ZONE="${dns_zone}" \
@@ -56,7 +79,7 @@ reconcile_gcp_dns() {
 }
 
 sync_backup_dns() {
-  python3 tools/sync-route53-api-aliases.py --apply
+  with_wave_dns_lock python3 tools/sync-route53-api-aliases.py --apply
 }
 
 resolve_template_digest() {

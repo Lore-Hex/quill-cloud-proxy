@@ -791,17 +791,20 @@ printf '%s\\n' "${GCLOUD_JSON}"
         self.assertLess(west.index(zones), west.index("        run: |"))
         # Apart from its zones (and the comments explaining them), the step is
         # the US East step with the region renamed.
-        renamed = (
-            step("Roll US East GCP MIG")
-            .replace("US East", "US West")
-            .replace("us-east4", "us-west1")
-            .replace("us_east4", "us_west1")
+        # Apart from its zones (and the comments explaining them), its worker
+        # arguments are the US East worker's in the Europe and US East wave,
+        # with the region renamed.
+        wave = step("Roll Europe and US East GCP MIGs in parallel")
+        east_args = wave[wave.index("            us-east4 \\\n"):].splitlines()
+        renamed = [
+            line.replace("us-east4", "us-west1")
             .replace("useast4", "uswest1")
-        )
-        self.assertEqual(
-            [line for line in west if line != zones and not line.lstrip().startswith("#")],
-            renamed.splitlines(),
-        )
+            .replace("${US_EAST4_PREV_", "${PREV_")
+            for line in east_args
+        ]
+        west_args = west[west.index("            us-west1 \\"):]
+        self.assertEqual(west_args, renamed)
+        self.assertIn("          bash tools/roll-secondary-region.sh \\", west)
         for expected in (
             "timeout-minutes: 55",
             "            us-west1 \\",
@@ -1173,7 +1176,8 @@ printf '%s\\n' "${GCLOUD_JSON}"
         self.assertEqual(completed.stdout.splitlines(), ["QUILL_USAGE_HEARTBEAT 4 0 4", "QUILL_TERMINATE_AT_CAP 4 0 4"])
 
         # A pending region's flags answer to the same declarations.
-        self._set_stage_d_flag(moved, "Roll US East GCP MIG", "QUILL_USAGE_HEARTBEAT", "off")
+        self._set_stage_d_flag(
+            moved, "Roll Europe and US East GCP MIGs in parallel", "US_EAST4_QUILL_USAGE_HEARTBEAT", "off")
         self._assert_stage_d_mutation_red(moved, "QUILL_USAGE_HEARTBEAT: declared regions not on: ['us-east4']")
 
         # Positive control: in neither file, the same region is unconfigured.
@@ -1338,19 +1342,16 @@ esac
             self.assertIn(command, function)
 
         self.assertIn("set -euo pipefail", function)
-        europe = workflow.index("      - name: Roll Europe GCP MIG")
-        us_east = workflow.index("      - name: Roll US East GCP MIG")
+        wave = workflow.index("      - name: Roll Europe and US East GCP MIGs in parallel")
         us_west = workflow.index("      - name: Roll US West GCP MIG")
-        self.assertLess(europe, us_east)
-        # The region that may still be bootstrapping rolls last, so its first
-        # deploy cannot hold up the regions that already serve.
-        self.assertLess(us_east, us_west)
+        # The region that may still be bootstrapping rolls last, alone, so its
+        # first deploy cannot hold up the regions that already serve.
+        self.assertLess(wave, us_west)
         self.assertEqual(
             re.findall(r"^      - name: (Roll .*GCP MIG.*)$", workflow, re.MULTILINE),
             [
                 "Roll the GCP MIG (us-central1)",
-                "Roll Europe GCP MIG",
-                "Roll US East GCP MIG",
+                "Roll Europe and US East GCP MIGs in parallel",
                 "Roll US West GCP MIG",
             ],
         )
@@ -1363,12 +1364,8 @@ esac
 
         pairs = (
             (
-                "Refresh AWS credentials for Europe backup-domain DNS",
-                "Roll Europe GCP MIG",
-            ),
-            (
-                "Refresh AWS credentials for US East backup-domain DNS",
-                "Roll US East GCP MIG",
+                "Refresh AWS credentials for the Europe and US East wave",
+                "Roll Europe and US East GCP MIGs in parallel",
             ),
             (
                 "Refresh AWS credentials for US West backup-domain DNS",

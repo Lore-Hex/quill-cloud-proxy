@@ -14,6 +14,8 @@ INVENTORY = "tools/gcp-enclave-migs.txt"
 PENDING_INVENTORY = "tools/gcp-enclave-migs-pending.txt"
 HEARTBEAT = "tools/stage-d-heartbeat-regions.txt"
 TERMINATE = "tools/stage-d-terminate-regions.txt"
+# Europe and US East roll in one step; their flags carry a region key.
+WAVE = "Roll Europe and US East GCP MIGs in parallel"
 
 
 class TerminateRegionsTests(unittest.TestCase):
@@ -88,7 +90,7 @@ class TerminateRegionsTests(unittest.TestCase):
             "QUILL_USAGE_HEARTBEAT 4 0 4", "QUILL_TERMINATE_AT_CAP 4 0 4",
         ])
         # Pending is not a way around the declaration: its flag must match too.
-        self.set_flag_off("Roll US East GCP MIG", "QUILL_TERMINATE_AT_CAP")
+        self.set_flag_off(WAVE, "US_EAST4_QUILL_TERMINATE_AT_CAP")
         self.assert_rejected(
             "QUILL_TERMINATE_AT_CAP: declared regions not on: ['us-east4']"
         )
@@ -113,13 +115,13 @@ class TerminateRegionsTests(unittest.TestCase):
         )
 
     def test_m2_declared_us_east_cannot_be_off(self):
-        self.set_flag_off("Roll US East GCP MIG", "QUILL_TERMINATE_AT_CAP")
+        self.set_flag_off(WAVE, "US_EAST4_QUILL_TERMINATE_AT_CAP")
         self.assert_rejected(
             "QUILL_TERMINATE_AT_CAP: declared regions not on: ['us-east4']"
         )
 
     def test_declared_europe_cannot_be_off(self):
-        self.set_flag_off("Roll Europe GCP MIG", "QUILL_TERMINATE_AT_CAP")
+        self.set_flag_off(WAVE, "EUROPE_WEST4_QUILL_TERMINATE_AT_CAP")
         self.assert_rejected(
             "QUILL_TERMINATE_AT_CAP: declared regions not on: ['europe-west4']"
         )
@@ -132,10 +134,56 @@ class TerminateRegionsTests(unittest.TestCase):
 
     def test_subset_rejected_even_when_heartbeat_bijection_matches(self):
         self.remove_region(HEARTBEAT, "us-east4")
-        self.set_flag_off("Roll US East GCP MIG", "QUILL_USAGE_HEARTBEAT")
+        self.set_flag_off(WAVE, "US_EAST4_QUILL_USAGE_HEARTBEAT")
         self.assert_rejected(
             "termination requires heartbeat in declared regions: ['us-east4']"
         )
+
+
+    def edit_step(self, step, old, new):
+        workflow = self.inputs[WORKFLOW]
+        start = workflow.index(f"      - name: {step}\n")
+        end = workflow.index("\n      - name:", start + 1)
+        self.assertEqual(workflow[start:end].count(old), 1, old)
+        self.inputs[WORKFLOW] = workflow[:start] + workflow[start:end].replace(old, new) + workflow[end:]
+
+    def test_wave_flag_needs_its_own_regions_template(self):
+        self.edit_step(WAVE, "US_EAST4_PREV_TEMPLATE:", "US_EAST4_PREVIOUS_TEMPLATE:")
+        self.assert_rejected(f"QUILL_USAGE_HEARTBEAT: {WAVE}: cannot determine a unique rollout region")
+
+    def test_wave_flag_key_must_match_the_template_it_names(self):
+        # A key whose template output is another region's cannot claim it.
+        self.edit_step(
+            WAVE,
+            "US_EAST4_PREV_TEMPLATE: ${{ steps.prev.outputs.us_east4_template }}",
+            "US_EAST4_PREV_TEMPLATE: ${{ steps.prev.outputs.us_west1_template }}",
+        )
+        self.assert_rejected(f"QUILL_USAGE_HEARTBEAT: {WAVE}: cannot determine a unique rollout region")
+
+    def test_unkeyed_flag_in_a_wave_step_is_rejected(self):
+        # One bare flag would apply to every region in the wave.
+        self.edit_step(
+            WAVE,
+            '          US_EAST4_QUILL_USAGE_HEARTBEAT: "on"\n',
+            '          US_EAST4_QUILL_USAGE_HEARTBEAT: "on"\n          QUILL_USAGE_HEARTBEAT: "on"\n',
+        )
+        self.assert_rejected(f"QUILL_USAGE_HEARTBEAT: {WAVE}: cannot determine a unique rollout region")
+
+    def test_keyed_flag_outside_a_wave_step_is_rejected(self):
+        self.edit_step(
+            "Roll US West GCP MIG",
+            'QUILL_USAGE_HEARTBEAT: "on"',
+            'US_WEST1_QUILL_USAGE_HEARTBEAT: "on"',
+        )
+        self.assert_rejected("QUILL_USAGE_HEARTBEAT: line")
+
+    def test_duplicate_keyed_flag_is_rejected(self):
+        self.edit_step(
+            WAVE,
+            'EUROPE_WEST4_QUILL_USAGE_HEARTBEAT: "on"',
+            'US_EAST4_QUILL_USAGE_HEARTBEAT: "on"',
+        )
+        self.assert_rejected("QUILL_USAGE_HEARTBEAT: us-east4: duplicate flag")
 
 
 if __name__ == "__main__":
