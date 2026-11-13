@@ -13,7 +13,7 @@ jobs:
     permissions:
       contents: read
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: Install pinned Rust toolchain
         run: rustup toolchain install 1.94.1 --profile minimal --component clippy --component rustfmt
       - name: Check pilot client (no credentials or live requests)
@@ -31,7 +31,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: Build pinned client and run control-plane safety tests
         working-directory: enclave-go
         run: docker build --platform linux/amd64 --target privatemode -f Dockerfile.enclave.gcp.multi .
@@ -74,8 +74,8 @@ jobs:
           - "cloud_gcp,llm_vertex"
           - "cloud_gcp,llm_multi"
     steps:
-      - uses: actions/checkout@v7
-      - uses: actions/setup-go@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
           go-version: "1.26.11"
       - name: Build (${{ matrix.tags }})
@@ -104,8 +104,8 @@ jobs:
           - "cloud_aws"
           - "cloud_gcp"
     steps:
-      - uses: actions/checkout@v7
-      - uses: actions/setup-go@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
           go-version: "1.26.11"
       - name: Build (${{ matrix.tags }})
@@ -123,10 +123,8 @@ jobs:
       run:
         working-directory: parent
     steps:
-      - uses: actions/checkout@v7
-      - uses: astral-sh/setup-uv@v7
-        with:
-          version: "latest"
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: Lore-Hex/quill-cloud-proxy/.github/actions/setup-uv@582cbdee7b7023cfeb915b62a7f635aa1e4662b1 # main 2026-11-13
       - name: Sync
         run: uv sync --frozen
       - name: Lint
@@ -145,13 +143,13 @@ jobs:
     env:
       TR_REQUIRE_CRYPTO: "1"
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           # Provenance validation resolves the exact commit that built each
           # published enclave. A shallow checkout makes older release commits
           # appear invalid even when they are ancestors of main.
           fetch-depth: 0
-      - uses: astral-sh/setup-uv@v7
+      - uses: Lore-Hex/quill-cloud-proxy/.github/actions/setup-uv@582cbdee7b7023cfeb915b62a7f635aa1e4662b1 # main 2026-11-13
         with:
           version: "0.13.4"
       - name: Install locked attestation dependencies in isolation
@@ -178,6 +176,7 @@ jobs:
           python3 tools/test_aws_fargate_pins.py
           python3 tools/test_check_trust_copies.py
           python3 tools/test_check_trust_signatures.py
+          python3 tools/test_workflow_action_policy.py
           python3 tools/test_wait_stage_d_policy.py
           python3 tools/test_reconcile_enclave_dns.py
           python3 tools/test_nyte_acme_iam.py

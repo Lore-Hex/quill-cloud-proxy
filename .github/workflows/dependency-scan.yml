@@ -19,6 +19,11 @@ name: Dependency scan
 # go.mod/go.sum is still matched against OSV; findings are not filtered by
 # reachability.
 
+# Inlined from google/osv-scanner-action's reusable workflows (v2.7.0,
+# osv-scanner-reusable.yml and osv-scanner-reusable-pr.yml) as steps. Lore-Hex
+# runs no third-party actions: the repository's osv-scanner action runs the same
+# OSV-Scanner image those workflows ran, pinned by digest.
+
 on:
   pull_request:
     branches: ["main"]
@@ -34,29 +39,138 @@ permissions:
 jobs:
   scan-full:
     if: ${{ github.event_name != 'pull_request' }}
+    runs-on: ubuntu-latest
     permissions:
       actions: read
       security-events: write
       contents: read
-    uses: "google/osv-scanner-action/.github/workflows/osv-scanner-reusable.yml@ef6dfdf01765802d5a8dbc3c39852a6128b00af0" # v2.7.0
-    with:
-      fail-on-vuln: false
-      scan-args: |-
-        --include-git-root
-        --no-call-analysis=go
-        -r
-        ./
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Run scanner
+        id: scan
+        uses: Lore-Hex/quill-cloud-proxy/.github/actions/osv-scanner@582cbdee7b7023cfeb915b62a7f635aa1e4662b1 # main 2026-11-13
+        continue-on-error: true
+        with:
+          scan-args: |-
+            --output=results.json
+            --format=json
+            --include-git-root
+            --no-call-analysis=go
+            -r
+            ./
+      # osv-scanner exits non-zero both when it finds vulnerabilities and when
+      # the scan itself fails; only the second leaves no results file.
+      - name: Check that the scan completed
+        if: ${{ steps.scan.outcome == 'failure' }}
+        run: test -s results.json || { echo "::error::OSV-Scanner failed without writing results.json"; exit 1; }
+      - name: Run osv-scanner-reporter
+        uses: Lore-Hex/quill-cloud-proxy/.github/actions/osv-scanner@582cbdee7b7023cfeb915b62a7f635aa1e4662b1 # main 2026-11-13
+        with:
+          tool: reporter
+          scan-args: |-
+            --output=results.sarif
+            --new=results.json
+            --gh-annotations=false
+            --fail-on-vuln=false
+      - name: Upload artifact
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: OSV Scanner SARIF file
+          path: results.sarif
+          retention-days: 5
+      - name: Upload to code-scanning
+        if: ${{ !cancelled() }}
+        uses: github/codeql-action/upload-sarif@6f2ac81f5cd81fe351a197ba0b00d91d03cd2aee # v4.39.0
+        with:
+          sarif_file: results.sarif
 
   scan-pr:
     if: ${{ github.event_name == 'pull_request' }}
+    runs-on: ubuntu-latest
     permissions:
       actions: read
       security-events: write
       contents: read
-    uses: "google/osv-scanner-action/.github/workflows/osv-scanner-reusable-pr.yml@ef6dfdf01765802d5a8dbc3c39852a6128b00af0" # v2.7.0
-    with:
-      scan-args: |-
-        --include-git-root
-        --no-call-analysis=go
-        -r
-        ./
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+      - name: Checkout target branch
+        run: git checkout "$GITHUB_BASE_REF"
+      - name: Run scanner on existing code
+        id: scan-old
+        uses: Lore-Hex/quill-cloud-proxy/.github/actions/osv-scanner@582cbdee7b7023cfeb915b62a7f635aa1e4662b1 # main 2026-11-13
+        continue-on-error: true
+        with:
+          scan-args: |-
+            --format=json
+            --output=old-results.json
+            --include-git-root
+            --no-call-analysis=go
+            -r
+            ./
+      - name: Checkout current branch
+        run: git checkout -f "$GITHUB_SHA"
+      - name: Run scanner on new code
+        id: scan-new
+        uses: Lore-Hex/quill-cloud-proxy/.github/actions/osv-scanner@582cbdee7b7023cfeb915b62a7f635aa1e4662b1 # main 2026-11-13
+        continue-on-error: true
+        with:
+          scan-args: |-
+            --format=json
+            --output=new-results.json
+            --include-git-root
+            --no-call-analysis=go
+            -r
+            ./
+      # A failed scan writes no file, and the reporter reads a missing --new
+      # file as "no new vulnerabilities"; refuse to compare incomplete scans.
+      - name: Check that both scans completed
+        if: ${{ steps.scan-old.outcome == 'failure' || steps.scan-new.outcome == 'failure' }}
+        env:
+          OLD_OUTCOME: ${{ steps.scan-old.outcome }}
+          NEW_OUTCOME: ${{ steps.scan-new.outcome }}
+        run: |
+          status=0
+          if [ "$OLD_OUTCOME" = failure ] && [ ! -s old-results.json ]; then echo "::error::scan of the target branch wrote no results"; status=1; fi
+          if [ "$NEW_OUTCOME" = failure ] && [ ! -s new-results.json ]; then echo "::error::scan of this branch wrote no results"; status=1; fi
+          exit "$status"
+      - name: Run osv-scanner-reporter
+        uses: Lore-Hex/quill-cloud-proxy/.github/actions/osv-scanner@582cbdee7b7023cfeb915b62a7f635aa1e4662b1 # main 2026-11-13
+        with:
+          tool: reporter
+          scan-args: |-
+            --output=results.sarif
+            --old=old-results.json
+            --new=new-results.json
+            --gh-annotations=true
+            --fail-on-vuln=true
+      - name: Upload artifact
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: OSV Scanner SARIF file
+          path: results.sarif
+          retention-days: 5
+      - name: Upload old scan json results
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: old-json-results
+          path: old-results.json
+          retention-days: 5
+      - name: Upload new scan json results
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: new-json-results
+          path: new-results.json
+          retention-days: 5
+      - name: Upload to code-scanning
+        if: ${{ !cancelled() }}
+        uses: github/codeql-action/upload-sarif@6f2ac81f5cd81fe351a197ba0b00d91d03cd2aee # v4.39.0
+        with:
+          sarif_file: results.sarif

@@ -1,0 +1,57 @@
+name: nix-installer
+description: >-
+  Install Determinate Nix with the nix-installer release binary, as
+  DeterminateSystems/nix-installer-action@v21 did with source-tag and an empty
+  github-token: the binary for the requested tag (now SHA-256 pinned, from the
+  GitHub release), run as `install linux --determinate` with
+  trusted-users = root <runner user>, diagnostics off, KVM opened to the runner,
+  and the Nix profile directories added to PATH. No FlakeHub login, no GitHub
+  access token in nix.conf.
+inputs:
+  source-tag:
+    description: nix-installer release tag. It must have a checksum below.
+    required: true
+runs:
+  using: composite
+  steps:
+    - shell: bash
+      env:
+        SOURCE_TAG: ${{ inputs.source-tag }}
+      run: |
+        set -euo pipefail
+        case "$(uname -m)" in
+          x86_64) arch=x86_64-linux ;;
+          aarch64) arch=aarch64-linux ;;
+          *) echo "::error::nix-installer: unsupported architecture $(uname -m)"; exit 1 ;;
+        esac
+        case "$SOURCE_TAG/$arch" in
+          v3.23.3/x86_64-linux) sha256=c41a1e6a9fbb557f16b0de5faf7f361f0351b2d0726e7d56c2e2ed7f4f7d075e ;;
+          v3.23.3/aarch64-linux) sha256=dd4a471ca5bcb8d82e9d4185c5874904266efce9b6586e108413b47caa783931 ;;
+          *) echo "::error::nix-installer: no pinned checksum for nix-installer ${SOURCE_TAG} on ${arch}; add one to this action"; exit 1 ;;
+        esac
+        binary="${RUNNER_TEMP}/nix-installer"
+        curl -fsSL --retry 5 --retry-all-errors --connect-timeout 20 -o "$binary" \
+          "https://github.com/DeterminateSystems/nix-installer/releases/download/${SOURCE_TAG}/nix-installer-${arch}"
+        echo "${sha256}  ${binary}" | sha256sum --check --strict -
+        chmod 0755 "$binary"
+        # KVM for VM-based builds, exactly as the action configured it.
+        if [ -e /dev/kvm ]; then
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' \
+            | sudo tee /etc/udev/rules.d/99-determinate-nix-installer-kvm.rules >/dev/null
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+          echo "DETERMINATE_NIX_KVM=1" >> "$GITHUB_ENV"
+        else
+          echo "DETERMINATE_NIX_KVM=0" >> "$GITHUB_ENV"
+        fi
+        sudo env \
+          NIX_INSTALLER_NO_CONFIRM=true \
+          NIX_INSTALLER_DIAGNOSTIC_ENDPOINT= \
+          NIX_INSTALLER_EXTRA_CONF="trusted-users = root $(id -un)"$'\n' \
+          "$binary" install linux --determinate
+        {
+          echo /usr/local/bin
+          echo /nix/var/nix/profiles/default/bin
+          echo "${HOME}/.nix-profile/bin"
+        } >> "$GITHUB_PATH"
+        /nix/var/nix/profiles/default/bin/nix --version

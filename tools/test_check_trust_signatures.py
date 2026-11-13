@@ -554,8 +554,7 @@ class TheRepository(unittest.TestCase):
                 str((step.get("with") or {}).get("cosign-release", ""))
                 for job in workflow["jobs"].values()
                 for step in job.get("steps", [])
-                # GitHub resolves action names case-insensitively.
-                if str(step.get("uses", "")).lower().startswith("sigstore/cosign-installer")
+                if _installs_cosign(step)
             ]
         # The workflows that sign or verify bundles each install cosign.
         for name in (
@@ -654,10 +653,18 @@ class TheRepository(unittest.TestCase):
                     self.assertIn(f"trust-page/{document}", triggers)
 
 
+COSIGN_INSTALLERS = (
+    # The repository's own installer (pinned release, pinned checksum).
+    "lore-hex/quill-cloud-proxy/.github/actions/cosign-install@",
+    # Kept so a reintroduced upstream installer is still held to the patched pin.
+    "sigstore/cosign-installer",
+)
+
+
 def _installs_cosign(step: dict) -> bool:
-    """Whether a workflow step runs the cosign installer action."""
+    """Whether a workflow step runs a cosign installer action."""
     # GitHub resolves action names case-insensitively.
-    return str(step.get("uses", "")).lower().startswith("sigstore/cosign-installer")
+    return str(step.get("uses", "")).lower().startswith(COSIGN_INSTALLERS)
 
 
 def _patched(release: str) -> bool:

@@ -149,8 +149,8 @@ jobs:
       run:
         working-directory: enclave-go
     steps:
-      - uses: actions/checkout@v7
-      - uses: actions/setup-go@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
           go-version: "1.26.11"
       - name: Test Stage D publication and streaming gates (offline)
@@ -186,7 +186,7 @@ jobs:
     env:
       GH_TOKEN: ${{ github.token }}
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           sparse-checkout: tools/superseded_rollout.py
           sparse-checkout-cone-mode: false
@@ -210,7 +210,7 @@ jobs:
       accepted_references: ${{ steps.write-trust.outputs.accepted_references }}
       stage_d_policy_sha256: ${{ steps.stage-d-transition.outputs.policy_sha256 }}
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0   # need history for the auto-commit + push back
           # Trust-artifact commits push directly to protected main. The
@@ -236,12 +236,12 @@ jobs:
           } >> "$GITHUB_ENV"
 
       - name: Authenticate to GCP via WIF
-        uses: google-github-actions/auth@v3
+        uses: Lore-Hex/quill-cloud-proxy/.github/actions/gcp-auth@582cbdee7b7023cfeb915b62a7f635aa1e4662b1 # main 2026-11-13
         with:
           workload_identity_provider: projects/44325983244/locations/global/workloadIdentityPools/github-actions/providers/github
           service_account: tr-deploy@quill-cloud-proxy.iam.gserviceaccount.com
 
-      - uses: google-github-actions/setup-gcloud@v3
+      - uses: Lore-Hex/quill-cloud-proxy/.github/actions/setup-gcloud@582cbdee7b7023cfeb915b62a7f635aa1e4662b1 # main 2026-11-13
 
       # The installer downloads cosign from GitHub Releases once, with no
       # retry; on 2026-11-09 that download failed in three runs within 16
@@ -249,14 +249,14 @@ jobs:
       # after a pause. The retry has no continue-on-error, so a second failure
       # still fails the job (tools/test_check_trust_signatures.py checks this).
       - id: cosign-install
-        uses: sigstore/cosign-installer@v3
+        uses: Lore-Hex/quill-cloud-proxy/.github/actions/cosign-install@582cbdee7b7023cfeb915b62a7f635aa1e4662b1 # main 2026-11-13
         continue-on-error: true
         with:
           cosign-release: v2.6.5
       - if: steps.cosign-install.outcome == 'failure'
         run: sleep 30
       - if: steps.cosign-install.outcome == 'failure'
-        uses: sigstore/cosign-installer@v3
+        uses: Lore-Hex/quill-cloud-proxy/.github/actions/cosign-install@582cbdee7b7023cfeb915b62a7f635aa1e4662b1 # main 2026-11-13
         with:
           cosign-release: v2.6.5
 
@@ -565,7 +565,7 @@ jobs:
     needs: build-and-release
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: main
       # The installer downloads cosign from GitHub Releases once, with no
@@ -574,14 +574,14 @@ jobs:
       # after a pause. The retry has no continue-on-error, so a second failure
       # still fails the job (tools/test_check_trust_signatures.py checks this).
       - id: cosign-install
-        uses: sigstore/cosign-installer@v3
+        uses: Lore-Hex/quill-cloud-proxy/.github/actions/cosign-install@582cbdee7b7023cfeb915b62a7f635aa1e4662b1 # main 2026-11-13
         continue-on-error: true
         with:
           cosign-release: v2.6.5
       - if: steps.cosign-install.outcome == 'failure'
         run: sleep 30
       - if: steps.cosign-install.outcome == 'failure'
-        uses: sigstore/cosign-installer@v3
+        uses: Lore-Hex/quill-cloud-proxy/.github/actions/cosign-install@582cbdee7b7023cfeb915b62a7f635aa1e4662b1 # main 2026-11-13
         with:
           cosign-release: v2.6.5
       - name: Wait for exact signed public transitional Stage D policy
@@ -606,7 +606,7 @@ jobs:
     runs-on: ubuntu-latest
     environment: batch-release
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: Require explicit Batch storage activation
         env:
           TR_BATCH_STORAGE_ENABLED: ${{ vars.TR_BATCH_STORAGE_ENABLED }}
@@ -616,11 +616,11 @@ jobs:
             exit 1
           fi
       - name: Authenticate isolated Batch release identity
-        uses: google-github-actions/auth@v3
+        uses: Lore-Hex/quill-cloud-proxy/.github/actions/gcp-auth@582cbdee7b7023cfeb915b62a7f635aa1e4662b1 # main 2026-11-13
         with:
           workload_identity_provider: projects/44325983244/locations/global/workloadIdentityPools/github-actions/providers/github
           service_account: tr-batch-release@quill-cloud-proxy.iam.gserviceaccount.com
-      - uses: google-github-actions/setup-gcloud@v3
+      - uses: Lore-Hex/quill-cloud-proxy/.github/actions/setup-gcloud@582cbdee7b7023cfeb915b62a7f635aa1e4662b1 # main 2026-11-13
       - name: Grant only the new measured enclave digest
         env:
           IMAGE_DIGEST: ${{ needs.build-and-release.outputs.image_digest }}
@@ -644,12 +644,12 @@ jobs:
     outputs:
       operation: ${{ steps.admit.outputs.TR_DEPLOY_MUTEX_OPERATION }}
     steps:
-      - uses: actions/checkout@v7
-      - uses: google-github-actions/auth@v3
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: Lore-Hex/quill-cloud-proxy/.github/actions/gcp-auth@582cbdee7b7023cfeb915b62a7f635aa1e4662b1 # main 2026-11-13
         with:
           workload_identity_provider: projects/44325983244/locations/global/workloadIdentityPools/github-actions/providers/github
           service_account: tr-deploy@quill-cloud-proxy.iam.gserviceaccount.com
-      - uses: google-github-actions/setup-gcloud@v3
+      - uses: Lore-Hex/quill-cloud-proxy/.github/actions/setup-gcloud@582cbdee7b7023cfeb915b62a7f635aa1e4662b1 # main 2026-11-13
       - name: Reserve GCP across both repositories
         id: admit
         env:
@@ -695,7 +695,7 @@ jobs:
       TR_CP_HOLD_MAX_SECONDS: "1200"
       TR_CP_HOLD_BUDGET_SECONDS: "1200"
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         timeout-minutes: 2
         with:
           # Match the image source, not a newer main containing runtime envs
@@ -705,18 +705,18 @@ jobs:
           persist-credentials: false
       - name: Authenticate to GCP via WIF
         timeout-minutes: 2
-        uses: google-github-actions/auth@v3
+        uses: Lore-Hex/quill-cloud-proxy/.github/actions/gcp-auth@582cbdee7b7023cfeb915b62a7f635aa1e4662b1 # main 2026-11-13
         with:
           workload_identity_provider: projects/44325983244/locations/global/workloadIdentityPools/github-actions/providers/github
           service_account: tr-deploy@quill-cloud-proxy.iam.gserviceaccount.com
-      - uses: google-github-actions/setup-gcloud@v3
+      - uses: Lore-Hex/quill-cloud-proxy/.github/actions/setup-gcloud@582cbdee7b7023cfeb915b62a7f635aa1e4662b1 # main 2026-11-13
         timeout-minutes: 3
         with:
           # MIG minReadySec is still exposed through the beta command group.
           # Install it explicitly so a non-interactive runner never pauses to
           # ask whether it may install the component mid-rollout.
           install_components: beta
-      - uses: astral-sh/setup-uv@v7
+      - uses: Lore-Hex/quill-cloud-proxy/.github/actions/setup-uv@582cbdee7b7023cfeb915b62a7f635aa1e4662b1 # main 2026-11-13
         timeout-minutes: 2
 
       - name: Verify shared cloud reservation before mutations
@@ -724,7 +724,7 @@ jobs:
         run: python3 tools/cloud-rollout.py assert --cloud gcp
       - name: Authenticate to AWS for backup-domain DNS
         timeout-minutes: 2
-        uses: aws-actions/configure-aws-credentials@v6
+        uses: Lore-Hex/quill-cloud-proxy/.github/actions/aws-credentials@582cbdee7b7023cfeb915b62a7f635aa1e4662b1 # main 2026-11-13
         with:
           role-to-assume: ${{ secrets.AWS_DEPLOY_ROLE_ARN }}
           aws-region: us-east-1
@@ -977,7 +977,7 @@ jobs:
       - name: Refresh AWS credentials before restoring us-central1
         timeout-minutes: 2
         if: ${{ steps.canary_us.outcome == 'success' }}
-        uses: aws-actions/configure-aws-credentials@v6
+        uses: Lore-Hex/quill-cloud-proxy/.github/actions/aws-credentials@582cbdee7b7023cfeb915b62a7f635aa1e4662b1 # main 2026-11-13
         with:
           role-to-assume: ${{ secrets.AWS_DEPLOY_ROLE_ARN }}
           aws-region: us-east-1
@@ -1011,7 +1011,7 @@ jobs:
       - name: Refresh AWS credentials for primary recovery
         timeout-minutes: 2
         if: ${{ always() && (failure() || steps.canary_us.outcome == 'failure') }}
-        uses: aws-actions/configure-aws-credentials@v6
+        uses: Lore-Hex/quill-cloud-proxy/.github/actions/aws-credentials@582cbdee7b7023cfeb915b62a7f635aa1e4662b1 # main 2026-11-13
         with:
           role-to-assume: ${{ secrets.AWS_DEPLOY_ROLE_ARN }}
           aws-region: us-east-1
@@ -1040,7 +1040,7 @@ jobs:
       # near the start of this long-running job.
       - name: Refresh AWS credentials for the Europe and US East wave
         timeout-minutes: 2
-        uses: aws-actions/configure-aws-credentials@v6
+        uses: Lore-Hex/quill-cloud-proxy/.github/actions/aws-credentials@582cbdee7b7023cfeb915b62a7f635aa1e4662b1 # main 2026-11-13
         with:
           role-to-assume: ${{ secrets.AWS_DEPLOY_ROLE_ARN }}
           aws-region: us-east-1
@@ -1108,7 +1108,7 @@ jobs:
 
       - name: Refresh AWS credentials for US West backup-domain DNS
         timeout-minutes: 2
-        uses: aws-actions/configure-aws-credentials@v6
+        uses: Lore-Hex/quill-cloud-proxy/.github/actions/aws-credentials@582cbdee7b7023cfeb915b62a7f635aa1e4662b1 # main 2026-11-13
         with:
           role-to-assume: ${{ secrets.AWS_DEPLOY_ROLE_ARN }}
           aws-region: us-east-1
@@ -1257,7 +1257,7 @@ jobs:
     outputs:
       stage_d_policy_sha256: ${{ steps.finalize.outputs.policy_sha256 }}
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: main
           fetch-depth: 0
@@ -1318,7 +1318,7 @@ jobs:
     needs: [build-and-release, finalize-trust-artifacts]
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: main
       # The installer downloads cosign from GitHub Releases once, with no
@@ -1327,14 +1327,14 @@ jobs:
       # after a pause. The retry has no continue-on-error, so a second failure
       # still fails the job (tools/test_check_trust_signatures.py checks this).
       - id: cosign-install
-        uses: sigstore/cosign-installer@v3
+        uses: Lore-Hex/quill-cloud-proxy/.github/actions/cosign-install@582cbdee7b7023cfeb915b62a7f635aa1e4662b1 # main 2026-11-13
         continue-on-error: true
         with:
           cosign-release: v2.6.5
       - if: steps.cosign-install.outcome == 'failure'
         run: sleep 30
       - if: steps.cosign-install.outcome == 'failure'
-        uses: sigstore/cosign-installer@v3
+        uses: Lore-Hex/quill-cloud-proxy/.github/actions/cosign-install@582cbdee7b7023cfeb915b62a7f635aa1e4662b1 # main 2026-11-13
         with:
           cosign-release: v2.6.5
       - name: Wait for exact signed public final Stage D policy
@@ -1360,12 +1360,12 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
-      - uses: actions/checkout@v7
-      - uses: google-github-actions/auth@v3
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: Lore-Hex/quill-cloud-proxy/.github/actions/gcp-auth@582cbdee7b7023cfeb915b62a7f635aa1e4662b1 # main 2026-11-13
         with:
           workload_identity_provider: projects/44325983244/locations/global/workloadIdentityPools/github-actions/providers/github
           service_account: tr-deploy@quill-cloud-proxy.iam.gserviceaccount.com
-      - uses: google-github-actions/setup-gcloud@v3
+      - uses: Lore-Hex/quill-cloud-proxy/.github/actions/setup-gcloud@582cbdee7b7023cfeb915b62a7f635aa1e4662b1 # main 2026-11-13
       - name: Release only after attestation and regional completion
         env:
           GH_TOKEN: ${{ secrets.TRUST_PUSH_TOKEN }}
@@ -1400,7 +1400,7 @@ jobs:
     env:
       GH_TOKEN: ${{ github.token }}
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           sparse-checkout: tools/superseded_rollout.py
           sparse-checkout-cone-mode: false
