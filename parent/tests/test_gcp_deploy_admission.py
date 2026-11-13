@@ -62,12 +62,12 @@ def test_the_coordinator_pin_names_the_commit_whose_cap_the_wait_assumes() -> No
     assert set(pin) == {"commit", "sha256"}
     assert re.fullmatch(r"[a-f0-9]{40}", pin["commit"])
     assert re.fullmatch(r"[a-f0-9]{64}", pin["sha256"])
-    # quill-router 377f0cc4 (2026-11-13, #2568): schema v3 component leases
+    # quill-router 3784922d (2026-11-13, #2568 merged): schema v3 component leases
     # and the read-only `lanes` command tools/gate_hold.py reads, on top of
     # FIFO admission (#2557). It keeps the four hour cap and 12 h maximum TTL
     # that the wait and TTL above assume (MAX_ADMISSION_WAIT_SECONDS = 4 * 3600
     # and 60 <= ttl <= 43_200 at that commit). The content digest is the
     # file's sha256 at that commit, which tools/cloud-rollout.py re-checks
     # before every use.
-    assert pin["commit"] == "377f0cc42f7ba067135a97f23d1ff69725cb495a"
+    assert pin["commit"] == "3784922d4ff87e6ee1475962fc12f3ccc5f7b7c6"
     assert pin["sha256"] == "4d3812b356cb68aad3647d183e5cb9d257bf066e62febd217468a9e97c411703"
