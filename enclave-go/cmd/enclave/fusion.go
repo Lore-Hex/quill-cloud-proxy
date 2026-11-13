@@ -315,11 +315,14 @@ var fusionLiberty40Fusers = []string{
 	fusionNemotron3Ultra,
 }
 
-// Liberty 4.1 is Liberty 4.0 with Thinking Machines' Inkling 2 Small as a
-// fourth panel member (its weights went public under Apache-2.0 on
-// 2026-11-12). The fusers, their order and their failover are Liberty 4.0's.
-// Inkling 2 Small runs on Cloudflare Workers AI's US 1M route, so it serves
-// Liberty's full window and is never dropped for length.
+// Liberty 4.1 is Liberty 4.0 with Thinking Machines' Inkling 2 Small (its
+// weights went public under Apache-2.0 on 2026-11-12) as a fourth panel
+// member and as the first fuser: Inkling 2 Small fuses, then Muse Spark,
+// Beam and Nemotron take over in Liberty 4.0's order, with the same
+// failover. As in Liberty 4.0, where Muse Spark both answers and fuses, a
+// model may sit on the panel and in the fuser list. Inkling 2 Small runs on
+// Cloudflare Workers AI's US 1M route, so it serves Liberty's full window
+// and is never dropped for length.
 var fusionLiberty41Panel = []string{
 	fusionNemotron3Ultra,
 	"reflection/beam-1.0",
@@ -327,7 +330,12 @@ var fusionLiberty41Panel = []string{
 	fusionInkling2Small,
 }
 
-var fusionLiberty41Fusers = fusionLiberty40Fusers
+var fusionLiberty41Fusers = []string{
+	fusionInkling2Small,
+	"meta-models/muse-spark-open",
+	"reflection/beam-1.0",
+	fusionNemotron3Ultra,
+}
 
 const fusionInkling2Small = "thinkingmachines/inkling-2-small"
 

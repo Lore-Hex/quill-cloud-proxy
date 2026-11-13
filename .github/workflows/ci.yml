@@ -190,6 +190,7 @@ jobs:
           python3 tools/test_verify_gcp_runtime_secret_access.py
           python3 tools/test_verify_pcr0_build_args.py
           python3 tools/test_go_toolchain_pins.py
+          python3 tools/test_secret_scan_workflow.py
           python3 tools/test_nitro_root_pin.py
           python3 tools/test_mirror_independence.py
           python3 tools/test_signing_identity_matches_docs.py
