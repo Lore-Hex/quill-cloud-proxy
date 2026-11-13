@@ -6,6 +6,7 @@ import copy
 import hashlib
 import json
 import subprocess
+import sys
 import tempfile
 import unittest
 from pathlib import Path
@@ -392,11 +393,7 @@ class BuildCommitTests(VendorRepo):
             ):
                 policy.verify_build_commit(self.repo, self.source, build)
 
-    def test_merge_in_build_chain_refuses(self):
-        self.git("checkout", "-q", "-b", "side", self.source)
-        self.write("services/opensecret/src/provider_registry.rs", "side change")
-        self.commit()
-        self.git("checkout", "-q", "-")
+    def merge(self, branch):
         self.git(
             "-c",
             "user.name=Test",
@@ -406,14 +403,104 @@ class BuildCommitTests(VendorRepo):
             "commit.gpgsign=false",
             "merge",
             "-q",
-            "-s",
-            "ours",
+            "--no-ff",
             "--no-edit",
-            "side",
+            branch,
         )
-        merge = self.git("rev-parse", "HEAD")
-        with self.assertRaisesRegex(policy.Refused, "merge|more than measurement"):
+        return self.git("rev-parse", "HEAD")
+
+    def test_merge_in_build_chain_refuses(self):
+        # Both parents and the merge itself touch only measurement files, so
+        # only the single-parent rule can refuse this chain.
+        self.git("checkout", "-q", "-b", "side", self.approval)
+        self.write("services/opensecret/pcrDevHistory.json", "[1]")
+        side = self.commit()
+        self.git("checkout", "-q", "-")
+        self.write("services/opensecret/pcrDev.json", "dev approval 2")
+        self.commit()
+        merge = self.merge("side")
+        for commit in (side, merge):
+            self.assertTrue(
+                set(policy.changed_paths(self.repo, commit + "^", commit))
+                <= policy.MEASUREMENTS
+            )
+        with self.assertRaisesRegex(policy.Refused, "merge"):
             policy.verify_build_commit(self.repo, self.source, merge)
+
+    def test_chain_over_bound_refuses(self):
+        for index in range(33):
+            self.write("services/opensecret/pcrDev.json", f"dev {index}")
+            tip = self.commit()
+        with self.assertRaisesRegex(policy.Refused, "exceeds bound"):
+            policy.verify_build_commit(self.repo, self.source, tip)
+        self.assertEqual(policy.build_commits(self.repo, self.source, tip), [self.source])
+
+    def test_build_commits_stop_at_first_refused_commit(self):
+        self.write("apps/chat/ui.rs", "post-approval change")
+        self.commit()
+        self.write("services/opensecret/pcrDev.json", "later approval")
+        later = self.commit()
+        self.assertEqual(
+            policy.build_commits(self.repo, self.source, later),
+            [self.source, self.dev, self.approval],
+        )
+
+    def test_build_commits_unexpected_error_stops_list_without_crashing(self):
+        real = policy.verify_build_commit
+        for error in (
+            subprocess.CalledProcessError(1, "git"),
+            UnicodeDecodeError("utf-8", b"\xff", 0, 1, "invalid"),
+        ):
+
+            def fake(repo, source, build, error=error):
+                if build == self.approval:
+                    raise error
+                return real(repo, source, build)
+
+            with (
+                self.subTest(error=type(error).__name__),
+                patch.object(policy, "verify_build_commit", fake),
+                patch("sys.stderr"),
+            ):
+                self.assertEqual(
+                    policy.build_commits(self.repo, self.source, self.approval),
+                    [self.source, self.dev],
+                )
+        real_git = policy.git
+
+        def failing_walk(repo, *args):
+            if args[:2] == ("rev-list", "--reverse"):
+                raise subprocess.CalledProcessError(128, "git")
+            return real_git(repo, *args)
+
+        with patch.object(policy, "git", failing_walk), patch("sys.stderr"):
+            self.assertEqual(
+                policy.build_commits(self.repo, self.source, self.approval),
+                [self.source],
+            )
+        # A failure on the measured source itself still refuses discovery.
+        with (
+            patch.object(
+                policy,
+                "measurement_source",
+                side_effect=subprocess.CalledProcessError(128, "git"),
+            ),
+            self.assertRaises(subprocess.CalledProcessError),
+        ):
+            policy.discover(self.repo, self.baseline)
+
+    def test_measurement_path_mode_or_type_change_refuses(self):
+        target = self.repo / "services/opensecret/pcrDev.json"
+        target.chmod(0o755)
+        executable = self.commit()
+        with self.assertRaisesRegex(policy.Refused, "regular file|more than"):
+            policy.verify_build_commit(self.repo, self.source, executable)
+        self.git("reset", "-q", "--hard", self.approval)
+        target.unlink()
+        target.symlink_to("../../services/opensecret/Cargo.lock")
+        link = self.commit()
+        with self.assertRaisesRegex(policy.Refused, "regular file"):
+            policy.verify_build_commit(self.repo, self.source, link)
 
     def test_build_outside_candidate_list_refuses(self):
         candidate = policy.discover(self.repo, self.baseline)
@@ -457,6 +544,119 @@ class BuildCommitTests(VendorRepo):
             policy.verify_release(
                 self.repo, candidate, vendor, rebuilt, self.approval
             )
+
+
+class SubmoduleTests(VendorRepo):
+    """A gitlink change must stay visible even if .gitmodules ignores it."""
+
+    SUB = "services/opensecret/privatemode-public"
+
+    def gitmodules(self, extra=""):
+        self.write(
+            ".gitmodules",
+            f'[submodule "{self.SUB}"]\n\tpath = {self.SUB}\n'
+            f"\turl = https://example.invalid/pm.git\n{extra}",
+        )
+
+    def gitlink(self, oid):
+        self.git("update-index", "--add", "--cacheinfo", f"160000,{oid},{self.SUB}")
+
+    def setUp(self):
+        super().setUp()
+        self.gitmodules()
+        (self.repo / self.SUB).mkdir(parents=True)
+        self.gitlink("1" * 40)
+        base = self.commit()
+        self.baseline.update(
+            source_commit=base,
+            security_boundary_sha256=policy.boundary(self.repo, base),
+        )
+        self.write("apps/chat/ui.rs", "v2\n")
+        self.source = self.commit()
+        # A "dev approval" that also swaps the submodule pointer.
+        self.gitlink("e" * 40)
+        self.write("services/opensecret/pcrDev.json", "dev")
+        self.dev = self.commit()
+        self.approval = self.approve()
+        # A later, never-built master commit hides submodule changes from
+        # porcelain diff for the whole clone.
+        self.gitmodules("\tignore = all\n")
+        self.commit()
+
+    def test_fixture_reproduces_porcelain_blind_spot(self):
+        hidden = self.git("diff", "--name-only", self.source, self.dev).split()
+        self.assertNotIn(self.SUB, hidden)
+        self.assertIn(self.SUB, policy.changed_paths(self.repo, self.source, self.dev))
+
+    def test_ignored_gitlink_swap_cannot_be_a_build_commit(self):
+        for build in (self.dev, self.approval):
+            with (
+                self.subTest(build=build),
+                self.assertRaisesRegex(policy.Refused, "more than measurement"),
+            ):
+                policy.verify_build_commit(self.repo, self.source, build)
+        self.assertEqual(
+            policy.build_commits(self.repo, self.source, self.approval), [self.source]
+        )
+        stale = {
+            "status": "automatic",
+            "source_commit": self.source,
+            "pcr0": "2" * 96,
+            "security_boundary_sha256": self.baseline["security_boundary_sha256"],
+            "build_commits": [self.source, self.dev, self.approval],
+        }
+        vendor, rebuilt = BuildCommitTests.release(self, self.approval)
+        with self.assertRaisesRegex(policy.Refused, "more than measurement"):
+            policy.verify_release(self.repo, stale, vendor, rebuilt, self.approval)
+
+    def test_each_lineage_layer_alone_refuses_ignored_gitlink(self):
+        def porcelain(repo, before, after):
+            raw = policy.git(repo, "diff", "--name-only", "-z", before, after)
+            return [path.decode() for path in raw.split(b"\0") if path]
+
+        def permissive_tree(repo, before, after):
+            return None
+
+        with patch.object(policy, "changed_paths", porcelain):
+            self.assertNotIn(self.SUB, porcelain(self.repo, self.source, self.dev))
+            with self.assertRaisesRegex(policy.Refused, "more than measurement"):
+                policy.verify_build_commit(self.repo, self.source, self.dev)
+            with (
+                patch.object(policy, "same_tree_except_measurements", permissive_tree),
+                self.assertRaisesRegex(policy.Refused, "protected source tree"),
+            ):
+                policy.verify_build_commit(self.repo, self.source, self.dev)
+
+    def test_ignored_gitlink_swap_is_source_for_existing_checks(self):
+        self.assertEqual(policy.measurement_source(self.repo, self.approval), self.dev)
+        with self.assertRaisesRegex(policy.Refused, "approvals only"):
+            policy.verify_history(
+                self.repo, self.source, self.approval, "2" * 96, self.baseline
+            )
+        candidate = policy.discover(self.repo, self.baseline)
+        self.assertEqual(candidate["source_commit"], self.dev)
+        self.assertEqual(candidate["status"], "review_required")
+        self.assertIn(self.SUB, candidate["security_sensitive_paths"])
+        self.assertEqual(candidate["build_commits"], [self.dev, self.approval])
+
+
+class CommandLineTests(unittest.TestCase):
+    def test_verify_requires_explicit_build(self):
+        result = subprocess.run(
+            [
+                sys.executable,
+                str(Path(policy.__file__)),
+                "verify",
+                "--vendor",
+                "missing",
+                "--candidate",
+                "missing.json",
+            ],
+            capture_output=True,
+            check=False,
+        )
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn(b"verify requires --build", result.stderr)
 
 
 class ArtifactTests(unittest.TestCase):
