@@ -24,7 +24,8 @@ WORKFLOW = REPO_ROOT / ".github" / "workflows" / "deploy-enclave-gcp.yml"
 COORDINATOR_PIN = REPO_ROOT / "tools" / "cloud-rollout-source.json"
 
 # MAX_ADMISSION_WAIT_SECONDS of scripts/deploy/cloud_rollout.py in quill-router at
-# the pinned commit (raised from two hours in quill-router #1481, 2026-10-02).
+# the pinned commit (raised from two hours in quill-router #1481, 2026-10-02;
+# unchanged by the FIFO admission coordinator, quill-router #2557).
 PINNED_COORDINATOR_CAP_SECONDS = 4 * 3600
 # The coordinator's maximum lease TTL (`60 <= ttl <= 43_200`), and GitHub's
 # default job timeout, which bounds the rollout job that holds the lease.
@@ -61,9 +62,11 @@ def test_the_coordinator_pin_names_the_commit_whose_cap_the_wait_assumes() -> No
     assert set(pin) == {"commit", "sha256"}
     assert re.fullmatch(r"[a-f0-9]{40}", pin["commit"])
     assert re.fullmatch(r"[a-f0-9]{64}", pin["sha256"])
-    # quill-router 200f758ec (2026-10-03): the first coordinator with the four
-    # hour cap and the deleted-owner-run recovery rule; the content digest is
-    # the file's sha256 at that commit, which tools/cloud-rollout.py re-checks
-    # before every use.
-    assert pin["commit"] == "200f758ec8c82cba6e77d1b261d1229e7d873c7c"
-    assert pin["sha256"] == "63579c677b28ad05e81461f43f2535231007e102a3980d77b636783860e2c7b9"
+    # quill-router 11ae458f (2026-11-13, #2557): FIFO admission across both
+    # repositories, keeping the four hour cap and 12 h maximum TTL that the
+    # wait and TTL above assume (MAX_ADMISSION_WAIT_SECONDS = 4 * 3600 and
+    # 60 <= ttl <= 43_200 at that commit). The content digest is the file's
+    # sha256 at that commit, which tools/cloud-rollout.py re-checks before
+    # every use.
+    assert pin["commit"] == "11ae458f0f833be38170a4f7044bee6d89f9c63d"
+    assert pin["sha256"] == "0f7b668b1f359b4f49c8f468f01f6e20b4949dc01d432b8295858b985c4cf032"
