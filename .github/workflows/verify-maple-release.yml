@@ -131,7 +131,7 @@ jobs:
       - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
           name: maple-candidate
-      - uses: Lore-Hex/quill-cloud-proxy/.github/actions/nix-installer@PINSHA # main 2026-11-13
+      - uses: Lore-Hex/quill-cloud-proxy/.github/actions/nix-installer@582cbdee7b7023cfeb915b62a7f635aa1e4662b1 # main 2026-11-13
         with:
           source-tag: v3.23.3
       - name: Obtain exact source without deployment credentials

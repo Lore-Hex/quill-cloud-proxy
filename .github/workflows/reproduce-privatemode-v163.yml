@@ -91,7 +91,7 @@ jobs:
           (root / 'policy-comparison.json').write_text(json.dumps(evidence, indent=2) + '\n')
           print(json.dumps(evidence))
           PY
-      - uses: Lore-Hex/quill-cloud-proxy/.github/actions/nix-installer@PINSHA # main 2026-11-13
+      - uses: Lore-Hex/quill-cloud-proxy/.github/actions/nix-installer@582cbdee7b7023cfeb915b62a7f635aa1e4662b1 # main 2026-11-13
         if: matrix.kind == 'images'
         with:
           source-tag: v3.23.3
