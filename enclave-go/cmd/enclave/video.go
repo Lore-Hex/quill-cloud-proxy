@@ -879,7 +879,7 @@ func writeVideoProviderError(conn io.Writer, err error, fallback string) {
 	if status == 429 {
 		code = "rate_limit_exceeded"
 	}
-	writeOpenAIError(conn, status, fallback, "provider_error", code, "")
+	writeOpenAIErrorWithSource(conn, status, fallback, "provider_error", code, "", "provider")
 }
 
 func videoErrorStatus(err error) int {

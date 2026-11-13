@@ -873,6 +873,10 @@ func writeAdapterOpenAIError(w io.Writer, err *adapter.AdapterError) {
 }
 
 func writeOpenAIError(w io.Writer, status int, message, errType, code, param string) {
+	writeOpenAIErrorWithSource(w, status, message, errType, code, param, "router")
+}
+
+func writeOpenAIErrorWithSource(w io.Writer, status int, message, errType, code, param, source string) {
 	if errType == "" {
 		errType = "invalid_request_error"
 	}
@@ -885,7 +889,7 @@ func writeOpenAIError(w io.Writer, status int, message, errType, code, param str
 			"type":    errType,
 			"param":   orNilString(param),
 			"code":    code,
-			"source":  "router",
+			"source":  source,
 		},
 	})
 	fmt.Fprintf(w, "HTTP/1.1 %d %s\r\nContent-Type: application/json\r\nContent-Length: %d\r\nConnection: %s\r\n\r\n",
