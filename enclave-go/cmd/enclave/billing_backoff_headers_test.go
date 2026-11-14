@@ -181,6 +181,9 @@ func TestBillingTelemetryAuthorizeEquivalence(t *testing.T) {
 					}
 					delete(captured, field)
 				}
+				// Correlation is generated per transport request, not derived
+				// from telemetry or included in its idempotency fingerprint.
+				delete(captured, "gateway_request_id")
 				if i == 0 {
 					baseline = captured
 				} else if !reflect.DeepEqual(baseline, captured) {

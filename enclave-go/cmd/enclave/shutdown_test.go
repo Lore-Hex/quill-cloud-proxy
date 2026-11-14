@@ -155,6 +155,65 @@ func TestDrainClosesIdleConnectionsWithoutWaitingForGrace(t *testing.T) {
 	}
 }
 
+func TestDrainClosesPartialUploadAndCachedAddressWithoutAuthorizing(t *testing.T) {
+	var calls atomic.Int32
+	billing := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls.Add(1)
+		w.WriteHeader(http.StatusInternalServerError)
+	}))
+	defer billing.Close()
+	gateway := trustedrouter.New(billing.URL, "fixture", billing.Client())
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer listener.Close()
+	// Retain the actual endpoint, modeling a client that never refreshes DNS.
+	cachedAddress := listener.Addr().String()
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+	done := make(chan error, 1)
+	ready := make(chan struct{})
+	go func() {
+		done <- serveWithDrain(ctx, listener, func(requestContext context.Context, conn net.Conn) {
+			markConnectionIdle(requestContext)
+			close(ready)
+			serveOne(requestContext, conn, auth.New(nil), &fakeStreamingLLM{}, nil, nil, gateway, nil)
+		}, time.Minute, time.Second)
+	}()
+	client, err := net.DialTimeout("tcp", cachedAddress, time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer client.Close()
+	<-ready
+	_, err = io.WriteString(client, "POST /v1/chat/completions HTTP/1.1\r\nAuthorization: Bearer fixture\r\nContent-Length: 100\r\n\r\n{\"model\":")
+	if err != nil {
+		t.Fatal(err)
+	}
+	cancel()
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("partial upload held drain open")
+	}
+	_ = client.SetReadDeadline(time.Now().Add(time.Second))
+	if _, err := client.Read(make([]byte, 1)); err == nil {
+		t.Fatal("partial upload remained open")
+	}
+	stale, err := net.DialTimeout("tcp", cachedAddress, time.Second)
+	if err == nil {
+		stale.Close()
+		t.Fatal("cached address admitted a new connection after drain")
+	}
+	if calls.Load() != 0 {
+		t.Fatalf("incomplete upload reached billing %d times", calls.Load())
+	}
+}
+
 func TestDrainIsBoundedWhenHandlerIgnoresCancellation(t *testing.T) {
 	listener, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {

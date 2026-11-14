@@ -233,6 +233,9 @@ func TestShadowProviderStreamPaths(t *testing.T) {
 						if route == "chat.completions" && tier != "failure" {
 							want = []byte(shadowChatTranscriptWithRouting(t, string(want)))
 						}
+						if tier != "failure" {
+							want = []byte(shadowTranscriptWithFinalCostStatus(t, string(want)))
+						}
 						if transcript != string(want) {
 							t.Fatalf("shadow=%v stream/body differ from frozen main\ngot %s\nwant %s", enabled, transcript, want)
 						}
@@ -287,6 +290,47 @@ func shadowChatTranscriptWithRouting(t *testing.T, frozen string) string {
 	})
 	if usageChunks != 1 {
 		t.Fatal("frozen usage is not unique")
+	}
+	return updated
+}
+
+// Keep historical oracle bytes pinned. These fixtures return a finalized
+// settlement; assert only the deliberate additive cost-status extension.
+func shadowTranscriptWithFinalCostStatus(t *testing.T, frozen string) string {
+	t.Helper()
+	pattern := regexp.MustCompile(`(?m)^([0-9a-f]+)\r\n((?:event: [^\n]+\n)?data: )?(\{[^\r\n]*\})(\n\n)?\r\n`)
+	changed := 0
+	updated := pattern.ReplaceAllStringFunc(frozen, func(frame string) string {
+		parts := pattern.FindStringSubmatch(frame)
+		var payload map[string]any
+		if err := json.Unmarshal([]byte(parts[3]), &payload); err != nil {
+			t.Fatal(err)
+		}
+		container := payload
+		if response, ok := payload["response"].(map[string]any); ok {
+			container = response
+		}
+		usage, ok := container["usage"].(map[string]any)
+		if !ok || usage["cost_microdollars"] == nil {
+			return frame
+		}
+		if _, exists := usage["cost_status"]; exists {
+			t.Fatal("frozen transcript already has cost status")
+		}
+		usage["cost_status"] = "final"
+		encoded, err := json.Marshal(payload)
+		if err != nil {
+			t.Fatal(err)
+		}
+		length, err := strconv.ParseInt(parts[1], 16, 64)
+		if err != nil {
+			t.Fatal(err)
+		}
+		changed++
+		return fmt.Sprintf("%x\r\n%s%s%s\r\n", length+int64(len(encoded)-len(parts[3])), parts[2], encoded, parts[4])
+	})
+	if changed != 1 {
+		t.Fatalf("expected one finalized usage extension, got %d", changed)
 	}
 	return updated
 }
