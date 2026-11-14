@@ -484,6 +484,34 @@ func TestUnknownCostDiscardsProviderPriceFields(t *testing.T) {
 	}
 }
 
+func TestStreamCostStatusNeverClaimsEstimatedOrMissingCostIsFinal(t *testing.T) {
+	for _, tc := range []struct {
+		name       string
+		settlement *trustedrouter.SettleResult
+		status     string
+		known      bool
+	}{
+		{"missing", nil, "unknown", false},
+		{"pending-without-price", &trustedrouter.SettleResult{Disposition: "intent_durable"}, "unknown", false},
+		{"estimated", &trustedrouter.SettleResult{CostMicrodollarsKnown: true, CostMicrodollars: 7}, "estimated", true},
+		{"pending", &trustedrouter.SettleResult{CostMicrodollarsKnown: true, CostMicrodollars: 7, Disposition: "intent_durable"}, "pending", true},
+		{"final", &trustedrouter.SettleResult{CostMicrodollarsKnown: true, CostMicrodollars: 7, Disposition: "finalized"}, "final", true},
+		{"refund", &trustedrouter.SettleResult{CostMicrodollarsKnown: true, CostMicrodollars: 0, Disposition: "finalized"}, "final", true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			usage := map[string]any{"cost_microdollars": 123, "total_cost_microdollars": 123}
+			annotateStreamUsageCost(usage, tc.settlement)
+			if usage["cost_status"] != tc.status {
+				t.Fatalf("status=%v", usage["cost_status"])
+			}
+			_, present := usage["cost_microdollars"]
+			if present != tc.known {
+				t.Fatalf("cost presence=%v want %v", present, tc.known)
+			}
+		})
+	}
+}
+
 type costUsageFailWriter struct {
 	bytes.Buffer
 	failAt string
