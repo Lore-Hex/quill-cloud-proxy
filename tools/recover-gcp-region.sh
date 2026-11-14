@@ -107,6 +107,11 @@ on_exit() {
   trap - EXIT
   if [ "${status}" -ne 0 ] && [ "${recovery_complete}" -ne 1 ]; then
     echo "${region}: recovery failed; preserving the canonical rollout drain" >&2
+    if [ "${status}" -eq 65 ]; then
+      # tools/verify-region-before-dns.sh: a request-path check failed. The
+      # restored template attested; the control plane may be the cause.
+      echo "${region}: the restored template's request-path check failed (exit 65), which a control-plane fault causes as readily as a gateway one; the region stays drained until a re-run of this recovery verifies it" >&2
+    fi
     update_drain set rollout >/dev/null 2>&1 || true
     reconcile_gcp_dns >/dev/null 2>&1 || true
   fi

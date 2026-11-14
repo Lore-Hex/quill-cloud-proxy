@@ -19,7 +19,7 @@ func TestServeOneControlPlaneDiscovery(t *testing.T) {
 		{"confidential host", "api.confidential.trustedrouter.com", ""},
 		{"confidential SNI", "api.trustedrouter.com", "api.confidential.trustedrouter.com"},
 	} {
-		for _, root := range []string{"keys", "credits", "activity", "workspaces", "organization", "billing", "byok", "broadcast", "auth", "signup", "generation"} {
+		for _, root := range []string{"keys", "credits", "activity", "workspaces", "organization", "billing", "byok", "broadcast", "auth", "signup", "generation", "requests"} {
 			for _, target := range []struct{ method, suffix string }{
 				{"GET", ""},
 				{"POST", "/"},
@@ -57,7 +57,7 @@ func TestServeOneControlPlaneDiscovery(t *testing.T) {
 						}
 						want := subject + " is served at https://trustedrouter.com/v1/" + root + ", not api.trustedrouter.com"
 						errBody := envelope["error"]
-						if len(envelope) != 1 || len(errBody) != 3 || errBody["status"] != float64(404) || errBody["source"] != "router" || errBody["message"] != want {
+						if len(envelope) != 1 || len(errBody) != 4 || errBody["code"] != "not_found" || errBody["status"] != float64(404) || errBody["source"] != "router" || errBody["message"] != want {
 							t.Fatalf("error envelope changed: %s", body)
 						}
 						if strings.Contains(conn.writes.String(), "private-") {

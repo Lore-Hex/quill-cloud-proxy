@@ -130,8 +130,11 @@ func (c *Client) PrepareSpendLeaseAdmission(
 		admission.Release()
 		return nil, nil
 	}
-	body, err := json.Marshal(admissionAuthorizeBody(c, lookupHash,
-		chatAuthorizeBody(c, lookupHash, idempotencyKey, minted, req, routeType), admission))
+	authorizeBody := chatAuthorizeBody(c, lookupHash, idempotencyKey, minted, req, routeType)
+	if requestLogID := requestLogIDFromContext(ctx); requestLogID != "" {
+		authorizeBody["gateway_request_id"] = requestLogID
+	}
+	body, err := json.Marshal(admissionAuthorizeBody(c, lookupHash, authorizeBody, admission))
 	if err != nil {
 		admission.Release()
 		return nil, err

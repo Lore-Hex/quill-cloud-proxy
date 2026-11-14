@@ -196,7 +196,8 @@ func TestStageCReserveUsesPinnedReceiptBodyAndReturnsBoundMarker(t *testing.T) {
 }
 
 func TestStageCReserveRetriesIdenticalReceiptBytesAndBootProof(t *testing.T) {
-	ctx := fixedStageCContext()
+	const trace = "rlog_00112233445566778899aabbccddeeff"
+	ctx := WithRequestLogID(fixedStageCContext(), trace)
 	client, _, _ := stageCAdmissionClient(t, "admission_accepted_response.json", http.StatusOK, nil)
 	client.authorizeRetry = retryPolicy{attempts: 2, totalBudget: spendlease.ReserveBudget, sleep: func(context.Context, time.Duration) error { return nil }}
 	var bodies [][]byte
@@ -230,6 +231,13 @@ func TestStageCReserveRetriesIdenticalReceiptBytesAndBootProof(t *testing.T) {
 	}
 	if len(bodies) != 2 || !bytes.Equal(bodies[0], bodies[1]) || len(proofs) != 2 || proofs[0] == "" || proofs[0] != proofs[1] {
 		t.Fatalf("retry drift: bodies=%q proofs=%q", bodies, proofs)
+	}
+	var payload map[string]any
+	if err := json.Unmarshal(bodies[0], &payload); err != nil {
+		t.Fatal(err)
+	}
+	if payload["gateway_request_id"] != trace {
+		t.Fatalf("admission lost request ID: %#v", payload["gateway_request_id"])
 	}
 }
 
