@@ -211,6 +211,7 @@ func TestAuthorizeTransientRetryIsBounded(t *testing.T) {
 }
 
 func TestAuthorizeEmbeddingsRetriesWithCallerIdempotencyKey(t *testing.T) {
+	const trace = "rlog_00112233445566778899aabbccddeeff"
 	attempts := 0
 	var idempotencyKeys []string
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -221,6 +222,9 @@ func TestAuthorizeEmbeddingsRetriesWithCallerIdempotencyKey(t *testing.T) {
 		}
 		if payload["route_type"] != "embeddings" {
 			t.Fatalf("route_type = %v, want embeddings", payload["route_type"])
+		}
+		if payload["gateway_request_id"] != trace {
+			t.Fatalf("embedding authorization lost request ID: %#v", payload["gateway_request_id"])
 		}
 		idempotencyKeys = append(idempotencyKeys, fmt.Sprint(payload["idempotency_key"]))
 		if attempts == 1 {
@@ -237,7 +241,7 @@ func TestAuthorizeEmbeddingsRetriesWithCallerIdempotencyKey(t *testing.T) {
 		attempts: 3,
 		sleep:    func(context.Context, time.Duration) error { return nil },
 	}
-	auth, err := client.AuthorizeEmbeddings(t.Context(), "sk-test", &qtypes.EmbeddingRequest{
+	auth, err := client.AuthorizeEmbeddings(WithRequestLogID(t.Context(), trace), "sk-test", &qtypes.EmbeddingRequest{
 		Model:          "openai/text-embedding-3-small",
 		Input:          "private embedding input",
 		IdempotencyKey: "caller-idem",

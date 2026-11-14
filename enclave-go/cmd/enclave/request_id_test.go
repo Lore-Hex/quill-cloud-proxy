@@ -314,7 +314,7 @@ func TestWriteHealthResponseInjectsDifferentRequestIDsOnKeepAlive(t *testing.T) 
 	}
 }
 
-func TestServeOneUsesResponseRequestIDForSettlementOnly(t *testing.T) {
+func TestServeOneUsesResponseRequestIDForAuthorizationAndSettlement(t *testing.T) {
 	authorizePayloadCh := make(chan map[string]any, 1)
 	settlePayloadCh := make(chan map[string]any, 1)
 	trGateway := trustedrouter.New("https://trustedrouter.com", "internal", &http.Client{
@@ -376,8 +376,8 @@ func TestServeOneUsesResponseRequestIDForSettlementOnly(t *testing.T) {
 	}
 	requireRequestIDHeaders(t, resp, requestID)
 	authorizePayload := <-authorizePayloadCh
-	if _, ok := authorizePayload["gateway_request_id"]; ok {
-		t.Fatal("authorize body contains gateway_request_id")
+	if got := authorizePayload["gateway_request_id"]; got != requestID {
+		t.Fatalf("authorize gateway_request_id = %#v, want %q", got, requestID)
 	}
 	if _, ok := authorizePayload["client"]; ok {
 		t.Fatal("authorize body contains client")

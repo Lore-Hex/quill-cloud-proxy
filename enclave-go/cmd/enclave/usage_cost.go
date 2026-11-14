@@ -114,6 +114,25 @@ func annotateUsageCost(usage map[string]any, settlement *trustedrouter.SettleRes
 	usage["total_cost_microdollars"] = settlement.CostMicrodollars
 }
 
+func annotateStreamUsageCost(usage map[string]any, settlement *trustedrouter.SettleResult) {
+	annotateUsageCost(usage, settlement)
+	if usage == nil {
+		return
+	}
+	// A price derived from the frozen tariff is not a durable ledger result.
+	// Missing cost is explicitly unknown, never an implied zero charge.
+	usage["cost_status"] = "unknown"
+	if !settlement.HasCost() {
+		return
+	}
+	usage["cost_status"] = "estimated"
+	if settlement.Disposition == trustedrouter.DispositionIntentDurable {
+		usage["cost_status"] = "pending"
+	} else if settlement.Settled || settlement.AlreadySettled || settlement.Disposition == trustedrouter.DispositionFinalized || settlement.Disposition == trustedrouter.DispositionReapedSnapshot || settlement.Disposition == trustedrouter.DispositionAlreadyFinalized {
+		usage["cost_status"] = "final"
+	}
+}
+
 // Copy only the reported scalar into the retry job; never retain pricing or secrets.
 func costForRetry(reported *trustedrouter.SettleResult) *int {
 	if !reported.HasCost() {

@@ -293,10 +293,7 @@ func TestGatewayRequestIDForwarding(t *testing.T) {
 				t.Fatalf("RefundDetailedAttributed: %v", err)
 			}
 
-			if _, ok := payloads["/internal/gateway/authorize"]["gateway_request_id"]; ok {
-				t.Fatalf("authorize body contains gateway_request_id: %#v", payloads["/internal/gateway/authorize"])
-			}
-			for _, path := range []string{"/internal/gateway/settle", "/internal/gateway/refund"} {
+			for _, path := range []string{"/internal/gateway/authorize", "/internal/gateway/settle", "/internal/gateway/refund"} {
 				got, ok := payloads[path]["gateway_request_id"]
 				if test.want {
 					if !ok || got != test.id {
