@@ -105,18 +105,20 @@ def test_the_coordinator_pin_names_the_commit_whose_cap_the_wait_assumes() -> No
     assert set(pin) == {"commit", "sha256"}
     assert re.fullmatch(r"[a-f0-9]{40}", pin["commit"])
     assert re.fullmatch(r"[a-f0-9]{64}", pin["sha256"])
-    # quill-router 06134e53, the head of #2581 (draft). RE-PIN BEFORE MERGE:
+    # quill-router 5daa535e, the head of #2581 (draft). RE-PIN BEFORE MERGE:
     # this must name #2581's merge commit on quill-router main, and the digest
     # must be recomputed there (it stays the same unless cloud_rollout.py
     # changes again before that merge).
     #
-    # #2581: the v3 release probe of a control-plane lease passes the
-    # application's own source limiter 429, matched byte for byte, so outside
-    # traffic that spends the shared unauthenticated bucket can no longer hold
-    # a finished control-plane lease. fetch converts a Retry-After only when it
-    # is one to nine ASCII digits, so a decimal past Python's 4300 digit limit
-    # or superscript digits give up as the HTTP error instead of refusing a
-    # grant. That sits on top of the holdback lease-over check (#2573), schema
+    # #2581: on aws and azure, the v3 release probe of a control-plane lease
+    # passes the application's own source limiter 429, matched byte for byte,
+    # so outside traffic that spends the shared unauthenticated bucket can no
+    # longer hold a finished control-plane lease (gcp keeps the refusal: its
+    # control backend runs with the limiter off). fetch converts a Retry-After
+    # only when it is one to nine ASCII digits; a decimal past Python's 4300
+    # digit limit or superscript digits now give up as the HTTP error, so the
+    # evidence read counts as no document instead of refusing the grant.
+    # That sits on top of the holdback lease-over check (#2573), schema
     # v3 component leases with the read-only `lanes` command tools/gate_hold.py
     # reads (#2568) and FIFO admission (#2557). It keeps the four hour cap and
     # 12 h maximum TTL that the wait and TTL above assume
@@ -131,5 +133,5 @@ def test_the_coordinator_pin_names_the_commit_whose_cap_the_wait_assumes() -> No
     # runs today `release` probes the whole cloud. The content digest is the
     # file's sha256 at that commit, which tools/cloud-rollout.py re-checks
     # before every use.
-    assert pin["commit"] == "06134e534ea9a535c6d0b978a3250e2b76228d63"
-    assert pin["sha256"] == "21e5ccf9853be7658b3b0838f4df60acca6ab381082bc784277af9d7de3b5e14"
+    assert pin["commit"] == "5daa535ed9967c22ba627c91e2e933b15b142ec5"
+    assert pin["sha256"] == "bb8220597d6131a6a6534dd95968adca496c2f3dcff0809b522be219e1d90ff8"
