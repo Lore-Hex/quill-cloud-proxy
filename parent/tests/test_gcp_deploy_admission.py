@@ -105,10 +105,7 @@ def test_the_coordinator_pin_names_the_commit_whose_cap_the_wait_assumes() -> No
     assert set(pin) == {"commit", "sha256"}
     assert re.fullmatch(r"[a-f0-9]{40}", pin["commit"])
     assert re.fullmatch(r"[a-f0-9]{64}", pin["sha256"])
-    # quill-router 5daa535e, the head of #2581 (draft). RE-PIN BEFORE MERGE:
-    # this must name #2581's merge commit on quill-router main, and the digest
-    # must be recomputed there (it stays the same unless cloud_rollout.py
-    # changes again before that merge).
+    # quill-router 79a43e6a, the merge of #2581 on main.
     #
     # #2581: on aws and azure, the v3 release probe of a control-plane lease
     # passes the application's own source limiter 429, matched byte for byte,
@@ -133,5 +130,5 @@ def test_the_coordinator_pin_names_the_commit_whose_cap_the_wait_assumes() -> No
     # runs today `release` probes the whole cloud. The content digest is the
     # file's sha256 at that commit, which tools/cloud-rollout.py re-checks
     # before every use.
-    assert pin["commit"] == "5daa535ed9967c22ba627c91e2e933b15b142ec5"
+    assert pin["commit"] == "79a43e6ae217287298a0e98484891f7cb585c9d8"
     assert pin["sha256"] == "bb8220597d6131a6a6534dd95968adca496c2f3dcff0809b522be219e1d90ff8"
