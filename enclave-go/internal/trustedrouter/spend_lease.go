@@ -267,6 +267,9 @@ func (c *Client) authorizeAtDecodeSeamWithAdmission(
 	if plan != nil {
 		bodyBytes = plan.body
 	} else {
+		if requestLogID := requestLogIDFromContext(ctx); requestLogID != "" {
+			body["gateway_request_id"] = requestLogID
+		}
 		bodyBytes, err = json.Marshal(body)
 	}
 	if err != nil {
@@ -415,7 +418,7 @@ func admissionAuthorizeBody(c *Client, lookupHash string, ordinary map[string]an
 		}
 		body["provider"] = canonicalProvider
 	}
-	for _, field := range []string{"allow_fallbacks", "requested_parameters", "service_tier", "idempotency_key_source"} {
+	for _, field := range []string{"allow_fallbacks", "requested_parameters", "service_tier", "idempotency_key_source", "gateway_request_id"} {
 		if value, ok := ordinary[field]; ok {
 			body[field] = value
 		}

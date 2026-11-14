@@ -798,6 +798,18 @@ func serveOneRequest(
 			writeError(conn, 400, err.Error())
 			return
 		}
+		if errors.Is(err, errAmbiguousRequestFraming) {
+			writeOpenAIError(conn, 400, "ambiguous request framing", "invalid_request_error", "ambiguous_request_framing", "")
+			return
+		}
+		if errors.Is(err, errUnsupportedRequestTransferEncoding) {
+			writeOpenAIError(conn, 400, "use a Content-Length request body", "invalid_request_error", "unsupported_transfer_encoding", "")
+			return
+		}
+		if errors.Is(err, io.ErrUnexpectedEOF) {
+			writeOpenAIError(conn, 400, "incomplete request body", "invalid_request_error", "incomplete_request_body", "")
+			return
+		}
 		writeError(conn, 400, "could not read request")
 		return
 	}
@@ -1953,12 +1965,21 @@ func serveStreaming(
 	case <-selectedRoute.Ready():
 	case <-providerDone:
 	}
+	refundSelectedStream := func(status int, reason string) *trustedrouter.SettleResult {
+		refundAuthorization := authorization
+		if authorization != nil {
+			selected := *authorization
+			selected.Model = selectedRoute.Model(req.Model, authorization)
+			selected.EndpointID = selectedRoute.Endpoint("", authorization)
+			refundAuthorization = &selected
+		}
+		return refundFailedStream(ctx, trGateway, refundAuthorization, requestLogID, status, reason, time.Since(requestStarted).Seconds(), req.Metadata)
+	}
 	failBeforeHead := func(err error) {
+		cancelProvider()
 		_ = pr.Close()
 		status, _ := upstreamErrorResponse(err)
-		if trGateway != nil && trGateway.Enabled() {
-			_ = trGateway.Refund(ctx, authorization, status, failureReason(err), time.Since(requestStarted).Seconds(), req.Metadata)
-		}
+		refundSelectedStream(status, failureReason(err))
 		writeUpstreamError(conn, routeType, err, authorization)
 	}
 	if err := selectedRoute.Failure(); err != nil {
@@ -1977,6 +1998,7 @@ func serveStreaming(
 			err := fmt.Errorf("stage_d: selected endpoint or gateway unavailable")
 			_ = pr.CloseWithError(err)
 			fmt.Fprintf(os.Stderr, "enclave.stage_d_preheader_refused request_log_id=%q auth_id=%q err=%q\n", requestLogID, authorizationID(authorization), errorClass(err))
+			refundSelectedStream(503, "heartbeat_unavailable")
 			writeOpenAIError(conn, 503, "usage heartbeat unavailable", "server_error", "heartbeat_unavailable", "")
 			return
 		}
@@ -1988,6 +2010,7 @@ func serveStreaming(
 			cancelProvider()
 			_ = pr.CloseWithError(err)
 			fmt.Fprintf(os.Stderr, "enclave.stage_d_preheader_refused request_log_id=%q auth_id=%q err=%q\n", requestLogID, authorizationID(authorization), errorClass(err))
+			refundSelectedStream(503, "heartbeat_unavailable")
 			writeOpenAIError(conn, 503, "usage heartbeat unavailable", "server_error", "heartbeat_unavailable", "")
 			return
 		}
@@ -2013,13 +2036,24 @@ func serveStreaming(
 		return
 	}
 	if headErr != nil {
+		cancelProvider()
 		_ = pr.Close()
+		if stageDController != nil {
+			stageDController.stopCadence()
+		}
+		refundSelectedStream(499, "client_write_failed")
 		return
 	}
 
 	chunkW := newChunkedWriter(conn)
 	defer chunkW.Close()
-	statsW := newStreamStatsWriter(chunkW)
+	keepaliveW, stopKeepalive := startSSEKeepalive(ctx, chunkW, 15*time.Second, func(err error) {
+		chunkW.Abort()
+		cancelProvider()
+		_ = pr.CloseWithError(err)
+	})
+	defer stopKeepalive()
+	statsW := newStreamStatsWriter(keepaliveW)
 	streamW := io.Writer(statsW)
 	var hashW *receiptHashWriter
 	if receiptEnabled {
@@ -2167,7 +2201,7 @@ func serveStreaming(
 				terminalSettlement = settlement
 				terminalBillingUsage = usage
 				if routeType == "responses" {
-					annotateUsageCost(terminal.UsageFields, settlement)
+					annotateStreamUsageCost(terminal.UsageFields, settlement)
 					annotateEstimatedTokenUsage(terminal.UsageFields, usage)
 					if terminal.TRFinishReason != "" && terminal.UsageFields != nil && settlement.HasCost() {
 						terminal.UsageFields["input_tokens"] = usage.InputTokens
@@ -2196,7 +2230,7 @@ func serveStreaming(
 			settlement, usage, settleErr := settleStream(settleCtx, terminal.Result)
 			settlement = reportedSettlement(settlement, authorization, usage, settleErr)
 			if routeType == "responses" {
-				annotateUsageCost(terminal.UsageFields, settlement)
+				annotateStreamUsageCost(terminal.UsageFields, settlement)
 				annotateEstimatedTokenUsage(terminal.UsageFields, usage)
 			} else {
 				annotateChatTerminalUsage(terminal, settlement, usage)
@@ -2263,17 +2297,15 @@ func serveStreaming(
 			} else {
 				var err error
 				settlement, usage, err = settleStream(settleCtx, final)
-				if err != nil {
-					// settleStream already queued recovery. Delivered output is final.
-					return nil, nil
-				}
+				// Recovery is already queued on error. Still report an explicit
+				// cost status instead of silently omitting billing metadata.
 				settlement = reportedSettlement(settlement, authorization, usage, err)
 			}
 			metadata := map[string]any{}
-			if settlement.HasCost() && (routeType == "responses" || chatIncludeUsage(req)) {
+			if routeType == "responses" || chatIncludeUsage(req) {
 				fields := map[string]any{}
 				if routeType == "responses" {
-					annotateUsageCost(fields, settlement)
+					annotateStreamUsageCost(fields, settlement)
 				} else {
 					annotateChatTerminalUsage(adapter.StreamTerminal{UsageFields: fields}, settlement, usage)
 				}
@@ -2321,8 +2353,21 @@ func serveStreaming(
 	}
 	stageDControl = withInferenceLocation(stageDControl, authorization, selectedRoute)
 	stageDControl = adapter.WithReasoningVisibility(stageDControl, req.ExcludeReasoning)
+	exposeResponsesUsage := stageDControl != nil
+	// No liveness comment may follow the terminal event, including [DONE].
+	if stageDControl == nil {
+		stageDControl = &adapter.StreamControl{}
+	}
+	beforeTerminal := stageDControl.BeforeTerminal
+	stageDControl.BeforeTerminal = func(terminal adapter.StreamTerminal) error {
+		stopKeepalive()
+		if beforeTerminal != nil {
+			return beforeTerminal(terminal)
+		}
+		return terminal.Emit()
+	}
 	if routeType == "responses" {
-		if stageDControl != nil {
+		if exposeResponsesUsage {
 			stageDControl.ExposeResponsesUsage = true
 		}
 		if stageDControl != nil {
@@ -2341,6 +2386,7 @@ func serveStreaming(
 		_ = pr.Close()
 		stageDController.stopCadence()
 	}
+	stopKeepalive()
 	if batchW != nil {
 		if closeErr := batchW.Close(); err == nil {
 			err = closeErr
@@ -2354,38 +2400,17 @@ func serveStreaming(
 		// deadline, or the connection broke) also aborts the provider stream, so
 		// the provider attempt logs a closed pipe. Name the side that failed.
 		failedSide, failedClass := "provider", errorClass(err)
-		if clientErr := statsW.ClientWriteErr(); clientErr != nil {
+		clientErr := statsW.ClientWriteErr()
+		if clientErr == nil {
+			clientErr = keepaliveW.ClientWriteErr()
+		}
+		if clientErr != nil {
 			failedSide, failedClass = "client", errorClass(clientErr)
 		}
 		fmt.Fprintf(os.Stderr, "enclave.transform_stream_failed request_log_id=%q model=%q side=%s err=%v bytes_to_client=%d\n", requestLogID, req.Model, failedSide, failedClass, statsW.BytesWritten())
 		status, _ := upstreamErrorResponse(err)
 		if trGateway != nil && trGateway.Enabled() && !settledBeforeTerminal {
-			if stageDController != nil && statsW.BytesWritten() > 0 {
-				refundAuthorization := authorization
-				if authorization != nil {
-					selected := *authorization
-					selected.Model = selectedRoute.Model(req.Model, authorization)
-					selected.EndpointID = selectedRoute.Endpoint("", authorization)
-					refundAuthorization = &selected
-				}
-				refundResult, refundErr := trGateway.RefundDetailed(ctx, refundAuthorization, status, failureReason(err), time.Since(requestStarted).Seconds(), req.Metadata)
-				terminalSettlement = refundResult
-				if stageDDispositionLost(refundResult) {
-					fmt.Fprintf(os.Stderr, "enclave.stage_d_refund_lost request_log_id=%q auth_id=%q disposition=%q\n", requestLogID, authorizationID(refundAuthorization), refundResult.Disposition)
-				}
-				if refundErr != nil {
-					settlementRetries.Enqueue(settlementRetryJob{
-						cause:     refundErr,
-						trGateway: trGateway, authorization: refundAuthorization, requestLogID: requestLogID,
-						clientContext: trustedrouter.ClientContextFromContext(ctx), kind: "refund",
-						refundStatus: status, refundType: failureReason(err), refundElapsed: time.Since(requestStarted).Seconds(), refundMetadata: req.Metadata,
-					})
-				}
-			} else if trGateway.AsyncSettlementNegotiated(authorization) {
-				terminalSettlement, _ = trGateway.RefundDetailed(ctx, authorization, status, failureReason(err), time.Since(requestStarted).Seconds(), req.Metadata)
-			} else {
-				_ = trGateway.Refund(ctx, authorization, status, failureReason(err), time.Since(requestStarted).Seconds(), req.Metadata)
-			}
+			terminalSettlement = refundSelectedStream(status, failureReason(err))
 		}
 		if !trGateway.AsyncSettlementNegotiated(authorization) {
 			terminalSettlement = nil

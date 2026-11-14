@@ -849,7 +849,7 @@ func writeErrorWithSourceHeaders(w io.Writer, status int, message, source string
 		source = "router"
 	}
 	body, _ := json.Marshal(map[string]any{
-		"error": map[string]any{"status": status, "message": message, "source": source},
+		"error": map[string]any{"status": status, "message": message, "source": source, "code": publicErrorCode(status, message)},
 	})
 	fmt.Fprintf(w, "HTTP/1.1 %d %s\r\nContent-Type: application/json\r\nContent-Length: %d\r\nConnection: %s\r\n",
 		status, statusText(status), len(body), responseConnection(w))
@@ -860,6 +860,40 @@ func writeErrorWithSourceHeaders(w io.Writer, status int, message, source string
 	}
 	io.WriteString(w, "\r\n")
 	w.Write(body)
+}
+
+func publicErrorCode(status int, message string) string {
+	// Only closed, content-free reasons are promoted to machine-readable codes.
+	switch message {
+	case "invalid JSON":
+		return "invalid_json"
+	case "could not read request":
+		return "request_read_failed"
+	}
+	switch status {
+	case 400:
+		return "invalid_request"
+	case 401:
+		return "unauthorized"
+	case 403:
+		return "forbidden"
+	case 404:
+		return "not_found"
+	case 413:
+		return "request_body_too_large"
+	case 429:
+		return "rate_limit_exceeded"
+	case 431:
+		return "request_headers_too_large"
+	case 502:
+		return "upstream_error"
+	case 503:
+		return "service_unavailable"
+	case 504:
+		return "upstream_timeout"
+	default:
+		return "request_failed"
+	}
 }
 
 func writeAdapterOpenAIError(w io.Writer, err *adapter.AdapterError) {
