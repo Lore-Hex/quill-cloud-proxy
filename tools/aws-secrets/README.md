@@ -98,3 +98,37 @@ The trust-mirror bucket is deliberately not used: its publication script runs
 The manifest verifier authenticates the dedicated `publish-aws-eif.yml` main
 workflow identity and then validates the EIF's size and SHA-256 digest. It does
 not itself admit a measurement, change KMS policy, or roll the fleet.
+
+## Phase 4: separately approved recipient-only keys
+
+`provision_attested_keys=true` is disabled by default. Enable it only after
+the measured v2 enclave and pre-boot admission stages pass, with separate
+approval for these KMS, IAM and Secrets Manager metadata changes. Keep earlier
+opt-ins enabled and supply `accepted_pcr0` from authenticated CI manifests.
+Never copy a candidate host's claimed measurement into this variable.
+
+This creates one symmetric CMK and one independent
+`quill/attested-bootstrap-v2` secret in each serving region. An additional
+parent policy grants Decrypt on only those two keys and GetSecretValue on only
+those two secrets. It does not remove or modify legacy permissions. Secret
+values are not managed by Terraform and must contain only signed ciphertext.
+
+The key policy explicitly denies Decrypt and ReEncrypt when the recipient's
+ImageSha384 is missing or not accepted. An IAM Allow or grant cannot bypass
+that Deny. Zero/debug measurements and empty sets are rejected by validation.
+Named key administrators get no cryptographic operations; only the named
+operator may generate data keys for the bootstrap purpose. There is no
+account-root delegation or lockout-safety bypass.
+
+Review a saved plan before applying it under the AWS rollout fence. Expected
+changes are the two keys, two aliases, two secret metadata records and one
+parent inline policy. Existing signer, artifact and legacy resources must not
+change. Use the off-host sealer for independently encrypted regional bundles;
+never configure Secrets Manager replication for these secrets.
+
+After creation, prove the live recipient-only and parent-privilege negative
+controls before any serving dependency on these keys. A mocked Terraform
+policy test is not live KMS evidence. Later releases must widen this variable
+and the signed/runtime admission sets before boot, and narrow both only after
+verifying the surviving fleet. Removing the opt-in is not rollback and is
+blocked by `prevent_destroy`.
