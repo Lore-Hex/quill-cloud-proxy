@@ -218,10 +218,13 @@ func invokeProviderStream(
 					ttfbCaptured = true
 					ttfbTimer.Stop()
 				},
-				// The provider answering is the success the circuit counts:
-				// resolving here frees a half-open probe at acceptance, not
-				// after the whole generation.
-				onAccept: func() { providerCircuits.Succeed(circuitTicket) },
+				// The provider's 2xx head frees a half-open probe slot at
+				// once, so a probe never holds its circuit for a whole
+				// generation; only content (or completion) counts as the
+				// success that closes the circuit. An accepted attempt that
+				// errors before content is neither success nor failure.
+				onHead:    func() { providerCircuits.ReleaseProbe(circuitTicket) },
+				onContent: func() { providerCircuits.Succeed(circuitTicket) },
 			}
 			if x := shadowobserve.FromContext(ctx); x != nil {
 				model := option.UpstreamModel
@@ -858,17 +861,27 @@ type routeSelectingWriter struct {
 	committed   bool
 	opened      bool
 	onFirstByte func()
-	onAccept    func()
-	acceptOnce  sync.Once
+	onHead      func()
+	onContent   func()
+	headOnce    sync.Once
+	contentOnce sync.Once
 	phases      *requesttiming.Timer
 	invocation  *requesttiming.Invocation
 	firstByte   sync.Once
 }
 
-// accept runs onAccept once, the first time the provider answers.
-func (w *routeSelectingWriter) accept() {
-	if w.onAccept != nil {
-		w.acceptOnce.Do(w.onAccept)
+// head runs onHead once, when the provider answers with a 2xx head.
+func (w *routeSelectingWriter) head() {
+	if w.onHead != nil {
+		w.headOnce.Do(w.onHead)
+	}
+}
+
+// produced runs onContent once, at the first output byte.
+func (w *routeSelectingWriter) produced() {
+	w.head()
+	if w.onContent != nil {
+		w.contentOnce.Do(w.onContent)
 	}
 }
 
@@ -877,7 +890,6 @@ func (w *routeSelectingWriter) selectRoute() {
 	// silence before and between raw body bytes for the selected provider.
 	w.phases.FirstByte(w.invocation)
 	w.committed = true
-	w.accept()
 	if w.onFirstByte != nil {
 		w.firstByte.Do(w.onFirstByte)
 	}
@@ -886,7 +898,7 @@ func (w *routeSelectingWriter) selectRoute() {
 
 func (w *routeSelectingWriter) UpstreamOpened() bool {
 	w.opened = true
-	w.accept()
+	w.head()
 	if w.streaming {
 		w.selectRoute()
 	}
@@ -897,7 +909,7 @@ func (w *routeSelectingWriter) UpstreamOpened() bool {
 // body (upstreamerror.Answered). It never commits the response.
 func (w *routeSelectingWriter) UpstreamAnswered() {
 	w.opened = true
-	w.accept()
+	w.head()
 }
 
 // Accepted reports whether the provider answered this attempt: a 2xx head
@@ -912,6 +924,7 @@ func (w *routeSelectingWriter) Write(p []byte) (int, error) {
 	}
 	if len(p) > 0 {
 		w.selectRoute()
+		w.produced()
 	}
 	n, err := w.w.Write(p)
 	w.bytes += n

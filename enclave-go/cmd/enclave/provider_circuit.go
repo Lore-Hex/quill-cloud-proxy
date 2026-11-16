@@ -387,6 +387,27 @@ func (r *providerCircuitRegistry) releaseProbeLocked(ticket *providerCircuitTick
 	}
 }
 
+// ReleaseProbe frees the half-open probe slots this attempt holds without
+// resolving it: the provider answered, so the slot need not wait for the
+// outcome, which content or a failure decides later.
+func (r *providerCircuitRegistry) ReleaseProbe(ticket *providerCircuitTicket) {
+	if r == nil || ticket == nil {
+		return
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if ticket.resolved || len(ticket.probes) == 0 {
+		return
+	}
+	for _, key := range ticket.route.keys() {
+		if state, ok := r.states[key]; ok {
+			r.releaseProbeLocked(ticket, key, &state)
+			r.states[key] = state
+		}
+	}
+	ticket.probes = nil
+}
+
 // resolveLocked marks the ticket resolved and reports whether it was not yet.
 func (r *providerCircuitRegistry) resolveLocked(ticket *providerCircuitTicket) bool {
 	if ticket == nil || ticket.resolved {
@@ -993,11 +1014,11 @@ func providerDownFailure(err error, finalFirstByteBudget bool) bool {
 }
 
 // recordProviderCircuitOutcome resolves one candidate attempt (after its
-// same-provider retries) unless the provider's acceptance already resolved it
-// as a success. A failure counts only when the request was still live and the
-// provider never answered (no 2xx head, no output): once a provider answers, a
-// later error is about this stream, not the provider being down. A client
-// disconnect cancels ctx and counts as nothing.
+// same-provider retries) unless its first content byte already resolved it as
+// a success. Completion is a success. A failure counts only when the request
+// was still live and the provider never answered (no 2xx head, no output);
+// an attempt that was answered and then failed before content, or that a
+// client disconnect cancelled, counts as neither.
 func recordProviderCircuitOutcome(
 	ctx context.Context,
 	ticket *providerCircuitTicket,
@@ -1039,4 +1060,29 @@ func laterCandidateAllowed(options []llm.InvokeOptions, model, tenant string) bo
 		}
 	}
 	return false
+}
+
+type requestChargesKey struct{}
+
+// requestCharges records that some call of this request reached settlement,
+// so a later failure must not tell the client a retry is free.
+type requestCharges struct{ charged atomic.Bool }
+
+// withRequestCharges gives ctx a charge tracker unless it already has one.
+func withRequestCharges(ctx context.Context) context.Context {
+	if _, ok := ctx.Value(requestChargesKey{}).(*requestCharges); ok {
+		return ctx
+	}
+	return context.WithValue(ctx, requestChargesKey{}, &requestCharges{})
+}
+
+func markRequestCharged(ctx context.Context) {
+	if charges, ok := ctx.Value(requestChargesKey{}).(*requestCharges); ok {
+		charges.charged.Store(true)
+	}
+}
+
+func requestCharged(ctx context.Context) bool {
+	charges, ok := ctx.Value(requestChargesKey{}).(*requestCharges)
+	return ok && charges.charged.Load()
 }

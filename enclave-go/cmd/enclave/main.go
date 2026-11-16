@@ -716,6 +716,7 @@ func serveOneRequest(
 	ctx = abuse.WithRequestState(ctx, &abuse.RequestState{})
 	ctx = trustedrouter.WithRequestLogID(ctx, requestLogID)
 	ctx = trustedrouter.WithAuthorizationInvocation(ctx)
+	ctx = withRequestCharges(ctx)
 
 	requestStartedAt := time.Now()
 	phases := requesttiming.FromContext(ctx)

@@ -930,6 +930,7 @@ func maybeServeFusion(
 	originalInput any,
 	requestLogID string,
 ) (bool, error) {
+	ctx = withRequestCharges(ctx)
 	config, requested, err := fusionConfigForRequest(req)
 	if err != nil {
 		return true, err
@@ -3875,7 +3876,8 @@ func writeFusionError(ctx context.Context, conn io.Writer, trGateway *trustedrou
 }
 
 // fusionCharged reports whether any call of this request already settled,
-// so re-sending it would pay for those calls again.
+// so re-sending it would pay for those calls again. requestCharged also covers
+// settled calls these results do not carry (a panel that returned nothing).
 func fusionCharged(groups ...[]fusionCallResult) bool {
 	for _, group := range groups {
 		for _, call := range group {
@@ -3891,14 +3893,24 @@ func fusionCharged(groups ...[]fusionCallResult) bool {
 // were already charged: the client is told not to re-send (x-should-retry:
 // false), as decide does.
 func writeFusionErrorSpent(ctx context.Context, conn io.Writer, trGateway *trustedrouter.Client, err error, spent bool) {
-	_ = ctx
 	_ = trGateway
+	// Any sub-call of this request that reached settlement charged it, whether
+	// or not it produced a usable answer.
+	spent = spent || requestCharged(ctx)
+	var spentHeaders map[string]string
+	if spent {
+		spentHeaders = map[string]string{shouldRetryHeader: "false"}
+	}
 	var aerr *adapter.AdapterError
 	if asAdapterErr(err, &aerr) {
-		writeError(conn, aerr.Status, aerr.Message)
+		writeErrorWithSourceHeaders(conn, aerr.Status, aerr.Message, "router", spentHeaders)
 		return
 	}
-	if _, ok := idempotencyReplayError(err); ok {
+	if controlErr, ok := idempotencyReplayError(err); ok {
+		if spent {
+			writeOpenAIErrorWithHeaders(conn, http.StatusConflict, controlErr.Message, "idempotency_replay", "idempotency_replay", "", spentHeaders)
+			return
+		}
 		writeGatewayAuthorizationError(conn, err)
 		return
 	}

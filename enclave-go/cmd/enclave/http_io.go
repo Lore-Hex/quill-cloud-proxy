@@ -914,6 +914,11 @@ func writeAdapterOpenAIError(w io.Writer, err *adapter.AdapterError) {
 }
 
 func writeOpenAIError(w io.Writer, status int, message, errType, code, param string) {
+	writeOpenAIErrorWithHeaders(w, status, message, errType, code, param, nil)
+}
+
+// writeOpenAIErrorWithHeaders is writeOpenAIError plus extra response headers.
+func writeOpenAIErrorWithHeaders(w io.Writer, status int, message, errType, code, param string, extra map[string]string) {
 	if errType == "" {
 		errType = "invalid_request_error"
 	}
@@ -929,8 +934,14 @@ func writeOpenAIError(w io.Writer, status int, message, errType, code, param str
 			"source":  "router",
 		},
 	})
-	fmt.Fprintf(w, "HTTP/1.1 %d %s\r\nContent-Type: application/json\r\nContent-Length: %d\r\nConnection: %s\r\n\r\n",
+	fmt.Fprintf(w, "HTTP/1.1 %d %s\r\nContent-Type: application/json\r\nContent-Length: %d\r\nConnection: %s\r\n",
 		status, statusText(status), len(body), responseConnection(w))
+	for name, value := range extra {
+		if name != "" && value != "" && !strings.ContainsAny(name+value, "\r\n") {
+			fmt.Fprintf(w, "%s: %s\r\n", name, value)
+		}
+	}
+	io.WriteString(w, "\r\n")
 	w.Write(body)
 }
 

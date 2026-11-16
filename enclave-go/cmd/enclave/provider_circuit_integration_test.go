@@ -951,3 +951,191 @@ func TestProviderCircuitFusionRefusalAfterChargedPanelIsNotFreeToRetry(t *testin
 		t.Fatalf("status=%d headers=%v body=%s, want 503 with Retry-After and x-should-retry: false", response.StatusCode, response.Header, body)
 	}
 }
+
+// circuitFailModelLLM answers 503 for one model (or for the calls fail
+// selects) and delegates the rest.
+type circuitFailModelLLM struct {
+	inner llm.Client
+	model string
+	fail  func(*types.OpenAIChatRequest) bool
+}
+
+func (c circuitFailModelLLM) InvokeStreaming(ctx context.Context, req *types.OpenAIChatRequest, body *types.AnthropicMessagesRequest, out io.Writer, options ...llm.InvokeOptions) error {
+	if req.Model == c.model || (c.fail != nil && c.fail(req)) {
+		return providerCircuitUpstreamStatus(503)
+	}
+	return c.inner.InvokeStreaming(ctx, req, body, out, options...)
+}
+
+// assertChargedFailures runs an orchestration request four times while a
+// later stage's model is down. Earlier stages settle every time, so every
+// failure must say x-should-retry: false. With wantRefusal, the dead model's
+// tenant circuit is open by the fourth request and the route must surface it
+// as a 503 with Retry-After (still x-should-retry: false).
+func assertChargedFailures(t *testing.T, wantRefusal bool, serve func() []byte) {
+	t.Helper()
+	for i := 1; i <= 4; i++ {
+		response, body := readRawHTTPResponse(t, serve())
+		if response.StatusCode < 500 || response.Header.Get("X-Should-Retry") != "false" {
+			t.Fatalf("request %d after charged sub-calls: status=%d x-should-retry=%q body=%s", i, response.StatusCode, response.Header.Get("X-Should-Retry"), body)
+		}
+		if wantRefusal && i == 4 && (response.StatusCode != http.StatusServiceUnavailable || response.Header.Get("Retry-After") == "") {
+			t.Fatalf("request 4: status=%d headers=%v body=%s, want the circuit refusal", response.StatusCode, response.Header, body)
+		}
+	}
+}
+
+func serveOrchestrationThroughServeOne(t *testing.T, trGateway *trustedrouter.Client, upstream llm.Client, requestBody string) []byte {
+	t.Helper()
+	raw := fmt.Sprintf("POST /v1/chat/completions HTTP/1.1\r\nAuthorization: Bearer bearer\r\nContent-Type: application/json\r\nContent-Length: %d\r\nConnection: close\r\n\r\n%s", len(requestBody), requestBody)
+	conn := newScriptedConn(raw, nil)
+	captureStderr(t, func() {
+		serveOne(context.Background(), conn, auth.New(nil), upstream, nil, nil, trGateway, nil)
+	})
+	return append([]byte(nil), conn.writes.Bytes()...)
+}
+
+func TestProviderCircuitSelectorFailureAfterChargedPanelIsNotFreeToRetry(t *testing.T) {
+	enableProviderCircuitsForTest(t)
+	trGateway, _, cleanup := newFusionGatewayRecorder(t)
+	defer cleanup()
+	upstream := circuitFailModelLLM{model: "model/selector", inner: &fusionEchoLLM{textByModel: map[string]string{"model/a": "first panel answer", "model/b": "best panel answer"}}}
+	body := `{"model":"trustedrouter/selector","stream":false,"messages":[{"role":"user","content":"choose the best"}],"tools":[{"type":"trustedrouter:selector","parameters":{"analysis_models":["model/a","model/b"],"selector_models":["model/selector"],"max_completion_tokens":64}}],"max_tokens":64}`
+	assertChargedFailures(t, true, func() []byte { return serveOrchestrationThroughServeOne(t, trGateway, upstream, body) })
+}
+
+func TestProviderCircuitMapReduceFailureAfterChargedStagesIsNotFreeToRetry(t *testing.T) {
+	enableProviderCircuitsForTest(t)
+	trGateway, _, cleanup := newFusionGatewayRecorder(t)
+	defer cleanup()
+	upstream := circuitFailModelLLM{model: "model/reducer", inner: &fusionEchoLLM{
+		textByModel:               map[string]string{"model/mapper": `{"parts":[{"title":"Alpha","prompt":"Part Alpha"},{"title":"Beta","prompt":"Part Beta"}]}`},
+		textByLastMessageContains: map[string]string{"Part Alpha": "alpha result", "Part Beta": "beta result"},
+	}}
+	body := `{"model":"trustedrouter/mapreduce","stream":false,"messages":[{"role":"user","content":"solve a multi-part problem"}],"tools":[{"type":"trustedrouter:mapreduce","parameters":{"mapper_models":["model/mapper"],"parallel_models":["model/parallel"],"reducer_models":["model/reducer"],"max_parts":2,"max_completion_tokens":64}}],"max_tokens":64}`
+	assertChargedFailures(t, true, func() []byte { return serveOrchestrationThroughServeOne(t, trGateway, upstream, body) })
+}
+
+func TestProviderCircuitAdvisorFailureAfterChargedWorkerIsNotFreeToRetry(t *testing.T) {
+	enableProviderCircuitsForTest(t)
+	trGateway, _, cleanup := newFusionGatewayRecorder(t)
+	defer cleanup()
+	// The worker's first call (asking for advice) and the advisor settle; the
+	// worker's follow-up and the advisor's fallback answer both fail.
+	upstream := circuitFailModelLLM{inner: &advisorScriptedLLM{callAdviceFirst: true}, fail: func(req *types.OpenAIChatRequest) bool {
+		switch req.Model {
+		case "cerebras/gpt-oss-120b":
+			return strings.Contains(lastChatMessageText(req.Messages), "advisor says") || strings.Contains(firstSystemMessageText(req.Messages), "advisor says")
+		case "anthropic/claude-opus-4.8":
+			return len(req.Messages) > 0 && strings.Contains(types.ContentText(req.Messages[0].Content), "worker model path failed")
+		}
+		return false
+	}}
+	config := testAdvisorConfig(t)
+	assertChargedFailures(t, false, func() []byte {
+		req := &types.OpenAIChatRequest{Model: trustedRouterSocrates10Model, Messages: []types.OpenAIChatMessage{{Role: "user", Content: "review this risky migration"}}}
+		var out bytes.Buffer
+		captureStderr(t, func() {
+			serveAdvisorNonStreaming(withRequestCharges(context.Background()), &out, upstream, req, config, trGateway, nil, "bearer", nil, "log_advisor_circuit")
+		})
+		return out.Bytes()
+	})
+}
+
+func TestProviderCircuitSubagentFailureAfterChargedControllerIsNotFreeToRetry(t *testing.T) {
+	enableProviderCircuitsForTest(t)
+	trGateway, _, cleanup := newFusionGatewayRecorder(t)
+	defer cleanup()
+	// The controller settles; its delegated worker is down, so the subagent
+	// cannot complete.
+	upstream := circuitFailModelLLM{model: "cerebras/gpt-oss-120b", inner: &subagentScriptedLLM{}}
+	assertChargedFailures(t, false, func() []byte {
+		req := &types.OpenAIChatRequest{
+			Model:    "deepseek/deepseek-v4-flash",
+			Messages: []types.OpenAIChatMessage{{Role: "user", Content: "Check deployment risk."}},
+			Tools: []any{map[string]any{"type": openRouterSubagentTool, "parameters": map[string]any{
+				"model": "cerebras/gpt-oss-120b", "instructions": "answer the delegated task tersely",
+				"max_tool_calls": 2, "max_completion_tokens": 128,
+			}}},
+		}
+		var out bytes.Buffer
+		captureStderr(t, func() {
+			if handled, err := maybeServeSubagent(context.Background(), &out, upstream, req, trGateway, nil, "bearer", nil, "log_subagent_circuit"); !handled || err != nil {
+				t.Errorf("maybeServeSubagent handled=%t err=%v", handled, err)
+			}
+		})
+		return out.Bytes()
+	})
+}
+
+// A fusion whose panel members all settled but gave nothing usable, and one
+// whose finals all refused after a billed panel and judge, both charged the
+// request: neither may say a retry is free.
+func TestProviderCircuitFusionAdapterFailuresAfterChargesAreNotFreeToRetry(t *testing.T) {
+	enableProviderCircuitsForTest(t)
+	trGateway, recorder, cleanup := newFusionGatewayRecorder(t)
+	defer cleanup()
+	config := fusionConfig{Enabled: true, AnalysisModels: []string{"circuit-panel-a/model", "circuit-panel-b/model"}, SelectionStrategy: "synthesize", MaxCompletionTokens: 512}
+	config.BuiltInPanelPrompt, config.BuiltInFinalPrompt = fusionBuiltInPrompts(false)
+	maxTokens := 512
+	for name, streamer := range map[string]*fusionEchoLLM{
+		"empty panel answers": {textByModel: map[string]string{"circuit-panel-a/model": " ", "circuit-panel-b/model": " "}},
+		"refusing finals":     {refusalModels: map[string]bool{"circuit-final/model": true}},
+	} {
+		t.Run(name, func(t *testing.T) {
+			recorder.mu.Lock()
+			settledBefore := len(recorder.settle)
+			recorder.mu.Unlock()
+			req := &types.OpenAIChatRequest{Model: trustedRouterLiberty40Model, MaxTokens: &maxTokens, Messages: []types.OpenAIChatMessage{{Role: "user", Content: "Reply with a short local test answer."}}}
+			cfg := config
+			if name == "refusing finals" {
+				cfg.SelectionStrategy = "synthesize_non_refusals"
+			}
+			var out bytes.Buffer
+			captureStderr(t, func() {
+				serveFusionNonStreaming(withRequestCharges(context.Background()), &out, streamer, req, cfg,
+					[]string{"circuit-final/model"}, []string{"circuit-judge/model"}, trGateway, nil, "local-liberty-key", req.Messages, "fusion-charged")
+			})
+			response, body := readRawHTTPResponse(t, out.Bytes())
+			recorder.mu.Lock()
+			settled := len(recorder.settle) - settledBefore
+			recorder.mu.Unlock()
+			if settled == 0 {
+				t.Fatalf("fixture: nothing settled (status=%d body=%s)", response.StatusCode, body)
+			}
+			if response.StatusCode == http.StatusOK || response.Header.Get("X-Should-Retry") != "false" {
+				t.Fatalf("status=%d x-should-retry=%q body=%s, want a failure that says not to retry", response.StatusCode, response.Header.Get("X-Should-Retry"), body)
+			}
+		})
+	}
+}
+
+// A provider that answers 2xx and then errors before any content has not
+// shown it is up: the attempt is neither success nor failure. It must not
+// wipe a streak of head-level failures or close a half-open circuit (it does
+// free the probe slot at the head).
+func TestProviderCircuitAcceptThenErrorIsNeitherSuccessNorFailure(t *testing.T) {
+	clock := enableProviderCircuitsForTest(t)
+	option := llm.InvokeOptions{Provider: "circuit-accept-error", Model: "circuit-accept-error/model", EndpointID: "accept-error", UsageType: "Credits"}
+	const workspace = "ws-accept-error"
+	tenant := providerCircuitTenant(&trustedrouter.Authorization{WorkspaceID: workspace})
+	acceptThenError := streamingProviderFunc(func(_ context.Context, w io.Writer, _ llm.InvokeOptions) error {
+		upstreamerror.Open(w)
+		return &upstreamerror.Error{Status: 502, Body: `{"type":"error","error":{"message":"stream error"}}`}
+	})
+	_ = runCircuitInvocation(context.Background(), workspace, circuitDown, option)
+	_ = runCircuitInvocation(context.Background(), workspace, circuitDown, option)
+	_ = runCircuitInvocation(context.Background(), workspace, acceptThenError, option)
+	_ = runCircuitInvocation(context.Background(), workspace, circuitDown, option)
+	if _, blocked := providerCircuits.Blocked(option, tenant); !blocked {
+		t.Fatal("an accepted-then-failed attempt wiped the streak of head-level failures")
+	}
+	clock.Advance(61 * time.Second)
+	_ = runCircuitInvocation(context.Background(), workspace, acceptThenError, option)
+	// The probe slot was freed at the head, and the circuit did not close: the
+	// next failure reopens it at once.
+	_ = runCircuitInvocation(context.Background(), workspace, circuitDown, option)
+	if _, blocked := providerCircuits.Blocked(option, tenant); !blocked {
+		t.Fatal("an accepted-then-failed probe closed the half-open circuit")
+	}
+}
