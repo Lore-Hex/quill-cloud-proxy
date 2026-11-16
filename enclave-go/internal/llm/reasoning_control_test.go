@@ -3,12 +3,19 @@ package llm
 import (
 	"bytes"
 	"encoding/json"
+	"go/ast"
+	"go/parser"
+	"go/token"
 	"io"
 	"net/http"
+	"path/filepath"
+	"sort"
+	"strconv"
 	"strings"
 	"testing"
 
 	"github.com/Lore-Hex/quill-cloud-proxy/enclave-go/internal/adapter"
+	"github.com/Lore-Hex/quill-cloud-proxy/enclave-go/internal/directproviders"
 	qtypes "github.com/Lore-Hex/quill-cloud-proxy/enclave-go/internal/types"
 )
 
@@ -102,8 +109,9 @@ var otherGenericHosts = []string{
 
 // The six probed hosts are sent an effort of low, medium or high top-level as
 // well as inside the reasoning object, which stays as the request holds it.
-// Off governs, an effort that is already top-level is left alone, any other
-// effort word stays inside the object alone, and no effort adds nothing.
+// Beside enabled=false nothing is added, an effort that is already top-level
+// is left alone (even beside enabled=false), any other effort word stays
+// inside the object alone, and no effort adds nothing.
 //
 // Every other host outside the effort list is sent what it was sent before
 // any host got a top-level copy. That wire is the parent column; where it is
@@ -203,10 +211,103 @@ func frozenParentChatReasoningEffort(provider string, req *qtypes.OpenAIChatRequ
 	}
 }
 
+// knownProviderSlugs returns every provider spelling the enclave knows: the
+// direct provider registry, and every string a source file of this package
+// matches a provider against. That takes in the dispatch switch in multi.go,
+// the alias table, the base URL table and each per-provider contract. It reads
+// the source, whatever the build tags, so a provider added later is covered
+// without anyone naming it in a test.
+func knownProviderSlugs(t *testing.T) []string {
+	t.Helper()
+	seen := map[string]bool{}
+	for _, spec := range directproviders.All() {
+		seen[spec.Provider] = true
+	}
+	var isProvider func(ast.Expr) bool
+	isProvider = func(expr ast.Expr) bool {
+		switch e := expr.(type) {
+		case *ast.ParenExpr:
+			return isProvider(e.X)
+		case *ast.Ident:
+			return e.Name == "provider" || e.Name == "slug" || e.Name == "normalizedProvider"
+		case *ast.SelectorExpr:
+			return e.Sel.Name == "provider" || e.Sel.Name == "Provider"
+		case *ast.CallExpr:
+			name, ok := e.Fun.(*ast.Ident)
+			return ok && name.Name == "normalizeDirectProvider"
+		}
+		return false
+	}
+	add := func(expr ast.Expr) {
+		if literal, ok := expr.(*ast.BasicLit); ok && literal.Kind == token.STRING {
+			if value, err := strconv.Unquote(literal.Value); err == nil && value != "" {
+				seen[value] = true
+			}
+		}
+	}
+	files, err := filepath.Glob("*.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	parsed := 0
+	for _, name := range files {
+		if strings.HasSuffix(name, "_test.go") {
+			continue
+		}
+		file, err := parser.ParseFile(token.NewFileSet(), name, nil, parser.SkipObjectResolution)
+		if err != nil {
+			t.Fatal(err)
+		}
+		parsed++
+		ast.Inspect(file, func(node ast.Node) bool {
+			switch n := node.(type) {
+			case *ast.SwitchStmt:
+				if n.Tag == nil || !isProvider(n.Tag) {
+					break
+				}
+				for _, clause := range n.Body.List {
+					for _, label := range clause.(*ast.CaseClause).List {
+						add(label)
+					}
+				}
+			case *ast.BinaryExpr:
+				if n.Op != token.EQL && n.Op != token.NEQ {
+					break
+				}
+				if isProvider(n.X) {
+					add(n.Y)
+				}
+				if isProvider(n.Y) {
+					add(n.X)
+				}
+			}
+			return true
+		})
+	}
+	// A harvest that silently finds nothing would let the comparison pass on
+	// a handful of hand-named hosts. These spellings come from the registry,
+	// the dispatch switch and the alias table in turn.
+	for _, anchor := range []string{"io-net", "hixtube", "openrouter-exclusive", "cloudflare-workers-ai", "novita-ai", "token-factory"} {
+		if !seen[anchor] {
+			t.Fatalf("provider harvest lost %q: the source or the registry moved, fix the harvest", anchor)
+		}
+	}
+	if parsed < 20 || len(seen) < 150 {
+		t.Fatalf("provider harvest read %d files and found %d spellings: too few to trust", parsed, len(seen))
+	}
+	slugs := make([]string, 0, len(seen))
+	for slug := range seen {
+		slugs = append(slugs, slug)
+	}
+	sort.Strings(slugs)
+	return slugs
+}
+
 // Against the frozen parent rule, byte for byte: a host that was not probed is
 // sent exactly what the parent sent for every request shape, and a probed host
 // differs only by a top-level effort of low, medium or high that the parent
-// left blank.
+// left blank. It runs over every provider spelling the enclave knows, so the
+// list of probed hosts cannot grow past these six without this test failing.
 func TestOnlyProbedHostsDifferFromTheParentEffortRule(t *testing.T) {
 	probed := map[string]bool{"deepinfra": true, "io-net": true, "nebius": true, "novita": true, "parasail": true, "together": true}
 	type request struct {
@@ -253,6 +354,7 @@ func TestOnlyProbedHostsDifferFromTheParentEffortRule(t *testing.T) {
 	}
 	providers := append(append([]string{}, probedEffortHosts...), otherGenericHosts...)
 	providers = append(providers, "privatemode", "meta", "openai", "gemini", "google-ai-studio", "deepseek", "zai", "kimi", "mistral", "alibaba", "tencent", "tinfoil", "grok", "baseten", "crusoe", "cerebras", "fireworks")
+	providers = append(providers, knownProviderSlugs(t)...)
 	changed := map[string]int{}
 	for _, provider := range providers {
 		for _, r := range requests {
@@ -293,6 +395,7 @@ func TestOnlyProbedHostsDifferFromTheParentEffortRule(t *testing.T) {
 			t.Errorf("%s: no wire differs from the parent", slug)
 		}
 	}
+	t.Logf("compared %d provider spellings on %d requests", len(providers), len(requests))
 }
 
 // The top-level copy is for the probed hosts only. Providers with a reviewed

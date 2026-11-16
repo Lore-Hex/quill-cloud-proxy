@@ -50,15 +50,18 @@ func applyChatReasoningEffort(provider string, req *qtypes.OpenAIChatRequest, bo
 		wire.Reasoning = nil
 	case "deepinfra", "io-net", "nebius", "novita", "parasail", "together":
 		// Hosts outside the effort list, each observed on 2026-11-16
-		// (docs/reasoning-output.md) to honor a top-level reasoning_effort, to
-		// accept it together with the reasoning object, and to accept it on a
-		// model that does not reason. Together and Nebius, and probably
+		// (docs/reasoning-output.md) to accept a top-level reasoning_effort,
+		// alone and together with the reasoning object, and to accept it alone
+		// on a model that does not reason. Five of them showed a clear
+		// difference between low and high at the top level. Novita's was small
+		// there and clear with both fields. Together and Nebius, and probably
 		// Parasail, ignore an effort that is only inside the object. So here an
 		// effort of low, medium or high written only inside the object also
-		// goes top-level, and the object stays as the request holds it. Off
-		// governs: beside reasoning.enabled=false nothing is added. A native
-		// Messages request is passed through: its thinking object is forwarded
-		// as written and nothing is derived from it.
+		// goes top-level, and the object stays as the request holds it. Beside
+		// reasoning.enabled=false nothing is added. A request that itself
+		// holds both that Off and a top-level effort is sent with both, as
+		// before. A native Messages request is passed through: its thinking
+		// object is forwarded as written and nothing is derived from it.
 		//
 		// Served requests change here, so the list holds only what was
 		// observed. Add a host after it has been observed, not before. Every
@@ -71,9 +74,10 @@ func applyChatReasoningEffort(provider string, req *qtypes.OpenAIChatRequest, bo
 }
 
 // topLevelCopiedEffort reports the efforts copied top-level for the observed
-// hosts. Any other word (none, off, minimal, xhigh, max, auto, an unknown
-// one) was not observed, and a host that validates the top-level field could
-// refuse it, so it stays inside the object alone.
+// hosts. The probe sent low and high. Medium was not probed: it is copied
+// because it sits between those two. Any other word (none, off, minimal,
+// xhigh, max, auto, an unknown one) stays inside the object alone, because a
+// host that validates the top-level field could refuse it.
 func topLevelCopiedEffort(effort string) bool {
 	switch effort {
 	case "low", "medium", "high":

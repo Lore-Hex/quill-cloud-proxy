@@ -173,15 +173,19 @@ the request holds it:
 * A switch beside an effort, for example `thinking: {"type": "enabled"}` with
   `reasoning_effort: "high"`, is sent as
   `"reasoning": {"effort": "high", "enabled": true}` and
-  `"reasoning_effort": "high"`. So on these six hosts, adding a switch to a
-  working `reasoning_effort` request does not change where the host finds
-  the effort.
-* Only `low`, `medium` and `high` are copied. Any other word inside the
-  object (`none`, `off`, `minimal`, `xhigh`, `max`, `auto`, or one the gateway
-  does not know) is sent inside the object alone, as before. Those were not
-  observed, and a host that validates the top-level field could refuse them.
-* Off governs. With `reasoning: {"enabled": false}` nothing is added, even
-  beside an effort. This is unchanged.
+  `"reasoning_effort": "high"`. So with `low`, `medium` or `high`, adding a
+  switch to a working `reasoning_effort` request does not change where these
+  six hosts find the effort. With `xhigh`, `max`, `minimal` or another word,
+  a switch beside the effort still moves it into the object only.
+* Only `low`, `medium` and `high` are copied. The probe sent `low` and
+  `high`. `medium` was not probed: it is copied because it sits between those
+  two. Any other word inside the object (`none`, `off`, `minimal`, `xhigh`,
+  `max`, `auto`, or one the gateway does not know) is sent inside the object
+  alone, as before, because a host that validates the top-level field could
+  refuse it.
+* When reasoning is explicitly off, `reasoning: {"enabled": false}`, nothing
+  is added. A request that itself carries both that Off and a top-level
+  `reasoning_effort` is still sent with both, as before.
 * A request that names no effort is unchanged.
 
 The same rule covers the other spellings that put an effort inside the
@@ -207,26 +211,36 @@ almost all reasoning:
 | io-net | 350 | 719 | 374 | 842 | 372 | 820 |
 
 "Object" is `"reasoning": {"effort": E, "enabled": true}` with no top-level
-field. "Both" is the top-level field and the object together. All six honor
-a top-level `reasoning_effort`. Together and Nebius, and probably Parasail,
-ignore an effort that is only inside the object. All six accept both fields
-together and honor the effort.
+field. "Both" is the top-level field and the object together. All six
+accepted a top-level `reasoning_effort`. Five showed a clear difference
+between low and high there. Novita's was small, 624 against 729 with one
+request per cell, while its cells with both fields differ clearly, 525
+against 958. Together and Nebius, and probably Parasail, ignore an effort
+that is only inside the object. All six accepted both fields together, and
+with both fields every one shows a clear difference between low and high.
 
-Each of the six was also sent a model that does not reason, with top-level
-`reasoning_effort: "high"`, and all six answered 200: DeepInfra, Novita,
-Parasail and io.net on a Llama 3.3 70B route, Together and Nebius on another
-chat model that does not reason. So on these six hosts the added field does
-not turn a working request into a refusal for a model that does not reason.
+Each of the six was also sent one model that does not reason, with the
+top-level field alone: `reasoning_effort: "high"` and no `reasoning` object.
+All six answered 200: DeepInfra, Novita, Parasail and io.net on a Llama 3.3
+70B route, Together and Nebius on another chat model that does not reason.
+So on these six hosts the top-level field alone does not turn a working
+request into a refusal for that model. The object and the top-level field
+together were not sent to a model that does not reason, so that combination
+was not observed.
 
 The remaining limits. The effort probe used one model, with one request per
-cell, at `low` and `high`. No other host outside the effort list has been
-observed: such a host may read the top-level field, the object, both or
-neither, and until it is observed it is sent the fields as the request holds
-them. Adding a host to the six needs an observation of that host: that it
-honors a top-level effort, that it accepts both fields together, and that it
+cell, at `low` and `high`: `medium` was not probed. The check on a model
+that does not reason used one model per host and the top-level field alone,
+at `high`. No other host outside the effort list has been observed: such a
+host may read the top-level field, the object, both or neither, and until it
+is observed it is sent the fields as the request holds them. Adding a host
+to the six needs an observation of that host: that it accepts a top-level
+effort and reads it, that it accepts both fields together, and that it
 accepts the top-level field on a model that does not reason. A host that
 rejects a request is a provider error like any other: the request goes to
-the next provider authorized for the model.
+the next provider authorized for the model. When no other provider can
+serve the request, because the caller pinned a listed host or only that host
+has the model, a host's refusal of the added field would reach the caller.
 
 ### Open decisions
 
