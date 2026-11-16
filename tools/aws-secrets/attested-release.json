@@ -1,5 +1,8 @@
 {
   "schema_version": 1,
-  "required": false,
-  "key_arns": {}
+  "required": true,
+  "key_arns": {
+    "eu-west-1": "arn:aws:kms:eu-west-1:330422590279:key/8eb99ae5-e78a-4427-86ab-7762bf8285bc",
+    "eu-west-3": "arn:aws:kms:eu-west-3:330422590279:key/a21065e5-ee25-44f3-8662-b4ca30b89447"
+  }
 }
