@@ -345,18 +345,24 @@ runpy.run_path(os.path.join(os.path.dirname(os.path.abspath(__file__)), "gate_ho
                run_name="__main__")
 '''
 
-# gcloud, logged. A monitor trigger can be made to hang (TRIGGER_SLEEP) or to
-# fail (TRIGGER_STATUS); every other call succeeds at once.
+# gcloud, logged. A monitor trigger can be made to hang (TRIGGER_SLEEP), to
+# ignore TERM while it hangs (TRIGGER_DEAF) or to fail (TRIGGER_STATUS); every
+# other call succeeds at once.
 GCLOUD_STUB = r'''#!/bin/bash
 echo "gcloud $*" >> "${COMMAND_LOG:-${GATE_LOG}}"
 case "$*" in
-  "scheduler jobs run "*) sleep "${TRIGGER_SLEEP:-0}"; exit "${TRIGGER_STATUS:-0}" ;;
+  "scheduler jobs run "*)
+    [ -z "${TRIGGER_DEAF:-}" ] || trap '' TERM  # its sleep inherits this
+    sleep "${TRIGGER_SLEEP:-0}"; exit "${TRIGGER_STATUS:-0}" ;;
 esac
 '''
 
 MOVING = lanes(held="control-plane")
 US_UP, EU_UP = ("us-central1", "up", 0), ("europe-west4", "up", 0)
 NO_EU = "no fresh attestation_nonce from europe-west4, tls_health from europe-west4;"
+NO_US = "no fresh attestation_nonce from us-central1, tls_health from us-central1;"
+NO_ROWS = ("no fresh attestation_nonce from europe-west4, tls_health from europe-west4, "
+           "attestation_nonce from us-central1, tls_health from us-central1;")
 # What running both monitors looks like in a command log.
 TRIGGERS = [f"gcloud scheduler jobs run trusted-router-synthetic-{monitor}-every-three-minutes "
             f"--location={monitor} --project=quill-cloud-proxy" for monitor in MONITORS]
@@ -431,7 +437,7 @@ class Library(unittest.TestCase):
 
     def run_canary(self, plan: list[dict[str, object]], *, before: list[dict[str, object]] | None = None,
                    lane_lines: list[object] | None = None, hold_max: int = 30,
-                   env: dict[str, str] | None = None, monitors: bool = False,
+                   env: dict[str, str] | None = None, monitors: bool = False, timeout: int = 60,
                    ) -> tuple[subprocess.CompletedProcess[str], list[str]]:
         """`gate_hold canary us-central1` for real. Each attempt publishes its
         rows of `plan` on the status page, which starts with the rows `before`.
@@ -441,7 +447,8 @@ class Library(unittest.TestCase):
         hook = "GATE_HOLD_BEFORE_ATTEMPT=trigger_synthetic_workers " if monitors else ""
         return self.run_lib(f'{hook}gate_hold canary us-central1 watch; echo "rc=$?"',
                             lane_lines=lane_lines or [MOVING], status=page(*(before or [])),
-                            hold_max=hold_max, env={"WATCH_PLAN": str(self.temp / "plan.json"), **(env or {})})
+                            hold_max=hold_max, timeout=timeout,
+                            env={"WATCH_PLAN": str(self.temp / "plan.json"), **(env or {})})
 
     @staticmethod
     def starts(log: list[str]) -> list[int]:
@@ -528,22 +535,57 @@ class Library(unittest.TestCase):
         self.assertIn("job's (10s", done.stderr)
         self.assertEqual(len(log), 1)
 
-    def test_canary_evidence_accumulates_across_the_attempts_of_one_hold(self) -> None:
+    def test_canary_evidence_counts_from_the_previous_attempt(self) -> None:
         """Production, 2026-11-16: the lease was held throughout, every attempt
         passed and every monitor reported the region up, but never both
         monitors inside one attempt's window. The gate held to its deadline."""
         old = healthy_page(at=time.time() - 3600)["data"]["current"]["checks"]
-        # The monitors take turns, as they did: one reports per attempt.
-        done, log = self.run_canary([{"rows": [US_UP]}, {"rows": [EU_UP]}] * 10, before=old)
+        # As it happened: neither monitor reported during the first attempt,
+        # then they took turns, one per attempt, us-central1 first.
+        plan = [{"rows": []}] + [{"rows": [US_UP]}, {"rows": [EU_UP]}] * 10
+        done, log = self.run_canary(plan, before=old)
         self.assertIn("rc=0", done.stdout, done.stderr)
-        self.assertEqual(len(log), 2, done.stderr)  # passed on the second attempt
-        first, second = self.starts(log)
-        # us-central1's rows are older than the second attempt and newer than the first.
+        self.assertEqual(len(log), 3, done.stderr)  # passed on the third attempt
+        first, second, third = self.starts(log)
+        # us-central1's rows are older than the third attempt, not than the second.
         self.assertLess(first, second)
+        self.assertLess(second, third)
         held = self.inconclusive(done.stderr)
-        self.assertEqual(len(held), 1, done.stderr)
-        self.assertIn(NO_EU, held[0])
+        self.assertEqual(len(held), 2, done.stderr)  # the incident's first two verdicts
+        self.assertIn(NO_ROWS, held[0])
+        self.assertIn(NO_EU, held[1])
         self.assertNotIn("failing closed", done.stderr)
+
+    def test_a_row_from_two_canary_attempts_ago_does_not_count(self) -> None:
+        """The evidence is at most about two attempts old: an older row must
+        not confirm a region that may have broken since it was written."""
+        # europe-west4 reports during the first attempt only, us-central1 during
+        # the third only. The fourth attempt fails, which ends the run.
+        done, log = self.run_canary([{"rows": [EU_UP]}, {"rows": []}, {"rows": [US_UP]},
+                                     {"rows": [], "exit": 7}])
+        self.assertIn("rc=7", done.stdout, done.stderr)
+        self.assertEqual(len(log), 4, done.stderr)
+        held = self.inconclusive(done.stderr)
+        self.assertEqual(len(held), 3, done.stderr)
+        self.assertIn(NO_US, held[0])
+        self.assertIn(NO_US, held[1])  # the second attempt still counts europe-west4's row
+        self.assertIn(NO_EU, held[2])  # the third does not: the row is two attempts old
+
+    def test_the_evidence_window_belongs_to_one_gate_hold_call(self) -> None:
+        """A second canary gate in the same shell begins with its own window:
+        the rows that confirmed the first gate cannot confirm it."""
+        plan = [{"rows": []}, {"rows": [US_UP, EU_UP]},   # the first gate: held, then confirmed
+                {"rows": []}, {"rows": [], "exit": 7}]   # the second: no reports, then it fails
+        (self.temp / "plan.json").write_text(json.dumps(plan))
+        script = ('gate_hold canary us-central1 watch; echo "first=$?"\n'
+                  "sleep 2\n"  # the first gate's rows now predate the second gate
+                  'gate_hold canary us-central1 watch; echo "second=$?"')
+        done, log = self.run_lib(script, lane_lines=[MOVING], status=page(), hold_max=30,
+                                 env={"WATCH_PLAN": str(self.temp / "plan.json")})
+        self.assertIn("first=0", done.stdout, done.stderr)
+        self.assertIn("second=7", done.stdout, done.stderr)
+        self.assertEqual(len(log), 4, done.stderr)
+        self.assertEqual(len(self.inconclusive(done.stderr)), 2, done.stderr)
 
     def test_the_latest_row_decides_across_canary_attempts(self) -> None:
         # us-central1 read up during the first attempt and down during the second.
@@ -604,7 +646,7 @@ class Library(unittest.TestCase):
         self.assertEqual(len(log), 2, done.stderr)
         self.assertEqual(len(self.inconclusive(done.stderr)), 1, done.stderr)
 
-    def test_only_a_canary_pass_is_judged_on_the_first_attempts_window(self) -> None:
+    def test_only_a_canary_pass_is_judged_on_the_previous_attempts_window(self) -> None:
         """Every other verdict, and every attempt's WAIT_UP_STARTED_AT, is the attempt's own."""
         (self.tools / "gate_hold.py").rename(self.tools / "gate_hold_real.py")
         (self.tools / "gate_hold.py").write_text(DECIDE_SHIM)
@@ -631,7 +673,8 @@ class Library(unittest.TestCase):
         starts = self.starts(log)
         self.assertEqual(len(starts), 3)
         self.assertEqual(starts, sorted(set(starts)))  # each watch is still given its own start
-        self.assertEqual(judged(), [starts[0]] * 3)
+        # The first pass has only its own window; each later one, the attempt before it.
+        self.assertEqual(judged(), [starts[0], starts[0], starts[1]])
         # A canary that fails on a re-run is judged at once, on its own window.
         done, log = self.run_canary([{"rows": []}, {"rows": [], "exit": 7}], env=env)
         self.assertIn("rc=7", done.stdout, done.stderr)
@@ -712,6 +755,34 @@ class Library(unittest.TestCase):
         self.assertIn("attributed to the gateway", done.stderr)
         self.assertEqual(shape(log)[0], "us")
         self.assertLess(elapsed, 20)  # the cap and the kill graces, never the 2 x 12 s of hanging
+
+    def test_a_trigger_deaf_to_term_is_killed_after_a_short_grace(self) -> None:
+        """gcloud has nothing to clean up: 5 s after TERM, not an attempt's 30."""
+        started = time.monotonic()
+        done, log = self.run_canary([{"rows": [US_UP, EU_UP]}], monitors=True, timeout=150,
+                                    env={"TRIGGER_SLEEP": "100", "TRIGGER_DEAF": "1",
+                                         "GATE_HOLD_TRIGGER_SECONDS": "1"})
+        elapsed = time.monotonic() - started
+        self.assertIn("rc=0", done.stdout, done.stderr)
+        self.assertEqual(shape(log), ["us", "eu", "watch"])
+        self.assertEqual(done.stderr.count("the trigger was cut off"), 2, done.stderr)
+        self.assertGreater(elapsed, 8)  # each call did get its 5 s after TERM
+        self.assertLess(elapsed, 30)  # 2 x (1 s + 5 s), never 2 x (1 s + 30 s)
+
+    def test_a_stop_during_the_trigger_takes_effect_as_the_gate_command_starts(self) -> None:
+        stop = self.temp / "stop"
+        script = (f'should_stop() {{ [ -e "{stop}" ]; }}\n'
+                  'on_stop() { echo hook >&2; exit 75; }\n'
+                  "GATE_HOLD_STOP=should_stop GATE_HOLD_ON_STOP=on_stop\n"
+                  f'( sleep 2; touch "{stop}" ) &\n'
+                  "GATE_HOLD_BEFORE_ATTEMPT=trigger_synthetic_workers gate_hold canary us-central1 gate")
+        started = time.monotonic()
+        done, log = self.run_lib(script, codes="s40", lane_lines=[MOVING], status=self.fresh_page(),
+                                 env={"TRIGGER_SLEEP": "30", "GATE_HOLD_TRIGGER_SECONDS": "10"})
+        self.assertEqual(done.returncode, 75, done.stderr)
+        self.assertIn("hook", done.stderr)
+        self.assertNotIn("the trigger was cut off", done.stderr)  # stopped, not timed out
+        self.assertLess(time.monotonic() - started, 15)  # never the 2 x 10 s the calls may take
 
     def test_overlapping_holds_share_the_budget_as_they_spend_it(self) -> None:
         """Review of #772: a wave's two holds must not each spend the budget."""

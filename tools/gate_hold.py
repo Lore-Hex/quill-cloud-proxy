@@ -18,16 +18,19 @@ Each gate runs unchanged. The rules for its verdict:
     region from every monitor to be up. The canary reads an unreachable
     status page as `unknown` and passes; a failing latest row then makes it
     the gateway's failure, and a missing or not-up row makes it inconclusive.
-    For these rows alone, fresh means created since the FIRST attempt of the
-    hold began, not since this attempt began: the evidence accumulates
-    across the re-runs. A canary attempt is about four minutes. Each monitor
+    For these rows alone, fresh means created since the PREVIOUS attempt of
+    the hold began, not since this attempt began (the first attempt has only
+    its own window). A canary attempt is about four minutes. Each monitor
     publishes a given probe for a region only every three to six minutes,
     and the monitors are not in step, so one attempt's window usually holds
     one monitor's rows and not the other's. With a window that started again
     on every re-run, the monitors were never both inside it, and a region
-    that every monitor had reported up failed closed at the deadline. Only
-    the window is wider. The latest row per monitor and probe still decides,
-    and a row created before the first attempt never counts. So that the
+    that every monitor had reported up failed closed at the deadline. Two
+    attempts are long enough for both to report. The window goes back no
+    further, which keeps the rows to about two attempts old: an older row
+    must not confirm a region that broke after it was written. Only the
+    window is wider. The latest row per monitor and probe still decides, and
+    a row created before the previous attempt never counts. So that the
     rows usually land inside the first attempt, each canary attempt begins
     by running both monitors (tools/gate-hold-lib.sh): a re-run costs about
     five minutes of the hold budget that all the regions share.
@@ -40,8 +43,8 @@ Each gate runs unchanged. The rules for its verdict:
     monitor ingesting.
   * Otherwise the result is inconclusive. The region stays as the gate left
     it (out of canonical DNS), nothing is promoted, and the whole gate runs
-    again with a fresh window (a canary's evidence alone keeps the window of
-    its first attempt, as above), until a hard deadline: the gate's own hold
+    again with a fresh window (a canary's evidence alone also keeps the
+    previous attempt's, as above), until a hard deadline: the gate's own hold
     bound (TR_CP_HOLD_MAX_SECONDS, a clock per gate) or the job's budget for
     all holds (TR_CP_HOLD_BUDGET_SECONDS), whichever comes first. An attempt
     in flight at the deadline is stopped, and the gate fails closed.
@@ -59,8 +62,9 @@ file only decides, from files the library captured:
       --status-json STATUS.json
 
 `--since` is when the attempt began, except for a canary that passed: then
-it is when the first attempt of its hold began. The lane snapshots are always
-the attempt's own. It prints `pass`, `gateway:<why>` or `inconclusive:<why>`.
+it is when the previous attempt of its hold began, if there was one. The lane
+snapshots are always the attempt's own. It prints `pass`, `gateway:<why>` or
+`inconclusive:<why>`.
 """
 
 from __future__ import annotations
@@ -229,9 +233,10 @@ def canary_evidence(payload: object, region: str, since: float,
     row for this region from every monitor is up. Returns None when they are,
     ('gateway', why) when one is failing, and ('inconclusive', why) otherwise.
 
-    `since` is when the first attempt of the hold began, so the rows of every
-    attempt so far count: the monitors publish too seldom, and too far out of
-    step, to both land inside one attempt (see the module docstring).
+    `since` is when the previous attempt of the hold began (this attempt, if
+    it is the first), so the rows of two attempts count: the monitors publish
+    too seldom, and too far out of step, to both land inside one attempt, and
+    anything older could predate a failure (see the module docstring).
     """
     rows = _rows(payload)
     if rows is None:
@@ -298,7 +303,7 @@ def decide(kind: str, region: str, status: int, since: float, before: object, af
         if moved is None:
             return "pass"
         # The only use of `since` for a pass: the caller gives a canary pass
-        # the start of the hold's first attempt.
+        # the start of the hold's previous attempt.
         evidence = canary_evidence(payload, region, since, monitors)
         if evidence is None:
             return "pass"

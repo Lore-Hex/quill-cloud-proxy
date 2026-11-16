@@ -968,11 +968,11 @@ jobs:
         # A canary that passed while the control plane moved must also have
         # seen fresh enclave-only rows from every monitor; otherwise it re-runs
         # within the hold bound and then fails closed (tools/gate_hold.py).
-        # Fresh means since the first attempt began. Every attempt first runs
-        # both monitors (bounded and never fatal: tools/gate-hold-lib.sh), so
-        # that their rows usually land inside the first attempt. A re-run
-        # costs about five minutes of the job's hold budget, which every
-        # region shares.
+        # Fresh means since the previous attempt began. Every attempt first
+        # runs both monitors (never fatal, and about 50 seconds of the attempt
+        # at most: tools/gate-hold-lib.sh), so that their rows usually land
+        # inside the first attempt. A re-run costs about five minutes of the
+        # job's hold budget, which every region shares.
         # A 10-minute attempt, the 20-minute hold, bounded reads.
         timeout-minutes: 38
         env:

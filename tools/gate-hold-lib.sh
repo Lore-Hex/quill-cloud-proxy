@@ -16,14 +16,18 @@
 # does, with one exception: the canary's evidence. A canary that passed while
 # the control plane moved also needs fresh enclave-only rows from every
 # monitor (tools/gate_hold.py), and for those rows the window starts when the
-# FIRST attempt of this gate_hold call began. A canary attempt is about four
-# minutes. Each monitor publishes a given probe for a region only every three
-# to six minutes, and the monitors are not in step, so one attempt's window
-# usually holds one monitor's rows and not the other's. A window that started
-# again with every re-run threw the earlier rows away, and the gate stayed
-# inconclusive until its deadline while every monitor reported the region up.
+# PREVIOUS attempt of this gate_hold call began (the first attempt has only its
+# own). A canary attempt is about four minutes. Each monitor publishes a given
+# probe for a region only every three to six minutes, and the monitors are not
+# in step, so one attempt's window usually holds one monitor's rows and not the
+# other's. A window that started again with every re-run threw the earlier rows
+# away, and the gate stayed inconclusive until its deadline while every monitor
+# reported the region up. Two attempts are enough for both monitors to report.
+# The window goes back no further, so that the rows are at most about two
+# attempts old: older rows must not confirm a region that broke after them.
 # Each re-run is still a whole new canary, the lane snapshots are still per
 # attempt, and no other gate kind is given anything but its attempt's window.
+# The window belongs to one gate_hold call; the next call starts with none.
 #
 # A re-run is costly: about five minutes of the job's hold budget, which all
 # the regions share. So the canary gates do not wait for the monitors' own
@@ -69,13 +73,18 @@
 # GATE_HOLD_BEFORE_ATTEMPT names a function that the loop calls at the start of
 # every attempt, after the attempt's window has opened and before the gate
 # command runs. It is given the attempt's deadline (epoch seconds, or "" when
-# there is none) and must return by then. Its status is ignored, so it can
-# never fail a gate, and the gate command, its process group and its deadlines
-# are exactly as without it. Unset, the loop calls nothing.
+# there is none) and must return by then. Its exit status is ignored, so a
+# failing hook never fails a gate. Its time is not free: it is spent inside the
+# attempt, whose cap and deadlines do not move, so a slow hook leaves the gate
+# command less of them. The gate command and its process group are exactly as
+# without the hook. Unset, the loop calls nothing.
 #
 # trigger_synthetic_workers cuts each of its two calls off after
 # GATE_HOLD_TRIGGER_SECONDS (default 20), and at the deadline it is given if
-# that is sooner, so a hung gcloud cannot eat an attempt.
+# that is sooner. A call that ignores TERM is killed 5 seconds later (it has
+# nothing to clean up), so the two calls cost an attempt about 50 seconds at
+# most. A stop (GATE_HOLD_STOP) that arrives during a call ends that call at
+# once and takes effect when the gate command starts.
 
 GATE_HOLD_TOOLS="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 GATE_HOLD_TIMEOUT_STATUS=124
@@ -227,7 +236,9 @@ gate_hold_write() {
 
 # gate_hold_trigger <job> <location> <cut|"">: run one Cloud Scheduler job now.
 # Never fatal. Cut off after GATE_HOLD_TRIGGER_SECONDS, or at <cut> (epoch
-# seconds) if that is sooner; gcloud has nothing to clean up, so a short grace.
+# seconds) if that is sooner. gcloud has nothing to clean up, so it gets a
+# grace of 5 seconds after TERM, not an attempt's 30. A stop ends the call at
+# once and is acted on when the gate command starts.
 gate_hold_trigger() {
   local job="$1" location="$2" cut="$3" seconds status=0
   seconds="$(gate_hold_number GATE_HOLD_TRIGGER_SECONDS 20)" || seconds=20
@@ -251,7 +262,7 @@ trigger_synthetic_workers() {
 
 gate_hold() {
   local kind="$1" region="$2" max pause cap budget monitors state own_state=0 work
-  local since first_since="" judged_since attempt_deadline cut_deadline hold_deadline=""
+  local since previous_since="" judged_since attempt_deadline cut_deadline hold_deadline=""
   local status=1 decision remaining status_after_pause _gh_budget_state="" _gh_budget
   shift 2
   max="$(gate_hold_number TR_CP_HOLD_MAX_SECONDS 1200)" || return 2
@@ -268,8 +279,6 @@ gate_hold() {
   _gh_budget="${budget}"
   while true; do
     since="$(date +%s)"
-    # The canary's evidence window opens once, with the first attempt.
-    first_since="${first_since:-${since}}"
     attempt_deadline=""
     if [ "${cap}" -gt 0 ]; then attempt_deadline=$((since + cap)); fi
     # While holding, the gate's own deadline and the job budget cut the attempt.
@@ -288,7 +297,8 @@ gate_hold() {
       fi
     fi
     attempt_deadline="$(gate_hold_min "${attempt_deadline}" "${cut_deadline}")"
-    # The optional hook, inside this attempt's window. It cannot fail the gate.
+    # The optional hook, inside this attempt's window. Its exit status is
+    # ignored; its time is spent out of this attempt's cap and deadlines.
     if [ -n "${GATE_HOLD_BEFORE_ATTEMPT:-}" ]; then
       "${GATE_HOLD_BEFORE_ATTEMPT}" "${attempt_deadline}" || true
     fi
@@ -329,10 +339,12 @@ gate_hold() {
     fi
     gate_hold_lanes "${work}/after.json" "${cut_deadline}"
     gate_hold_curl_status > "${work}/status.json" || true
-    # A canary pass is confirmed by the rows since the first attempt began (see
-    # the header); every other verdict reads this attempt's own window.
+    # A canary pass is confirmed by the rows since the previous attempt began,
+    # or since its own start on the first attempt (see the header). Every other
+    # verdict reads this attempt's own window.
     judged_since="${since}"
-    if [ "${kind}" = canary ] && [ "${status}" -eq 0 ]; then judged_since="${first_since}"; fi
+    if [ "${kind}" = canary ] && [ "${status}" -eq 0 ]; then judged_since="${previous_since:-${since}}"; fi
+    previous_since="${since}"
     decision="$(WAIT_UP_MONITOR_REGIONS="${monitors}" python3 "${GATE_HOLD_TOOLS}/gate_hold.py" decide \
       --kind "${kind}" --region "${region}" --status "${status}" --since "${judged_since}" \
       --before "${work}/before.json" --after "${work}/after.json" \
