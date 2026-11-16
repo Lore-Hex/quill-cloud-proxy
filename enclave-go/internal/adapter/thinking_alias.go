@@ -52,7 +52,7 @@ func validateThinkingAlias(raw map[string]json.RawMessage) (map[string]any, erro
 		if result["enabled"] != true || !hasEffort {
 			return result, nil
 		}
-		if reasoningEffortOff(effort) {
+		if ReasoningEffortOff(effort) {
 			return bad("reasoning_effort turns reasoning off but " + field + " turns it on")
 		}
 		result["effort"] = effort
@@ -103,10 +103,10 @@ func validateThinkingAlias(raw map[string]json.RawMessage) (map[string]any, erro
 	return compose(result)
 }
 
-// reasoningEffortOff reports an effort that asks for no reasoning. The
-// documented word is none. Fireworks and the Claude budget mapping read the
-// other spellings the same way, so none of them can ride along with On.
-func reasoningEffortOff(effort string) bool {
+// ReasoningEffortOff reports an effort that asks for no reasoning. The
+// documented word is none. Fireworks and the Claude mapping read the other
+// spellings the same way, so none of them can ride along with On.
+func ReasoningEffortOff(effort string) bool {
 	switch strings.ToLower(strings.TrimSpace(effort)) {
 	case "none", "off", "disable", "disabled":
 		return true
