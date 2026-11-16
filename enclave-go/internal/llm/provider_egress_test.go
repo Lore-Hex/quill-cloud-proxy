@@ -85,7 +85,7 @@ func TestProviderEgressIncludesNativeMediaAndSearchEndpoints(t *testing.T) {
 		"api.bfl.ai", "api.eu.bfl.ai", "api.us.bfl.ai", "api.eu2.bfl.ai",
 		"api.decart.ai", "external.api.recraft.ai", "api.krea.ai", "fal.run",
 		"queue.fal.run", "design-api.sourceful.com", "api.ltx.io",
-		"api.dev.runwayml.com", "api-singapore.klingai.com", "api.exa.ai",
+		"api.dev.runwayml.com", "api-singapore.klingai.com", "api.exa.ai", "api.context.dev",
 		"aiplatform.googleapis.com", "us-central1-aiplatform.googleapis.com",
 		"eastus2.tts.speech.microsoft.com", "api.elevenlabs.io",
 	} {
@@ -105,6 +105,8 @@ func TestProviderEgressRejectsBeforeTransport(t *testing.T) {
 		"https://[::1]/v1", "https://other.cloud.databricks.com/serving-endpoints",
 		"https://unreviewed-aiplatform.googleapis.com/v1", "https://api.privatemode.ai/v1",
 		"https://enclave.trymaple.ai/v1", "https://api.openai.com/v1#fragment",
+		"http://api.context.dev/v1/web/search", "https://api.context.dev:8443/v1/web/search",
+		"https://api.context.dev.attacker.example/v1/web/search", "https://other.context.dev/v1/web/search",
 	} {
 		t.Run(raw, func(t *testing.T) {
 			called := false
