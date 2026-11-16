@@ -74,11 +74,12 @@ elif args[:2] not in [
                 "AWS_EC2_METADATA_DISABLED": "true",
                 "PROJECT_TAG": "quill-enclave", "AWS_ACCOUNT": "330422590279",
                 "AWS_REGION": "eu-west-3", "DRY_RUN": "0",
+                "SCRIPT_DIR": str(ROOT / "tools"),
                 "ENCLAVE_REGIONS": regions, "FAILURE": failure,
                 "KEYS": json.dumps(KEYS), "CALLS": str(calls),
             }
             result = subprocess.run(["bash", "-c", script], env=env, text=True,
-                                    capture_output=True, timeout=10)
+                                    capture_output=True, timeout=10, check=False)
             self.assertTrue(calls.exists(), result.stderr)
             recorded = [json.loads(line) for line in calls.read_text().splitlines()]
             return result, recorded

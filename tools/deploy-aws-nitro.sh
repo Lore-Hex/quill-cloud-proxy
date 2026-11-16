@@ -53,6 +53,9 @@ AWS_EIF_MANIFEST="${AWS_EIF_MANIFEST:-}"
 AWS_EIF_SIGNATURE="${AWS_EIF_SIGNATURE:-}"
 AWS_EIF_SOURCE_COMMIT="${AWS_EIF_SOURCE_COMMIT:-}"
 CANDIDATE_TEMPLATE_ONLY="${CANDIDATE_TEMPLATE_ONLY:-0}"
+# Parent mode is a staged operator choice, not an enclave trust override.
+# The strict enclave image never falls back regardless of this setting.
+AWS_BOOTSTRAP_MODE="${AWS_BOOTSTRAP_MODE:-legacy}"
 # The release image has run ACME since 2026-08-23. Keep this overrideable for
 # the standalone self-signed deployment, whose separation model deliberately
 # carries no cross-cloud GCP credential and therefore must skip the ACME-only
@@ -206,13 +209,14 @@ log "Mode: $([ $DRY_RUN -eq 1 ] && echo DRY-RUN || echo APPLY) phase: $PHASE tls
 # The cross-cloud-key phase is the one deliberate escape hatch: it creates or
 # repairs the value this guard checks. Every other ACME deploy path must prove
 # the current region is bootable before it changes infrastructure.
-if [ "$QUILL_TLS_MODE" = "acme" ] && [ "$PHASE" != "cross-cloud-key" ]; then
+if [ "$QUILL_TLS_MODE" = "acme" ] && [ "$PHASE" != "cross-cloud-key" ] && [ "$AWS_BOOTSTRAP_MODE" != "v2-only" ]; then
   preflight_acme_sa_key
 fi
 
 # ─── Phase: IAM ────────────────────────────────────────────────────────────
 phase_iam() {
   log "=== phase: iam ==="
+  python3 "$SCRIPT_DIR/aws_kms_admission.py" require-legacy-provisioning
   local role_name="${PROJECT_TAG}-role"
   local profile_name="${PROJECT_TAG}-instance-profile"
   local trust_doc='{"Version":"2012-10-17","Statement":[{"Effect":"Allow","Principal":{"Service":"ec2.amazonaws.com"},"Action":"sts:AssumeRole"}]}'
@@ -637,6 +641,36 @@ phase_ecr() {
 }
 
 # ─── Phase: Compute (Launch Template + ASG + NLB + parent + enclave) ─────
+resolve_parent_image() {
+  local repo="$1" prefix="$2" approved_digest="$3"
+  local selector digest tag
+  if [ -n "$approved_digest" ]; then
+    [[ "$approved_digest" =~ ^sha256:[0-9a-f]{64}$ ]] || {
+      log "  ERROR: invalid approved parent image digest for $repo"
+      return 1
+    }
+    selector="imageDigest=$approved_digest"
+  else
+    tag=$(latest_ecr_tag "$repo" "$prefix") || return 1
+    [ -n "$tag" ] && [ "$tag" != None ] || {
+      log "  ERROR: no parent image found in ECR $repo"
+      return 1
+    }
+    selector="imageTag=$tag"
+  fi
+  digest=$(aws ecr describe-images --region "$AWS_REGION" --repository-name "$repo" \
+    --image-ids "$selector" --query 'imageDetails[0].imageDigest' --output text) || return 1
+  [[ "$digest" =~ ^sha256:[0-9a-f]{64}$ ]] || {
+    log "  ERROR: ECR did not return an immutable parent digest for $repo"
+    return 1
+  }
+  [ -z "$approved_digest" ] || [ "$digest" = "$approved_digest" ] || {
+    log "  ERROR: approved parent image differs from ECR for $repo"
+    return 1
+  }
+  printf '%s.dkr.ecr.%s.amazonaws.com/%s@%s\n' "$AWS_ACCOUNT" "$AWS_REGION" "$repo" "$digest"
+}
+
 phase_compute() {
   log "=== phase: compute ==="
   log "  prerequisites: signed CI-built EIF published in both regional buckets"
@@ -647,8 +681,18 @@ phase_compute() {
   # Resolve everything we need from earlier phases. Each lookup fails
   # the run early if a prereq is missing — better than producing a
   # half-wired ASG.
-  local parent_repo_url="${AWS_ACCOUNT}.dkr.ecr.${AWS_REGION}.amazonaws.com/${PARENT_ECR_REPO_NAME}"
-  local parent_tag
+  local parent_image parent_digest="${AWS_PARENT_IMAGE_DIGEST:-}"
+  local bootstrap_mode="${AWS_BOOTSTRAP_MODE:-legacy}" bootstrap_key
+  bootstrap_key=$(python3 "$SCRIPT_DIR/aws_kms_admission.py" parent-key \
+    --region "$AWS_REGION" --mode "$bootstrap_mode")
+  if [ "$bootstrap_mode" != legacy ] && [ -z "$parent_digest" ]; then
+    log "  ERROR: attested bootstrap requires an explicitly reviewed AWS_PARENT_IMAGE_DIGEST"
+    return 1
+  fi
+  if [ -n "$parent_digest" ] && ! [[ "$parent_digest" =~ ^sha256:[0-9a-f]{64}$ ]]; then
+    log "  ERROR: AWS_PARENT_IMAGE_DIGEST must be an immutable SHA256 digest"
+    return 1
+  fi
   if [ "$AWS_ACCOUNT" != "330422590279" ] || [ -z "$AWS_EIF_MANIFEST" ] || [ -z "$AWS_EIF_SIGNATURE" ] || [ -z "$AWS_EIF_SOURCE_COMMIT" ]; then
     log "  ERROR: compute requires the approved AWS account and signed CI manifest, signature and source commit"
     return 1
@@ -688,12 +732,8 @@ phase_compute() {
     "$eif_sha" "$eif_size"
   log "  verified EIF: s3://${eif_bucket}/${eif_object_key} PCR0=${eif_pcr0}"
 
-  parent_tag=$(latest_ecr_tag "$PARENT_ECR_REPO_NAME" "parent-aws-release-" || echo "None")
-  if [ "$parent_tag" = "None" ] || [ -z "$parent_tag" ]; then
-    log "  ERROR: no parent image found in ECR ${PARENT_ECR_REPO_NAME}; build via deploy-parent-aws.yml"
-    return 1
-  fi
-  log "  parent image:  ${parent_repo_url}:${parent_tag}"
+  parent_image=$(resolve_parent_image "$PARENT_ECR_REPO_NAME" "parent-aws-release-" "$parent_digest")
+  log "  parent image:  ${parent_image}"
 
   # The parent-pump is the Go replacement for the Python TCP pump on
   # the data path. It runs as a separate small (~3.5 MB) container on
@@ -701,14 +741,9 @@ phase_compute() {
   # /admin, /trust, /health, and the bootstrap RPC server (all off the
   # data path). The Go binary handles the TCP-to-vsock pump where
   # latency matters.
-  local parent_pump_repo_url="${AWS_ACCOUNT}.dkr.ecr.${AWS_REGION}.amazonaws.com/${PARENT_PUMP_ECR_REPO_NAME}"
-  local parent_pump_tag
-  parent_pump_tag=$(latest_ecr_tag "$PARENT_PUMP_ECR_REPO_NAME" "parent-pump-aws-release-" || echo "None")
-  if [ "$parent_pump_tag" = "None" ] || [ -z "$parent_pump_tag" ]; then
-    log "  ERROR: no parent-pump image in ECR ${PARENT_PUMP_ECR_REPO_NAME}; build via deploy-parent-pump-aws.yml"
-    return 1
-  fi
-  log "  pump image:    ${parent_pump_repo_url}:${parent_pump_tag}"
+  local parent_pump_image
+  parent_pump_image=$(resolve_parent_image "$PARENT_PUMP_ECR_REPO_NAME" "parent-pump-aws-release-" "${AWS_PARENT_PUMP_IMAGE_DIGEST:-}")
+  log "  pump image:    ${parent_pump_image}"
 
   local sg_id
   sg_id=$(aws ec2 describe-security-groups --region "$AWS_REGION" \
@@ -1123,7 +1158,7 @@ aws ecr get-login-password --region ${AWS_REGION} \\
   | docker login --username AWS --password-stdin ${AWS_ACCOUNT}.dkr.ecr.${AWS_REGION}.amazonaws.com
 
 # 4a. Parent container (Python) — FastAPI on :8443 (/health, /admin/usage,
-# /trust) + bootstrap RPC server on vsock 9100. NOT the data-path pump.
+# /trust) + the explicitly staged bootstrap mode. NOT the data-path pump.
 #
 # Env vars consumed by quill_parent.config.Settings (env_prefix=QUILL_):
 #   QUILL_AWS_REGION             — Secrets Manager + KMS region (us-west-2)
@@ -1134,23 +1169,25 @@ aws ecr get-login-password --region ${AWS_REGION} \\
 #                                    as trustedrouter_base_url. The AWS public
 #                                    service is observer-only, so the canonical
 #                                    billing authority is the safe default.
-docker pull ${parent_repo_url}:${parent_tag}
+docker pull ${parent_image}
 docker run -d --restart=always --name=quill-parent \\
   --network=host \\
   --device=/dev/vsock \\
   --security-opt seccomp=unconfined \\
   -e QUILL_BOOTSTRAP_SERVER=true \\
+  -e QUILL_BOOTSTRAP_MODE=${bootstrap_mode} \\
+  -e QUILL_BOOTSTRAP_V2_CMK_ARN=${bootstrap_key} \\
   -e QUILL_AWS_REGION=${AWS_REGION} \\
   -e QUILL_SECRET_PREFIX=quill/ \\
   -e QUILL_GCP_SA_KMS_ALIAS=alias/${PROJECT_TAG}-cmk \\
   -e QUILL_TR_CONTROL_PLANE_BASE_URL=${TR_CONTROL_PLANE_BASE_URL} \\
-  ${parent_repo_url}:${parent_tag}
+  ${parent_image}
 
 # 4b. Parent-pump container (Go) — listens on TCP :8444 and forwards
 # to the enclave's vsock listener (CID 16, port 8001). Replaces the
 # Python tcp_relay.py on the data path: io.Copy between two net.Conns
 # instead of asyncio buffer-copy + GIL overhead. Tiny scratch image.
-docker pull ${parent_pump_repo_url}:${parent_pump_tag}
+docker pull ${parent_pump_image}
 # --security-opt seccomp=unconfined is required for the Go vsock
 # library: Docker's default seccomp profile rejects socket(AF_VSOCK)
 # with EPERM in scratch-based images. (Python/glibc images get the
@@ -1165,7 +1202,7 @@ docker run -d --restart=always --name=quill-parent-pump \\
   -e QUILL_PUMP_LISTEN_ADDR=:8444 \\
   -e QUILL_PUMP_ENCLAVE_CID=16 \\
   -e QUILL_PUMP_ENCLAVE_PORT=8001 \\
-  ${parent_pump_repo_url}:${parent_pump_tag}
+  ${parent_pump_image}
 
 # 5. Download the signed CI artifact. Never build an EIF on a serving host.
 # The deployment authenticated the manifest; these exact bytes and size are

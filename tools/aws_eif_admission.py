@@ -17,10 +17,11 @@ from pathlib import Path
 from typing import Any
 
 from tools import aws_eif_manifest as manifests
+from tools import aws_kms_admission
 
 ROOT = Path(__file__).resolve().parents[1]
 TRUST = ROOT / "trust-page" / "trust"
-PUBLIC_RECORD = "https://trustedrouter.com/trust/aws-release.json"
+PUBLIC_RECORD = "https://trust.trustedrouter.com/trust/aws-release.json"
 PUBLIC_IDENTITY = "https://github.com/Lore-Hex/quill-cloud-proxy/.github/workflows/publish-trust-aws.yml@refs/heads/main"
 
 
@@ -162,6 +163,7 @@ def widen_runtime() -> None:
     # sequentially, preserving the old sets and restoring on a failed region.
     subprocess.run(["python3", str(ROOT / "tools" / "cloud-rollout.py"),
                     "assert", "--cloud", "aws"], check=True, timeout=90)
+    aws_kms_admission.check_keys(current["accepted_pcr0s"])
     subprocess.run([
         "python3", str(ROOT / "tools" / "capture-plane-measurements.py"),
         "--plane", "aws", "--repin-aws-monitor", "--keep-accepted",
@@ -178,9 +180,10 @@ def check_ready(manifest: Path, signature: Path, source: str) -> None:
     record = TRUST / "aws-release.json"
     if verify_record(record) != artifact:
         raise ValueError("requested EIF is not the staged CI-authenticated candidate")
-    require_published(record)
+    current = require_published(record)
     subprocess.run(["python3", str(ROOT / "tools" / "cloud-rollout.py"),
                     "assert", "--cloud", "aws"], check=True, timeout=90)
+    aws_kms_admission.check_keys(current["accepted_pcr0s"])
     subprocess.run([
         "python3", str(ROOT / "tools" / "capture-plane-measurements.py"),
         "--plane", "aws", "--check-published",

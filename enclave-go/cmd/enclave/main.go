@@ -242,6 +242,7 @@ func main() {
 		fmt.Fprintf(os.Stderr, "bootstrap fetch failed: %v\n", err)
 		os.Exit(1)
 	}
+	recordAWSBootstrapEvidence(boot.AWSBootstrap)
 
 	// Only the AWS build may wire a GCP service-account credential. Azure has
 	// cloud-local sealed provider secrets and a cloud-local encrypted ACME
