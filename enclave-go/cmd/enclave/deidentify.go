@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"io"
+	"strings"
 
 	"github.com/Lore-Hex/quill-cloud-proxy/enclave-go/internal/deidentify"
 	"github.com/Lore-Hex/quill-cloud-proxy/enclave-go/internal/llm"
@@ -11,6 +12,23 @@ import (
 )
 
 var rampartRunner deidentify.Runner = deidentify.NewWorker("/rampart/node", "/rampart/worker.mjs")
+
+func deidentifyDirectModels(req *types.OpenAIChatRequest) bool {
+	direct := func(model string) bool {
+		model = types.CanonicalRouterModelID(strings.TrimSpace(model))
+		return !isOrchestrationModel(model) && !isGenericAdvisorPrimitive(model)
+	}
+	if !direct(req.Model) {
+		return false
+	}
+	// Fallback normalization can promote a models entry to the primary model.
+	for _, model := range req.Models {
+		if !direct(model) {
+			return false
+		}
+	}
+	return true
+}
 
 func writeDeidentifyError(out io.Writer, route string, err error) {
 	status, code, message := 503, "deidentify_unavailable", "De-identification could not complete; request was not sent to a provider"

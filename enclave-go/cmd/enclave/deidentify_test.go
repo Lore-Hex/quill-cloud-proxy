@@ -211,6 +211,36 @@ func TestDeidentifyRealModelEndToEnd(t *testing.T) {
 	testPrivacySurfaces(t, true)
 }
 
+func TestDeidentifyRejectsOrchestrationInEveryRoutingPosition(t *testing.T) {
+	previous := rampartRunner
+	defer func() { rampartRunner = previous }()
+	for _, model := range []string{"trustedrouter/subagent", "trustedrouter/advisor", polyphemusModel, " trustedrouter/subagent ", "nyte/subagent"} {
+		for _, position := range []string{"primary", "promoted", "fallback"} {
+			t.Run(model+"/"+position, func(t *testing.T) {
+				runner := &privacyTestRunner{}
+				rampartRunner = runner
+				body := map[string]any{"deidentify": true, "messages": []any{map[string]any{"role": "user", "content": "alice@example.com"}}}
+				switch position {
+				case "primary":
+					body["model"] = model
+				case "promoted":
+					body["models"] = []string{model}
+					body["allow_fallbacks"] = false
+				case "fallback":
+					body["model"] = "anthropic/claude-opus-5.5"
+					body["models"] = []string{model}
+				}
+				raw, _ := json.Marshal(body)
+				provider := &privacyEchoProvider{}
+				status, _ := privacyRoundTrip(t, "/v1/chat/completions", string(raw), provider)
+				if status != 400 || provider.calls != 0 || runner.calls != 0 {
+					t.Fatalf("not rejected before scanning/invocation: status=%d provider=%d scanner=%d", status, provider.calls, runner.calls)
+				}
+			})
+		}
+	}
+}
+
 func TestDeidentifyFlagStrictAndDisabledNoAllocation(t *testing.T) {
 	for _, value := range []string{`null`, `1`, `"true"`, `{}`, `[]`} {
 		if _, err := parseChatRequest([]byte(`{"model":"test","messages":[],"deidentify":` + value + `}`)); err == nil {

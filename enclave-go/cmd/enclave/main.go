@@ -1231,7 +1231,7 @@ func serveOneRequest(
 	}
 	req.NormalizeRouterModelAliases()
 	if req.Deidentify {
-		if isOrchestrationModel(req.Model) || isGenericAdvisorPrimitive(req.Model) || req.Model == polyphemusModel {
+		if !deidentifyDirectModels(&req) {
 			writeOpenAIError(conn, 400, "deidentify requires a direct model and local function tools", "invalid_request_error", "deidentify_unsupported", "deidentify")
 			return
 		}
