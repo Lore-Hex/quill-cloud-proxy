@@ -140,18 +140,107 @@ provider authorized for the model, which is sent the `reasoning` object
 unchanged. If there is none, the caller gets the error and the hold is
 refunded.
 
-### Hosts outside the effort list: known limit
+### Hosts outside the effort list
 
 Some chat endpoints are known to read a top-level `reasoning_effort`, and are
 always sent the effort there: Meta, OpenAI, Google AI Studio, DeepSeek, Z.ai,
 Kimi, Mistral, Alibaba, Tencent, Tinfoil, Grok, Baseten, Crusoe, Cerebras,
-Fireworks and Privatemode. Every other OpenAI-compatible host is sent the
-reasoning fields as the request holds them. For those hosts the effort of a
-switch plus effort request goes inside the `reasoning` object,
+Fireworks and Privatemode. Nothing in this section changes what they are
+sent.
+
+Every other OpenAI-compatible host is sent the reasoning fields as the
+request holds them. For those hosts the effort of a switch plus effort
+request goes inside the `reasoning` object,
 `"reasoning": {"effort": "high", "enabled": true}`, while an effort sent alone
 goes as top-level `"reasoning_effort": "high"`. So adding a switch to a
 working `reasoning_effort` request changes where such a host finds the
-effort. Which of the two each of those hosts reads has not been observed.
+effort, and an effort written only inside the object may be ignored there:
+of the hosts observed, Together and Nebius, and probably Parasail, ignore it.
+
+Six of those hosts were observed, and only these six are sent the effort
+top-level as well: DeepInfra, Novita, Parasail, Together, Nebius and io.net.
+The list is short on purpose. The top-level copy reaches requests that are
+served today, so it goes only to hosts that were seen to take it. On these
+six, when the request names an effort of `low`, `medium` or `high` and does
+not turn reasoning off, the effort is sent as top-level `reasoning_effort`
+wherever the request wrote it, and the `reasoning` object is sent exactly as
+the request holds it:
+
+* `reasoning_effort: "high"` alone is sent as written. This is unchanged.
+* `reasoning: {"effort": "high"}`, with or without `"enabled": true`, is sent
+  as that object and `"reasoning_effort": "high"`. Before, the object was
+  sent alone.
+* A switch beside an effort, for example `thinking: {"type": "enabled"}` with
+  `reasoning_effort: "high"`, is sent as
+  `"reasoning": {"effort": "high", "enabled": true}` and
+  `"reasoning_effort": "high"`. So with `low`, `medium` or `high`, adding a
+  switch to a working `reasoning_effort` request does not change where these
+  six hosts find the effort. With `xhigh`, `max`, `minimal` or another word,
+  a switch beside the effort still moves it into the object only.
+* Only `low`, `medium` and `high` are copied. The probe sent `low` and
+  `high`. `medium` was not probed: it is copied because it sits between those
+  two. Any other word inside the object (`none`, `off`, `minimal`, `xhigh`,
+  `max`, `auto`, or one the gateway does not know) is sent inside the object
+  alone, as before, because a host that validates the top-level field could
+  refuse it.
+* When reasoning is explicitly off, `reasoning: {"enabled": false}`, nothing
+  is added. A request that itself carries both that Off and a top-level
+  `reasoning_effort` is still sent with both, as before.
+* A request that names no effort is unchanged.
+
+The same rule covers the other spellings that put an effort inside the
+object: `output_config.effort` on chat completions, and `reasoning.effort` on
+the Responses API. The top-level copy is the effort in lower case without
+surrounding spaces, and the object keeps the caller's spelling. A blank
+top-level `reasoning_effort` counts as absent. A native `POST /v1/messages`
+request is passed through as before: its `thinking` object is forwarded as
+written and no `reasoning_effort` is derived from it.
+
+The evidence is a live probe through the production gateway on 2026-11-16,
+with the model `openai/gpt-oss-120b`, the same puzzle each time, and one
+request per cell. The numbers are completion tokens, which for this model are
+almost all reasoning:
+
+| host | top-level low | top-level high | object low | object high | both low | both high |
+|---|---|---|---|---|---|---|
+| deepinfra | 474 | 1029 | 436 | 1008 | 516 | 1431 |
+| novita | 624 | 729 | 384 | 619 | 525 | 958 |
+| parasail | 346 | 908 | 459 | 582 | 312 | 729 |
+| together | 309 | 826 | 713 | 663 | 371 | 1057 |
+| nebius | 394 | 828 | 526 | 580 | 385 | 922 |
+| io-net | 350 | 719 | 374 | 842 | 372 | 820 |
+
+"Object" is `"reasoning": {"effort": E, "enabled": true}` with no top-level
+field. "Both" is the top-level field and the object together. All six
+accepted a top-level `reasoning_effort`. Five showed a clear difference
+between low and high there. Novita's was small, 624 against 729 with one
+request per cell, while its cells with both fields differ clearly, 525
+against 958. Together and Nebius, and probably Parasail, ignore an effort
+that is only inside the object. All six accepted both fields together, and
+with both fields every one shows a clear difference between low and high.
+
+Each of the six was also sent one model that does not reason, with the
+top-level field alone: `reasoning_effort: "high"` and no `reasoning` object.
+All six answered 200: DeepInfra, Novita, Parasail and io.net on a Llama 3.3
+70B route, Together and Nebius on another chat model that does not reason.
+So on these six hosts the top-level field alone does not turn a working
+request into a refusal for that model. The object and the top-level field
+together were not sent to a model that does not reason, so that combination
+was not observed.
+
+The remaining limits. The effort probe used one model, with one request per
+cell, at `low` and `high`: `medium` was not probed. The check on a model
+that does not reason used one model per host and the top-level field alone,
+at `high`. No other host outside the effort list has been observed: such a
+host may read the top-level field, the object, both or neither, and until it
+is observed it is sent the fields as the request holds them. Adding a host
+to the six needs an observation of that host: that it accepts a top-level
+effort and reads it, that it accepts both fields together, and that it
+accepts the top-level field on a model that does not reason. A host that
+rejects a request is a provider error like any other: the request goes to
+the next provider authorized for the model. When no other provider can
+serve the request, because the caller pinned a listed host or only that host
+has the model, a host's refusal of the added field would reach the caller.
 
 ### Open decisions
 
@@ -174,9 +263,6 @@ These are not decided by this release:
   can stop their reasoning or take a token budget, so a refusal is the honest
   answer. The cost is that requests another host serves today, without the
   option honored, would start to fail.
-* (d) Where the effort of a switch plus effort request should go on hosts
-  outside the effort list: inside the `reasoning` object as today, top-level
-  as an effort alone goes, or both. It needs a live probe of those hosts.
 
 ## Reasoning visibility
 
