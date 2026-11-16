@@ -6,6 +6,8 @@
 #   gate_hold <pong|pre-dns|canary|discovery> <region> <command> [args...]
 #   gate_status_presence <region> [hold|once]
 #                                    prints present, missing or unreadable
+#   trigger_synthetic_workers        runs both synthetic monitors now; bounded
+#                                    and never fatal
 #
 # The gate command runs exactly as it would without this library, in its own
 # process group so that a deadline or a stop can end it with its children.
@@ -22,6 +24,14 @@
 # inconclusive until its deadline while every monitor reported the region up.
 # Each re-run is still a whole new canary, the lane snapshots are still per
 # attempt, and no other gate kind is given anything but its attempt's window.
+#
+# A re-run is costly: about five minutes of the job's hold budget, which all
+# the regions share. So the canary gates do not wait for the monitors' own
+# schedule. They set GATE_HOLD_BEFORE_ATTEMPT=trigger_synthetic_workers, and
+# every canary attempt begins, once its window is open, by running both
+# monitors, so that fresh rows from each usually land inside the first attempt.
+# No other gate sets it: the PONG gates run the monitors once, before they
+# start, as they always did.
 #
 # Time limits, all hard (an attempt in flight is killed at them):
 #   TR_CP_HOLD_ATTEMPT_SECONDS  cap on any one attempt (0: none; default 0)
@@ -55,6 +65,17 @@
 # GATE_HOLD_STOP names a function that returns 0 when the gate must stop now
 # (a peer region failed, the forward deadline passed). The attempt is then
 # killed, the hold is recorded, and GATE_HOLD_ON_STOP runs (it may exit).
+#
+# GATE_HOLD_BEFORE_ATTEMPT names a function that the loop calls at the start of
+# every attempt, after the attempt's window has opened and before the gate
+# command runs. It is given the attempt's deadline (epoch seconds, or "" when
+# there is none) and must return by then. Its status is ignored, so it can
+# never fail a gate, and the gate command, its process group and its deadlines
+# are exactly as without it. Unset, the loop calls nothing.
+#
+# trigger_synthetic_workers cuts each of its two calls off after
+# GATE_HOLD_TRIGGER_SECONDS (default 20), and at the deadline it is given if
+# that is sooner, so a hung gcloud cannot eat an attempt.
 
 GATE_HOLD_TOOLS="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 GATE_HOLD_TIMEOUT_STATUS=124
@@ -204,6 +225,30 @@ gate_hold_write() {
   "$@" > "${out}" 2>/dev/null
 }
 
+# gate_hold_trigger <job> <location> <cut|"">: run one Cloud Scheduler job now.
+# Never fatal. Cut off after GATE_HOLD_TRIGGER_SECONDS, or at <cut> (epoch
+# seconds) if that is sooner; gcloud has nothing to clean up, so a short grace.
+gate_hold_trigger() {
+  local job="$1" location="$2" cut="$3" seconds status=0
+  seconds="$(gate_hold_number GATE_HOLD_TRIGGER_SECONDS 20)" || seconds=20
+  GATE_HOLD_KILL_GRACE=5 gate_hold_run "$(gate_hold_min "$(( $(date +%s) + seconds ))" "${cut}")" \
+    gcloud scheduler jobs run "${job}" \
+      --location="${location}" --project=quill-cloud-proxy || status=$?
+  if [ "${status}" -eq "${GATE_HOLD_TIMEOUT_STATUS}" ]; then
+    echo "${job}: the trigger was cut off; continuing without it" >&2
+  fi
+  return 0
+}
+
+# Run both active monitors now, so that a gate does not wait for a stale row
+# from either. The only copy of these calls: the PONG gates run it once before
+# they start, and the canary gates before every attempt (as
+# GATE_HOLD_BEFORE_ATTEMPT, which passes the attempt's deadline).
+trigger_synthetic_workers() {
+  gate_hold_trigger trusted-router-synthetic-us-central1-every-three-minutes us-central1 "${1:-}"
+  gate_hold_trigger trusted-router-synthetic-europe-west4-every-three-minutes europe-west4 "${1:-}"
+}
+
 gate_hold() {
   local kind="$1" region="$2" max pause cap budget monitors state own_state=0 work
   local since first_since="" judged_since attempt_deadline cut_deadline hold_deadline=""
@@ -243,6 +288,10 @@ gate_hold() {
       fi
     fi
     attempt_deadline="$(gate_hold_min "${attempt_deadline}" "${cut_deadline}")"
+    # The optional hook, inside this attempt's window. It cannot fail the gate.
+    if [ -n "${GATE_HOLD_BEFORE_ATTEMPT:-}" ]; then
+      "${GATE_HOLD_BEFORE_ATTEMPT}" "${attempt_deadline}" || true
+    fi
     gate_hold_lanes "${work}/before.json" "${attempt_deadline}"
     status=0
     # The PONG gate and the classifier judge the same window.

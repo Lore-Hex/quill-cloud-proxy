@@ -27,7 +27,10 @@ Each gate runs unchanged. The rules for its verdict:
     on every re-run, the monitors were never both inside it, and a region
     that every monitor had reported up failed closed at the deadline. Only
     the window is wider. The latest row per monitor and probe still decides,
-    and a row created before the first attempt never counts.
+    and a row created before the first attempt never counts. So that the
+    rows usually land inside the first attempt, each canary attempt begins
+    by running both monitors (tools/gate-hold-lib.sh): a re-run costs about
+    five minutes of the hold budget that all the regions share.
   * A failure counts against the gateway, at once and as before, when the gate
     failed on something the control plane does not touch, or when the control
     plane was provably still and healthy over the gate's window: no
