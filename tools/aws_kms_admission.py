@@ -6,6 +6,7 @@ Terraform change. Missing/disabled keys or a mismatched set stop deployment.
 """
 from __future__ import annotations
 
+import argparse
 import json
 import re
 import subprocess
@@ -74,8 +75,7 @@ def check_policy(policy: str, accepted: list[str]) -> None:
         raise ValueError("KMS recipient policy differs from the published admission set")
 
 
-def check_keys(accepted: list[str], *, config_path: Path = CONFIG) -> None:
-    accepted = measurements(accepted)
+def configured_keys(config_path: Path = CONFIG) -> dict[str, str]:
     with config_path.open("rb") as stream:
         raw = stream.read(4097)
     if len(raw) > 4096:
@@ -88,7 +88,7 @@ def check_keys(accepted: list[str], *, config_path: Path = CONFIG) -> None:
     if not config["required"]:
         if config["key_arns"] != {}:
             raise ValueError("cannot disable a configured attested key gate")
-        return
+        return {}
     keys = config["key_arns"]
     if not isinstance(keys, dict) or set(keys) != REGIONS:
         raise ValueError("both regional attested keys are required")
@@ -97,6 +97,12 @@ def check_keys(accepted: list[str], *, config_path: Path = CONFIG) -> None:
             rf"arn:aws:kms:{region}:330422590279:key/[a-f0-9]{{8}}-(?:[a-f0-9]{{4}}-){{3}}[a-f0-9]{{12}}", arn,
         ) is None:
             raise ValueError("invalid pinned regional attested key")
+    return keys
+
+
+def check_keys(accepted: list[str], *, config_path: Path = CONFIG) -> None:
+    accepted = measurements(accepted)
+    keys = configured_keys(config_path)
     for region, arn in sorted(keys.items()):
         metadata = aws_json(region, "describe-key", "--key-id", arn).get("KeyMetadata", {})
         if (metadata.get("Arn") != arn or metadata.get("Enabled") is not True
@@ -105,3 +111,37 @@ def check_keys(accepted: list[str], *, config_path: Path = CONFIG) -> None:
             raise ValueError(f"attested key is not ready in {region}")
         policy = aws_json(region, "get-key-policy", "--key-id", arn, "--policy-name", "default")
         check_policy(policy.get("Policy"), accepted)
+
+
+def parent_key(region: str, mode: str, *, config_path: Path = CONFIG) -> str:
+    if region not in REGIONS or mode not in {"legacy", "dual", "v2-only"}:
+        raise ValueError("invalid parent bootstrap mode or region")
+    keys = configured_keys(config_path)
+    if mode == "legacy":
+        return ""
+    if not keys:
+        raise ValueError("attested parent requires the approved pinned regional keys")
+    return keys[region]
+
+
+def require_legacy_provisioning(*, config_path: Path = CONFIG) -> None:
+    if configured_keys(config_path):
+        raise ValueError("legacy IAM provisioner is retired; use the approved Terraform migration")
+
+
+def main() -> None:
+    parser = argparse.ArgumentParser(description=__doc__)
+    commands = parser.add_subparsers(dest="command", required=True)
+    commands.add_parser("require-legacy-provisioning")
+    parent = commands.add_parser("parent-key")
+    parent.add_argument("--region", required=True)
+    parent.add_argument("--mode", required=True)
+    args = parser.parse_args()
+    if args.command == "require-legacy-provisioning":
+        require_legacy_provisioning()
+    else:
+        print(parent_key(args.region, args.mode))
+
+
+if __name__ == "__main__":
+    main()

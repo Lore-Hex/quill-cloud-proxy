@@ -92,6 +92,23 @@ class KMSAdmissionTests(unittest.TestCase):
             gate.check_keys(self.pins, config_path=self.path)
         aws.assert_not_called()
 
+    def test_parent_modes_use_only_pinned_regional_key(self):
+        for mode in ("dual", "v2-only"):
+            self.assertEqual(gate.parent_key("eu-west-3", mode, config_path=self.path),
+                             self.config["key_arns"]["eu-west-3"])
+        self.assertEqual(gate.parent_key("eu-west-1", "legacy", config_path=self.path), "")
+        with self.assertRaises(ValueError):
+            gate.parent_key("eu-west-1", "dual")
+        with self.assertRaises(ValueError):
+            gate.parent_key("eu-west-1", "legacy; injected", config_path=self.path)
+        with self.assertRaises(ValueError):
+            gate.parent_key("us-west-2", "dual", config_path=self.path)
+
+    def test_legacy_iam_cannot_be_reintroduced_after_attested_activation(self):
+        gate.require_legacy_provisioning()
+        with self.assertRaisesRegex(ValueError, "retired"):
+            gate.require_legacy_provisioning(config_path=self.path)
+
 
 if __name__ == "__main__":
     unittest.main()

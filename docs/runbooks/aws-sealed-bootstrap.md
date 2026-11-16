@@ -70,12 +70,17 @@ recipient denial, ReEncrypt denial, and denied host signing/key mutation before
 relying on v2. The captured public CMS fixture and unit tests are not a
 substitute for those live controls.
 
-Roll `QUILL_BOOTSTRAP_MODE=dual` only with the new parent: it binds 9101 before
-9100. Require every enclave to report attested bootstrap. A transitional image
+Set `AWS_BOOTSTRAP_MODE=dual` for the candidate template only after publishing
+the new parent image. The deployment tool passes `QUILL_BOOTSTRAP_MODE=dual`
+and the pinned regional CMK to that parent, which binds 9101 before 9100.
+It refuses dual/v2-only mode before the regional key configuration is enabled.
+Require every enclave to report attested bootstrap. A transitional image
 can still fall back on any v2 failure, so it provides no host-resistant
 configuration guarantee. Next release the measured strict image, remove every
 fallback-capable image from both admission sets, then switch the parent to
 `v2-only` and separately revoke V1 access. Keep strict rollback targets.
+The legacy IAM provisioner refuses to run after attested-key activation, so a
+later `--phase iam` cannot accidentally regrant the old broad permissions.
 
 Secret deletion and rotation are later, separately approved steps. Coordinate
 the internal gateway token with the control plane. Never claim credential-plane

@@ -52,6 +52,9 @@ AWS_EIF_MANIFEST="${AWS_EIF_MANIFEST:-}"
 AWS_EIF_SIGNATURE="${AWS_EIF_SIGNATURE:-}"
 AWS_EIF_SOURCE_COMMIT="${AWS_EIF_SOURCE_COMMIT:-}"
 CANDIDATE_TEMPLATE_ONLY="${CANDIDATE_TEMPLATE_ONLY:-0}"
+# Parent mode is a staged operator choice, not an enclave trust override.
+# The strict enclave image never falls back regardless of this setting.
+AWS_BOOTSTRAP_MODE="${AWS_BOOTSTRAP_MODE:-legacy}"
 # The release image has run ACME since 2026-08-23. Keep this overrideable for
 # the standalone self-signed deployment, whose separation model deliberately
 # carries no cross-cloud GCP credential and therefore must skip the ACME-only
@@ -205,13 +208,14 @@ log "Mode: $([ $DRY_RUN -eq 1 ] && echo DRY-RUN || echo APPLY) phase: $PHASE tls
 # The cross-cloud-key phase is the one deliberate escape hatch: it creates or
 # repairs the value this guard checks. Every other ACME deploy path must prove
 # the current region is bootable before it changes infrastructure.
-if [ "$QUILL_TLS_MODE" = "acme" ] && [ "$PHASE" != "cross-cloud-key" ]; then
+if [ "$QUILL_TLS_MODE" = "acme" ] && [ "$PHASE" != "cross-cloud-key" ] && [ "$AWS_BOOTSTRAP_MODE" != "v2-only" ]; then
   preflight_acme_sa_key
 fi
 
 # ─── Phase: IAM ────────────────────────────────────────────────────────────
 phase_iam() {
   log "=== phase: iam ==="
+  python3 "$SCRIPT_DIR/aws_kms_admission.py" require-legacy-provisioning
   local role_name="${PROJECT_TAG}-role"
   local profile_name="${PROJECT_TAG}-instance-profile"
   local trust_doc='{"Version":"2012-10-17","Statement":[{"Effect":"Allow","Principal":{"Service":"ec2.amazonaws.com"},"Action":"sts:AssumeRole"}]}'
@@ -648,6 +652,9 @@ phase_compute() {
   # half-wired ASG.
   local parent_repo_url="${AWS_ACCOUNT}.dkr.ecr.${AWS_REGION}.amazonaws.com/${PARENT_ECR_REPO_NAME}"
   local parent_tag
+  local bootstrap_mode="${AWS_BOOTSTRAP_MODE:-legacy}" bootstrap_key
+  bootstrap_key=$(python3 "$SCRIPT_DIR/aws_kms_admission.py" parent-key \
+    --region "$AWS_REGION" --mode "$bootstrap_mode")
   if [ "$AWS_ACCOUNT" != "330422590279" ] || [ -z "$AWS_EIF_MANIFEST" ] || [ -z "$AWS_EIF_SIGNATURE" ] || [ -z "$AWS_EIF_SOURCE_COMMIT" ]; then
     log "  ERROR: compute requires the approved AWS account and signed CI manifest, signature and source commit"
     return 1
@@ -1122,7 +1129,7 @@ aws ecr get-login-password --region ${AWS_REGION} \\
   | docker login --username AWS --password-stdin ${AWS_ACCOUNT}.dkr.ecr.${AWS_REGION}.amazonaws.com
 
 # 4a. Parent container (Python) — FastAPI on :8443 (/health, /admin/usage,
-# /trust) + bootstrap RPC server on vsock 9100. NOT the data-path pump.
+# /trust) + the explicitly staged bootstrap mode. NOT the data-path pump.
 #
 # Env vars consumed by quill_parent.config.Settings (env_prefix=QUILL_):
 #   QUILL_AWS_REGION             — Secrets Manager + KMS region (us-west-2)
@@ -1139,6 +1146,8 @@ docker run -d --restart=always --name=quill-parent \\
   --device=/dev/vsock \\
   --security-opt seccomp=unconfined \\
   -e QUILL_BOOTSTRAP_SERVER=true \\
+  -e QUILL_BOOTSTRAP_MODE=${bootstrap_mode} \\
+  -e QUILL_BOOTSTRAP_V2_CMK_ARN=${bootstrap_key} \\
   -e QUILL_AWS_REGION=${AWS_REGION} \\
   -e QUILL_SECRET_PREFIX=quill/ \\
   -e QUILL_GCP_SA_KMS_ALIAS=alias/${PROJECT_TAG}-cmk \\

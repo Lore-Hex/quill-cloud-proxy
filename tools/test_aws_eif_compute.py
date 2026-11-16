@@ -17,7 +17,7 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 class ComputeTests(unittest.TestCase):
-    def run_candidate(self, *, bad_signature=False, missing=False, follows_latest=False, wrong_checksum=False, unadmitted=False):
+    def run_candidate(self, *, bad_signature=False, missing=False, follows_latest=False, wrong_checksum=False, unadmitted=False, bootstrap_mode="legacy"):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             calls = root / "calls.jsonl"
@@ -75,6 +75,7 @@ else: sys.exit('Unexpected AWS operation: '+repr(a))
                    "SCRIPT_DIR": str(ROOT / "tools"), "AWS_EIF_MANIFEST": "" if missing else str(root / "manifest.json"),
                    "AWS_EIF_SIGNATURE": str(root / "signature.json"), "AWS_EIF_SOURCE_COMMIT": "a" * 40,
                    "CANDIDATE_TEMPLATE_ONLY": "1", "DRY_RUN": "0", "INSTANCE_TYPE": "m5.xlarge",
+                   "AWS_BOOTSTRAP_MODE": bootstrap_mode,
                    "TR_CONTROL_PLANE_BASE_URL": "https://trustedrouter.com", "CALLS": str(calls), "DIGEST": digest,
                    "LATEST": str(int(follows_latest)), "BAD_CHECKSUM": str(int(wrong_checksum)),
                    "UNADMITTED": str(int(unadmitted))}
@@ -91,6 +92,7 @@ else: sys.exit('Unexpected AWS operation: '+repr(a))
         raw = base64.b64decode(data["UserData"])
         user_data = (gzip.decompress(raw) if raw[:2] == b"\x1f\x8b" else raw).decode()
         self.assertIn("aws-nitro-enclaves-cli-1.5.0-0.amzn2023", user_data)
+        self.assertIn("QUILL_BOOTSTRAP_MODE=legacy", user_data)
         self.assertIn("sha256sum --check --strict", user_data)
         self.assertIn("stat -c %s /opt/quill/enclave.eif.tmp", user_data)
         self.assertIn("quill-enclave-eif-eu-west-1-330422590279", user_data)
@@ -120,6 +122,12 @@ else: sys.exit('Unexpected AWS operation: '+repr(a))
         self.assertNotEqual(result.returncode, 0)
         self.assertIn("candidate isolation refused", result.stderr)
         self.assertFalse(any(call[1].startswith(("create-", "modify-", "update-")) for call in calls))
+
+    def test_attested_parent_requires_configured_keys_before_cloud(self):
+        for mode in ("dual", "v2-only", "invalid"):
+            result, calls = self.run_candidate(bootstrap_mode=mode)
+            self.assertNotEqual(result.returncode, 0)
+            self.assertEqual(calls, [])
 
 
 if __name__ == "__main__":
