@@ -152,6 +152,7 @@ _PROVIDER_KEYS: Final[tuple[tuple[str, str], ...]] = (
     ("digitalocean_api_key", "trustedrouter-digitalocean-api-key"),
     ("engy_api_key", "trustedrouter-engy-api-key"),
     ("exa_api_key", "trustedrouter-exa-api-key"),
+    ("context_dev_api_key", "trustedrouter-context-dev-api-key"),
     ("inceptron_api_key", "trustedrouter-inceptron-api-key"),
     ("morph_api_key", "trustedrouter-morph-api-key"),
     ("neurometric_api_key", "trustedrouter-neurometric-api-key"),

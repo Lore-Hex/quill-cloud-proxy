@@ -227,6 +227,8 @@ func parseExaWebSearchParameters(parameters map[string]any, context string) (*ty
 			switch strings.ToLower(strings.TrimSpace(engine)) {
 			case "", "auto", "exa":
 				config.Engine = "exa"
+			case "context", "context.dev":
+				config.Engine = "context"
 			default:
 				return nil, &AdapterError{Status: 501, Message: "not_supported_in_alpha", Context: context + ".engine"}
 			}
@@ -297,6 +299,12 @@ func parseExaWebSearchParameters(parameters map[string]any, context string) (*ty
 		default:
 			return nil, unknownRequestParameter(context + "." + key)
 		}
+	}
+	if config.Engine == "context" && config.Mode != "auto" {
+		return nil, &AdapterError{Status: 400, Message: "context.dev supports mode auto only", Context: context + ".mode"}
+	}
+	if config.Engine == "context" && config.MaxCharacters > 20_000 {
+		return nil, &AdapterError{Status: 400, Message: "context.dev max_characters cannot exceed 20000", Context: context + ".max_characters"}
 	}
 	return config, nil
 }
