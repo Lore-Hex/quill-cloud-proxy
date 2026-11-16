@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import unittest
+from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 from tools import aws_bootstrap_probe as probe
@@ -13,6 +14,36 @@ LEGACY_EVIDENCE = {"policy": "transition", "mode": "legacy", "bundle_version": 0
 
 
 class BootstrapProbeTests(unittest.TestCase):
+    def test_shared_go_health_wire_contract(self):
+        path = Path(__file__).resolve().parents[1] / "enclave-go/internal/types/testdata/aws_bootstrap_health.json"
+        bodies = json.loads(path.read_text())
+        self.assertEqual(len(bodies), 3)
+        for body in bodies:
+            evidence = body["aws_bootstrap"]
+            version = evidence.get("bundle_version", 0)
+            expected = {**evidence, "bundle_version": version}
+            self.assertEqual(
+                probe.validate_health(json.dumps(body).encode(), evidence["policy"], version, mode=evidence["mode"]),
+                expected,
+            )
+
+    def test_omitted_version_is_only_valid_for_explicit_transitional_legacy(self):
+        valid = {"status": "ok", "aws_bootstrap": {"policy": "transition", "mode": "legacy"}}
+        self.assertEqual(probe.validate_health(json.dumps(valid).encode(), "transition", 0, mode="legacy"), LEGACY_EVIDENCE)
+        for evidence in (
+            {"policy": "transition", "mode": "attested"},
+            {"policy": "strict", "mode": "attested"},
+            {"policy": "strict", "mode": "legacy"},
+            {"policy": "transition", "mode": "legacy", "extra": 0},
+            {"policy": "transition", "mode": "legacy", "bundle_version": None},
+            {"policy": "transition", "mode": "legacy", "bundle_version": False},
+            {"policy": "transition", "mode": "legacy", "bundle_version": 1},
+        ):
+            body = json.dumps({"status": "ok", "aws_bootstrap": evidence}).encode()
+            for policy, mode, version in (("transition", "legacy", 0), ("transition", "attested", 1), ("strict", "attested", 1)):
+                with self.subTest(evidence=evidence, policy=policy, mode=mode), self.assertRaises(ValueError):
+                    probe.validate_health(body, policy, version, mode=mode)
+
     def test_health_rejects_missing_forged_legacy_and_wrong_versions(self):
         valid = {"status": "ok", "aws_bootstrap": EVIDENCE}
         self.assertEqual(probe.validate_health(json.dumps(valid).encode(), "transition", 1), EVIDENCE)
