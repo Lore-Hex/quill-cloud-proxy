@@ -1,62 +1,62 @@
 {
   "Policies": {
-    "2e4247564198b08060ff49d1ed7822de22a31edd1cbd7034e610c7e9cb6d9f95": {
-      "SANs": [
-        "root",
-        "secret-service",
-        "secret-service-internal.continuum-a225c8.svc.cluster.local",
-        "*.secret-service-headless.continuum-a225c8.svc.cluster.local"
-      ],
-      "WorkloadSecretID": "apps/v1/StatefulSet/continuum-a225c8/secret-service"
-    },
-    "382f8395b01ff5203de61f71dbc29044a00177263c0740c17e84f941d83ab8c7": {
+    "0d738b8dbf259a85d176381626d8bcf04f1319b5539aa9a9a363efc73d4d3fba": {
       "SANs": [
         "continuum-etcd-client",
         "workload-whisper-qwen3-voxtral"
       ],
-      "WorkloadSecretID": "apps/v1/Deployment/continuum-a225c8/workload-whisper-qwen3-voxtral"
+      "WorkloadSecretID": "apps/v1/Deployment/continuum-13d78c/workload-whisper-qwen3-voxtral"
     },
-    "539dda33477fdbf4ae248556fc489450ba4c9f9c0b3bcc07f8f1b9ef848760c3": {
+    "10a2265576c135aedcd427e3b66772a4ff4f4e65a9546771270d6b8cde45a715": {
       "SANs": [
         "continuum-etcd-client",
         "workload-deepseek-ocr-2"
       ],
-      "WorkloadSecretID": "apps/v1/Deployment/continuum-a225c8/workload-deepseek-ocr-2"
+      "WorkloadSecretID": "apps/v1/Deployment/continuum-13d78c/workload-deepseek-ocr-2"
     },
-    "67cb2afc964dee742d9ee007824a989906d52a55b6d7a39c67f929f5e45fdb0d": {
-      "SANs": [
-        "continuum-etcd-client",
-        "workload-gpt-oss-120b"
-      ],
-      "WorkloadSecretID": "apps/v1/Deployment/continuum-a225c8/workload-gpt-oss-120b"
-    },
-    "8db3cfedc949f9a1e0702f5ca19ac96eb935fd1ff9cff6a0b2a94d1ceff9575d": {
-      "SANs": [
-        "continuum-etcd-client",
-        "workload-glm-5-3"
-      ],
-      "WorkloadSecretID": "apps/v1/Deployment/continuum-a225c8/workload-glm-5-3"
-    },
-    "abb78b0c3985a8eeb63c86f9ec9b544abeddadaa2868737379e18c531d906360": {
+    "2ca27d0c361dfe4e098a9d650f013729113d0fde3496612eaee959cd47e7b7dc": {
       "SANs": [
         "continuum-etcd-client",
         "workload-glm-5-3-flash"
       ],
-      "WorkloadSecretID": "apps/v1/Deployment/continuum-a225c8/workload-glm-5-3-flash"
+      "WorkloadSecretID": "apps/v1/Deployment/continuum-13d78c/workload-glm-5-3-flash"
     },
-    "b6b4a3d3a25a40e76c881decc848da766e46e5accf0ce71cf5c64a651d393529": {
+    "3ce42aa373d6bede62c11d8cd22a74f899af62c79da5d303f0adc4a3b1a37ac3": {
       "SANs": [
         "coordinator"
       ],
-      "WorkloadSecretID": "apps/v1/StatefulSet/continuum-a225c8/coordinator",
+      "WorkloadSecretID": "apps/v1/StatefulSet/continuum-13d78c/coordinator",
       "Role": "coordinator"
     },
-    "f62cb117f1f9e2ba8dfca0b67db2e04c8dde069d6a7ed59a560c1912c6561856": {
+    "69b8c49ca751575b9ef0128479932b53a63e38479e6aeed5b2e8319aa2a28457": {
+      "SANs": [
+        "root",
+        "secret-service",
+        "secret-service-internal.continuum-13d78c.svc.cluster.local",
+        "*.secret-service-headless.continuum-13d78c.svc.cluster.local"
+      ],
+      "WorkloadSecretID": "apps/v1/StatefulSet/continuum-13d78c/secret-service"
+    },
+    "76935b0a1e35bc078815c8439ecf9f8aab336e04c40c56fd4c6cffcd057804e8": {
+      "SANs": [
+        "continuum-etcd-client",
+        "workload-glm-5-3"
+      ],
+      "WorkloadSecretID": "apps/v1/Deployment/continuum-13d78c/workload-glm-5-3"
+    },
+    "d1e6c4f1bf1388244d04d587d45913133ef9dfaaac5f1b2149823abf14226c19": {
+      "SANs": [
+        "continuum-etcd-client",
+        "workload-gpt-oss-120b"
+      ],
+      "WorkloadSecretID": "apps/v1/Deployment/continuum-13d78c/workload-gpt-oss-120b"
+    },
+    "f095242202b4ff2549344ea9674601515e1eecaedd7cc6ae80ac8ac5e903b151": {
       "SANs": [
         "continuum-etcd-client",
         "unstructured-api"
       ],
-      "WorkloadSecretID": "apps/v1/Deployment/continuum-a225c8/unstructured-api"
+      "WorkloadSecretID": "apps/v1/Deployment/continuum-13d78c/unstructured-api"
     }
   },
   "ReferenceValues": {
@@ -64,12 +64,12 @@
       {
         "Platform": "Metal-QEMU-SNP-GPU",
         "ProductName": "Genoa",
-        "TrustedMeasurement": "e9a2ec65b58870be28896100a881427af162c877521ea647b882234dcc8983f31232d4cad2743c86ee4d2a0a8c9971a7",
+        "TrustedMeasurement": "a25667a52d291e4595100ae13a57b334f2aa2dd218fd6328b7bb6db634b2e63b3540e87e2ee9540b2c00ebfdbd3c39b2",
         "APEIP": "0080b004",
         "MinimumTCB": {
           "BootloaderVersion": 12,
           "TEEVersion": 0,
-          "SNPVersion": 28,
+          "SNPVersion": 30,
           "MicrocodeVersion": 88
         },
         "GuestPolicy": {
@@ -90,7 +90,7 @@
           "ECCEnabled": true,
           "AliasCheckComplete": true
         },
-        "MinimumMitigationVector": 15,
+        "MinimumMitigationVector": 1023,
         "AllowedChipIDs": [
           "06B3977C15C8E92E9897EBC3A0BE1E6EF6E2E70F9B57A327854F8E735A608EC1E528821C2FA770E0DD175CFD421E492C45A164457C4C669674B695368C08D36D",
           "11495177E7796396BC5E4B8F239727AE12D8E8B0A7C2D3866D14ADC385D931DB6EC9AC27810CF8B8593E6C278C16DEA882036ABBF6820BC4EBF10E9A8F44FBF9",
@@ -108,7 +108,7 @@
         "Rtmrs": [
           "3a57ae743d61d8431a9996cfeb262ee920de9072295e53352959b96c6dee54b46bf251291efb428de418a571d11a5244",
           "a79021d3cc13952efd0d1c2888269b7e7a21fd72a640f51530212e90a0aa4e2dfdafe177d599f928cdd508e38c6dec6b",
-          "6793f01eb1bccb5bdae186d92e41ac83155a3e6d5f2e480bece4ea6f4b2bd1f9d59f181fd076e610d4ea02d8c09a7221",
+          "3f935d9ee9a6bff4c997fef1b133ee4444bcb9fc1f0781f7e8026d9188c3f5c6d718c473510d8ed2303da3763636f1f3",
           "000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000"
         ],
         "Xfam": "e702060000000000",
@@ -124,6 +124,6 @@
     ]
   },
   "SeedshareOwnerPubKeys": [
-    "3082020a0282020100bbd40e4d660476f913f60d0c2660700de25e08e2c7ab71073287ea9ae255f54d050f22a972c63c6a3981940a964672d3e4b4dff2620cae9865b8b942e3f8138ffb428a291d173a76b13ffb6b492d0d991056cc28e770da8ba59db088c149e86db35a9423dd1be4d4c73b6f553169cf3c441fc3419988e47e575195a86776ca103748b9682a860377beb28668f2ec691f42dc05c84f1886677b3d3eedba2c804d66ecdb1882570512dcf0d146138cca02ca4400996804ec3f5cb829a3728824077103ea6efbb011c819e531f140d8bc1a15f4c18209340b10b7436ab90554abc8791c3430972f317bcd410aaf6fc0d1d08ddce1aa482585e847f186ebcc3250e510a1f54112e3725ce9394c2fda834cdce2ef1f757fb858830a40fb79de60c522c6f52aa0549772c70bd159797dfc4eb878e897ad3a12aff41192e087c2df7c36772c9950a1cc3b99b42861ff16ac836e2d5b7e31e4fef48e284f2c2eccb98269f934a3c0da27b5eeb00fcd0bc8b302f2ed0e8752412031587cbcd720e496e8ab8eb5cfbdaa32c50a599f737af54d757aa7a431209ec112dfd96f53231867948136bcea985808891010e281805070d46196e14476b9da98e66f0cb9639494557d6cb9d89e7a838f0f30d953976b769db8738d0909cca20bf1cb8bfece7fdc3c539b7bff579f2f182bd66c882452f1c0577fcc95521da6a8bc3bace89cff9daf610203010001"
+    "3082020a02820201009eb7f023da4fd8ed56e6e1963e53d6434840259bcc2e9f90ce6414d9dac79be36fef1d542e188a5864b6bf4495534c53e5d29880bd053002957d5f80317e8da44a5aca09ab99c9d7ad7820d922b000488f51531e3ad4e981aaca1629cdec436ae55d8953605af919fa4e069610989d8ee146d8a55c89bb5166f98115721f881c955fb03a51bb5b7829da80a67f0ca75f659750ba91f07255b644b8814e7cacd85fdbf34c24933bd3ce61e4e1088ce388f28479ac983d5c7535e1e787c82686601a92c1bd0a2b2e0be549d55afba32392bb22e28f62b150d9dddd2e31b153e074713a739cd12aa4f66b2bf51c9910af6f2d56d470d906fd88b94f3e8942fcc68ad4a4b0d7809f611983ffba051951d2845f761948f9cd347f843dac3b3b4fd5b1cb0b42f6d663e548ee2bd8095f8e2547c462471dc129a21cf3b8913c12ca7f7edbee8b741d124b688a190e1c38402eb78199fc8648fb04580d87cca1c4d5194760eaf35fe66cc80b4c46627c065eae9a9478a3d2eb02d0c9dbe0fc5a4452427abf31648af76112f8c23d59f38e9319828a813f7447c1eda60847de41233628d1a0055e951329c412b59e96bef11159ad960d886fe6c4e78c58b11055c2539d38f8ac75bbae7af6b36de7df79864155872a7d9b518255283e1ac516dc35d7786d4347768dd69e68a248ccebf80f7dd57da1aea4c67fd64fba2cdae0fde74bf6430203010001"
   ]
 }

@@ -83,8 +83,29 @@ review and reproduction remain incomplete, not implicitly approved here.
   calls exposed a harness assertion that did not join split SSE text chunks.
   The structured SSE parser and its split-chunk regression test now pass.
   Failed harness attempts are not counted as passing qualification.
-- Reproduction workflow: `43789562675`, PR #786. Both jobs remained queued
-  without assigned runners at the latest check. No success is claimed.
+- Reproduction workflow `43789562675` passed both policies and images. All
+  eight policies and hardware reference values match structurally after the
+  documented namespace/SAN adjustments, excluding only the separately approved
+  recovery identity. All five security-component OCI digests match. Downloaded
+  evidence is retained at `/Users/jperla/claude/privatemode-v164-evidence`.
+  The reproduction artifact deliberately records owner approval as false:
+  operator approval is separate evidence, not something the build can grant.
+- Secret scan flagged the public secret-service image digest as a generic API
+  key. The exception is limited to that exact independently reproduced digest
+  in the v164 reproduction workflow; the detector remains enabled everywhere.
+- The candidate branch now updates the source archive, version and embedded
+  pin together for qualification. No candidate image has been promoted.
+- Linux preliminary qualification with the actual launcher and source-built
+  vendor client passed: altered coordinator policy rejected with HTTP 401;
+  encrypted PONG and usage passed for GPT OSS 120B (76/19 tokens), GLM 5.3
+  (21/4), and GLM 5.3 Flash (21/10). UID/GID 65532, zero capabilities,
+  no-new-privs and zero core limits were asserted. This used a Debian test
+  container with mounted binaries; the full scratch-image gate is separate.
+- Historical v163 reproduction now reads its own unchanged evidence manifest,
+  not the mutable current runtime pin. Its expected hash and comparisons are
+  unchanged, avoiding a false failure on legitimate newer pin releases.
 
-No production pins, transport origins or fallback eligibility changed in this
-review. No user-session mutation was performed. Isolated sidecars were stopped.
+No serving production pins, transport origins or fallback eligibility changed
+in this review. No user-session mutation was performed. Isolated fallback
+sidecars were stopped. Redundant local policy generation was stopped after the
+independent CI result; it is not counted as completed reproduction.

@@ -21,7 +21,7 @@ FROM --platform=$BUILDPLATFORM golang:1.27.4-bookworm@sha256:4fa7c968ba93f163567
 ARG TARGETARCH=amd64
 ENV CGO_ENABLED=0 GOOS=linux GOARCH=${TARGETARCH}
 WORKDIR /src
-ADD --checksum=sha256:d76de0050c7e3d16a0938bdc4d2f87f4008ed67fd2e2312b587f0d340540da5d https://codeload.github.com/edgelesssys/privatemode-public/tar.gz/2634ffb82c72339902f26ae071db513add2bdc2f /tmp/privatemode-source.tar.gz
+ADD --checksum=sha256:d7712bfbea9d61cc36372ab30f3d8b989e4f34d89ab70abcefe1852060d044ff https://codeload.github.com/edgelesssys/privatemode-public/tar.gz/3c98e0abf3219a6ebcc29112867a5f004605041b /tmp/privatemode-source.tar.gz
 COPY third_party/privatemode ./third_party/privatemode
 RUN bash third_party/privatemode/build.sh /tmp/privatemode-source.tar.gz /out/privatemode-proxy
 
