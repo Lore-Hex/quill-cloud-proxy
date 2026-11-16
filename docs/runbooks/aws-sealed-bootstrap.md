@@ -111,6 +111,11 @@ substitute for those live controls.
 Set `AWS_BOOTSTRAP_MODE=dual` for the candidate template only after publishing
 the new parent image. The deployment tool passes `QUILL_BOOTSTRAP_MODE=dual`
 and the pinned regional CMK to that parent, which binds 9101 before 9100.
+For this parent-only roll, keep the same CI-authenticated EIF. The pre-boot
+gate accepts a completed release only when its exact source and measurement
+match the signed CI artifact and its public accepted set contains only that
+measurement. Public signature, rollout fence, regional key and runtime-pin
+checks still apply. Do not invent another candidate admission for the same EIF.
 It refuses dual/v2-only mode before the regional key configuration is enabled.
 Require every enclave to report attested bootstrap. A transitional image
 reports `aws_bootstrap` on its enclave HTTPS `/health` response with the
