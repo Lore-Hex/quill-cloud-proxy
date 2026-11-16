@@ -30,7 +30,8 @@ class RolloutSafetyTests(unittest.TestCase):
         self.assertIn("roles/spanner.databaseUser", roles)
         self.assertIn("roles/secretmanager.secretAccessor", roles)
 
-    def _run_cross_cloud_key_phase(self, phase: str, describe: str, enabled_keys: str) -> tuple[int, str]:
+    def _run_cross_cloud_key_phase(self, phase: str, describe: str, enabled_keys: str,
+                                  *, attested: bool = False) -> tuple[int, str]:
         """Run phase_cross_cloud_key with stubbed aws and gcloud; return (exit code, calls and log)."""
         script = (ROOT / "tools/deploy-aws-nitro.sh").read_text()
         body = script.split("phase_cross_cloud_key() {", 1)[1].split("\n}\n", 1)[0]
@@ -72,10 +73,30 @@ class RolloutSafetyTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             calls = Path(tmp) / "calls"
             calls.touch()
+            scripts = Path(tmp) / "tools"
+            config = scripts / "aws-secrets"
+            config.mkdir(parents=True)
+            shutil.copyfile(ROOT / "tools/aws_kms_admission.py", scripts / "aws_kms_admission.py")
+            (config / "attested-release.json").write_text(json.dumps({
+                "schema_version": 1, "required": attested,
+                "key_arns": {region: f"arn:aws:kms:{region}:330422590279:key/11111111-2222-3333-4444-555555555555"
+                             for region in ("eu-west-1", "eu-west-3")} if attested else {},
+            }))
             env = {**os.environ, "FAKE_DESCRIBE": describe, "FAKE_ENABLED_KEYS": enabled_keys,
-                   "CALLS_FILE": str(calls)}
+                   "CALLS_FILE": str(calls), "SCRIPT_DIR": str(scripts),
+                   "AWS_CONFIG_FILE": "/dev/null", "AWS_SHARED_CREDENTIALS_FILE": "/dev/null",
+                   "AWS_EC2_METADATA_DISABLED": "true"}
             done = subprocess.run(["bash", "-c", program], capture_output=True, text=True, env=env)
             return done.returncode, calls.read_text() + done.stdout + done.stderr
+
+    def test_attested_activation_stops_full_and_explicit_legacy_rotation(self) -> None:
+        for phase in ("all", "cross-cloud-key"):
+            for state in ("exists", "absent", "throttled"):
+                with self.subTest(phase=phase, state=state):
+                    code, out = self._run_cross_cloud_key_phase(phase, state, "", attested=True)
+                    self.assertNotEqual(code, 0, out)
+                    self.assertIn("retired", out)
+                    self.assertNotIn("CALL ", out)
 
     def test_a_full_provision_does_not_mint_a_second_cross_cloud_key(self) -> None:
         # Phase "all" provisions and never rotates: with a wrapped key stored
