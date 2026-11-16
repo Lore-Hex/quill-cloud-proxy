@@ -1,0 +1,82 @@
+# AWS sealed bootstrap publication
+
+This is a staged migration, not a declaration that V1 has been retired.
+Follow the phase order in [the design](../design/aws-attested-secret-release.md).
+Neither merging this tool nor publishing a bundle changes the serving parent
+or enclave mode. IAM, KMS and Secrets Manager writes require Joseph's approval.
+
+## Before publication
+
+1. Complete the signer and CI-built EIF stages. Authenticate the published
+   measurements from CI, never from a host requesting admission. Confirm the
+   candidate image contains the approved signer public key and minimum version.
+2. Separately approve the regional recipient-only CMKs, the new secret metadata
+   and the specific bundle publication. Leave V1 secrets and policies unchanged.
+3. Acquire the AWS rollout reservation. Do not override another operator's lock.
+   Keep the returned fence for publication and verification.
+4. Assemble a complete `BootstrapData` JSON on the operator machine using the
+   restricted local source. Compare its field and provider names with the
+   current parent bootstrap catalog. Preserve all active provider credentials,
+   prompts, lease configuration, Cloudflare values and the GCS ACME credential.
+   A partial provider-key update is not a bootstrap bundle. Do not fetch or
+   construct plaintext on a gateway, commit it, or put it in Terraform state.
+5. Use an owner-only regular input file, not a symlink, and the real signer's
+   public DER key exported from KMS. The signer public key is not secret.
+   Review regional endpoints and the `https://trustedrouter.com` billing
+   authority. Choose a strictly increasing version accepted by the image.
+
+## Validate and publish
+
+From the repository root, with approved paths and exact key ARNs substituted:
+
+```sh
+AWS_REPLICA_REGIONS="" bash tools/sync-secrets-to-aws.sh --sealed-bundle \
+  --bootstrap-file "$PRIVATE_BOOTSTRAP_FILE" \
+  --region eu-west-1 --version "$BUNDLE_VERSION" \
+  --key-arn "$ATTESTED_CMK_ARN" --signer-arn "$BUNDLE_SIGNER_ARN" \
+  --signer-public-key "$SIGNER_PUBLIC_DER"
+```
+
+The default is local validation with no AWS calls. Add `--apply` only after
+approval and the rollout fence. This path never writes V1 copies. It requires
+the named `jperla` seal operator, not a host or CI session. Run separately for
+eu-west-3 with its own input region and CMK. Replication is rejected: the other
+region must have an independently encrypted bundle.
+
+The tool creates `AWSPENDING`, reads the ciphertext back, then moves
+`AWSCURRENT` from the observed predecessor. It verifies the resulting stage.
+Output contains only region, version, ciphertext size and hash. The plaintext
+and data key never go to a gateway. Python's memory clearing is best effort,
+not a guarantee; use a trusted operator machine with restricted storage.
+
+## Interrupted publication
+
+Stop if the tool fails. Do not blindly retry, remove pending stages, decrement
+the version, or restore a different active bundle. Inspect version IDs and
+stages with the operator identity. The version ID is deterministic for the
+region and bundle version; a newly encrypted payload cannot overwrite it.
+
+If the active stage moved successfully but the response was lost, verify that
+version's ciphertext, signature, region and minimum version before recording
+completion. If a non-current pending version remains, review the stored signed
+bundle and predecessor before an explicitly approved recovery. The tool fails
+closed on this state rather than guessing. Do not print secret payloads into
+terminal transcripts or logs during inspection.
+
+## Serving and cutover gates
+
+Test real KMS recipient release, debug and unpublished-image denial, missing
+recipient denial, ReEncrypt denial, and denied host signing/key mutation before
+relying on v2. The captured public CMS fixture and unit tests are not a
+substitute for those live controls.
+
+Roll `QUILL_BOOTSTRAP_MODE=dual` only with the new parent: it binds 9101 before
+9100. Require every enclave to report attested bootstrap. A transitional image
+can still fall back on any v2 failure, so it provides no host-resistant
+configuration guarantee. Next release the measured strict image, remove every
+fallback-capable image from both admission sets, then switch the parent to
+`v2-only` and separately revoke V1 access. Keep strict rollback targets.
+
+Secret deletion and rotation are later, separately approved steps. Coordinate
+the internal gateway token with the control plane. Never claim credential-plane
+parity before the strict-image and admission gates have passed.

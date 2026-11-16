@@ -52,6 +52,14 @@
 
 set -euo pipefail
 
+# Explicit separate mode: never also publish V1 copies during sealed rotation.
+# This must be the first option. The full reviewed BootstrapData input contains
+# every secret and config field; partial provider updates are not bundles.
+if [ "${1:-}" = "--sealed-bundle" ]; then
+  shift
+  exec uv run --locked --script "$(dirname "${BASH_SOURCE[0]}")/seal_aws_bootstrap.py" "$@"
+fi
+
 AWS_REGION="${AWS_REGION:-eu-west-1}"
 AWS_SECRET_PREFIX="${AWS_SECRET_PREFIX:-quill/}"   # AWS secret name = prefix + GCP secret id
 
