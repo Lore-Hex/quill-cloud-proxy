@@ -274,6 +274,7 @@ jobs:
           python3 -m unittest tools.test_aws_bundle_replication
           python3 -m unittest tools.test_aws_eif_admission
           python3 -m unittest tools.test_aws_bootstrap_probe
+          python3 -m unittest tools.test_verify_aws_denial_probe
           python3 -m unittest tools.test_aws_kms_admission
           python3 tools/test_go_toolchain_pins.py
           python3 tools/test_secret_scan_workflow.py
