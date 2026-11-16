@@ -24,6 +24,8 @@ class KMSAdmissionTests(unittest.TestCase):
         directory = tempfile.TemporaryDirectory()
         self.addCleanup(directory.cleanup)
         self.path = Path(directory.name) / "keys.json"
+        self.disabled_path = Path(directory.name) / "disabled-keys.json"
+        self.disabled_path.write_text(json.dumps({"schema_version": 1, "required": False, "key_arns": {}}))
         self.pins = ["a" * 96, "b" * 96]
         self.config = {"schema_version": 1, "required": True, "key_arns": {
             region: f"arn:aws:kms:{region}:330422590279:key/11111111-1111-1111-1111-111111111111"
@@ -45,9 +47,9 @@ class KMSAdmissionTests(unittest.TestCase):
         self.assertEqual({call.args[0] for call in aws.call_args_list}, gate.REGIONS)
         self.assertEqual({call.args[1] for call in aws.call_args_list}, {"describe-key", "get-key-policy"})
 
-    def test_disabled_default_performs_no_cloud_calls(self):
+    def test_disabled_configuration_performs_no_cloud_calls(self):
         with patch.object(gate, "aws_json") as aws:
-            gate.check_keys(self.pins)
+            gate.check_keys(self.pins, config_path=self.disabled_path)
         aws.assert_not_called()
 
     def test_malformed_or_partial_configuration_fails_before_cloud(self):
@@ -98,14 +100,14 @@ class KMSAdmissionTests(unittest.TestCase):
                              self.config["key_arns"]["eu-west-3"])
         self.assertEqual(gate.parent_key("eu-west-1", "legacy", config_path=self.path), "")
         with self.assertRaises(ValueError):
-            gate.parent_key("eu-west-1", "dual")
+            gate.parent_key("eu-west-1", "dual", config_path=self.disabled_path)
         with self.assertRaises(ValueError):
             gate.parent_key("eu-west-1", "legacy; injected", config_path=self.path)
         with self.assertRaises(ValueError):
             gate.parent_key("us-west-2", "dual", config_path=self.path)
 
     def test_legacy_iam_cannot_be_reintroduced_after_attested_activation(self):
-        gate.require_legacy_provisioning()
+        gate.require_legacy_provisioning(config_path=self.disabled_path)
         with self.assertRaisesRegex(ValueError, "retired"):
             gate.require_legacy_provisioning(config_path=self.path)
 

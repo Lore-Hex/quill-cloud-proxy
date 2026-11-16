@@ -48,6 +48,12 @@ elif command == ['ecr','describe-images']:
 else: sys.exit('Unexpected AWS operation: '+repr(a))
 """)
             fake.chmod(0o700)
+            key_config = root / "attested-keys.json"
+            key_config.write_text(json.dumps({
+                "schema_version": 1, "required": configured_key,
+                "key_arns": {region: f"arn:aws:kms:{region}:330422590279:key/11111111-2222-3333-4444-555555555555"
+                             for region in ("eu-west-1", "eu-west-3")} if configured_key else {},
+            }))
             # The real admission gate is covered by test_aws_eif_admission.
             # Isolate template tests from public HTTPS and production pin reads.
             python = root / "python3"
@@ -55,8 +61,12 @@ else: sys.exit('Unexpected AWS operation: '+repr(a))
                 "#!" + sys.executable + "\nimport os,sys\n"
                 "if sys.argv[1:3] == ['-m','tools.aws_eif_admission']:\n"
                 "    sys.exit(int(os.environ['UNADMITTED']))\n"
-                "if sys.argv[1].endswith('/aws_kms_admission.py') and os.environ['CONFIGURED_KEY'] == '1':\n"
-                "    print('arn:aws:kms:eu-west-1:330422590279:key/11111111-2222-3333-4444-555555555555')\n"
+                "if sys.argv[1].endswith('/aws_kms_admission.py'):\n"
+                "    from pathlib import Path\n"
+                "    sys.path.insert(0, str(Path(sys.argv[1]).parent.parent))\n"
+                "    from tools.aws_kms_admission import parent_key\n"
+                "    print(parent_key(sys.argv[sys.argv.index('--region')+1], sys.argv[sys.argv.index('--mode')+1],\n"
+                "                     config_path=Path(os.environ['KEY_CONFIG'])))\n"
                 "    sys.exit(0)\n"
                 "os.execv(" + repr(sys.executable) + ", ["
                 + repr(sys.executable) + "] + sys.argv[1:])\n"
@@ -87,7 +97,7 @@ else: sys.exit('Unexpected AWS operation: '+repr(a))
                    "AWS_EIF_SIGNATURE": str(root / "signature.json"), "AWS_EIF_SOURCE_COMMIT": "a" * 40,
                    "CANDIDATE_TEMPLATE_ONLY": "1", "DRY_RUN": "0", "INSTANCE_TYPE": "m5.xlarge",
                    "AWS_BOOTSTRAP_MODE": bootstrap_mode,
-                   "CONFIGURED_KEY": str(int(configured_key)),
+                   "KEY_CONFIG": str(key_config),
                    "REGISTRY_DIGEST": registry_digest if registry_digest is not None else "",
                    "TR_CONTROL_PLANE_BASE_URL": "https://trustedrouter.com", "CALLS": str(calls), "DIGEST": digest,
                    "LATEST": str(int(follows_latest)), "BAD_CHECKSUM": str(int(wrong_checksum)),
