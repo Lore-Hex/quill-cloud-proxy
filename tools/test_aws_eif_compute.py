@@ -17,7 +17,8 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 class ComputeTests(unittest.TestCase):
-    def run_candidate(self, *, bad_signature=False, missing=False, follows_latest=False, wrong_checksum=False, unadmitted=False):
+    def run_candidate(self, *, bad_signature=False, missing=False, follows_latest=False, wrong_checksum=False,
+                      unadmitted=False, parent_digest="", pump_digest="", wrong_parent=False, parent_error=False):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             calls = root / "calls.jsonl"
@@ -38,6 +39,9 @@ elif command == ['ec2','describe-launch-templates']: print('lt-test')
 elif command == ['autoscaling','describe-auto-scaling-groups']:
     print(json.dumps({'AutoScalingGroups':[{'LaunchTemplate':{'LaunchTemplateId':'lt-test','Version':'$Latest' if os.environ['LATEST']=='1' else '55'}}]}))
 elif command == ['ec2','create-launch-template-version']: print('56')
+elif command == ['ecr','describe-images']:
+    print('bad-digest' if os.environ['BAD_PARENT']=='1' else 'sha256:'+('7' if a[a.index('--repository-name')+1]=='quill-parent' else '8')*64)
+    sys.exit(int(os.environ['PARENT_ERROR']))
 else: sys.exit('Unexpected AWS operation: '+repr(a))
 """)
             fake.chmod(0o700)
@@ -66,8 +70,9 @@ else: sys.exit('Unexpected AWS operation: '+repr(a))
             (root / "manifest.json").write_text(json.dumps(record))
             (root / "signature.json").write_text("{}")
             source = (ROOT / "tools/deploy-aws-nitro.sh").read_text()
+            resolver = "resolve_parent_image() {" + source.split("resolve_parent_image() {", 1)[1].split("phase_compute() {", 1)[0]
             phase = "phase_compute() {" + source.split("phase_compute() {", 1)[1].split("phase_quotas() {", 1)[0]
-            script = 'set -euo pipefail\nlog() { printf "%s\\n" "$*" >&2; }\nlatest_ecr_tag() { echo test; }\n' + phase + "\nphase_compute\n"
+            script = 'set -euo pipefail\nlog() { printf "%s\\n" "$*" >&2; }\nlatest_ecr_tag() { echo test; }\n' + resolver + phase + "\nphase_compute\n"
             env = {**os.environ, "PATH": str(root) + os.pathsep + os.environ["PATH"],
                    "AWS_CONFIG_FILE": "/dev/null", "AWS_SHARED_CREDENTIALS_FILE": "/dev/null", "AWS_EC2_METADATA_DISABLED": "true",
                    "AWS_ACCOUNT": "330422590279", "AWS_REGION": "eu-west-1", "PROJECT_TAG": "quill-enclave",
@@ -77,7 +82,9 @@ else: sys.exit('Unexpected AWS operation: '+repr(a))
                    "CANDIDATE_TEMPLATE_ONLY": "1", "DRY_RUN": "0", "INSTANCE_TYPE": "m5.xlarge",
                    "TR_CONTROL_PLANE_BASE_URL": "https://trustedrouter.com", "CALLS": str(calls), "DIGEST": digest,
                    "LATEST": str(int(follows_latest)), "BAD_CHECKSUM": str(int(wrong_checksum)),
-                   "UNADMITTED": str(int(unadmitted))}
+                   "UNADMITTED": str(int(unadmitted)), "AWS_PARENT_IMAGE_DIGEST": parent_digest,
+                   "AWS_PARENT_PUMP_IMAGE_DIGEST": pump_digest, "BAD_PARENT": str(int(wrong_parent)),
+                   "PARENT_ERROR": str(int(parent_error))}
             result = subprocess.run(["bash", "-c", script], env=env, text=True, capture_output=True, timeout=15, check=False)
             return result, [json.loads(line) for line in calls.read_text().splitlines()] if calls.exists() else []
 
@@ -96,7 +103,25 @@ else: sys.exit('Unexpected AWS operation: '+repr(a))
         self.assertIn("quill-enclave-eif-eu-west-1-330422590279", user_data)
         self.assertNotIn("build-enclave", user_data)
         self.assertNotIn("aws-nitro-enclaves-cli-devel", user_data)
+        self.assertIn("quill-parent@sha256:" + "7" * 64, user_data)
+        self.assertIn("quill-parent-pump@sha256:" + "8" * 64, user_data)
+        self.assertNotIn("quill-parent:test", user_data)
         self.assertLess(user_data.index("sha256sum"), user_data.index("run-enclave --eif-path"))
+
+    def test_approved_parent_digests_are_checked_without_selecting_tags(self):
+        result, calls = self.run_candidate(parent_digest="sha256:" + "7" * 64, pump_digest="sha256:" + "8" * 64)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        lookups = [call for call in calls if call[:2] == ["ecr", "describe-images"]]
+        self.assertEqual([call[call.index("--image-ids") + 1] for call in lookups],
+                         ["imageDigest=sha256:" + "7" * 64, "imageDigest=sha256:" + "8" * 64])
+
+    def test_bad_or_mismatched_parent_digest_prevents_mutations(self):
+        for options in ({"parent_digest": "latest"}, {"parent_digest": "sha256:" + "9" * 64},
+                        {"pump_digest": "sha256:" + "9" * 64}, {"wrong_parent": True}, {"parent_error": True}):
+            with self.subTest(options=options):
+                result, calls = self.run_candidate(**options)
+                self.assertNotEqual(result.returncode, 0)
+                self.assertFalse(any(call[1].startswith(("create-", "modify-", "update-")) for call in calls))
 
     def test_missing_or_unverified_manifest_prevents_all_cloud_operations(self):
         for options in ({"missing": True}, {"bad_signature": True}):
