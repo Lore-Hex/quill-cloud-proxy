@@ -39,7 +39,7 @@ func TestContextWebSearchEndToEnd(t *testing.T) {
 				if route == "chat/completions" {
 					input = `"messages":[{"role":"user","content":"What changed?"}],"stream_options":{"include_usage":true}`
 				}
-				request := fmt.Sprintf(`{"model":"test/model",%s,"tools":[{"type":"web_search","engine":"context"}],"tool_choice":"required","max_tool_calls":1,"stream":%t}`, input, stream)
+				request := fmt.Sprintf(`{"model":"test/model",%s,"tools":[{"type":"web_search","engine":"context.dev"}],"tool_choice":"required","max_tool_calls":1,"stream":%t}`, input, stream)
 				if _, err := fmt.Fprintf(client, "POST /v1/%s HTTP/1.1\r\nAuthorization: Bearer test-key\r\nContent-Type: application/json\r\nContent-Length: %d\r\n\r\n%s", route, len(request), request); err != nil {
 					t.Fatal(err)
 				}
@@ -52,7 +52,7 @@ func TestContextWebSearchEndToEnd(t *testing.T) {
 				if response.StatusCode != 200 {
 					t.Fatalf("status=%d body=%s", response.StatusCode, body)
 				}
-				for _, expected := range []string{`"web_search_engine":"context"`, `"web_search_credit_microdollars":6000`, fmt.Sprintf(`"web_search_credits":%d`, tc.credits), fmt.Sprintf(`"web_search_cost_microdollars":%d`, charge), `"conservative_credit_tariff"`, "https://example.com/release"} {
+				for _, expected := range []string{`"web_search_engine":"context.dev"`, `"web_search_credit_microdollars":6000`, fmt.Sprintf(`"web_search_credits":%d`, tc.credits), fmt.Sprintf(`"web_search_cost_microdollars":%d`, charge), `"conservative_credit_tariff"`, "https://example.com/release"} {
 					if !bytes.Contains(body, []byte(expected)) {
 						t.Fatalf("missing %s: %s", expected, body)
 					}
@@ -81,12 +81,15 @@ func TestContextWebSearchNoImplicitFallback(t *testing.T) {
 	t.Cleanup(func() { enclaveWebSearchClient, enclaveContextSearchClient = previousExa, previousContext })
 	enclaveWebSearchClient = &fakeResponsesWebSearcher{}
 	enclaveContextSearchClient = nil
-	if selectedWebSearchClient(&types.ResponseWebSearchConfig{Engine: "context"}) != nil {
+	if selectedWebSearchClient(&types.ResponseWebSearchConfig{Engine: "context.dev"}) != nil {
 		t.Fatal("context fell back to exa")
 	}
 	configureContextSearch("key")
-	if selectedWebSearchClient(&types.ResponseWebSearchConfig{Engine: "context"}) == nil {
+	if selectedWebSearchClient(&types.ResponseWebSearchConfig{Engine: "context.dev"}) == nil {
 		t.Fatal("context not configured")
+	}
+	if selectedWebSearchClient(&types.ResponseWebSearchConfig{Engine: "context"}) != nil {
+		t.Fatal("removed alias selected a search engine")
 	}
 	configureContextSearch("")
 	if enclaveContextSearchClient != nil {
@@ -125,7 +128,7 @@ func TestContextWebSearchFailureRefundsOnce(t *testing.T) {
 					if route == "chat/completions" {
 						input = `"messages":[{"role":"user","content":"What changed?"}]`
 					}
-					request := fmt.Sprintf(`{"model":"test/model",%s,"tools":[{"type":"web_search","engine":"context"}],"tool_choice":"required","max_tool_calls":1,"stream":%t}`, input, stream)
+					request := fmt.Sprintf(`{"model":"test/model",%s,"tools":[{"type":"web_search","engine":"context.dev"}],"tool_choice":"required","max_tool_calls":1,"stream":%t}`, input, stream)
 					if _, err := fmt.Fprintf(client, "POST /v1/%s HTTP/1.1\r\nAuthorization: Bearer test-key\r\nContent-Type: application/json\r\nContent-Length: %d\r\n\r\n%s", route, len(request), request); err != nil {
 						t.Fatal(err)
 					}
@@ -164,7 +167,7 @@ func TestContextWebSearchFailureRefundsOnce(t *testing.T) {
 
 func TestContextWebSearchTariffReservation(t *testing.T) {
 	for _, tc := range []struct{ results, calls, total, want int }{{5, 3, 0, 36000}, {25, 2, 0, 72000}, {10, 30, 2, 24000}} {
-		config := &types.ResponseWebSearchConfig{Engine: "context", MaxResults: tc.results, MaxCalls: tc.calls, MaxTotalResults: tc.total}
+		config := &types.ResponseWebSearchConfig{Engine: "context.dev", MaxResults: tc.results, MaxCalls: tc.calls, MaxTotalResults: tc.total}
 		if got := webSearchReservationMicrodollars(config); got != tc.want {
 			t.Fatalf("reserve=%d want=%d", got, tc.want)
 		}
@@ -172,9 +175,31 @@ func TestContextWebSearchTariffReservation(t *testing.T) {
 	for _, model := range []string{"trustedrouter/zdr", "trustedrouter/confidential", "trustedrouter/e2e", "trustedrouter/eu"} {
 		req := webSearchTestRequest()
 		req.Model = model
-		req.Response.WebSearch.Engine = "context"
+		req.Response.WebSearch.Engine = "context.dev"
 		if validateResponsesWebSearchPrivacy(req) == nil {
 			t.Fatalf("accepted restricted model %s", model)
+		}
+	}
+}
+
+func TestContextWebSearchRemovedAliasNeverInvokesProviders(t *testing.T) {
+	previousExa, previousContext := enclaveWebSearchClient, enclaveContextSearchClient
+	t.Cleanup(func() { enclaveWebSearchClient, enclaveContextSearchClient = previousExa, previousContext })
+	for _, shape := range []struct{ route, input, search string }{
+		{"chat/completions", `"messages":[{"role":"user","content":"Search"}]`, `"tools":[{"type":"web_search","engine":"context"}]`},
+		{"chat/completions", `"messages":[{"role":"user","content":"Search"}]`, `"tools":[{"type":"openrouter:web_search","parameters":{"engine":"context"}}]`},
+		{"chat/completions", `"messages":[{"role":"user","content":"Search"}]`, `"plugins":[{"id":"web","engine":"context"}]`},
+		{"responses", `"input":"Search"`, `"tools":[{"type":"web_search","engine":"context"}]`},
+	} {
+		for _, stream := range []bool{false, true} {
+			exa, searcher := &fakeResponsesWebSearcher{}, &fakeResponsesWebSearcher{}
+			enclaveWebSearchClient, enclaveContextSearchClient = exa, searcher
+			provider := &privacyEchoProvider{}
+			body := fmt.Sprintf(`{"model":"test/model",%s,%s,"stream":%t}`, shape.input, shape.search, stream)
+			status, response := privacyRoundTrip(t, "/v1/"+shape.route, body, provider)
+			if status != http.StatusNotImplemented || provider.calls != 0 || len(exa.queries) != 0 || len(searcher.queries) != 0 {
+				t.Fatalf("removed alias reached a provider: status=%d provider=%d exa=%d context=%d response=%s", status, provider.calls, len(exa.queries), len(searcher.queries), response)
+			}
 		}
 	}
 }

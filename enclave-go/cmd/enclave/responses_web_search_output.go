@@ -94,9 +94,9 @@ func responsesWebSearchProviderUsage(outcome responsesWebSearchOutcome) map[stri
 		"web_search_elapsed_ms":                 outcome.SearchElapsedMS,
 		"contains_prompt_or_completion":         false,
 	}
-	if outcome.SearchEngine == "context" {
+	if outcome.SearchEngine == "context.dev" {
 		delete(usage, "operator_web_search_cost_microdollars")
-		usage["web_search_engine"] = "context"
+		usage["web_search_engine"] = "context.dev"
 		usage["web_search_pricing_basis"] = "conservative_credit_tariff"
 		usage["web_search_credit_microdollars"] = websearch.ContextCreditMicrodollars
 		usage["web_search_credits"] = outcome.SearchCostMicrodollars / websearch.ContextCreditMicrodollars
