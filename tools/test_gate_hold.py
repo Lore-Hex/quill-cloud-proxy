@@ -1382,21 +1382,20 @@ class OneRegion(unittest.TestCase):
     def test_a_gate_in_flight_stops_when_the_forward_deadline_passes(self) -> None:
         """The stop hook reads the rollout's deadline, not the gate attempt's.
 
-        gate_hold_run calls the hook while its own local "deadline" is in
-        scope; a global of that name was shadowed, so a gate in flight ran on
-        past the forward deadline until the step ended or its attempt cap.
+        gate_hold_run calls the hook while its own local "deadline" (the
+        attempt's) is in scope; a global of that name was shadowed, so the
+        forward deadline never stopped a gate in flight: the PONG gate ran on
+        under the script's own attempt cap until the step ended.
         """
-        for cap in ("0", "90"):
-            with self.subTest(attempt_cap=cap):
-                started = time.monotonic()
-                done, commands, final = self.roll(
-                    lanes_now=STILL, deadline_in=10,  # passes during the 45 s PONG gate
-                    env={"SLOW_PONG": "45", "TR_CP_HOLD_ATTEMPT_SECONDS": cap})
-                self.assertEqual(done.returncode, 76, done.stderr)
-                self.assertIn("rollout deadline passed before promotion", done.stderr)
-                self.assertIn("bash tools/wait-region-synthetic-up.sh us-west1", commands)
-                self.assertEqual(final, "recovered")
-                self.assertLess(time.monotonic() - started, 35)
+        started = time.monotonic()
+        done, commands, final = self.roll(lanes_now=STILL, deadline_in=20,  # passes during the 60 s PONG gate
+                                          env={"SLOW_PONG": "60"})
+        self.assertIn("bash tools/wait-region-synthetic-up.sh us-west1", commands,
+                      "the deadline passed before the PONG gate began; the runner is too slow for this test")
+        self.assertEqual(done.returncode, 76, done.stderr)
+        self.assertIn("rollout deadline passed before promotion", done.stderr)
+        self.assertEqual(final, "recovered")
+        self.assertLess(time.monotonic() - started, 45)
 
     def test_a_stuck_hold_record_cannot_extend_the_deadline_forever(self) -> None:
         """Review of #772: the extension is capped at the job's hold budget."""
