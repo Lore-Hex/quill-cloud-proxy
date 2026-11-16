@@ -60,6 +60,10 @@ if [ "${1:-}" = "--sealed-bundle" ]; then
   exec uv run --locked --script "$(dirname "${BASH_SOURCE[0]}")/seal_aws_bootstrap.py" "$@"
 fi
 
+# After activation a default legacy sync would silently miss the serving
+# bundle, and could repopulate secrets that were deliberately retired.
+python3 "$(dirname "${BASH_SOURCE[0]}")/aws_kms_admission.py" require-legacy-provisioning
+
 AWS_REGION="${AWS_REGION:-eu-west-1}"
 AWS_SECRET_PREFIX="${AWS_SECRET_PREFIX:-quill/}"   # AWS secret name = prefix + GCP secret id
 
