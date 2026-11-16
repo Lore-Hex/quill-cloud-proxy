@@ -5,6 +5,7 @@ on:
 
 permissions:
   contents: read
+  actions: read
   id-token: write
 
 concurrency:
@@ -22,6 +23,16 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+      - name: Require successful complete CI for this source
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          gh run list --repo "$GITHUB_REPOSITORY" --workflow ci.yml --branch main \
+            --event push --commit "$GITHUB_SHA" --limit 1 \
+            --json status,conclusion,headSha,headBranch,event > "$RUNNER_TEMP/aws-eif-ci.json"
+          python3 -c 'import json,sys; runs=json.load(open(sys.argv[1])); expected={"status":"completed","conclusion":"success","headSha":sys.argv[2],"headBranch":"main","event":"push"}; sys.exit(0 if isinstance(runs,list) and len(runs)==1 and runs[0]==expected else "Full main CI has not passed for this source; refusing EIF publication.")' \
+            "$RUNNER_TEMP/aws-eif-ci.json" "$GITHUB_SHA"
       - name: Build the measured application from this main commit
         run: |
           set -euo pipefail

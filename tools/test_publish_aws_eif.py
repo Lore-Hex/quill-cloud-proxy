@@ -4,6 +4,8 @@ import base64
 import hashlib
 import io
 import json
+import os
+import subprocess
 import tempfile
 import unittest
 from pathlib import Path
@@ -90,22 +92,22 @@ class PublicationTests(unittest.TestCase):
         self.assertEqual(self.store.writes, [])
 
     def test_bad_published_signature_blocks_completion_marker(self):
-        with patch.object(manifest, "verify", side_effect=ValueError("bad signature")):
-            with self.assertRaisesRegex(ValueError, "bad signature"):
-                self.publish()
+        with (patch.object(manifest, "verify", side_effect=ValueError("bad signature")),
+              self.assertRaisesRegex(ValueError, "bad signature")):
+            self.publish()
         self.assertNotIn(self.prefix + "/manifest.json", self.store.objects)
 
     def test_permission_failure_is_not_treated_as_missing(self):
-        with patch.object(self.store, "head_object", side_effect=StorageError("AccessDenied")):
-            with self.assertRaises(StorageError):
-                self.publish()
+        with (patch.object(self.store, "head_object", side_effect=StorageError("AccessDenied")),
+              self.assertRaises(StorageError)):
+            self.publish()
         self.assertEqual(self.store.writes, [])
 
     def test_manifest_collision_is_not_overwritten(self):
         self.store.objects[self.prefix + "/manifest.json"] = b"substituted metadata"
-        with patch.object(manifest, "verify", return_value=self.record):
-            with self.assertRaisesRegex(ValueError, "manifest differs"):
-                self.publish()
+        with (patch.object(manifest, "verify", return_value=self.record),
+              self.assertRaisesRegex(ValueError, "manifest differs")):
+            self.publish()
         self.assertEqual(self.store.objects[self.prefix + "/manifest.json"], b"substituted metadata")
 
     def test_unknown_region_is_rejected_before_storage(self):
@@ -128,7 +130,7 @@ class WorkflowTests(unittest.TestCase):
         job = workflow["jobs"]["publish"]
         self.assertEqual(job["if"], "github.ref == 'refs/heads/main'")
         self.assertRegex(job["env"]["BUILDER_IMAGE"], r"^330422590279\.dkr\.ecr\.eu-west-1\.amazonaws\.com/quill-enclave-eif-builder@sha256:[0-9a-f]{64}$")
-        self.assertEqual(workflow["permissions"], {"contents": "read", "id-token": "write"})
+        self.assertEqual(workflow["permissions"], {"contents": "read", "actions": "read", "id-token": "write"})
         scripts = "\n".join(step.get("run", "") for step in job["steps"])
         for value in ("SOURCE_REVISION=$GITHUB_SHA", "BUILD_TAGS=cloud_aws,llm_multi", "QUILL_TLS_MODE=acme",
                       "QUILL_API_HOST=api-aws.trustedrouter.com", "QUILL_ACME_DNS_GCP_PROJECT=quill-cloud-proxy",
@@ -137,6 +139,40 @@ class WorkflowTests(unittest.TestCase):
         self.assertNotIn("run-enclave", scripts)
         self.assertNotIn("start-instance-refresh", scripts)
         self.assertNotIn("put-key-policy", scripts)
+
+    def test_full_ci_gate_refuses_missing_pending_failed_or_wrong_source(self):
+        import yaml
+        root = Path(__file__).resolve().parents[1]
+        workflow = yaml.safe_load((root / ".github/workflows/publish-aws-eif.yml").read_text())
+        steps = workflow["jobs"]["publish"]["steps"]
+        gate_index = next(i for i, step in enumerate(steps)
+                          if step.get("name") == "Require successful complete CI for this source")
+        gate = steps[gate_index]
+        self.assertNotIn("if", gate)
+        self.assertNotIn("continue-on-error", gate)
+        self.assertLess(gate_index, next(i for i, step in enumerate(steps)
+                                       if step.get("name", "").startswith("Build the measured")))
+        self.assertLess(gate_index, next(i for i, step in enumerate(steps)
+                                       if "/aws-credentials@" in step.get("uses", "")))
+        good = {"status": "completed", "conclusion": "success", "headSha": "a" * 40,
+                "headBranch": "main", "event": "push"}
+        cases = [([], False), ([good], True)]
+        for key, value in (("status", "queued"), ("conclusion", "failure"),
+                           ("headSha", "b" * 40), ("headBranch", "topic"), ("event", "pull_request")):
+            cases.append(([{**good, key: value}], False))
+        with tempfile.TemporaryDirectory() as directory:
+            temporary = Path(directory)
+            gh = temporary / "gh"
+            gh.write_text("#!/bin/sh\nprintf '%s' \"$FAKE_CI_RUNS\"\n")
+            gh.chmod(0o700)
+            for runs, accepted in cases:
+                with self.subTest(runs=runs):
+                    env = {"PATH": directory + os.pathsep + os.environ["PATH"],
+                           "GITHUB_SHA": good["headSha"], "GITHUB_REPOSITORY": "Lore-Hex/quill-cloud-proxy",
+                           "RUNNER_TEMP": directory, "FAKE_CI_RUNS": json.dumps(runs)}
+                    result = subprocess.run(["bash", "-e", "-c", gate["run"]], env=env,
+                                            capture_output=True, text=True, check=False, timeout=10)
+                    self.assertEqual(result.returncode == 0, accepted, result.stderr)
 
 
 if __name__ == "__main__":
