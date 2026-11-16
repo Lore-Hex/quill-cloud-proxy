@@ -75,6 +75,27 @@ class KMSAdmissionTests(unittest.TestCase):
                 gate.check_policy(json.dumps(policy(pins)), self.pins)
         gate.check_policy(json.dumps(policy(list(reversed(self.pins)))), self.pins)
 
+    def test_kms_singleton_serialization_keeps_exact_admission(self):
+        pin = self.pins[0]
+        gate.check_policy(json.dumps(policy(pin)), [pin])
+        gate.check_policy(json.dumps(policy([pin])), [pin])
+        for actual, expected in ((pin, self.pins), (self.pins[1], [pin]),
+                                 ("0" * 96, [pin]), ("*", [pin]),
+                                 (None, [pin]), (True, [pin]), (123, [pin]),
+                                 ([pin, pin], [pin]), ({"pin": pin}, [pin])):
+            with self.subTest(actual=actual), self.assertRaises(ValueError):
+                gate.check_policy(json.dumps(policy(actual)), expected)
+
+    def test_both_live_keys_may_use_singleton_condition_values(self):
+        self.pins = [self.pins[0]]
+        def response(region, command, *args):
+            if command == "get-key-policy":
+                return {"Policy": json.dumps(policy(self.pins[0]))}
+            return self.reply(region, command, *args)
+        with patch.object(gate, "aws_json", side_effect=response) as aws:
+            gate.check_keys(self.pins, config_path=self.path)
+        self.assertEqual(aws.call_count, 4)
+
     def test_weakened_denial_cannot_pass(self):
         for change in ({"Effect": "Allow"}, {"Principal": {"AWS": "parent"}},
                        {"Action": ["kms:Decrypt"]}, {"Resource": "key/one"},
