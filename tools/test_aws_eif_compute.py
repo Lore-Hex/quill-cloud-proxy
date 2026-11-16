@@ -7,16 +7,17 @@ import gzip
 import hashlib
 import json
 import os
-from pathlib import Path
 import subprocess
+import sys
 import tempfile
 import unittest
+from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 
 
 class ComputeTests(unittest.TestCase):
-    def run_candidate(self, *, bad_signature=False, missing=False, follows_latest=False, wrong_checksum=False):
+    def run_candidate(self, *, bad_signature=False, missing=False, follows_latest=False, wrong_checksum=False, unadmitted=False):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             calls = root / "calls.jsonl"
@@ -40,6 +41,17 @@ elif command == ['ec2','create-launch-template-version']: print('56')
 else: sys.exit('Unexpected AWS operation: '+repr(a))
 """)
             fake.chmod(0o700)
+            # The real admission gate is covered by test_aws_eif_admission.
+            # Isolate template tests from public HTTPS and production pin reads.
+            python = root / "python3"
+            python.write_text(
+                "#!" + sys.executable + "\nimport os,sys\n"
+                "if sys.argv[1:3] == ['-m','tools.aws_eif_admission']:\n"
+                "    sys.exit(int(os.environ['UNADMITTED']))\n"
+                "os.execv(" + repr(sys.executable) + ", ["
+                + repr(sys.executable) + "] + sys.argv[1:])\n"
+            )
+            python.chmod(0o700)
             cosign = root / "cosign"
             cosign.write_text("#!/bin/sh\nexit " + ("1\n" if bad_signature else "0\n"))
             cosign.chmod(0o700)
@@ -64,8 +76,9 @@ else: sys.exit('Unexpected AWS operation: '+repr(a))
                    "AWS_EIF_SIGNATURE": str(root / "signature.json"), "AWS_EIF_SOURCE_COMMIT": "a" * 40,
                    "CANDIDATE_TEMPLATE_ONLY": "1", "DRY_RUN": "0", "INSTANCE_TYPE": "m5.xlarge",
                    "TR_CONTROL_PLANE_BASE_URL": "https://trustedrouter.com", "CALLS": str(calls), "DIGEST": digest,
-                   "LATEST": str(int(follows_latest)), "BAD_CHECKSUM": str(int(wrong_checksum))}
-            result = subprocess.run(["bash", "-c", script], env=env, text=True, capture_output=True, timeout=15)
+                   "LATEST": str(int(follows_latest)), "BAD_CHECKSUM": str(int(wrong_checksum)),
+                   "UNADMITTED": str(int(unadmitted))}
+            result = subprocess.run(["bash", "-c", script], env=env, text=True, capture_output=True, timeout=15, check=False)
             return result, [json.loads(line) for line in calls.read_text().splitlines()] if calls.exists() else []
 
     def test_candidate_is_pinned_and_does_not_change_serving_resources(self):
@@ -96,6 +109,11 @@ else: sys.exit('Unexpected AWS operation: '+repr(a))
         result, calls = self.run_candidate(wrong_checksum=True)
         self.assertNotEqual(result.returncode, 0)
         self.assertEqual([call[:2] for call in calls], [["s3api", "head-object"]])
+
+    def test_unadmitted_candidate_prevents_all_cloud_operations(self):
+        result, calls = self.run_candidate(unadmitted=True)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertEqual(calls, [])
 
     def test_asg_following_latest_blocks_candidate_version_creation(self):
         result, calls = self.run_candidate(follows_latest=True)

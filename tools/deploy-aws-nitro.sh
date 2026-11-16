@@ -657,6 +657,13 @@ phase_compute() {
     return 1
   fi
   local verified_eif eif_sha eif_size eif_source eif_pcr0
+  # No template or fleet changes before signed public and runtime admission.
+  # check-ready is read-only and independently checks the shared rollout fence.
+  if [ "$DRY_RUN" -eq 0 ]; then
+    (cd "$SCRIPT_DIR/.." && python3 -m tools.aws_eif_admission check-ready \
+      --manifest "$AWS_EIF_MANIFEST" --signature "$AWS_EIF_SIGNATURE" \
+      --expected-source "$AWS_EIF_SOURCE_COMMIT")
+  fi
   verified_eif=$(python3 "$SCRIPT_DIR/aws_eif_manifest.py" verify \
     --manifest "$AWS_EIF_MANIFEST" --signature "$AWS_EIF_SIGNATURE" \
     --expected-source "$AWS_EIF_SOURCE_COMMIT")
