@@ -190,10 +190,19 @@ func TestClaudeLadderBudgetsMatchTheSharedProjection(t *testing.T) {
 		_, body := claudeChat(t, `"reasoning_effort":"`+effort+`"`)
 		shared, _ := body.Thinking.(map[string]any)
 		for _, class := range []claudeReasoningClass{claudeBudget, claudeOpus45} {
-			if step := class.step(effort); shared["budget_tokens"] != step.budget {
+			if step, listed := class.step(effort); !listed || shared["budget_tokens"] != step.budget {
 				t.Errorf("%s %s: ladder budget %d, shared projection %v", class, effort, step.budget, shared["budget_tokens"])
 			}
 		}
+	}
+	// The budget On adds beside an unknown effort is the one On alone is.
+	_, body := claudeChat(t, `"reasoning":{"enabled":true}`)
+	if shared, _ := body.Thinking.(map[string]any); shared["budget_tokens"] != claudeOnBudget {
+		t.Errorf("On alone: dispatch budget %d, shared projection %v", claudeOnBudget, shared["budget_tokens"])
+	}
+	// The floor On uses beside minimal is the lowest step of the ladder.
+	if step, _ := claudeBudget.step("low"); step.budget != claudeMinimumBudget {
+		t.Errorf("low is %d tokens, the floor is %d", step.budget, claudeMinimumBudget)
 	}
 }
 
@@ -262,12 +271,30 @@ func TestClaudeSonnet55OffIsBetweenTools(t *testing.T) {
 }
 
 // Decision 3: On beside an effort is that effort, wherever the effort is
-// written. On alone stays 4,096 tokens on the budget classes.
+// written. On alone stays 4,096 tokens on the budget classes. On is an
+// explicit ask, so it always turns thinking on: where the effort alone sets
+// no budget on a budget class, On adds one. Beside minimal that is the
+// smallest budget, and beside an unknown word it is what On alone is.
 func TestClaudeOnBesideAnEffortIsThatEffort(t *testing.T) {
-	for _, ids := range [][]string{claudeFullIDs, claudeV46IDs, claudeOpus45IDs, claudeBudgetIDs} {
+	onAdds := map[string]string{
+		"minimal": `{"max_tokens":4096,"thinking":{"budget_tokens":1024,"type":"enabled"}}`,
+		"ultra":   `{"max_tokens":8192,"thinking":{"budget_tokens":4096,"type":"enabled"}}`,
+	}
+	for class, ids := range map[claudeReasoningClass][]string{claudeFull: claudeFullIDs, claudeV46: claudeV46IDs, claudeOpus45: claudeOpus45IDs, claudeBudget: claudeBudgetIDs} {
 		for _, id := range ids {
 			for _, effort := range []string{"minimal", "low", "medium", "high", "xhigh", "max", "ultra", "none"} {
 				alone := claudeWire(t, id, `"reasoning_effort":"`+effort+`"`)
+				if added, adds := onAdds[effort]; adds && (class == claudeBudget || class == claudeOpus45) {
+					if strings.Contains(alone, `"thinking"`) {
+						t.Errorf("%s %s alone thinks: %s", id, effort, alone)
+					}
+					// Opus 4.5 keeps the effort the word alone sends.
+					if class == claudeOpus45 {
+						word := map[string]string{"minimal": "low", "ultra": "ultra"}[effort]
+						added = strings.Replace(added, `,"thinking"`, `,"output_config":{"effort":"`+word+`"},"thinking"`, 1)
+					}
+					alone = added
+				}
 				for _, on := range []string{
 					`"reasoning":{"enabled":true},"reasoning_effort":"` + effort + `"`,
 					`"reasoning":{"enabled":true,"effort":"` + effort + `"}`,
@@ -275,7 +302,7 @@ func TestClaudeOnBesideAnEffortIsThatEffort(t *testing.T) {
 					`"reasoning":{"type":"enabled"},"reasoning_effort":"` + effort + `"`,
 				} {
 					if got := claudeWire(t, id, on); got != alone {
-						t.Errorf("%s %s:\n got %s\nthe effort alone sends %s", id, on, got, alone)
+						t.Errorf("%s %s:\n got %s\nwant %s", id, on, got, alone)
 					}
 				}
 			}
@@ -291,6 +318,81 @@ func TestClaudeOnBesideAnEffortIsThatEffort(t *testing.T) {
 	high := claudeWire(t, "claude-haiku-4-5", `"reasoning":{"enabled":true},"reasoning_effort":"high"`)
 	if low != `{"max_tokens":4096,"thinking":{"budget_tokens":1024,"type":"enabled"}}` || high != `{"max_tokens":12288,"thinking":{"budget_tokens":8192,"type":"enabled"}}` {
 		t.Errorf("On beside low sends %s, beside high %s", low, high)
+	}
+}
+
+// On always turns thinking on, on Opus 4.5 and the budget-only models. An
+// effort that sets no budget by itself must not make an explicit On vanish.
+func TestClaudeOnAlwaysThinksOnBudgetClasses(t *testing.T) {
+	const (
+		prefill = `"messages":[{"role":"user","content":"test"},{"role":"assistant","content":"{"}]`
+		anyTool = `"tool_choice":"required",` + claudeTestTools
+		floor   = `"thinking":{"budget_tokens":1024,"type":"enabled"}`
+		onDepth = `"thinking":{"budget_tokens":4096,"type":"enabled"}`
+	)
+	for _, id := range append(append([]string{}, claudeBudgetIDs...), claudeOpus45IDs...) {
+		opus45 := strings.Contains(claudeModelKey(id), "claude-opus-4-5")
+		effort := func(word string) string {
+			if opus45 {
+				return `"output_config":{"effort":"` + word + `"},`
+			}
+			return ""
+		}
+		off := `{"max_tokens":4096}`
+		if opus45 {
+			off = `{"max_tokens":4096,"thinking":{"type":"disabled"}}`
+		}
+		for _, tc := range []struct{ name, fields, want string }{
+			// On beside minimal: thinking on at the least depth.
+			{"On object beside minimal", `"reasoning":{"enabled":true},"reasoning_effort":"minimal"`, `{"max_tokens":4096,` + effort("low") + floor + `}`},
+			{"On object holding minimal", `"reasoning":{"enabled":true,"effort":"minimal"}`, `{"max_tokens":4096,` + effort("low") + floor + `}`},
+			{"bare true beside minimal", `"reasoning":true,"reasoning_effort":"minimal"`, `{"max_tokens":4096,` + effort("low") + floor + `}`},
+			{"reasoning.type beside minimal", `"reasoning":{"type":"enabled"},"reasoning_effort":"minimal"`, `{"max_tokens":4096,` + effort("low") + floor + `}`},
+			// On beside a word the gateway does not know: what On alone is.
+			{"On object beside an unknown word", `"reasoning":{"enabled":true},"reasoning_effort":"ultra"`, `{"max_tokens":8192,` + effort("ultra") + onDepth + `}`},
+			{"On object holding an unknown word", `"reasoning":{"enabled":true,"effort":"ultra"}`, `{"max_tokens":8192,` + effort("ultra") + onDepth + `}`},
+			{"bare true beside an unknown word", `"reasoning":true,"reasoning_effort":"ultra"`, `{"max_tokens":8192,` + effort("ultra") + onDepth + `}`},
+			// Thinking the caller turned on is left for the provider to judge.
+			{"On + minimal + required tool", `"reasoning":{"enabled":true,"effort":"minimal"},` + anyTool, `{"max_tokens":4096,` + effort("low") + floor + `,"tool_choice":{"type":"any"}}`},
+			{"On + minimal + prefill", `"reasoning":{"enabled":true},"reasoning_effort":"minimal",` + prefill, `{"max_tokens":4096,` + effort("low") + floor + `}`},
+			{"On + unknown word + required tool", `"reasoning":{"enabled":true,"effort":"ultra"},` + anyTool, `{"max_tokens":8192,` + effort("ultra") + onDepth + `,"tool_choice":{"type":"any"}}`},
+			// The budget is sent as a request Anthropic accepts.
+			{"On + minimal + sampling", `"reasoning":{"enabled":true,"effort":"minimal"},"temperature":0.2,"top_k":40,"top_p":0.5`, `{"max_tokens":4096,` + effort("low") + floor + `}`},
+			{"On + minimal with a cap", `"reasoning":{"enabled":true,"effort":"minimal"},"max_tokens":512`, `{"max_tokens":1536,` + effort("low") + floor + `}`},
+			{"On + unknown word with a cap", `"reasoning":{"enabled":true,"effort":"ultra"},"max_tokens":512`, `{"max_tokens":4608,` + effort("ultra") + onDepth + `}`},
+			// Off still governs, and without On nothing changes.
+			{"On beside none", `"reasoning":{"enabled":true},"reasoning_effort":"none"`, off},
+			{"On holding none", `"reasoning":{"enabled":true,"effort":"none"}`, off},
+			{"Off beside minimal", `"reasoning":{"enabled":false},"reasoning_effort":"minimal"`, off},
+			{"minimal alone", `"reasoning_effort":"minimal"`, `{"max_tokens":4096` + strings.TrimSuffix(","+effort("low"), ",") + `}`},
+			{"minimal alone, in the object", `"reasoning":{"effort":"minimal"}`, `{"max_tokens":4096` + strings.TrimSuffix(","+effort("low"), ",") + `}`},
+			{"an unknown word alone", `"reasoning_effort":"ultra"`, `{"max_tokens":4096` + strings.TrimSuffix(","+effort("ultra"), ",") + `}`},
+			{"a bare false beside minimal is not On", `"reasoning":false,"reasoning_effort":"minimal"`, `{"max_tokens":4096` + strings.TrimSuffix(","+effort("low"), ",") + `}`},
+			// A budget the caller named stands.
+			{"named budget beside minimal", `"reasoning":{"enabled":true,"max_tokens":2048},"reasoning_effort":"minimal"`, `{"max_tokens":4096,` + effort("low") + `"thinking":{"budget_tokens":2048,"type":"enabled"}}`},
+		} {
+			if got := claudeWire(t, id, tc.fields, "tool_choice", "temperature", "top_p", "top_k"); got != tc.want {
+				t.Errorf("%s %s:\n got %s\nwant %s", id, tc.name, got, tc.want)
+			}
+		}
+	}
+	// Inside a funded allowance the budget On adds still fits below it.
+	for _, total := range []int{1024, 1025, 2000, 4096, 60000} {
+		for effort, budget := range map[string]int{"minimal": 1024, "ultra": 4096} {
+			req, body, authorized := fundedrequest.New(t, total, map[string]any{"enabled": true}, effort)
+			for _, model := range []string{"claude-haiku-4-5", "claude-opus-4-5"} {
+				native := anthropicChatReasoningBody(model, req, body)
+				fundedrequest.Check(t, buildAnthropicWireRequest(model, native.Messages, native), authorized, false)
+				thinking, _ := native.Thinking.(map[string]any)
+				if total <= 1024 {
+					if native.Thinking != nil {
+						t.Errorf("%s total=%d %s: thinking=%v below the provider minimum", model, total, effort, native.Thinking)
+					}
+				} else if want := min(budget, total-1); thinking["budget_tokens"] != want {
+					t.Errorf("%s total=%d %s: budget=%v, want %d", model, total, effort, thinking["budget_tokens"], want)
+				}
+			}
+		}
 	}
 }
 

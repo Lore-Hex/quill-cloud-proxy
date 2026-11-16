@@ -80,7 +80,8 @@ type claudeEffortStep struct {
 // sits below every ladder. It becomes the lowest effort where the model has
 // an effort field, and no thinking where the only control is a budget, whose
 // floor of 1,024 tokens is already low. A word that is not listed is sent as
-// written where there is an effort field and sets no budget.
+// written where there is an effort field and sets no budget. On beside either
+// still thinks on a budget class: see claudeBudgetReasoningBody.
 var claudeEffortLadders = map[claudeReasoningClass]map[string]claudeEffortStep{
 	claudeFull: {
 		"minimal": {effort: "low"}, "low": {effort: "low"}, "medium": {effort: "medium"},
@@ -100,15 +101,25 @@ var claudeEffortLadders = map[claudeReasoningClass]map[string]claudeEffortStep{
 	},
 }
 
-func (class claudeReasoningClass) step(effort string) claudeEffortStep {
+// step is what an effort word becomes on a class, and whether the class's
+// ladder lists the word.
+func (class claudeReasoningClass) step(effort string) (claudeEffortStep, bool) {
 	if step, listed := claudeEffortLadders[class][effort]; listed {
-		return step
+		return step, true
 	}
 	if class == claudeBudget {
-		return claudeEffortStep{}
+		return claudeEffortStep{}, false
 	}
-	return claudeEffortStep{effort: effort}
+	return claudeEffortStep{effort: effort}, false
 }
+
+const (
+	// claudeMinimumBudget is the smallest thinking budget Anthropic takes.
+	claudeMinimumBudget = 1024
+	// claudeOnBudget is the thinking budget On alone is, as the shared
+	// projection writes it.
+	claudeOnBudget = 4096
+)
 
 // claudeReasoningAsk is what a chat request asks of a Claude model.
 type claudeReasoningAsk struct {
@@ -170,7 +181,8 @@ func claudeAdaptiveReasoningBody(model string, class claudeReasoningClass, ask c
 		result.AnthropicMaxTokens = 0
 		return &result
 	case ask.effort != "":
-		result.OutputConfig = claudeOutputConfigWithEffort(body, class.step(ask.effort).effort)
+		step, _ := class.step(ask.effort)
+		result.OutputConfig = claudeOutputConfigWithEffort(body, step.effort)
 		// An explicit caller budget still takes precedence over an effort-derived
 		// thinking mode. The provider validates whether its model accepts budgets.
 		if values, ok := req.Reasoning.(map[string]any); ok && values["max_tokens"] != nil {
@@ -217,7 +229,7 @@ func claudeBudgetReasoningBody(class claudeReasoningClass, ask claudeReasoningAs
 		result.AnthropicMaxTokens = 0
 		return &result
 	case ask.effort != "":
-		step := class.step(ask.effort)
+		step, listed := class.step(ask.effort)
 		if step.effort != "" {
 			result.OutputConfig = claudeOutputConfigWithEffort(body, step.effort)
 		}
@@ -225,11 +237,21 @@ func claudeBudgetReasoningBody(class claudeReasoningClass, ask claudeReasoningAs
 			break
 		}
 		// On beside an effort is that effort, so the ladder's budget replaces
-		// whatever the shared projection chose. Thinking that only an effort
-		// asked for gives way where Anthropic refuses thinking outright.
-		// Thinking the caller turned on is left for the provider to judge.
+		// whatever the shared projection chose.
 		budget := step.budget
-		if !ask.on && claudeRefusesThinking(body) {
+		switch {
+		case ask.on && budget == 0:
+			// On is an explicit ask, so it always turns thinking on. Beside an
+			// effort below the ladder it is the smallest budget. Beside a word
+			// the ladder does not know it is what On alone asks for.
+			budget = claudeOnBudget
+			if listed {
+				budget = claudeMinimumBudget
+			}
+		case !ask.on && claudeRefusesThinking(body):
+			// Thinking that only an effort asked for gives way where Anthropic
+			// refuses thinking outright. Thinking the caller turned on is left
+			// for the provider to judge.
 			budget = 0
 		}
 		result.Thinking, result.AnthropicMaxTokens = adapter.AnthropicBudgetThinking(req, budget, body.MaxTokens)

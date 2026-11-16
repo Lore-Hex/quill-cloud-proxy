@@ -277,18 +277,19 @@ func TestClaudeThinkingSwitchWithEffortIsTheReasoningObject(t *testing.T) {
 		}
 	}
 	// An effort the model does not have is the nearest one it has. On a
-	// budget-only model max is the 8,192 budget, and minimal and an unknown
-	// effort set no thinking even beside On. Opus 4.5 is sent an effort it
-	// accepts: max and xhigh are high, minimal is low with no thinking. An
-	// unknown effort is still sent as written.
+	// budget-only model max is the 8,192 budget. Opus 4.5 is sent an effort
+	// it accepts: max and xhigh are high, minimal is low. An unknown effort
+	// is still sent as written. These requests all carry On, and On always
+	// turns thinking on: beside minimal it is the smallest budget, 1,024
+	// tokens, and beside an unknown effort it is the 4,096 of On alone.
 	for _, tc := range []struct{ upstream, effort, want string }{
 		{"claude-sonnet-4-5", "max", `{"thinking":{"budget_tokens":8192,"type":"enabled"}}`},
-		{"claude-sonnet-4-5", "minimal", `{}`},
-		{"claude-haiku-4-5", "ultra", `{}`},
+		{"claude-sonnet-4-5", "minimal", `{"thinking":{"budget_tokens":1024,"type":"enabled"}}`},
+		{"claude-haiku-4-5", "ultra", `{"thinking":{"budget_tokens":4096,"type":"enabled"}}`},
 		{"claude-haiku-4-5", "high", `{"thinking":{"budget_tokens":8192,"type":"enabled"}}`},
 		{"claude-opus-4-5", "max", `{"output_config":{"effort":"high"},"thinking":{"budget_tokens":8192,"type":"enabled"}}`},
-		{"claude-opus-4-5", "minimal", `{"output_config":{"effort":"low"}}`},
-		{"claude-opus-4-5", "ultra", `{"output_config":{"effort":"ultra"}}`},
+		{"claude-opus-4-5", "minimal", `{"output_config":{"effort":"low"},"thinking":{"budget_tokens":1024,"type":"enabled"}}`},
+		{"claude-opus-4-5", "ultra", `{"output_config":{"effort":"ultra"},"thinking":{"budget_tokens":4096,"type":"enabled"}}`},
 		{"claude-opus-4-5", "xhigh", `{"output_config":{"effort":"high"},"thinking":{"budget_tokens":8192,"type":"enabled"}}`},
 		{"claude-sonnet-4-6", "xhigh", `{"output_config":{"effort":"high"},"thinking":{"type":"adaptive"}}`},
 		{"claude-sonnet-4-6", "minimal", `{"output_config":{"effort":"low"},"thinking":{"type":"adaptive"}}`},
@@ -421,6 +422,35 @@ func TestClaudeEffortLadderWireTable(t *testing.T) {
 		}},
 		{"On object beside max", user, `"reasoning":{"enabled":true},"reasoning_effort":"max"`, map[string]string{
 			budget: `{"max_tokens":12288,` + think("8192") + `}`, opus45: `{"max_tokens":12288,"output_config":{"effort":"high"},` + think("8192") + `}`,
+		}},
+		// On always turns thinking on. Beside minimal, which alone sets no
+		// budget, it is the smallest budget. Beside an effort the gateway does
+		// not know it is the 4,096 tokens of On alone.
+		{"On object beside minimal", user, `"reasoning":{"enabled":true},"reasoning_effort":"minimal"`, map[string]string{
+			budget: `{"max_tokens":4096,` + think("1024") + `}`, opus45: `{"max_tokens":4096,"output_config":{"effort":"low"},` + think("1024") + `}`,
+			v46: adaptive("low"), full: adaptive("low"), haiku55: adaptive("low"),
+		}},
+		{"On object holding minimal", user, `"reasoning":{"enabled":true,"effort":"minimal"}`, map[string]string{
+			budget: `{"max_tokens":4096,` + think("1024") + `}`, opus45: `{"max_tokens":4096,"output_config":{"effort":"low"},` + think("1024") + `}`,
+		}},
+		{"On switch beside minimal", user, `"thinking":{"type":"enabled"},"reasoning_effort":"minimal"`, map[string]string{
+			budget: `{"max_tokens":4096,` + think("1024") + `}`, opus45: `{"max_tokens":4096,"output_config":{"effort":"low"},` + think("1024") + `}`,
+		}},
+		{"On object beside an unknown effort", user, `"reasoning":{"enabled":true},"reasoning_effort":"ultra"`, map[string]string{
+			budget: `{"max_tokens":8192,` + think("4096") + `}`, opus45: `{"max_tokens":8192,"output_config":{"effort":"ultra"},` + think("4096") + `}`,
+			v46: adaptive("ultra"), full: adaptive("ultra"),
+		}},
+		{"On switch beside an unknown effort", user, `"enable_thinking":true,"reasoning_effort":"ultra"`, map[string]string{
+			budget: `{"max_tokens":8192,` + think("4096") + `}`, opus45: `{"max_tokens":8192,"output_config":{"effort":"ultra"},` + think("4096") + `}`,
+		}},
+		{"On + minimal + required tool", user, `"thinking":{"type":"enabled"},"reasoning_effort":"minimal",` + required, map[string]string{
+			budget: `{"max_tokens":4096,` + think("1024") + `,"tool_choice":{"type":"any"}}`, opus45: `{"max_tokens":4096,"output_config":{"effort":"low"},` + think("1024") + `,"tool_choice":{"type":"any"}}`,
+		}},
+		{"On + minimal + sampling", user, `"reasoning":{"enabled":true,"effort":"minimal"},"temperature":0.2,"top_k":40,"top_p":0.5`, map[string]string{
+			budget: `{"max_tokens":4096,` + think("1024") + `}`, opus45: `{"max_tokens":4096,"output_config":{"effort":"low"},` + think("1024") + `}`,
+		}},
+		{"On beside none is Off", user, `"reasoning":{"enabled":true},"reasoning_effort":"none"`, map[string]string{
+			budget: `{"max_tokens":4096}`, opus45: disabled,
 		}},
 		// On alone is adaptive thinking with no effort on the full class, which
 		// refuses a thinking budget, and the 4,096 token budget elsewhere.

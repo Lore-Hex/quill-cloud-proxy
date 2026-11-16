@@ -134,7 +134,11 @@ The switch and the effort work together:
 * On beside an effort is that effort, wherever the effort is written.
   `reasoning: {"enabled": true}` beside `reasoning_effort: "low"` sends what
   `reasoning_effort: "low"` alone sends, and so does
-  `reasoning: {"enabled": true, "effort": "low"}`.
+  `reasoning: {"enabled": true, "effort": "low"}`. On always turns thinking
+  on. On Opus 4.5 and the Budget class, where `minimal` alone sets no
+  thinking, On beside `minimal` is the smallest budget, 1,024 tokens, and On
+  beside an effort the gateway does not know is the 4,096 tokens of On
+  alone.
 * On alone, with no effort, depends on the class. The Full class refuses a
   thinking budget, so On alone is sent there as
   `thinking: {"type": "adaptive"}` with no effort: the model thinks at its
@@ -180,8 +184,8 @@ Limits that remain:
   has always done this. `max` on the Budget class now does too.
 * An effort the gateway does not know is not on any ladder. It is sent as
   written in `output_config.effort` to the adaptive classes and to Opus 4.5,
-  and Anthropic refuses a word that is not one of its own. It sets no
-  thinking on Opus 4.5 and on the Budget class.
+  and Anthropic refuses a word that is not one of its own. Without On it
+  sets no thinking on Opus 4.5 and on the Budget class.
 * Off is the object `reasoning: {"enabled": false}` or a switch. A bare
   `reasoning: false` is not read as Off.
 
