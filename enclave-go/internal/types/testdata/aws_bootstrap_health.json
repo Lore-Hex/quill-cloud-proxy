@@ -1,0 +1,5 @@
+[
+  {"status":"ok","aws_bootstrap":{"policy":"transition","mode":"legacy"}},
+  {"status":"ok","aws_bootstrap":{"policy":"transition","mode":"attested","bundle_version":7}},
+  {"status":"ok","aws_bootstrap":{"policy":"strict","mode":"attested","bundle_version":8}}
+]

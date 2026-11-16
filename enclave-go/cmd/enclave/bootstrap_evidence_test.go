@@ -3,6 +3,8 @@ package main
 import (
 	"bytes"
 	"encoding/json"
+	"os"
+	"path/filepath"
 	"testing"
 	"time"
 
@@ -17,7 +19,15 @@ func TestHealthReportsAWSBootstrapEvidence(t *testing.T) {
 		privatemodeProbeResults.Store(previousProbes)
 	})
 	privatemodeProbeResults.Store(nil)
-	for _, evidence := range []types.AWSBootstrapEvidence{
+	fixture, err := os.ReadFile(filepath.Join("..", "..", "internal", "types", "testdata", "aws_bootstrap_health.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var wire []json.RawMessage
+	if err := json.Unmarshal(fixture, &wire); err != nil || len(wire) != 3 {
+		t.Fatalf("invalid shared bootstrap wire fixture: %v", err)
+	}
+	for i, evidence := range []types.AWSBootstrapEvidence{
 		{Policy: "transition", Mode: "legacy"},
 		{Policy: "transition", Mode: "attested", BundleVersion: 7},
 		{Policy: "strict", Mode: "attested", BundleVersion: 8},
@@ -28,6 +38,10 @@ func TestHealthReportsAWSBootstrapEvidence(t *testing.T) {
 		var output bytes.Buffer
 		writeHealthResponse(&output, false, time.Now())
 		_, body := readRawHTTPResponse(t, output.Bytes())
+		var expected bytes.Buffer
+		if err := json.Compact(&expected, wire[i]); err != nil || !bytes.Equal(body, expected.Bytes()) {
+			t.Fatalf("health wire contract changed: %s (%v)", body, err)
+		}
 		var result struct {
 			Status    string                     `json:"status"`
 			Bootstrap types.AWSBootstrapEvidence `json:"aws_bootstrap"`

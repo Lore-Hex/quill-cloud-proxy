@@ -47,7 +47,14 @@ def validate_health(body: bytes, policy: str, version: int, *, mode: str = "atte
     if not isinstance(result, dict) or result.get("status") != "ok":
         raise ValueError("enclave is not healthy")
     evidence = result.get("aws_bootstrap")
-    if not isinstance(evidence, dict) or set(evidence) != {"policy", "mode", "bundle_version"}:
+    if not isinstance(evidence, dict):
+        raise ValueError("enclave-owned bootstrap evidence missing")
+    # Go omits the zero version on legacy boots. Only the explicit Phase 3
+    # legacy check may normalize that representation, never attested checks.
+    if (policy == "transition" and mode == "legacy" and version == 0
+            and evidence == {"policy": "transition", "mode": "legacy"}):
+        evidence = {**evidence, "bundle_version": 0}
+    if set(evidence) != {"policy", "mode", "bundle_version"}:
         raise ValueError("enclave-owned bootstrap evidence missing")
     if evidence["mode"] != mode or evidence["policy"] != policy:
         raise ValueError("enclave bootstrap mode/policy mismatch")
