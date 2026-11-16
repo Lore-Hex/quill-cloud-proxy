@@ -118,9 +118,40 @@ class TestDeployNamesOnlyProvisionedSecrets(unittest.TestCase):
             self.demanded,
         )
 
-    def test_maple_secret_is_opt_in_until_an_actual_bundle_is_sealed(self) -> None:
-        self.assertIn('QUILL_MAPLE_SECRET="${QUILL_MAPLE_SECRET:-}"', self.deploy_text)
-        self.assertNotIn("QUILL_MAPLE_SECRET", self.demanded)
+    def test_every_sealed_secret_is_named_unless_documented_dark(self) -> None:
+        # The reverse of test_every_deployed_secret_is_provisioned. A sealed key
+        # the deploy leaves unnamed renders a template without that binding, and
+        # applying it removes a live provider. On 2026-11-16 this nearly dropped
+        # six serving providers from both Azure regions during a routine roll.
+        self.assertEqual(
+            sealer.sealed_but_unnamed(self.provisioned, self.demanded),
+            [],
+            "sealed in the Azure bundle but not named by a deploy-azure-aci.sh "
+            "default; name it, or add it to SEALED_BUT_DARK_ON_AZURE with a reason",
+        )
+
+    def test_dark_exceptions_are_sealed_and_unnamed(self) -> None:
+        # The exception list cannot go stale: each entry is still sealed, still
+        # dark, and carries a reason.
+        named = set(self.demanded.values())
+        for name, reason in sealer.SEALED_BUT_DARK_ON_AZURE.items():
+            self.assertIn(name, self.provisioned)
+            self.assertNotIn(name, named)
+            self.assertTrue(reason.strip())
+
+    def test_sealed_live_providers_are_named_by_default(self) -> None:
+        # The six bindings the live Azure container groups carry (sealed in
+        # bundle 8df3ba43) must survive a plain deploy.
+        for env, name in {
+            "QUILL_PRIVATEMODE_SECRET": "trustedrouter-privatemode-api-key",
+            "QUILL_MAPLE_SECRET": "trustedrouter-maple-api-key",
+            "QUILL_HIXTUBE_SECRET": "trustedrouter-hixtube-api-key",
+            "QUILL_TELLUVIAN_SECRET": "trustedrouter-telluvian-api-key",
+            "QUILL_SYSTEM1MODELS_EU_SECRET": "trustedrouter-system1models-eu-api-key",
+            "QUILL_SYSTEM1MODELS_GLOBAL_SECRET": "trustedrouter-system1models-global-api-key",
+        }.items():
+            self.assertEqual(self.demanded.get(env), name, env)
+            self.assertIn(name, self.provisioned)
 
     def test_negbeta_is_opt_in_until_an_actual_bundle_is_sealed(self) -> None:
         self.assertIn('QUILL_NEGBETA_SECRET="${QUILL_NEGBETA_SECRET:-}"', self.deploy_text)
@@ -149,6 +180,28 @@ class TestDeployParseIsHonest(unittest.TestCase):
         self.assertEqual(
             sealer.deploy_demanded_names(sample),
             {"QUILL_STEPFUN_SECRET": "trustedrouter-stepfun-api-key"},
+        )
+
+    def test_unset_only_default_is_demanded_under_its_name(self) -> None:
+        # "${X-name}" demands its name exactly like "${X:-name}"; parsing only
+        # ":-" let unset-only names (Foundry, Bedrock, ...) skip both checks.
+        sample = 'QUILL_AZURE_SECRET="${QUILL_AZURE_SECRET-trustedrouter-azure-api-key}"\n'
+        self.assertEqual(
+            sealer.deploy_demanded_names(sample),
+            {"QUILL_AZURE_SECRET": "trustedrouter-azure-api-key"},
+        )
+
+    def test_a_sealed_but_empty_default_would_fail(self) -> None:
+        # Regression fixture for the 2026-11-16 near-miss: a sealed provider
+        # whose deploy default is empty is reported as dropped.
+        provisioned = {"trustedrouter-privatemode-api-key", "quill-device-keys"}
+        deploy = (
+            'QUILL_DEVICE_KEYS_SECRET="${QUILL_DEVICE_KEYS_SECRET:-quill-device-keys}"\n'
+            'QUILL_PRIVATEMODE_SECRET="${QUILL_PRIVATEMODE_SECRET:-}"\n'
+        )
+        self.assertEqual(
+            sealer.sealed_but_unnamed(provisioned, sealer.deploy_demanded_names(deploy)),
+            ["trustedrouter-privatemode-api-key"],
         )
 
     def test_a_reintroduced_unprovisioned_default_would_fail(self) -> None:
