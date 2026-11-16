@@ -5,6 +5,28 @@ Follow the phase order in [the design](../design/aws-attested-secret-release.md)
 Neither merging this tool nor publishing a bundle changes the serving parent
 or enclave mode. IAM, KMS and Secrets Manager writes require Joseph's approval.
 
+## Provisioning record: 2026-11-16
+
+Phase 0 and Phase 1 infrastructure were applied after the preceding operator
+released the AWS reservation and this migration acquired its own fence.
+Phase 0 imported four existing resources without changes and created the
+approved admin role, signer and alias. Phase 1 created the two private artifact
+buckets, builder repository and additive artifact policies. A fresh Terraform
+plan reported no drift. These steps did not change the serving fleet or its
+legacy secret access.
+
+* Signer: `arn:aws:kms:eu-west-1:330422590279:key/14d1c5b4-0b95-4c5c-995c-9511ff1038ab`.
+* Signer public DER SHA-256:
+  `1a8b304b7a2c84ce2d1ac24d5e3505160636a672358844e197f7540c9e38b37f`.
+* The public key compiled into the transitional image was compared directly
+  with KMS GetPublicKey. The image's minimum bundle version is 1.
+* The builder was pushed to the dedicated ECR repository and read back as
+  `sha256:7367ca7473a74d70433aa29bbce60ecef6aa0f713f7a361e18f90cd4c1044c06`.
+
+At this checkpoint, no recipient-only CMK or sealed runtime bundle existed,
+and no migration candidate had booted. This record is provisioning evidence,
+not evidence of attested secret delivery or completed cutover.
+
 ## Before publication
 
 1. Complete the signer and CI-built EIF stages. Authenticate the published
