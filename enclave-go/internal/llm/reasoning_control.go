@@ -48,23 +48,38 @@ func applyChatReasoningEffort(provider string, req *qtypes.OpenAIChatRequest, bo
 		// silently used upstream defaults (including when effort was "none").
 		wire.ReasoningEffort = effort
 		wire.Reasoning = nil
-	case "privatemode":
-		// preparePrivatemodeWire owns these fields, and PrepareChatRequest
-		// replaces whatever is set here with its result.
-	default:
-		// Every other OpenAI-compatible host. A live probe of six of them
-		// (docs/reasoning-output.md) found all six read a top-level
-		// reasoning_effort, some ignore an effort that is only inside the
-		// reasoning object, and all accept both together. So an effort written
-		// only inside the object also goes top-level, and the object stays as
-		// the request holds it. Off governs: beside reasoning.enabled=false
-		// nothing is added. A native Messages request is passed through: its
-		// thinking object is forwarded as written and nothing is derived from it.
+	case "deepinfra", "io-net", "nebius", "novita", "parasail", "together":
+		// Hosts outside the effort list, each observed on 2026-11-16
+		// (docs/reasoning-output.md) to honor a top-level reasoning_effort, to
+		// accept it together with the reasoning object, and to accept it on a
+		// model that does not reason. Together and Nebius, and probably
+		// Parasail, ignore an effort that is only inside the object. So here an
+		// effort of low, medium or high written only inside the object also
+		// goes top-level, and the object stays as the request holds it. Off
+		// governs: beside reasoning.enabled=false nothing is added. A native
+		// Messages request is passed through: its thinking object is forwarded
+		// as written and nothing is derived from it.
+		//
+		// Served requests change here, so the list holds only what was
+		// observed. Add a host after it has been observed, not before. Every
+		// other host is sent the reasoning fields as the request holds them.
 		native := body != nil && body.NativeContent
-		if !native && strings.TrimSpace(req.ReasoningEffort) == "" && !chatReasoningExplicitlyOff(req) {
+		if !native && strings.TrimSpace(req.ReasoningEffort) == "" && !chatReasoningExplicitlyOff(req) && topLevelCopiedEffort(effort) {
 			wire.ReasoningEffort = effort
 		}
 	}
+}
+
+// topLevelCopiedEffort reports the efforts copied top-level for the observed
+// hosts. Any other word (none, off, minimal, xhigh, max, auto, an unknown
+// one) was not observed, and a host that validates the top-level field could
+// refuse it, so it stays inside the object alone.
+func topLevelCopiedEffort(effort string) bool {
+	switch effort {
+	case "low", "medium", "high":
+		return true
+	}
+	return false
 }
 
 // chatReasoningExplicitlyOff reports a reasoning object that says
