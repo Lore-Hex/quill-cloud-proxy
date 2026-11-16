@@ -292,11 +292,18 @@ MUTATIONS = [
      'rollout_step gate_hold pong "${region}" bash', 'rollout_step bash',
      "OneRegion.test_a_pong_failure_while_the_control_plane_moves_holds_then_promotes"),
     ("forward deadline ignores holds", SECONDARY,
-     '  [ "$(date +%s)" -ge "$((deadline + held))" ]', '  [ "$(date +%s)" -ge "${deadline}" ]',
+     '  [ "$(date +%s)" -ge "$((forward_deadline + held))" ]', '  [ "$(date +%s)" -ge "${forward_deadline}" ]',
      "OneRegion.test_holding_extends_the_forward_deadline_by_exactly_the_hold"),
     ("forward deadline never passes", SECONDARY,
-     '  [ "$(date +%s)" -ge "$((deadline + held))" ]', "  false",
+     '  [ "$(date +%s)" -ge "$((forward_deadline + held))" ]', "  false",
      "OneRegion.test_work_outside_a_hold_keeps_the_base_deadline"),
+    # The bug this name fixes: the hook read a global named deadline, which
+    # the library's local of that name shadows while a gate is in flight.
+    ("the stop hook reads a shadowable deadline", SECONDARY,
+     'forward_deadline_passed() {\n  [ -n "${forward_deadline}" ] || return 1\n',
+     'deadline="${forward_deadline}"\nforward_deadline_passed() {\n  local forward_deadline="${deadline}"\n'
+     '  [ -n "${forward_deadline}" ] || return 1\n',
+     "OneRegion.test_a_gate_in_flight_stops_when_the_forward_deadline_passes"),
     ("a killed pre-dns gate skips the cold restore", VERIFY,
      "trap 'exit 143' TERM\n", "",
      "VerifyColdSwap.test_term_mid_cold_swap_restores_the_cname_and_marks_no_rerun"),
