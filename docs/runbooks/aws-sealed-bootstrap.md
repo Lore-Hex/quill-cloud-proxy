@@ -85,6 +85,59 @@ detects use, not compromise prevention, and is not two-person approval.
 
 ## Before publication
 
+### Recipient-only key provisioning and denial evidence
+
+On 2026-11-16, the approved Phase 4 plan added seven resources without
+changing or deleting any existing resource. The exact regional CMKs are:
+
+* Dublin: `arn:aws:kms:eu-west-1:330422590279:key/8eb99ae5-e78a-4427-86ab-7762bf8285bc`.
+* Paris: `arn:aws:kms:eu-west-3:330422590279:key/a21065e5-ee25-44f3-8662-b4ca30b89447`.
+
+Each has an independent `quill/attested-bootstrap-v2` ciphertext record.
+The additive parent policy names exactly those two keys and records. Both
+key policies accepted only the CI-authenticated transitional measurement
+documented above, had no root delegation or grants, and retained the explicit
+recipient and mutation denials. Existing credential access was not revoked.
+
+The actual `quill-enclave-role` session of isolated, non-serving candidate
+`i-09e301f758fce1b8b` passed nine live denial controls against each regional key:
+Decrypt without a recipient, ReEncrypt, GenerateDataKey, Encrypt, CreateGrant,
+PutKeyPolicy, signer Sign, a valid unpublished-image Nitro document, and a
+valid debug-mode Nitro document. Each returned `AccessDeniedException` with
+an AWS request ID. The probes used random test data, not customer credentials.
+Mutation controls used AWS dry-run where supported; PutKeyPolicy submitted
+the unchanged current policy. Before/after policy checks confirmed no change.
+
+SSM evidence command IDs, in privileges/unpublished/debug order:
+
+* Dublin: `96fc9bb3-732d-49a2-a907-f815d81d6ed1`,
+  `a1e1e96d-0ba0-4d88-b586-51ce37023b9c`,
+  `575a1f32-9f59-427e-8e46-dd7170b75715`.
+* Paris: `85265ab2-e362-473a-9492-f883d3e20b71`,
+  `79362285-da71-4fc5-a355-36382a4c7aae`,
+  `f0623b28-09b7-4668-84cc-5138581291bc`.
+
+The fresh Nitro documents were independently checked against the AWS root,
+nonce, instance, measurements and RSA public-key requirements before the KMS
+calls. The diagnostic enclaves were terminated afterward. Neither diagnostic
+measurement was added to an admission list. The final denial completed at
+`2026-11-16T18:53:25Z`.
+
+KMS normalizes a singleton condition array to a string and may reorder the
+administrator principal list in readback. The release checker accepts the
+equivalent singleton encoding, while still requiring the exact nonzero
+measurement set and complete explicit Deny. Tests cover changed, missing,
+extra, malformed and debug measurements. This is representation handling,
+not a policy exception.
+
+`attested-release.json` now requires both exact key ARNs on every admission
+check. Do not disable it to bypass a missing key or failed policy check. The
+legacy shell IAM and secret-sync paths also refuse operation after activation.
+These controls do not prove fleet adoption: require attested boot on every
+serving instance and complete the strict cutover before making that claim.
+
+### Operator checklist
+
 1. Complete the signer and CI-built EIF stages. Authenticate the published
    measurements from CI, never from a host requesting admission. Confirm the
    candidate image contains the approved signer public key and minimum version.
