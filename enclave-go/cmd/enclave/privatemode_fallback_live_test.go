@@ -32,7 +32,7 @@ func TestLivePrivatemodeRejectionToAttestedTinfoil(t *testing.T) {
 		t.Fatal("explicit key and isolated attestation socket required")
 	}
 	if os.Getenv("TR_LIVE_START_SIDECAR") == "1" {
-		child := exec.CommandContext(t.Context(), "/attest-sidecar", "-socket", os.Getenv("TINFOIL_ATTEST_SOCKET"))
+		child := exec.CommandContext(t.Context(), "/attest-sidecar", "-socket", os.Getenv("TINFOIL_ATTEST_SOCKET")) // #nosec G204 -- fixed binary; socket path is operator-supplied for this opt-in test
 		child.Env = []string{"PATH=/usr/bin:/bin"}
 		child.Stdout, child.Stderr = os.Stderr, os.Stderr
 		if err := child.Start(); err != nil {

@@ -1,9 +1,8 @@
 # Build container for the Go enclave EIF.
-# Two stages:
-#   - builder: pinned golang base, builds a static-PIE binary
-#   - runtime: scratch — single binary, no shell, no libc, no /etc/*
-# The EIF measurement is a function of the rootfs bytes, so the runtime
-# being literally one binary is what makes the PCR0 small + auditable.
+# Pinned builders assemble the gateway, attestation/provider helpers, and the
+# optional local Rampart worker. The scratch runtime has no shell; Rampart
+# includes Node and its dynamic-library closure. The EIF measurement covers
+# the complete rootfs, including the pinned model and tokenizer.
 #
 # REPRODUCIBILITY: the base image is pinned by sha256 digest, not just by
 # tag. `golang:1.26-bookworm` is mutable (Docker reuses the tag every
@@ -68,7 +67,7 @@ RUN go build -trimpath -tags "${BUILD_TAGS}" \
       -ldflags="-s -w -extldflags=-static -X github.com/Lore-Hex/quill-cloud-proxy/enclave-go/internal/trustedrouter.ShadowBuildRevision=${SOURCE_REVISION}" \
       -o /out/quill-enclave ./cmd/enclave
 
-# scratch keeps the EIF tiny and the PCR0 surface minimal.
+# The scratch runtime contains only the explicitly copied runtime components.
 # ─── attest-sidecar binary ──────────────────────────────────────────────────
 #
 # Lives in its own Go module (enclave-go/sidecar/go.mod) so its heavy dep graph
@@ -88,7 +87,15 @@ RUN cd sidecar && go mod download \
 
 RUN mkdir -p /out/rootfs/tmp && chmod 1777 /out/rootfs/tmp
 
+FROM node:24-bookworm-slim@sha256:dc26ae92c9fb15cf6b1d63e20f0944b2efe0f115b20e00be48fb23fceb061c54 AS rampart
+WORKDIR /rampart
+COPY rampart/package.json rampart/package-lock.json ./
+RUN npm ci --ignore-scripts
+COPY rampart/ ./
+RUN node model.mjs && npm test && sh rootfs.sh
+
 FROM scratch
+COPY --from=rampart /rootfs/ /
 COPY --from=maple /out/maple-transport /maple-transport
 COPY --from=maple /src/MAPLE-LICENSE /licenses/maple-MIT.txt
 ENV TR_ASYNC_SETTLE_SHADOW=on

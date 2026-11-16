@@ -1,0 +1,34 @@
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Sid": "ReadProviderSecrets", "Effect": "Allow",
+      "Action": ["secretsmanager:GetSecretValue", "secretsmanager:DescribeSecret"],
+      "Resource": "arn:aws:secretsmanager:*:330422590279:secret:quill/*"
+    },
+    {
+      "Sid": "DecryptKMSViaSecretsManager", "Effect": "Allow",
+      "Action": ["kms:Decrypt", "kms:DescribeKey"],
+      "Resource": "arn:aws:kms:*:330422590279:key/*",
+      "Condition": {"StringLike": {"kms:ViaService": "secretsmanager.*.amazonaws.com"}}
+    },
+    {
+      "Sid": "DecryptCrossCloudSAKeyDirect", "Effect": "Allow",
+      "Action": ["kms:Decrypt", "kms:DescribeKey"],
+      "Resource": [
+        "arn:aws:kms:eu-west-1:330422590279:key/d2535b04-c182-4262-adaa-c9489ce0d196",
+        "arn:aws:kms:eu-west-3:330422590279:key/0646cbd6-2687-4561-a7d9-f55aed89d16c"
+      ]
+    },
+    {
+      "Sid": "PullECR", "Effect": "Allow",
+      "Action": ["ecr:GetAuthorizationToken", "ecr:BatchCheckLayerAvailability", "ecr:GetDownloadUrlForLayer", "ecr:BatchGetImage"],
+      "Resource": "*"
+    },
+    {
+      "Sid": "Logs", "Effect": "Allow",
+      "Action": ["logs:CreateLogGroup", "logs:CreateLogStream", "logs:PutLogEvents"],
+      "Resource": "arn:aws:logs:eu-west-3:330422590279:log-group:/quill/*"
+    }
+  ]
+}

@@ -40,13 +40,7 @@ func applyChatReasoningEffort(provider string, req *qtypes.OpenAIChatRequest, bo
 	if effort == "" {
 		return
 	}
-	// The shared Anthropic projection synthesizes a budget for old Claude
-	// models. It is not a native thinking configuration for other providers.
-	if body != nil && !body.NativeContent {
-		if thinking, ok := wire.Thinking.(map[string]any); ok && thinking["budget_tokens"] != nil {
-			wire.Thinking = nil
-		}
-	}
+	dropSynthesizedThinkingBudget(body, wire)
 	switch normalizeDirectProvider(provider) {
 	case "meta", "openai", "gemini", "google-ai-studio", "deepseek", "zai", "kimi", "mistral", "alibaba", "tencent", "tinfoil", "grok", "baseten", "crusoe", "cerebras", "fireworks":
 		// These chat endpoints consume top-level reasoning_effort. Responses
@@ -54,6 +48,16 @@ func applyChatReasoningEffort(provider string, req *qtypes.OpenAIChatRequest, bo
 		// silently used upstream defaults (including when effort was "none").
 		wire.ReasoningEffort = effort
 		wire.Reasoning = nil
+	}
+}
+
+// The shared Anthropic projection synthesizes a budget for old Claude models.
+// It is not a native thinking configuration for other providers.
+func dropSynthesizedThinkingBudget(body *qtypes.AnthropicMessagesRequest, wire *openAICompatibleRequest) {
+	if body != nil && !body.NativeContent {
+		if thinking, ok := wire.Thinking.(map[string]any); ok && thinking["budget_tokens"] != nil {
+			wire.Thinking = nil
+		}
 	}
 }
 

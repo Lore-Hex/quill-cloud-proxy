@@ -58,7 +58,9 @@ updates:
     open-pull-requests-limit: 5
 
   - package-ecosystem: "terraform"
-    directory: "/tools/dns"
+    directories:
+      - "/tools/dns"
+      - "/tools/aws-secrets"
     schedule:
       interval: "weekly"
       day: "tuesday"
