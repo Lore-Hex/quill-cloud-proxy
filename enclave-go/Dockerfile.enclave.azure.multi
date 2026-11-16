@@ -26,7 +26,7 @@ FROM golang:1.27.4-bookworm@sha256:4fa7c968ba93f1635670522dbb01a2c78150443e13857
 ENV CGO_ENABLED=0 GOOS=linux GOARCH=amd64
 WORKDIR /src
 RUN curl --fail --show-error --silent --location --retry 3 --max-time 300 \
-    https://codeload.github.com/edgelesssys/privatemode-public/tar.gz/2634ffb82c72339902f26ae071db513add2bdc2f \
+    https://codeload.github.com/edgelesssys/privatemode-public/tar.gz/3c98e0abf3219a6ebcc29112867a5f004605041b \
     -o /tmp/privatemode-source.tar.gz
 COPY third_party/privatemode ./third_party/privatemode
 RUN bash third_party/privatemode/build.sh /tmp/privatemode-source.tar.gz /out/privatemode-proxy
