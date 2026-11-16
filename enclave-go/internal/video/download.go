@@ -7,6 +7,8 @@ import (
 	"net/http"
 	"net/url"
 	"strings"
+
+	"github.com/Lore-Hex/quill-cloud-proxy/enclave-go/internal/llm"
 )
 
 func downloadVideo(
@@ -17,6 +19,10 @@ func downloadVideo(
 	headers http.Header,
 ) (*PollResult, error) {
 	parsed, err := validateDownloadURL(rawURL)
+	if err != nil {
+		return nil, fmt.Errorf("%s video download: %w", provider, err)
+	}
+	httpc, err = llm.ProviderArtifactHTTPClient(httpc, parsed.String())
 	if err != nil {
 		return nil, fmt.Errorf("%s video download: %w", provider, err)
 	}

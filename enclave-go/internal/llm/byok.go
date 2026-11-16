@@ -387,7 +387,7 @@ func invokeOpenAICompatibleStreamingWithClientOptions(
 	if decisionCompletion {
 		return translateOpenAICompletionToAnthropic(resp.Body, out, normalizeDirectProvider(provider))
 	}
-	return translateOpenAIStreamToAnthropicForProvider(resp.Body, out, normalizeDirectProvider(provider))
+	return RelayOpenAIStream(resp.Body, out, normalizeDirectProvider(provider))
 }
 
 func buildOpenAICompatibleRequest(

@@ -12,6 +12,7 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"net/netip"
 	"net/url"
 	"sort"
 	"strings"
@@ -238,8 +239,11 @@ type nearAISingleConnection struct {
 }
 
 func newNearAISingleConnection(domain string) (*nearAISingleConnection, *http.Client, error) {
-	if domain != strings.ToLower(domain) || !strings.HasSuffix(domain, ".completions.near.ai") ||
-		strings.ContainsAny(domain, "/:@") {
+	approved := false
+	for _, known := range nearAIDirectDomains {
+		approved = approved || domain == known
+	}
+	if !approved {
 		return nil, nil, errors.New("llm/near-ai: invalid pinned direct endpoint")
 	}
 	connection := &nearAISingleConnection{
@@ -259,7 +263,7 @@ func newNearAISingleConnection(domain string) (*nearAISingleConnection, *http.Cl
 	}
 	connection.transport.DialTLSContext = connection.dialTLS
 	httpc := &http.Client{
-		Transport: connection.transport,
+		Transport: &pinnedProviderEgressTransport{base: connection.transport, host: domain},
 		CheckRedirect: func(_ *http.Request, _ []*http.Request) error {
 			return errors.New("llm/near-ai: redirects are forbidden on attested direct endpoints")
 		},
@@ -284,6 +288,12 @@ func (c *nearAISingleConnection) dialTLS(ctx context.Context, network, address s
 	cancel()
 	if err != nil {
 		return nil, fmt.Errorf("llm/near-ai: resolve direct endpoint: %w", err)
+	}
+	for _, address := range addresses {
+		ip, parseErr := netip.ParseAddr(address)
+		if parseErr != nil || !allowedPublicIP(ip.Unmap()) {
+			return nil, errProviderEgress
+		}
 	}
 	selected, err := nearAIAddressForAttempt(addresses, c.attempt)
 	if err != nil {

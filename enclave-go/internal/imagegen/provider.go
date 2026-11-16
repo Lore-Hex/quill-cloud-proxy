@@ -463,6 +463,9 @@ func (r *Registry) generateBFL(
 		pollReq.Header.Set("Accept", "application/json")
 		pollBody, pollStatus, pollErr := r.doLimited(pollReq, maxProviderErrorBytes)
 		if pollErr != nil {
+			if llm.IsProviderEgressDenied(pollErr) {
+				return nil, pollErr
+			}
 			pollDelay = nextImagePollDelay(pollDelay)
 			continue
 		}
@@ -541,7 +544,14 @@ func (r *Registry) downloadBFLResult(ctx context.Context, rawURL string, resolve
 	if err != nil {
 		return nil, fmt.Errorf("create BFL result request: %w", err)
 	}
-	body, status, err := r.doLimited(req, maxGeneratedImageBytes)
+	client, err := llm.ProviderArtifactHTTPClient(r.http, parsed.String())
+	if err != nil {
+		return nil, err
+	}
+	defer client.CloseIdleConnections()
+	downloadRegistry := *r
+	downloadRegistry.http = client
+	body, status, err := downloadRegistry.doLimited(req, maxGeneratedImageBytes)
 	if err != nil {
 		return nil, err
 	}

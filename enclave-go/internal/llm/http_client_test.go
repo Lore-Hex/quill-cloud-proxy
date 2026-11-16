@@ -22,7 +22,11 @@ func TestPooledHTTPClientUsesTunedTransport(t *testing.T) {
 	if client.Timeout != 30*time.Second {
 		t.Fatalf("timeout = %s, want 30s", client.Timeout)
 	}
-	tracked, ok := client.Transport.(*upstreamcert.Transport)
+	guarded, ok := client.Transport.(*providerEgressTransport)
+	if !ok {
+		t.Fatalf("transport = %T, want provider egress enforcement", client.Transport)
+	}
+	tracked, ok := guarded.base.(*upstreamcert.Transport)
 	if !ok {
 		t.Fatalf("transport = %T, want *upstreamcert.Transport", client.Transport)
 	}
@@ -32,6 +36,9 @@ func TestPooledHTTPClientUsesTunedTransport(t *testing.T) {
 	}
 	if !transport.ForceAttemptHTTP2 {
 		t.Fatal("ForceAttemptHTTP2 = false, want true")
+	}
+	if transport.Proxy != nil {
+		t.Fatal("provider transport must ignore environment proxies")
 	}
 	if transport.MaxIdleConns < 1024 {
 		t.Fatalf("MaxIdleConns = %d, want at least 1024", transport.MaxIdleConns)
