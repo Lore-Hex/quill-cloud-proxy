@@ -1,7 +1,8 @@
 {
   "accepted_pcr0s": [
     "1c9cce6aee2a3b058554976df8c375cb08363a8d237fe436e1f39712ac34206050880280384229d1dcf24f713752e58e",
-    "432d24f7f1f07c6a3a877769ed4c6e7579326a669ed65d0b60a6b440e3d2d5a69d5ce58d2b19b0d585d086397386fb1e"
+    "432d24f7f1f07c6a3a877769ed4c6e7579326a669ed65d0b60a6b440e3d2d5a69d5ce58d2b19b0d585d086397386fb1e",
+    "9ca5c924cbf0fc3f8ae99ced9cf57ef743579e45fc214affef7bda3a7d4d08dcf543d6aab36a30046ed1bd21441b7f6f"
   ],
   "api_base_url": "https://api-aws.trustedrouter.com/v1",
   "attestation_format": "cose-sign1-nitro-attestation-document",
@@ -29,10 +30,11 @@
     "mode": "acme-inside-nitro-enclave"
   },
   "transition_target": {
-    "image_digest": "sha256:f10a24255c896db4a8ad1ea750f133c663ed7c8462d965d43b3f03a6fc238e6a",
-    "observed_module_id": "i-0265c851d3caaf144-enc01a1ad3f93426363",
-    "pcr0": "432d24f7f1f07c6a3a877769ed4c6e7579326a669ed65d0b60a6b440e3d2d5a69d5ce58d2b19b0d585d086397386fb1e",
-    "source_commit": "ec57cca1ae725d3f5de8dd7ca3f1cf1a478a533f",
+    "image_digest": "sha256:3c2a5fa3478d4d715bcbf2aef7e5b06f4dce62aba9ac2ddbce44acdeee3b04e5",
+    "measurement_provenance": "Paris standalone candidate i-09e7887097ad4c328 (launch template quill-enclave-lt v50, a clone of serving v49 with only the enclave image digest changed), outside the ASG, every regional target group and routing DNS. Exact PCR0, Nitro root chain, certificate SPKI and fingerprint, TLS exporter channel binding and same-socket follow-up verified over an SSM forward; wrong-PCR0 control rejected. Built by tools/release-aws-enclave.sh (linux/amd64, cloud_aws,llm_multi, acme). The serving fleet remains on the primary record's source and measurement. Source-to-image provenance is operator-asserted, not independent AWS image reproduction.",
+    "observed_module_id": "i-09e7887097ad4c328-enc01a1e1bf552d5307",
+    "pcr0": "9ca5c924cbf0fc3f8ae99ced9cf57ef743579e45fc214affef7bda3a7d4d08dcf543d6aab36a30046ed1bd21441b7f6f",
+    "source_commit": "09e2c5cd2b42116a4df33148b262da73ae3e9573",
     "source_commit_provenance": "operator-asserted",
     "state": "isolated-candidate"
   },

@@ -35,6 +35,8 @@ var contractParameterCategories = map[string]struct{}{
 	"modalities": {}, "prompt_cache_retention": {}, "usage": {}, "other": {},
 	"allow_fallbacks":                   {},
 	"cache_control":                     {},
+	"chat_template_kwargs":              {},
+	"client_metadata":                   {},
 	"debug":                             {},
 	"depth":                             {},
 	"frequency_penalty":                 {},

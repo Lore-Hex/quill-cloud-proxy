@@ -90,6 +90,7 @@ PROVIDER_KEY_ALIASES: dict[str, str] = {
     "DIGITAL_OCEAN_API_KEY": "trustedrouter-digitalocean-api-key",
     "ENGY_API_KEY": "trustedrouter-engy-api-key",
     "EXA_API_KEY": "trustedrouter-exa-api-key",
+    "CONTEXT_DEV_API_KEY": "trustedrouter-context-dev-api-key",
     "INCEPTRON_API_KEY": "trustedrouter-inceptron-api-key",
     "KLING_API_KEY": "trustedrouter-kling-api-key",
     "LTX_API_KEY": "trustedrouter-ltx-api-key",

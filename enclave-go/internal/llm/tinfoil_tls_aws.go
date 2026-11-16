@@ -5,32 +5,21 @@ package llm
 import (
 	"context"
 	"crypto/tls"
-	"errors"
 	"net"
-	"net/http"
 
-	"github.com/Lore-Hex/quill-cloud-proxy/enclave-go/internal/upstreamcert"
+	"github.com/Lore-Hex/quill-cloud-proxy/enclave-go/internal/vsockhttp"
 )
 
 // dialTinfoilTLS keeps TLS termination and fingerprint verification inside
 // Nitro. The parent vsock proxy receives only encrypted TLS records.
 func dialTinfoilTLS(ctx context.Context, network, addr string) (net.Conn, error) {
-	httpc := defaultHTTPClient()
-	tracked, ok := httpc.Transport.(*upstreamcert.Transport)
-	if !ok {
-		return nil, errors.New("tinfoil: AWS vsock transport unavailable")
+	host, port, err := net.SplitHostPort(addr)
+	if err != nil || host != tinfoilEnclaveHost || port != "443" {
+		return nil, errProviderEgress
 	}
-	transport, ok := tracked.Base.(*http.Transport)
-	if !ok || transport.DialContext == nil {
-		return nil, errors.New("tinfoil: AWS vsock transport unavailable")
-	}
+	transport := vsockhttp.NewTransport(awsProviderTunnels)
 	rawConn, err := transport.DialContext(ctx, network, addr)
 	if err != nil {
-		return nil, err
-	}
-	host, _, err := net.SplitHostPort(addr)
-	if err != nil {
-		_ = rawConn.Close()
 		return nil, err
 	}
 	tlsConn := tls.Client(rawConn, &tls.Config{

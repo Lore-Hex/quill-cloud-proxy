@@ -66,6 +66,7 @@ type BootstrapData struct {
 	AdvisorWorkerPrompt         string          `json:"advisor_worker_prompt,omitempty"`
 	AdvisorPrompt               string          `json:"advisor_prompt,omitempty"`
 	ExaAPIKey                   string          `json:"exa_api_key,omitempty"`
+	ContextDevAPIKey            string          `json:"context_dev_api_key,omitempty"`
 
 	// Anthropic direct (only populated for the llm_anthropic build target).
 	// Same trust posture as the OpenRouter key — pulled from Secret Manager
@@ -652,7 +653,8 @@ type ResponseRequestMeta struct {
 	WebSearchCalls       []ResponseWebSearchCall
 	OutputAnnotations    []map[string]any
 	// FunctionNamespaces maps the name a namespaced function is sent to the
-	// provider under to the namespace and name the caller declared it with.
+	// provider under to the namespace and name the caller declared it with,
+	// or replayed a call to it with when the tools no longer declare it.
 	FunctionNamespaces map[string]ResponseNamespacedFunction
 }
 

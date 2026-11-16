@@ -25,7 +25,7 @@
 #   bash tools/deploy-aws-nitro.sh --apply --phase iam              # apply one phase
 #
 # Phases (run in order; each is idempotent):
-#   iam        IAM role + policies + instance profile (for EC2 hosts)
+#   iam        IAM role + policies + instance profile (requires existing CMKs)
 #   oidc       GitHub Actions OIDC identity provider + deployer role
 #   kms        KMS CMK for GCP-SA-key + BYOK envelope wrapping
 #   network    VPC + subnets + security group
@@ -233,19 +233,23 @@ phase_iam() {
   local cmk_alias="alias/${PROJECT_TAG}-cmk"
   local cmk_arns="" r key_id
   for r in $regions; do
-    key_id=$(aws kms list-aliases --region "$r" \
+    if ! key_id=$(aws kms list-aliases --region "$r" \
       --query "Aliases[?AliasName=='${cmk_alias}'].TargetKeyId" \
-      --output text 2>/dev/null || echo "")
-    if [ -n "$key_id" ] && [ "$key_id" != "None" ]; then
+      --output text); then
+      log "FATAL: cannot resolve ${cmk_alias} in ${r}; no IAM changes made"
+      return 1
+    fi
+    if [[ "$key_id" =~ ^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$ ]]; then
       cmk_arns="${cmk_arns}\"arn:aws:kms:${r}:${AWS_ACCOUNT}:key/${key_id}\","
     else
-      # CMK not provisioned in this region yet (phase_kms hasn't run).
-      # Wildcard scoped to that account+region; phase_kms creates exactly
-      # one CMK, and the next apply tightens it to the specific key.
-      cmk_arns="${cmk_arns}\"arn:aws:kms:${r}:${AWS_ACCOUNT}:key/*\","
-      log "  WARN: ${cmk_alias} not yet provisioned in ${r}; wildcarding direct-decrypt there"
+      log "FATAL: ${cmk_alias} missing or invalid in ${r}; provision its CMK explicitly before IAM. No wildcard decrypt grant is permitted."
+      return 1
     fi
   done
+  if [ -z "$cmk_arns" ]; then
+    log "FATAL: no enclave KMS regions resolved; no IAM changes made"
+    return 1
+  fi
   cmk_arns="[${cmk_arns%,}]"
   log "  IAM policy covers regions: ${regions}"
 

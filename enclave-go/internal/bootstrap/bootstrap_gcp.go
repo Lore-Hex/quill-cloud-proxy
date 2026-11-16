@@ -193,6 +193,7 @@ func Fetch(ctx context.Context) (*types.BootstrapData, error) {
 	klingSecret := os.Getenv("QUILL_KLING_SECRET")
 	xiaomiSecret := os.Getenv("QUILL_XIAOMI_SECRET")
 	exaSecret := os.Getenv("QUILL_EXA_SECRET")
+	contextDevSecret := os.Getenv("QUILL_CONTEXT_DEV_SECRET")
 	synthPanelPromptSecret := os.Getenv("QUILL_SYNTH_PANEL_PROMPT_SECRET")
 	synthSynthesisPromptSecret := os.Getenv("QUILL_SYNTH_SYNTHESIS_PROMPT_SECRET")
 	synthCodePanelPromptSecret := os.Getenv("QUILL_SYNTH_CODE_PANEL_PROMPT_SECRET")
@@ -714,6 +715,13 @@ func Fetch(ctx context.Context) (*types.BootstrapData, error) {
 		}
 	}
 	var synthPanelPrompt []byte
+	var contextDevKey []byte
+	if contextDevSecret != "" {
+		contextDevKey, err = fetchSecret(ctx, httpc, token, project, contextDevSecret)
+		if err != nil {
+			return nil, fmt.Errorf("bootstrap/gcp: context.dev key: %w", err)
+		}
+	}
 	if synthPanelPromptSecret != "" {
 		synthPanelPrompt, err = fetchSecret(ctx, httpc, token, project, synthPanelPromptSecret)
 		if err != nil {
@@ -853,6 +861,7 @@ func Fetch(ctx context.Context) (*types.BootstrapData, error) {
 		KlingAPIKey:                  strings.TrimSpace(string(klingKey)),
 		XiaomiAPIKey:                 strings.TrimSpace(string(xiaomiKey)),
 		ExaAPIKey:                    strings.TrimSpace(string(exaKey)),
+		ContextDevAPIKey:             strings.TrimSpace(string(contextDevKey)),
 		TrustedRouterBaseURL:         os.Getenv("TR_CONTROL_PLANE_BASE_URL"),
 		TrustedRouterInternalToken:   strings.TrimSpace(internalGatewayToken),
 		AsyncSettleTicketPublicKeys:  os.Getenv("TR_ASYNC_SETTLE_TICKET_PUBLIC_KEYS"),
