@@ -1,5 +1,5 @@
-# Phase 0 imports only. Freeze the existing objects so adoption cannot alter
-# serving access, key policy, or rotation. Later reviewed phases own cutover.
+# The role and legacy keys remain adopted and frozen. Only the parent's
+# inline policy is owned here for the separately approved Phase 6 cutover.
 resource "aws_iam_role" "parent" {
   name = "quill-enclave-role"
   assume_role_policy = jsonencode({
@@ -20,10 +20,9 @@ resource "aws_iam_role" "parent" {
 resource "aws_iam_role_policy" "parent" {
   name   = "quill-enclave-policy"
   role   = aws_iam_role.parent.name
-  policy = file("${path.module}/legacy-parent-policy.json")
+  policy = file("${path.module}/ciphertext-only-parent-policy.json")
   lifecycle {
     prevent_destroy = true
-    ignore_changes  = all
   }
 }
 
