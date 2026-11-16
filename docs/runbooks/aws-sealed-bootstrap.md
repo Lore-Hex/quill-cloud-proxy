@@ -97,6 +97,12 @@ terminal transcripts or logs during inspection.
 
 ## Serving and cutover gates
 
+For the Phase 3 transitional-image release, before sealed bundles or the dual
+parent are enabled, use the same verified-socket probe with `--policy transition
+--mode legacy --version 0`. This explicitly confirms the expected temporary
+fallback state. It is not proof of attested secret delivery. The verifier's
+default remains `attested`; strict policy never accepts a legacy expectation.
+
 Test real KMS recipient release, debug and unpublished-image denial, missing
 recipient denial, ReEncrypt denial, and denied host signing/key mutation before
 relying on v2. The captured public CMS fixture and unit tests are not a
