@@ -381,7 +381,7 @@ func TestProviderCircuitFailedProbeReopensAfterOneCall(t *testing.T) {
 	plane := newProviderCircuitControlPlane(t, model, providerCircuitTestCandidate{provider, "circuit-probe/glm-5.3-flash@circuit-probe/prepaid"})
 	upstream := &providerCircuitTestUpstream{}
 	upstream.setFailure(provider, providerCircuitUpstreamStatus(502))
-	const bearer = "circuit-probe-key"
+	const bearer = "circuit-probe-key" //nolint:gosec // deterministic public test fixture, not a credential
 	for i := 0; i < 3; i++ {
 		serveProviderCircuitRequest(t, plane, upstream, bearer, "/v1/chat/completions", chatBodyForCircuit(model, false))
 	}
@@ -517,7 +517,7 @@ func TestProviderCircuitFailoverSkipsOpenCandidatesAndFailsFastWhenAllOpen(t *te
 	)
 	upstream := &providerCircuitTestUpstream{}
 	upstream.setFailure("circuit-alpha", providerCircuitUpstreamStatus(503))
-	const bearer = "circuit-pair-key"
+	const bearer = "circuit-pair-key" //nolint:gosec // deterministic public test fixture, not a credential
 
 	// Alpha fails and beta serves; three failures open alpha for this tenant.
 	for i := 1; i <= 3; i++ {
