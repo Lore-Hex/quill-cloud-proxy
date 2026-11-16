@@ -61,6 +61,12 @@ func reasoningWire(t *testing.T, route wireRoute, fields string) string {
 		}
 		encoded = prepared.Bytes
 	}
+	return wireControls(t, encoded, keys)
+}
+
+// wireControls returns the named members of a provider request as compact JSON.
+func wireControls(t *testing.T, encoded []byte, keys []string) string {
+	t.Helper()
 	var wire map[string]any
 	if err := json.Unmarshal(encoded, &wire); err != nil {
 		t.Fatal(err)
@@ -100,13 +106,19 @@ var wireSwitchSpellings = map[string][]string{
 // a rule: where a row looks wrong, the row is the finding. In particular a
 // host with no reviewed reasoning contract is sent the effort of a switch
 // plus effort request inside the reasoning object, while an effort alone goes
-// top-level. See the open decisions in docs/reasoning-output.md.
+// top-level. The six such hosts that were probed are sent it in both places.
+// See "Hosts outside the effort list" in docs/reasoning-output.md.
 func TestChatThinkingSwitchWireTable(t *testing.T) {
 	const (
 		effortField  = `{"reasoning_effort":"high"}`
 		budget       = `"thinking":{"budget_tokens":4096,"type":"enabled"}`
 		reasoningOn  = `"reasoning":{"enabled":true}`
 		reasoningOff = `{"reasoning":{"enabled":false}}`
+		// The reasoning object holding the switch and the effort.
+		effortObject = `{"reasoning":{"effort":"high","enabled":true}}`
+		// The same object and the effort again top-level, where every probed
+		// host reads it.
+		objectAndEffort = `{"reasoning":{"effort":"high","enabled":true},"reasoning_effort":"high"}`
 	)
 	type row struct {
 		routes                                   []wireRoute
@@ -133,9 +145,16 @@ func TestChatThinkingSwitchWireTable(t *testing.T) {
 		// Hosts with no reviewed reasoning contract take the request fields as
 		// sent: a switch beside an effort is the reasoning object holding both.
 		"generic hosts": {
-			routes: hosts("together", "deepinfra", "novita", "groq", "parasail", "nebius", "siliconflow", "venice", "phala", "near-ai", "gmi", "friendli", "wafer", "minimax", "chutes", "cloudflare-workers-ai", "azure", "nvidia-nim", "sambanova", "huggingface"),
+			routes: hosts("groq", "siliconflow", "venice", "phala", "near-ai", "gmi", "friendli", "wafer", "minimax", "chutes", "cloudflare-workers-ai", "azure", "nvidia-nim", "sambanova", "huggingface", "openrouter", "perplexity", "neurometric", "engy", "hixtube"),
 			effort: effortField, on: `{` + reasoningOn + `,` + budget + `}`, off: reasoningOff,
-			onWithEffort: `{"reasoning":{"effort":"high","enabled":true}}`, offEffort: reasoningOff,
+			onWithEffort: effortObject, offEffort: reasoningOff,
+		},
+		// The six of those hosts that were probed. They take the same fields,
+		// and the effort is also sent top-level, as an effort alone is.
+		"probed generic hosts": {
+			routes: hosts("together", "deepinfra", "novita", "parasail", "nebius", "io-net"),
+			effort: effortField, on: `{` + reasoningOn + `,` + budget + `}`, off: reasoningOff,
+			onWithEffort: objectAndEffort, offEffort: reasoningOff,
 		},
 		// Chat endpoints that read top-level reasoning_effort and no reasoning object.
 		"reasoning_effort hosts": {
@@ -179,7 +198,7 @@ func TestChatThinkingSwitchWireTable(t *testing.T) {
 		"openai model on another host": {
 			routes: []wireRoute{{kind: "chat", provider: "gmi", model: "openai/gpt-5.5", upstream: "gpt-5.5", tools: true}},
 			effort: effortField, on: `{` + reasoningOn + `,` + budget + `}`, off: reasoningOff,
-			onWithEffort: `{"reasoning":{"effort":"high","enabled":true}}`, offEffort: reasoningOff,
+			onWithEffort: effortObject, offEffort: reasoningOff,
 		},
 		"claude budget-only": {
 			routes: claude("claude-haiku-4-5", "claude-sonnet-4-5", "us.anthropic.claude-haiku-4-5-20251001-v1:0", "claude-sonnet-4-5@20250929"),
@@ -241,22 +260,89 @@ func wireHost(provider string) wireRoute {
 
 // TestCanonicalReasoningRequestsOnProviderWires records what the canonical
 // reasoning fields put on a few provider wires today. Like the table above it
-// records current behavior, not a rule.
+// records current behavior, not a rule. On a probed generic host (Together
+// here) an effort of low, medium or high written only inside the reasoning
+// object is also sent top-level, unless the object says enabled=false. On any
+// other generic host (OpenRouter and GMI here) the fields go as the request
+// holds them.
 func TestCanonicalReasoningRequestsOnProviderWires(t *testing.T) {
+	together := wireRoute{kind: "chat", provider: "together", model: "m", upstream: "m"}
+	openrouter := wireRoute{kind: "chat", provider: "openrouter", model: "m", upstream: "m"}
 	for _, tc := range []struct {
 		route        wireRoute
 		fields, want string
 	}{
-		{wireRoute{kind: "chat", provider: "together", model: "m", upstream: "m"}, `"reasoning":{"effort":"high"}`, `{"reasoning":{"effort":"high"}}`},
-		{wireRoute{kind: "chat", provider: "together", model: "m", upstream: "m"}, `"reasoning":{"enabled":true,"effort":"high"}`, `{"reasoning":{"effort":"high","enabled":true}}`},
-		{wireRoute{kind: "chat", provider: "together", model: "m", upstream: "m"}, `"reasoning":{"enabled":true},"reasoning_effort":"high"`, `{"reasoning":{"enabled":true},"reasoning_effort":"high"}`},
-		{wireRoute{kind: "chat", provider: "together", model: "m", upstream: "m"}, `"output_config":{"effort":"high"},"thinking":{"type":"adaptive"}`, `{"reasoning":{"effort":"high","enabled":true}}`},
+		{together, `"reasoning":{"effort":"high"}`, `{"reasoning":{"effort":"high"},"reasoning_effort":"high"}`},
+		{together, `"reasoning":{"effort":"medium"}`, `{"reasoning":{"effort":"medium"},"reasoning_effort":"medium"}`},
+		{together, `"reasoning":{"effort":"low"}`, `{"reasoning":{"effort":"low"},"reasoning_effort":"low"}`},
+		{together, `"reasoning":{"enabled":true,"effort":"high"}`, `{"reasoning":{"effort":"high","enabled":true},"reasoning_effort":"high"}`},
+		{together, `"reasoning":{"enabled":true},"reasoning_effort":"high"`, `{"reasoning":{"enabled":true},"reasoning_effort":"high"}`},
+		{together, `"output_config":{"effort":"high"},"thinking":{"type":"adaptive"}`, `{"reasoning":{"effort":"high","enabled":true},"reasoning_effort":"high"}`},
+		{together, `"output_config":{"effort":"high"}`, `{"reasoning":{"effort":"high"},"reasoning_effort":"high"}`},
+		{together, `"reasoning":{"enabled":false,"effort":"high"}`, `{"reasoning":{"effort":"high","enabled":false}}`},
+		{together, `"reasoning":{"enabled":false},"reasoning_effort":"high"`, `{"reasoning":{"enabled":false},"reasoning_effort":"high"}`},
+		{together, `"reasoning":{"effort":"low"},"reasoning_effort":"high"`, `{"reasoning":{"effort":"low"},"reasoning_effort":"high"}`},
+		// Only low, medium and high are copied top-level.
+		{together, `"reasoning":{"effort":"none"}`, `{"reasoning":{"effort":"none"}}`},
+		{together, `"reasoning":{"effort":"minimal"}`, `{"reasoning":{"effort":"minimal"}}`},
+		{together, `"reasoning":{"effort":"xhigh"}`, `{"reasoning":{"effort":"xhigh"}}`},
+		{together, `"reasoning":{"effort":"max"}`, `{"reasoning":{"effort":"max"}}`},
+		{together, `"reasoning":{"effort":"ultra"}`, `{"reasoning":{"effort":"ultra"}}`},
+		{together, `"thinking":{"type":"enabled"},"reasoning_effort":"max"`, `{"reasoning":{"effort":"max","enabled":true}}`},
+		{together, `"output_config":{"effort":"xhigh"}`, `{"reasoning":{"effort":"xhigh"}}`},
+		// A generic host that was not probed.
+		{openrouter, `"reasoning":{"effort":"high"}`, `{"reasoning":{"effort":"high"}}`},
+		{openrouter, `"reasoning":{"enabled":true,"effort":"high"}`, `{"reasoning":{"effort":"high","enabled":true}}`},
+		{openrouter, `"output_config":{"effort":"high"},"thinking":{"type":"adaptive"}`, `{"reasoning":{"effort":"high","enabled":true}}`},
+		{openrouter, `"output_config":{"effort":"high"}`, `{"reasoning":{"effort":"high"}}`},
+		{openrouter, `"thinking":{"type":"enabled"},"reasoning_effort":"high"`, `{"reasoning":{"effort":"high","enabled":true}}`},
+		{openrouter, `"reasoning_effort":"high"`, `{"reasoning_effort":"high"}`},
+		{wireRoute{kind: "chat", provider: "gmi", model: "openai/gpt-5.5", upstream: "gpt-5.5", tools: true}, `"reasoning":{"effort":"high"}`, `{"reasoning":{"effort":"high"}}`},
+		{wireRoute{kind: "chat", provider: "mistral", model: "m", upstream: "m"}, `"reasoning":{"effort":"high"}`, `{"reasoning_effort":"high"}`},
 		{wireRoute{kind: "chat", provider: "mistral", model: "m", upstream: "m"}, `"reasoning":{"enabled":true,"effort":"high"}`, `{"reasoning_effort":"high"}`},
 		{wireRoute{kind: "chat", provider: "zai", model: "z-ai/glm-5.3", upstream: "glm-5.3"}, `"reasoning":{"enabled":true,"effort":"high"}`, `{"reasoning_effort":"high","thinking":{"type":"enabled"}}`},
 		{wireRoute{kind: "chat", provider: "fireworks", model: "m", upstream: "m"}, `"reasoning":{"enabled":false,"effort":"high"}`, `{"reasoning_effort":"none"}`},
 	} {
 		if got := reasoningWire(t, tc.route, tc.fields); got != tc.want {
 			t.Errorf("%s %s: got %s, want %s", tc.route.provider, tc.fields, got, tc.want)
+		}
+	}
+}
+
+// TestResponsesEffortOnProviderWires records where the effort of a Responses
+// API request goes on a chat completions wire. Responses carries the effort
+// inside the reasoning object. A probed generic host is sent low, medium or
+// high there and top-level, any other generic host inside the object alone,
+// and a provider on the effort list top-level only.
+func TestResponsesEffortOnProviderWires(t *testing.T) {
+	for _, tc := range []struct{ provider, fields, want string }{
+		{"together", `,"reasoning":{"effort":"high"}`, `{"reasoning":{"effort":"high"},"reasoning_effort":"high"}`},
+		{"together", `,"reasoning":{"effort":"high","summary":"auto"}`, `{"reasoning":{"effort":"high","summary":"auto"},"reasoning_effort":"high"}`},
+		{"together", `,"reasoning":{"effort":"minimal"}`, `{"reasoning":{"effort":"minimal"}}`},
+		{"together", `,"reasoning":{"effort":"none"}`, `{"reasoning":{"effort":"none"}}`},
+		{"together", ``, `{}`},
+		{"openrouter", `,"reasoning":{"effort":"high","summary":"auto"}`, `{"reasoning":{"effort":"high","summary":"auto"}}`},
+		{"groq", `,"reasoning":{"effort":"high"}`, `{"reasoning":{"effort":"high"}}`},
+		{"mistral", `,"reasoning":{"effort":"high","summary":"auto"}`, `{"reasoning_effort":"high"}`},
+	} {
+		responses, err := parseResponsesRequest([]byte(`{"model":"m","input":"test"` + tc.fields + `}`))
+		if err != nil {
+			t.Fatalf("%s: %v", tc.fields, err)
+		}
+		req, err := adapter.ResponsesToChat(responses)
+		if err != nil {
+			t.Fatalf("%s: %v", tc.fields, err)
+		}
+		body, err := adapter.ToAnthropic(req, req.Model)
+		if err != nil {
+			t.Fatal(err)
+		}
+		prepared, err := llm.PrepareChatRequest(tc.provider, "m", req, body, []llm.ChatMessage{{Role: "user", Content: "test"}}, llm.ChatPreparationOptions{})
+		if err != nil {
+			t.Fatalf("%s %s: %v", tc.provider, tc.fields, err)
+		}
+		if got := wireControls(t, prepared.Bytes, []string{"reasoning", "reasoning_effort", "thinking"}); got != tc.want {
+			t.Errorf("%s %s: got %s, want %s", tc.provider, tc.fields, got, tc.want)
 		}
 	}
 }

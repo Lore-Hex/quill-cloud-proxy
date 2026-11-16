@@ -15,6 +15,7 @@ Run: python3 tools/test_mirror_independence.py
 from __future__ import annotations
 
 import json
+import re
 import subprocess
 import unittest
 from collections import Counter
@@ -119,15 +120,16 @@ class MirrorIndependence(unittest.TestCase):
             and not Path(name).name.startswith("test_")
         }
 
-        # One script holds the S3 commands. Comment lines, including those in a
-        # workflow step's shell, run nothing.
+        # One script holds S3 writes. Published-EIF downloads use only the two
+        # explicitly allowed read operations. Unknown operations remain writes
+        # for this check. Comments, including in workflow shell, run nothing.
         self.assertEqual(
             sorted(
-                [name for name, text in scripts.items() if "aws s3" in _code(text)]
+                [name for name, text in scripts.items() if _has_s3_writer(text)]
                 + [
                     name
                     for name, doc in workflows.items()
-                    if any("aws s3" in _code(value) for _, value in _strings(doc))
+                    if any(_has_s3_writer(value) for _, value in _strings(doc))
                 ]
             ),
             ["tools/publish-trust-s3.sh"],
@@ -203,6 +205,19 @@ class MirrorIndependence(unittest.TestCase):
             if command != "Lore-Hex/quill-cloud-proxy/.github/actions/cosign-install@":
                 self.assertFalse(step.get("continue-on-error"), command)
 
+    def test_s3_read_exceptions_do_not_allow_writers(self) -> None:
+        for operation in ("head-object", "get-object"):
+            self.assertFalse(_has_s3_writer(f"aws s3api {operation} --bucket example"))
+        for command in (
+            "aws s3 sync . s3://example/", "aws s3 cp file s3://example/",
+            "aws s3api put-object", "aws s3api delete-object", "aws s3api copy-object",
+            "aws s3api complete-multipart-upload", "aws s3api put-bucket-policy",
+            "aws s3api get-object-unknown", "aws s3api", "aws s3",
+            "aws s3api get-object --bucket example\naws s3api put-object",
+        ):
+            with self.subTest(command=command):
+                self.assertTrue(_has_s3_writer(command))
+
 
 def _step(workflow: dict, command: str) -> int:
     """The index of the single job's first step that uses or runs command."""
@@ -216,6 +231,13 @@ def _step(workflow: dict, command: str) -> int:
 def _code(text: str) -> str:
     """text without its comment lines."""
     return "\n".join(line for line in text.splitlines() if not line.lstrip().startswith("#"))
+
+
+def _has_s3_writer(text: str) -> bool:
+    code = _code(text)
+    # Preserve the existing conservative scan, removing only exact read verbs.
+    code = re.sub(r"\baws\s+s3api\s+(?:head-object|get-object)(?=\s|$)", "", code)
+    return re.search(r"\baws\s+s3(?:api)?\b", code) is not None
 
 
 def _strings(node: object, path: tuple = ()) -> list[tuple[tuple, str]]:

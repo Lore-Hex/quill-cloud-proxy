@@ -25,7 +25,7 @@
 #   bash tools/deploy-aws-nitro.sh --apply --phase iam              # apply one phase
 #
 # Phases (run in order; each is idempotent):
-#   iam        IAM role + policies + instance profile (for EC2 hosts)
+#   iam        IAM role + policies + instance profile (requires existing CMKs)
 #   oidc       GitHub Actions OIDC identity provider + deployer role
 #   kms        KMS CMK for GCP-SA-key + BYOK envelope wrapping
 #   network    VPC + subnets + security group
@@ -33,7 +33,8 @@
 #   compute    Launch template + Auto Scaling Group + NLB + target group
 #   quotas     Submit Service Quotas request for m5.xlarge
 #   cross-cloud-key  Create GCP SA, mint a key, wrap with AWS KMS, store in
-#                    AWS Secrets Manager. Re-running rotates the key.
+#                    AWS Secrets Manager. Run by name it rotates the key;
+#                    as part of "all" it leaves a stored key alone.
 
 set -euo pipefail
 
@@ -46,6 +47,12 @@ PROJECT_TAG="${PROJECT_TAG:-quill-enclave}"
 ECR_REPO_NAME="${ECR_REPO_NAME:-quill-enclave}"
 PARENT_ECR_REPO_NAME="${PARENT_ECR_REPO_NAME:-quill-parent}"
 PARENT_PUMP_ECR_REPO_NAME="${PARENT_PUMP_ECR_REPO_NAME:-quill-parent-pump}"
+# Mandatory signed CI artifacts for compute changes. Existing instances are
+# unaffected until a separately gated candidate/fleet rollout consumes them.
+AWS_EIF_MANIFEST="${AWS_EIF_MANIFEST:-}"
+AWS_EIF_SIGNATURE="${AWS_EIF_SIGNATURE:-}"
+AWS_EIF_SOURCE_COMMIT="${AWS_EIF_SOURCE_COMMIT:-}"
+CANDIDATE_TEMPLATE_ONLY="${CANDIDATE_TEMPLATE_ONLY:-0}"
 # The release image has run ACME since 2026-08-23. Keep this overrideable for
 # the standalone self-signed deployment, whose separation model deliberately
 # carries no cross-cloud GCP credential and therefore must skip the ACME-only
@@ -232,19 +239,23 @@ phase_iam() {
   local cmk_alias="alias/${PROJECT_TAG}-cmk"
   local cmk_arns="" r key_id
   for r in $regions; do
-    key_id=$(aws kms list-aliases --region "$r" \
+    if ! key_id=$(aws kms list-aliases --region "$r" \
       --query "Aliases[?AliasName=='${cmk_alias}'].TargetKeyId" \
-      --output text 2>/dev/null || echo "")
-    if [ -n "$key_id" ] && [ "$key_id" != "None" ]; then
+      --output text); then
+      log "FATAL: cannot resolve ${cmk_alias} in ${r}; no IAM changes made"
+      return 1
+    fi
+    if [[ "$key_id" =~ ^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$ ]]; then
       cmk_arns="${cmk_arns}\"arn:aws:kms:${r}:${AWS_ACCOUNT}:key/${key_id}\","
     else
-      # CMK not provisioned in this region yet (phase_kms hasn't run).
-      # Wildcard scoped to that account+region; phase_kms creates exactly
-      # one CMK, and the next apply tightens it to the specific key.
-      cmk_arns="${cmk_arns}\"arn:aws:kms:${r}:${AWS_ACCOUNT}:key/*\","
-      log "  WARN: ${cmk_alias} not yet provisioned in ${r}; wildcarding direct-decrypt there"
+      log "FATAL: ${cmk_alias} missing or invalid in ${r}; provision its CMK explicitly before IAM. No wildcard decrypt grant is permitted."
+      return 1
     fi
   done
+  if [ -z "$cmk_arns" ]; then
+    log "FATAL: no enclave KMS regions resolved; no IAM changes made"
+    return 1
+  fi
   cmk_arns="[${cmk_arns%,}]"
   log "  IAM policy covers regions: ${regions}"
 
@@ -628,7 +639,7 @@ phase_ecr() {
 # ─── Phase: Compute (Launch Template + ASG + NLB + parent + enclave) ─────
 phase_compute() {
   log "=== phase: compute ==="
-  log "  prerequisites: ECR has the cloud_aws,llm_multi enclave image"
+  log "  prerequisites: signed CI-built EIF published in both regional buckets"
   log "  prerequisites: ECR has the parent image (parent/Dockerfile.parent)"
   log "  prerequisites: IAM role + KMS CMK + security group provisioned"
   log "  prerequisites: Service Quotas approved m5.xlarge to >= ASG_MAX"
@@ -636,16 +647,46 @@ phase_compute() {
   # Resolve everything we need from earlier phases. Each lookup fails
   # the run early if a prereq is missing — better than producing a
   # half-wired ASG.
-  local enclave_repo_url="${AWS_ACCOUNT}.dkr.ecr.${AWS_REGION}.amazonaws.com/${ECR_REPO_NAME}"
   local parent_repo_url="${AWS_ACCOUNT}.dkr.ecr.${AWS_REGION}.amazonaws.com/${PARENT_ECR_REPO_NAME}"
-  local enclave_tag parent_tag
-
-  enclave_tag=$(latest_ecr_tag "$ECR_REPO_NAME" "aws-release-" || echo "None")
-  if [ "$enclave_tag" = "None" ] || [ -z "$enclave_tag" ]; then
-    log "  ERROR: no enclave image found in ECR ${ECR_REPO_NAME}; build via deploy-enclave-aws.yml"
+  local parent_tag
+  if [ "$AWS_ACCOUNT" != "330422590279" ] || [ -z "$AWS_EIF_MANIFEST" ] || [ -z "$AWS_EIF_SIGNATURE" ] || [ -z "$AWS_EIF_SOURCE_COMMIT" ]; then
+    log "  ERROR: compute requires the approved AWS account and signed CI manifest, signature and source commit"
     return 1
   fi
-  log "  enclave image: ${enclave_repo_url}:${enclave_tag}"
+  if [ "$CANDIDATE_TEMPLATE_ONLY" != 0 ] && [ "$CANDIDATE_TEMPLATE_ONLY" != 1 ]; then
+    log "  ERROR: CANDIDATE_TEMPLATE_ONLY must be 0 or 1"
+    return 1
+  fi
+  local verified_eif eif_sha eif_size eif_source eif_pcr0
+  # No template or fleet changes before signed public and runtime admission.
+  # check-ready is read-only and independently checks the shared rollout fence.
+  if [ "$DRY_RUN" -eq 0 ]; then
+    (cd "$SCRIPT_DIR/.." && python3 -m tools.aws_eif_admission check-ready \
+      --manifest "$AWS_EIF_MANIFEST" --signature "$AWS_EIF_SIGNATURE" \
+      --expected-source "$AWS_EIF_SOURCE_COMMIT")
+  fi
+  verified_eif=$(python3 "$SCRIPT_DIR/aws_eif_manifest.py" verify \
+    --manifest "$AWS_EIF_MANIFEST" --signature "$AWS_EIF_SIGNATURE" \
+    --expected-source "$AWS_EIF_SOURCE_COMMIT")
+  read -r eif_sha eif_size eif_source eif_pcr0 < <(printf '%s' "$verified_eif" | python3 -c \
+    'import json,sys; r=json.load(sys.stdin); print(r["eif_sha256"],r["eif_size_bytes"],r["source_commit"],r["measurements"]["PCR0"])')
+  local eif_bucket="quill-enclave-eif-${AWS_REGION}-${AWS_ACCOUNT}"
+  local eif_object_key="releases/${eif_source}/${eif_sha}/enclave.eif"
+  local ami_id
+  case "$AWS_REGION" in
+    eu-west-1) ami_id="ami-00fcaf85b81e85b1d" ;;
+    eu-west-3) ami_id="ami-07dcdf1066ae9dad3" ;;
+    *) log "  ERROR: no reviewed, pinned Nitro host AMI for $AWS_REGION"; return 1 ;;
+  esac
+  # An authenticated manifest must not produce a template for a missing or
+  # partially published EIF. S3's own checksum is over the uploaded bytes.
+  local eif_head
+  eif_head=$(aws s3api head-object --region "$AWS_REGION" --bucket "$eif_bucket" \
+    --key "$eif_object_key" --checksum-mode ENABLED --output json)
+  printf '%s' "$eif_head" | python3 -c \
+    'import base64,json,sys; h=json.load(sys.stdin); assert h.get("ContentLength")==int(sys.argv[2]) and h.get("ChecksumSHA256")==base64.b64encode(bytes.fromhex(sys.argv[1])).decode(), "published EIF checksum/size mismatch"' \
+    "$eif_sha" "$eif_size"
+  log "  verified EIF: s3://${eif_bucket}/${eif_object_key} PCR0=${eif_pcr0}"
 
   parent_tag=$(latest_ecr_tag "$PARENT_ECR_REPO_NAME" "parent-aws-release-" || echo "None")
   if [ "$parent_tag" = "None" ] || [ -z "$parent_tag" ]; then
@@ -699,14 +740,7 @@ phase_compute() {
     return 1
   fi
 
-  # Resolve a current Amazon Linux 2023 AMI for x86_64 in this region.
-  # We use the SSM public parameter so the AMI ID stays current as AWS
-  # publishes patches.
-  local ami_id
-  ami_id=$(aws ssm get-parameter \
-    --name "/aws/service/ami-amazon-linux-latest/al2023-ami-kernel-default-x86_64" \
-    --region "$AWS_REGION" --query "Parameter.Value" --output text)
-  log "  AL2023 AMI: $ami_id"
+  log "  pinned AL2023 AMI: $ami_id; host Nitro CLI: 1.5.0-0.amzn2023"
 
   # Build the user-data script. This runs on every fresh EC2 boot.
   # The script:
@@ -714,7 +748,7 @@ phase_compute() {
   #   2. Configures the enclave allocator (CPU + memory)
   #   3. Logs in to ECR
   #   4. Pulls + runs the parent container (FastAPI + TCP pump + bootstrap RPC)
-  #   5. Pulls the enclave image, converts to .eif, runs the enclave
+  #   5. Downloads the CI-built EIF, verifies bytes, runs the enclave
   #
   # The parent container is started with --network host so it can bind
   # 8443 (FastAPI) and 8444 (TCP pump) on the host's interfaces and reach
@@ -735,7 +769,8 @@ aws configure set ca_bundle /etc/pki/tls/certs/ca-bundle.crt
 sudo -Hu ec2-user aws configure set ca_bundle /etc/pki/tls/certs/ca-bundle.crt
 
 # 1. Nitro Enclaves CLI + Docker
-dnf install -y aws-nitro-enclaves-cli aws-nitro-enclaves-cli-devel docker
+dnf install -y aws-nitro-enclaves-cli-1.5.0-0.amzn2023 docker --releasever=2023.12.20261028
+test "\$(nitro-cli --version)" = "Nitro CLI 1.5.0"
 usermod -aG ne ec2-user
 usermod -aG docker ec2-user
 
@@ -1132,18 +1167,16 @@ docker run -d --restart=always --name=quill-parent-pump \\
   -e QUILL_PUMP_ENCLAVE_PORT=8001 \\
   ${parent_pump_repo_url}:${parent_pump_tag}
 
-# 5. Enclave image → .eif → run-enclave
-#
-# nitro-cli build-enclave fails with "[E51] Artifacts path environment
-# variable not set" when run from cloud-init under root with no HOME-
-# based config. Set NITRO_CLI_ARTIFACTS explicitly so the build can
-# write its intermediate artifacts (typically a .img + manifest).
-export NITRO_CLI_ARTIFACTS=/var/cache/nitro_enclaves
-mkdir -p "\$NITRO_CLI_ARTIFACTS" /opt/quill
-docker pull ${enclave_repo_url}:${enclave_tag}
-nitro-cli build-enclave \\
-  --docker-uri ${enclave_repo_url}:${enclave_tag} \\
-  --output-file /opt/quill/enclave.eif
+# 5. Download the signed CI artifact. Never build an EIF on a serving host.
+# The deployment authenticated the manifest; these exact bytes and size are
+# pinned into the launch template. A failed read/check never starts the EIF.
+mkdir -p /opt/quill
+aws s3api get-object --region ${AWS_REGION} --bucket ${eif_bucket} \\
+  --key ${eif_object_key} /opt/quill/enclave.eif.tmp >/dev/null
+test "\$(stat -c %s /opt/quill/enclave.eif.tmp)" = "${eif_size}"
+printf '%s  %s\\n' '${eif_sha}' /opt/quill/enclave.eif.tmp | sha256sum --check --strict
+chmod 0600 /opt/quill/enclave.eif.tmp
+mv /opt/quill/enclave.eif.tmp /opt/quill/enclave.eif
 
 # Run the enclave under systemd, NOT as a bare boot command. A bare
 # run-enclave dies permanently on any crash (or a debug-mode test), taking
@@ -1200,6 +1233,22 @@ EOS
   existing_lt_id=$(aws ec2 describe-launch-templates --region "$AWS_REGION" \
     --filters "Name=launch-template-name,Values=${lt_name}" \
     --query "LaunchTemplates[0].LaunchTemplateId" --output text 2>/dev/null)
+  if [ "$CANDIDATE_TEMPLATE_ONLY" -eq 1 ] && [ -n "$existing_lt_id" ] && [ "$existing_lt_id" != None ]; then
+    # Creating a version is not isolated if an ASG follows $Latest. Refuse
+    # rather than silently pinning or altering an existing serving group.
+    local groups
+    groups=$(aws autoscaling describe-auto-scaling-groups --region "$AWS_REGION" --output json)
+    printf '%s' "$groups" | python3 -c '
+import json, sys
+groups = json.load(sys.stdin)["AutoScalingGroups"]
+for group in groups:
+    specs = [group.get("LaunchTemplate", {}), group.get("MixedInstancesPolicy", {}).get("LaunchTemplate", {}).get("LaunchTemplateSpecification", {})]
+    specs += [override.get("LaunchTemplateSpecification", {}) for override in group.get("MixedInstancesPolicy", {}).get("LaunchTemplate", {}).get("Overrides", [])]
+    for spec in specs:
+        if (spec.get("LaunchTemplateId") == sys.argv[1] or spec.get("LaunchTemplateName") == sys.argv[2]) and spec.get("Version", "$Default") == "$Latest":
+            sys.exit("candidate isolation refused: serving ASG follows $Latest")
+' "$existing_lt_id" "$lt_name"
+  fi
   local lt_data
   lt_data=$(cat <<EOJ
 {
@@ -1224,28 +1273,40 @@ EOS
 }
 EOJ
 )
+  local lt_version="DRY_RUN"
   if [ -z "$existing_lt_id" ] || [ "$existing_lt_id" = "None" ]; then
     log "  creating launch template $lt_name"
     if [ $DRY_RUN -eq 0 ]; then
-      aws ec2 create-launch-template --region "$AWS_REGION" \
+      lt_version=$(aws ec2 create-launch-template --region "$AWS_REGION" \
         --launch-template-name "$lt_name" \
         --launch-template-data "$lt_data" \
         --tag-specifications "ResourceType=launch-template,Tags=[{Key=Project,Value=${PROJECT_TAG}}]" \
-        >/dev/null
+        --query LaunchTemplate.LatestVersionNumber --output text)
     fi
   else
     log "  launch template $lt_name already exists; creating new version"
     if [ $DRY_RUN -eq 0 ]; then
-      aws ec2 create-launch-template-version --region "$AWS_REGION" \
+      lt_version=$(aws ec2 create-launch-template-version --region "$AWS_REGION" \
         --launch-template-name "$lt_name" \
         --launch-template-data "$lt_data" \
         --source-version '$Latest' \
-        >/dev/null
-      aws ec2 modify-launch-template --region "$AWS_REGION" \
-        --launch-template-name "$lt_name" \
-        --default-version '$Latest' \
-        >/dev/null
+        --query LaunchTemplateVersion.VersionNumber --output text)
+      [[ "$lt_version" =~ ^[1-9][0-9]*$ ]] || { log "invalid launch template version"; return 1; }
+      if [ "$CANDIDATE_TEMPLATE_ONLY" -eq 0 ]; then
+        aws ec2 modify-launch-template --region "$AWS_REGION" \
+          --launch-template-name "$lt_name" \
+          --default-version "$lt_version" \
+          >/dev/null
+      fi
     fi
+  fi
+  if [ "$DRY_RUN" -eq 0 ]; then
+    [[ "$lt_version" =~ ^[1-9][0-9]*$ ]] || { log "invalid launch template version"; return 1; }
+  fi
+
+  if [ "$CANDIDATE_TEMPLATE_ONLY" -eq 1 ]; then
+    log "  candidate launch-template version ${lt_version} created; default, ASG, targets and DNS unchanged"
+    return 0
   fi
 
   # NLB
@@ -1362,7 +1423,7 @@ EOJ
     if [ $DRY_RUN -eq 0 ]; then
       aws autoscaling update-auto-scaling-group --region "$AWS_REGION" \
         --auto-scaling-group-name "$asg_name" \
-        --launch-template "LaunchTemplateName=${lt_name},Version=\$Latest" \
+        --launch-template "LaunchTemplateName=${lt_name},Version=${lt_version}" \
         --min-size "$ASG_MIN" --max-size "$ASG_MAX" \
         --desired-capacity "$update_desired" \
         --vpc-zone-identifier "$subnet_ids"
@@ -1372,7 +1433,7 @@ EOJ
     if [ $DRY_RUN -eq 0 ]; then
       aws autoscaling create-auto-scaling-group --region "$AWS_REGION" \
         --auto-scaling-group-name "$asg_name" \
-        --launch-template "LaunchTemplateName=${lt_name},Version=\$Latest" \
+        --launch-template "LaunchTemplateName=${lt_name},Version=${lt_version}" \
         --min-size "$ASG_MIN" --max-size "$ASG_MAX" \
         --desired-capacity "$ASG_DESIRED" \
         --vpc-zone-identifier "$subnet_ids" \
@@ -1445,9 +1506,14 @@ phase_cross_cloud_key() {
   #   5. Store in AWS Secrets Manager as quill/trustedrouter-aws-cross-cloud-sa-key.
   #   6. Wipe the local plaintext key file.
   #
-  # Re-running this phase ROTATES the key: a new JSON key is minted, the
+  # Running this phase by name ROTATES the key: a new JSON key is minted, the
   # existing AWS secret is updated, and previous key versions are left
   # on the GCP SA for cleanup via a separate rotation policy.
+  #
+  # Phase "all" provisions; it does not rotate. With a wrapped key already
+  # stored and an enabled key on the GCP account it stops after the IAM
+  # bindings: every mint adds a key to the GCP account that nothing here
+  # removes, and a full re-run is not a decision to rotate.
 
   local gcp_project="${GCP_PROJECT:-quill-cloud-proxy}"
   local sa_email="tr-aws-cross-cloud@${gcp_project}.iam.gserviceaccount.com"
@@ -1543,6 +1609,39 @@ phase_cross_cloud_key() {
     fi
   else
     log "    [dry-run] would grant cloudkms.cryptoKeyDecrypter on ${kms_keyring_loc}/${kms_keyring_name}/${kms_key_name}"
+  fi
+
+  if [ "$PHASE" = "all" ]; then
+    # Only a secret that Secrets Manager says is absent lets a full run mint.
+    # An auth error or a throttle is not evidence of absence, and a key minted
+    # on one is never stored: the AWS calls after the mint fail the same way.
+    local described enabled_keys
+    if described=$(aws secretsmanager describe-secret \
+        --secret-id "$aws_secret_name" --region "$AWS_REGION" 2>&1); then
+      # The secret exists. Its key is certainly dead if the GCP account has no
+      # enabled user-managed key left, and a full run should then repair it.
+      # --verbosity=error: with no key carrying a `disabled` field, gcloud
+      # warns on stderr that the filter key is absent, and that warning,
+      # captured here, would read as a key.
+      if ! enabled_keys=$(gcloud iam service-accounts keys list \
+          --iam-account="$sa_email" --project="$gcp_project" \
+          --managed-by=user --filter='disabled!=true' --format='value(name)' \
+          --verbosity=error 2>&1); then
+        log "FATAL: could not list the keys of $sa_email; not minting a key on an unknown state."
+        log "  gcloud: $enabled_keys"
+        return 1
+      fi
+      if [ -n "$enabled_keys" ]; then
+        log "  $aws_secret_name exists and $sa_email has an enabled key; not minting another"
+        log "  (this does not prove the stored key is that one; rotate with --phase cross-cloud-key)"
+        return
+      fi
+      log "  $aws_secret_name exists but $sa_email has no enabled key: the stored key is dead, minting a new one"
+    elif [[ "$described" != *ResourceNotFoundException* ]]; then
+      log "FATAL: Secrets Manager DescribeSecret failed in $AWS_REGION; this is an API error, not evidence that $aws_secret_name is absent. Not minting a key."
+      log "  aws CLI: $described"
+      return 1
+    fi
   fi
 
   # 3. Mint a JSON key and 4-5. wrap+store. We do this in a temp dir that

@@ -18,6 +18,7 @@ type ChatRequestValidation struct {
 }
 
 var chatRequestFields = map[string]struct{}{
+	"deidentify": {},
 	// OpenRouter ChatRequest fields from https://openrouter.ai/openapi.json.
 	"cache_control": {}, "debug": {}, "frequency_penalty": {}, "image_config": {},
 	"logit_bias": {}, "logprobs": {}, "max_completion_tokens": {}, "max_tokens": {},

@@ -25,6 +25,7 @@ import (
 // the gateway cannot faithfully proxy are rejected in MessagesToAnthropic
 // rather than silently dropped.
 type AnthropicNativeRequest struct {
+	Deidentify    types.DeidentifyFlag       `json:"deidentify,omitempty"`
 	Provider      *types.ProviderRouting     `json:"provider,omitempty"`
 	Model         string                     `json:"model"`
 	Messages      []types.AnthropicMessage   `json:"messages"`

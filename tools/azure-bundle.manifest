@@ -48,6 +48,7 @@ trustedrouter-digitalocean-api-key
 trustedrouter-elevenlabs-api-key
 trustedrouter-engy-api-key
 trustedrouter-exa-api-key
+trustedrouter-context-dev-api-key
 trustedrouter-fireworks-api-key
 trustedrouter-fortanix-api-key
 trustedrouter-friendli-api-key

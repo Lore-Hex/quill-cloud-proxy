@@ -7,6 +7,52 @@ on:
     branches: [main]
 
 jobs:
+  rampart:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Build pinned model and test real local de-identification
+        working-directory: enclave-go
+        run: docker build --platform linux/amd64 -f rampart/Dockerfile.test -t tr-rampart-test .
+      - name: Verify scratch runtime without network access
+        run: |
+          printf '%s' '{"texts":["My name is Alice Smith. Email alice@example.com."]}' | docker run --rm --network none -i tr-rampart-test | jq -e '.texts[0] | contains("alice@example.com") | not'
+      - name: Audit locked runtime dependencies
+        working-directory: enclave-go/rampart
+        run: npm audit --omit=dev --audit-level=high
+
+  aws-secret-policy:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    env:
+      AWS_CONFIG_FILE: /dev/null
+      AWS_SHARED_CREDENTIALS_FILE: /dev/null
+      AWS_EC2_METADATA_DISABLED: "true"
+      TF_IN_AUTOMATION: "true"
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Install checksum-pinned Terraform (no third-party action)
+        working-directory: ${{ runner.temp }}
+        run: |
+          curl --fail --silent --show-error --retry 3 --max-time 120 \
+            -o terraform.zip https://releases.hashicorp.com/terraform/1.14.9/terraform_1.14.9_linux_amd64.zip
+          echo '2e5cffc20a0b48a67a76268723bd5a10b8666f69b2aa4f04906e206726bedd63  terraform.zip' | sha256sum --check --strict
+          mkdir terraform-bin
+          unzip -q terraform.zip -d terraform-bin
+          echo "$RUNNER_TEMP/terraform-bin" >> "$GITHUB_PATH"
+      - name: Validate import and signer policies with mocked AWS
+        working-directory: tools/aws-secrets
+        run: |
+          terraform fmt -check -recursive
+          terraform init -backend=false -input=false -lockfile=readonly
+          terraform validate -no-color
+          terraform test -no-color
+
   maple-pilot:
     runs-on: ubuntu-latest
     timeout-minutes: 15
@@ -137,12 +183,20 @@ jobs:
         run: uv run pytest -v
 
   trust-page-validation:
+    # This is a required branch-protection check; policy regressions must block it.
+    needs: aws-secret-policy
+    if: ${{ always() }}
     # Catches accidental script tags / external font fetches / etc. on
     # the static trust page before publish.
     runs-on: ubuntu-latest
     env:
       TR_REQUIRE_CRYPTO: "1"
     steps:
+      - name: Require AWS policy checks to pass
+        if: ${{ needs.aws-secret-policy.result != 'success' }}
+        run: |
+          echo "AWS policy checks did not pass; refusing trust validation." >&2
+          exit 1
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           # Provenance validation resolves the exact commit that built each
@@ -190,6 +244,11 @@ jobs:
           python3 tools/test_gcp_enclave_inventory.py
           python3 tools/test_verify_gcp_runtime_secret_access.py
           python3 tools/test_verify_pcr0_build_args.py
+          python3 tools/test_aws_iam_cmk_scope.py
+          python3 -m unittest tools.test_aws_eif_manifest
+          python3 -m unittest tools.test_publish_aws_eif
+          python3 -m unittest tools.test_aws_eif_compute
+          python3 -m unittest tools.test_aws_eif_admission
           python3 tools/test_go_toolchain_pins.py
           python3 tools/test_secret_scan_workflow.py
           python3 tools/test_nitro_root_pin.py

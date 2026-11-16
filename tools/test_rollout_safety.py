@@ -30,6 +30,94 @@ class RolloutSafetyTests(unittest.TestCase):
         self.assertIn("roles/spanner.databaseUser", roles)
         self.assertIn("roles/secretmanager.secretAccessor", roles)
 
+    def _run_cross_cloud_key_phase(self, phase: str, describe: str, enabled_keys: str) -> tuple[int, str]:
+        """Run phase_cross_cloud_key with stubbed aws and gcloud; return (exit code, calls and log)."""
+        script = (ROOT / "tools/deploy-aws-nitro.sh").read_text()
+        body = script.split("phase_cross_cloud_key() {", 1)[1].split("\n}\n", 1)[0]
+        program = "\n".join([
+            "set -euo pipefail",
+            'log() { echo "LOG $*"; }',
+            "aws() {",
+            '  echo "CALL aws $1 $2" >> "$CALLS_FILE"',
+            '  if [ "$1 $2" = "secretsmanager describe-secret" ]; then',
+            '    case "$FAKE_DESCRIBE" in',
+            "      exists) return 0 ;;",
+            '      absent) echo "An error occurred (ResourceNotFoundException)" >&2; return 254 ;;',
+            '      *) echo "An error occurred (ThrottlingException)" >&2; return 254 ;;',
+            "    esac",
+            "  fi",
+            '  if [ "$1 $2" = "kms encrypt" ]; then echo Y2lwaGVy; fi',
+            "}",
+            "gcloud() {",
+            '  if [ "$1 $2 $3 $4" = "iam service-accounts keys list" ]; then',
+            '    echo "CALL gcloud keys list" >> "$CALLS_FILE"',
+            '    if [ "$FAKE_ENABLED_KEYS" = FAIL ]; then echo "ERROR: PERMISSION_DENIED" >&2; return 1; fi',
+            # As real gcloud: when no listed key has a `disabled` field it
+            # warns on stderr, unless told to report errors only.
+            '    case " $* " in *" --verbosity=error "*) ;; *)',
+            '      echo "WARNING: The following filter keys were not present in any resource : disabled" >&2 ;;',
+            "    esac",
+            '    printf "%s" "$FAKE_ENABLED_KEYS"; return 0',
+            "  fi",
+            '  if [ "$1 $2 $3 $4" = "iam service-accounts keys create" ]; then',
+            '    echo "CALL gcloud keys create" >> "$CALLS_FILE"; echo "{}" > "$5"; return 0',
+            "  fi",
+            "}",
+            "PHASE=" + phase, "DRY_RUN=0", "AWS_REGION=eu-west-3", "PROJECT_TAG=quill-enclave",
+            "phase_cross_cloud_key() {" + body + "\n}",
+            "phase_cross_cloud_key",
+        ])
+        # The script sends most command output to /dev/null and captures some
+        # of it, so the stubs record their calls in a file instead.
+        with tempfile.TemporaryDirectory() as tmp:
+            calls = Path(tmp) / "calls"
+            calls.touch()
+            env = {**os.environ, "FAKE_DESCRIBE": describe, "FAKE_ENABLED_KEYS": enabled_keys,
+                   "CALLS_FILE": str(calls)}
+            done = subprocess.run(["bash", "-c", program], capture_output=True, text=True, env=env)
+            return done.returncode, calls.read_text() + done.stdout + done.stderr
+
+    def test_a_full_provision_does_not_mint_a_second_cross_cloud_key(self) -> None:
+        # Phase "all" provisions and never rotates: with a wrapped key stored
+        # and an enabled key on the GCP account it returns before the mint,
+        # so a full re-run adds no key. Only the phase run by name rotates.
+        code, out = self._run_cross_cloud_key_phase("all", "exists", "projects/p/serviceAccounts/s/keys/1\n")
+        self.assertEqual(code, 0, out)
+        self.assertNotIn("CALL gcloud keys create", out)
+        self.assertIn("not minting another", out)
+
+        code, out = self._run_cross_cloud_key_phase("cross-cloud-key", "exists", "projects/p/serviceAccounts/s/keys/1\n")
+        self.assertEqual(code, 0, out)
+        self.assertIn("CALL gcloud keys create", out)
+        self.assertIn("CALL aws secretsmanager put-secret-value", out)
+
+    def test_a_full_provision_mints_only_when_the_key_is_absent_or_dead(self) -> None:
+        # Absent from Secrets Manager: a first provision mints and stores.
+        code, out = self._run_cross_cloud_key_phase("all", "absent", "")
+        self.assertEqual(code, 0, out)
+        self.assertIn("CALL gcloud keys create", out)
+        self.assertIn("CALL aws secretsmanager create-secret", out)
+
+        # Stored, but the GCP account has no enabled key left: the stored key
+        # cannot work, and minting adds no second key.
+        code, out = self._run_cross_cloud_key_phase("all", "exists", "")
+        self.assertEqual(code, 0, out)
+        self.assertIn("the stored key is dead", out)
+        self.assertIn("CALL gcloud keys create", out)
+
+        # The key list failing is an unknown state, not "no keys".
+        code, out = self._run_cross_cloud_key_phase("all", "exists", "FAIL")
+        self.assertNotEqual(code, 0, out)
+        self.assertNotIn("CALL gcloud keys create", out)
+        self.assertIn("could not list the keys", out)
+
+        # An API error is not evidence of absence. Minting on one would leave
+        # a key on the GCP account that the failing AWS calls never store.
+        code, out = self._run_cross_cloud_key_phase("all", "throttled", "")
+        self.assertNotEqual(code, 0, out)
+        self.assertNotIn("CALL gcloud keys create", out)
+        self.assertIn("not evidence that", out)
+
     def test_async_settlement_rollout_pins_and_keyring_allowlist(self) -> None:
         # Step 8 enables negotiation only for the four GCP pilot-serving regions,
         # after router gates are verified. AWS/Azure keep their pre-pilot pins;
@@ -77,13 +165,17 @@ class RolloutSafetyTests(unittest.TestCase):
             docker = (ROOT / ("enclave-go/Dockerfile.enclave" + suffix)).read_text()
             self.assertIn("ARG SOURCE_REVISION", docker)
             self.assertIn("trustedrouter.ShadowBuildRevision=${SOURCE_REVISION}", docker)
-        for name in ("release-aws-enclave.sh", "release-gcp.sh", "deploy-azure-aci.sh",
+        for name in ("release-gcp.sh", "deploy-azure-aci.sh",
                      "verify-pcr0.sh", "verify-build.sh"):
             self.assertIn('SOURCE_REVISION=$(git -C "$REPO_ROOT" rev-parse HEAD)',
                           (ROOT / "tools" / name).read_text())
         workflow = (ROOT / ".github/workflows/deploy-enclave-gcp.yml").read_text()
         self.assertIn("--build-arg SOURCE_REVISION=${_SOURCE_REVISION}", workflow)
         self.assertIn("_SOURCE_REVISION=${GITHUB_SHA}", workflow)
+
+        aws_workflow = (ROOT / ".github/workflows/publish-aws-eif.yml").read_text()
+        self.assertIn('--build-arg "SOURCE_REVISION=$GITHUB_SHA"', aws_workflow)
+        self.assertIn('test "$(git rev-parse HEAD)" = "$GITHUB_SHA"', aws_workflow)
 
     def test_shared_deploy_lock_queues_without_evicting_pending_releases(self) -> None:
         import yaml
