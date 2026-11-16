@@ -124,6 +124,12 @@ func TestUnlistedClaudeModelIsInTheFullClass(t *testing.T) {
 		"anthropic/claude-opus-6.1", "us.anthropic.claude-haiku-6", "claude-opus-7@20280101", "claude-sonnet-6-5-20270101", "claude-atlas-1",
 		// A longer version number is a different model from the one it starts with.
 		"claude-opus-4-10", "claude-opus-4-50", "claude-sonnet-4-50", "claude-sonnet-4-60", "claude-haiku-4-50",
+		"claude-4-10-opus", "claude-4-50-sonnet", "claude-sonnet-30", "claude-opus-30-1",
+		// Version first, a 4.x that no row names is a newer model too.
+		"claude-4-7-opus", "claude-4-8-sonnet", "claude-4-7-sonnet-20270101", "claude-5-sonnet", "claude-5-5-opus",
+		// A 4.0 model is matched by a date, an "@", a ":" or "-0" after the 4,
+		// and by nothing looser: a free-form suffix is some other model.
+		"claude-opus-4-v2-preview", "claude-sonnet-4-v3", "claude-opus-4-latest", "claude-sonnet-4-preview",
 	} {
 		if got, claude := claudeReasoningClassOf(id); !claude || got != claudeFull {
 			t.Errorf("%s: class %q (claude=%t), want %q", id, got, claude, claudeFull)
@@ -151,6 +157,14 @@ func TestClaudeBudgetClassIsAClosedList(t *testing.T) {
 		"claude-3-opus-20240229", "claude-3-haiku-20240307", "claude-3-5-sonnet-20241022", "claude-3-5-haiku-20241022", "claude-3-7-sonnet-20250219",
 		"anthropic/claude-3.7-sonnet", "anthropic/claude-3-5-sonnet", "anthropic.claude-3-5-sonnet-20241022-v2:0", "claude-3-7-sonnet@20250219",
 		"claude-2", "claude-2.1", "anthropic.claude-v2:1", "claude-instant-1.2", "anthropic.claude-instant-v1",
+		// The same models named version first, as older IDs and some
+		// deployment names have them.
+		"claude-4-sonnet", "claude-4-opus", "claude-4-sonnet-20250514", "anthropic/claude-4-opus", "claude-4-sonnet@20250514",
+		"claude-4-1-opus", "claude-4.1-opus", "claude-4-1-opus-20250805",
+		"claude-4-5-sonnet", "claude-4.5-sonnet", "claude-4-5-haiku", "claude-4-5-haiku-20251001",
+		// And the 3.x models named family first.
+		"claude-sonnet-3", "claude-haiku-3", "claude-opus-3", "claude-sonnet-3-5", "claude-sonnet-3-7", "claude-haiku-3-5",
+		"anthropic/claude-sonnet-3.7", "claude-opus-3-20240229", "claude-sonnet-3-7@20250219",
 	} {
 		if got, claude := claudeReasoningClassOf(id); !claude || got != claudeBudget {
 			t.Errorf("%s: class %q (claude=%t), want %q", id, got, claude, claudeBudget)
@@ -161,6 +175,13 @@ func TestClaudeBudgetClassIsAClosedList(t *testing.T) {
 		"claude-opus-4-5": claudeOpus45, "claude-opus-4-5-20251101": claudeOpus45,
 		"claude-sonnet-4-6": claudeV46, "claude-opus-4-6": claudeV46, "claude-sonnet-4-6@20260217": claudeV46,
 		"claude-opus-4-7": claudeFull, "claude-opus-4-8": claudeFull, "claude-sonnet-4-7": claudeFull, "claude-sonnet-4-7-20270101": claudeFull,
+		// Version first: Opus 4.5 and the 4.6 models keep their classes, and
+		// a later 4.x is in the full class.
+		"claude-4-5-opus": claudeOpus45, "claude-4.5-opus-20251101": claudeOpus45,
+		"claude-4-6-sonnet": claudeV46, "claude-4-6-opus": claudeV46, "claude-4.6-sonnet-20260217": claudeV46,
+		"claude-4-7-opus": claudeFull, "claude-4-8-opus": claudeFull,
+		// A real Bedrock 4.0 ID is matched by its date, not by its version suffix.
+		"us.anthropic.claude-opus-4-20250514-v1:0": claudeBudget, "anthropic.claude-sonnet-4-20250514-v1:0": claudeBudget,
 	} {
 		if got, _ := claudeReasoningClassOf(id); got != want {
 			t.Errorf("%s: class %q, want %q", id, got, want)
@@ -303,6 +324,62 @@ var claudeOffSpellings = []string{
 	`"reasoning":{"max_tokens":8192,"effort":"none"}`,
 }
 
+// A bare string in the reasoning field, reasoning "high", is an effort. It
+// is read like reasoning.effort: with no top-level effort it is the request's
+// effort, with the same ladder and the same Off words, and a top-level effort
+// beside it wins. The contract layer lets a bare string through unchecked,
+// alone or beside reasoning_effort, and refuses it beside a switch.
+func TestClaudeBareStringReasoningIsAnEffort(t *testing.T) {
+	for _, ids := range [][]string{claudeFullIDs, claudeV46IDs, claudeOpus45IDs, claudeBudgetIDs} {
+		for _, id := range ids {
+			for _, word := range []string{"minimal", "low", "medium", "high", "xhigh", "max", "ultra", "none", "off", "disable", "disabled"} {
+				want := claudeWire(t, id, `"reasoning_effort":"`+word+`"`)
+				for _, fields := range []string{`"reasoning":"` + word + `"`, `"reasoning":" ` + strings.ToUpper(word) + ` "`, `"reasoning":"` + word + `","reasoning_effort":""`} {
+					if got := claudeWire(t, id, fields); got != want {
+						t.Errorf("%s %s:\n got %s\nwant what reasoning_effort %s sends, %s", id, fields, got, word, want)
+					}
+				}
+			}
+			high, low, off := claudeWire(t, id, `"reasoning_effort":"high"`), claudeWire(t, id, `"reasoning_effort":"low"`), claudeWire(t, id, `"reasoning_effort":"none"`)
+			if high == low || high == off || low == off {
+				t.Fatalf("%s: high %s, low %s, Off %s: the rows below would prove nothing", id, high, low, off)
+			}
+			for fields, want := range map[string]string{
+				// A top-level effort wins over the string, in every order.
+				`"reasoning":"high","reasoning_effort":"low"`:  low,
+				`"reasoning":"low","reasoning_effort":"high"`:  high,
+				`"reasoning":"none","reasoning_effort":"high"`: high,
+				`"reasoning":"off","reasoning_effort":"low"`:   low,
+				`"reasoning":"high","reasoning_effort":"none"`: off,
+				`"reasoning":"max","reasoning_effort":"off"`:   off,
+				// The other fields of the request are treated as an effort treats them.
+				`"reasoning":"high","max_tokens":512`: claudeWire(t, id, `"reasoning_effort":"high","max_tokens":512`),
+			} {
+				if got := claudeWire(t, id, fields); got != want {
+					t.Errorf("%s %s:\n got %s\nwant %s", id, fields, got, want)
+				}
+			}
+			for _, extra := range []string{`,"temperature":0.2,"top_k":40,"top_p":0.5`, `,"tool_choice":"required",` + claudeTestTools, `,"messages":[{"role":"user","content":"test"},{"role":"assistant","content":"{"}]`} {
+				want := claudeWire(t, id, `"reasoning_effort":"high"`+extra, "temperature", "top_p", "top_k", "tool_choice")
+				if got := claudeWire(t, id, `"reasoning":"high"`+extra, "temperature", "top_p", "top_k", "tool_choice"); got != want {
+					t.Errorf("%s string high%s:\n got %s\nwant %s", id, extra, got, want)
+				}
+			}
+		}
+	}
+	// No full class model is sent a budget for a string effort any more.
+	for _, id := range claudeFullIDs {
+		req, body := claudeChat(t, `"reasoning":"high"`)
+		if shared, _ := body.Thinking.(map[string]any); shared["budget_tokens"] == nil {
+			t.Fatal("the shared projection wrote no budget for a string effort: this check proves nothing")
+		}
+		native := anthropicChatReasoningBody(id, req, body)
+		if thinking, _ := native.Thinking.(map[string]any); len(thinking) != 1 || thinking["type"] != "adaptive" {
+			t.Errorf("%s string high: thinking=%v", id, native.Thinking)
+		}
+	}
+}
+
 // When a request carries two efforts the top-level one wins, on every class.
 // An Off word is an effort, so the same rule decides it: in the reasoning
 // object beside a top-level effort it is not Off, and at the top level it is
@@ -314,12 +391,14 @@ func TestClaudeTwoEffortsTheTopLevelOneWins(t *testing.T) {
 		claudeBudget: claudeBudgetIDs, claudeOpus45: claudeOpus45IDs, claudeV46: claudeV46IDs, claudeFull: claudeFullIDs,
 	} {
 		for _, id := range ids {
-			off := `{"max_tokens":4096,"thinking":{"type":"disabled"}}`
+			off := `{"max_tokens":32000,"thinking":{"type":"disabled"}}`
 			switch {
 			case class == claudeBudget:
 				off = `{"max_tokens":4096}`
+			case class == claudeOpus45:
+				off = `{"max_tokens":4096,"thinking":{"type":"disabled"}}`
 			case claudeSonnet55.MatchString(claudeModelKey(id)):
-				off = `{"max_tokens":4096,"thinking":{"type":"between_tools"}}`
+				off = `{"max_tokens":32000,"thinking":{"type":"between_tools"}}`
 			}
 			high := claudeWire(t, id, `"reasoning_effort":"high"`)
 			low := claudeWire(t, id, `"reasoning_effort":"low"`)
@@ -369,7 +448,10 @@ func TestClaudeTwoEffortsTheTopLevelOneWins(t *testing.T) {
 }
 
 // Decision 1: Off governs on every class, even beside an effort or a budget,
-// and max_tokens keeps no room for a budget that is not sent.
+// and max_tokens keeps no room for a budget that is not sent. On the adaptive
+// classes a caller who set no limit keeps the 32,000 default of the class,
+// the one a request with no reasoning ask gets, so Off never shortens an
+// answer. The budget classes have a 4,096 default with or without Off.
 func TestClaudeOffGovernsOnEveryClass(t *testing.T) {
 	offs := claudeOffSpellings
 	var fullWithDisabled []string
@@ -384,21 +466,40 @@ func TestClaudeOffGovernsOnEveryClass(t *testing.T) {
 	}{
 		{claudeBudgetIDs, `{"max_tokens":4096}`},
 		{claudeOpus45IDs, `{"max_tokens":4096,"thinking":{"type":"disabled"}}`},
-		{claudeV46IDs, `{"max_tokens":4096,"thinking":{"type":"disabled"}}`},
-		{fullWithDisabled, `{"max_tokens":4096,"thinking":{"type":"disabled"}}`},
-		{[]string{"claude-opus-6", "claude-sonnet-4-7"}, `{"max_tokens":4096,"thinking":{"type":"disabled"}}`},
+		{claudeV46IDs, `{"max_tokens":32000,"thinking":{"type":"disabled"}}`},
+		{fullWithDisabled, `{"max_tokens":32000,"thinking":{"type":"disabled"}}`},
+		{[]string{"claude-opus-6", "claude-sonnet-4-7"}, `{"max_tokens":32000,"thinking":{"type":"disabled"}}`},
 	} {
 		for _, id := range tc.ids {
+			nothingAsked := claudeWire(t, id, ``)
 			for _, off := range offs {
 				if got := claudeWire(t, id, off); got != tc.want {
 					t.Errorf("%s %s:\n got %s\nwant %s", id, off, got, tc.want)
 				}
+				// Off never leaves less room than the same request without it.
+				if !strings.HasPrefix(claudeWire(t, id, off), strings.TrimSuffix(nothingAsked, "}")) {
+					t.Errorf("%s %s: sends %s, but nothing asked sends %s", id, off, claudeWire(t, id, off), nothingAsked)
+				}
+				// A caller limit is sent as the caller set it, the 4,096 the
+				// gateway would otherwise fill in included.
+				for _, limit := range []string{"512", "4096", "20000"} {
+					want := strings.Replace(strings.Replace(tc.want, `"max_tokens":32000`, `"max_tokens":`+limit, 1), `"max_tokens":4096`, `"max_tokens":`+limit, 1)
+					if strings.Contains(off, `"max_tokens"`) {
+						continue
+					}
+					if got := claudeWire(t, id, off+`,"max_tokens":`+limit); got != want {
+						t.Errorf("%s %s with max_tokens %s:\n got %s\nwant %s", id, off, limit, got, want)
+					}
+				}
 			}
-			// A caller cap is sent as the caller set it.
-			want := strings.Replace(tc.want, "4096", "512", 1)
-			if got := claudeWire(t, id, offs[0]+`,"max_tokens":512`); got != want {
-				t.Errorf("%s Off with a cap:\n got %s\nwant %s", id, got, want)
-			}
+		}
+	}
+	// Inside a funded allowance Off is sent the allowance, never the default.
+	for _, model := range []string{"claude-opus-4-8", "claude-sonnet-4-6", "claude-sonnet-5-5", "claude-haiku-4-5", "claude-opus-4-5"} {
+		for _, total := range []int{512, 4096, 6000} {
+			req, body, authorized := fundedrequest.New(t, total, map[string]any{"enabled": false}, "")
+			native := anthropicChatReasoningBody(model, req, body)
+			fundedrequest.Check(t, buildAnthropicWireRequest(model, native.Messages, native), authorized, false)
 		}
 	}
 }
@@ -411,9 +512,12 @@ func TestClaudeSonnet55OffIsBetweenTools(t *testing.T) {
 			t.Errorf("%s: class %q", id, class)
 		}
 		for _, off := range offs {
-			if got := claudeWire(t, id, off); got != `{"max_tokens":4096,"thinking":{"type":"between_tools"}}` {
+			if got := claudeWire(t, id, off); got != `{"max_tokens":32000,"thinking":{"type":"between_tools"}}` {
 				t.Errorf("%s %s: got %s", id, off, got)
 			}
+		}
+		if got := claudeWire(t, id, `"reasoning":{"enabled":false},"max_tokens":512`); got != `{"max_tokens":512,"thinking":{"type":"between_tools"}}` {
+			t.Errorf("%s Off with a limit: got %s", id, got)
 		}
 		// On and an effort are not Off.
 		if got := claudeWire(t, id, `"reasoning_effort":"high"`); got != `{"max_tokens":32000,"output_config":{"effort":"high"},"thinking":{"type":"adaptive"}}` {
@@ -425,7 +529,7 @@ func TestClaudeSonnet55OffIsBetweenTools(t *testing.T) {
 			continue
 		}
 		for _, off := range offs {
-			if got := claudeWire(t, id, off); got != `{"max_tokens":4096,"thinking":{"type":"disabled"}}` {
+			if got := claudeWire(t, id, off); got != `{"max_tokens":32000,"thinking":{"type":"disabled"}}` {
 				t.Errorf("%s %s: got %s", id, off, got)
 			}
 		}

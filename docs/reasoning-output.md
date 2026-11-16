@@ -96,10 +96,15 @@ The class is read from the model ID, lowercased and with `.` read as `-`. The
 Budget class is a closed list: an ID that contains `claude-haiku-4-5`,
 `claude-sonnet-4-5` or `claude-opus-4-1`; Opus 4 and Sonnet 4, which are
 `claude-opus-4` and `claude-sonnet-4` where the ID ends at the `4` or goes on
-with a date, a Vertex `@`, a Bedrock version or `-0`; and the `claude-3`,
-`claude-2` and `claude-instant` families. Opus 4.5 is an ID that contains
-`claude-opus-4-5`. The 4.6 class is `claude-opus-4-6` and `claude-sonnet-4-6`.
-Every other Claude ID is in the Full class.
+with a date, a Vertex `@`, a `:` or `-0`; and the `claude-3`, `claude-2` and
+`claude-instant` families. Opus 4.5 is an ID that contains `claude-opus-4-5`.
+The 4.6 class is `claude-opus-4-6` and `claude-sonnet-4-6`. The same models
+are recognised when the ID names the version first, as older IDs and some
+deployment names do: `claude-4-sonnet`, `claude-4-opus`, `claude-4-1-opus`,
+`claude-4-5-sonnet` and `claude-4-5-haiku` are in the Budget class,
+`claude-4-5-opus` is Opus 4.5, and `claude-4-6-` is the 4.6 class. The 3.x
+models are also recognised family first, as in `claude-sonnet-3-7`. Every
+other Claude ID is in the Full class.
 
 That default is deliberate. A new Claude model reaches the gateway through
 the catalog, with no gateway change, and every model since Opus 4.7 refuses a
@@ -134,7 +139,9 @@ one effort. An effort that means Off (`none`, `off`, `disable`, `disabled`)
 is an effort like any other, so the same rule decides it:
 `reasoning: {"effort": "none"}` beside `reasoning_effort: "high"` is `high`,
 and `reasoning_effort: "none"` beside `reasoning: {"effort": "high"}` is
-Off.
+Off. A bare string in the `reasoning` field, `reasoning: "high"`, is an
+effort too. It is read exactly like `reasoning.effort`: it is the request's
+effort when there is no top-level `reasoning_effort`.
 
 The switch and the effort work together:
 
@@ -151,6 +158,9 @@ The switch and the effort work together:
   that model: it does not think before responding, and the short updates it
   writes between tool calls come back as thinking blocks. The `max_tokens`
   sent is the caller's own, with no room added for a budget that is not sent.
+  A caller who set no limit gets the default of the class, which is what the
+  same request without Off gets: 32,000 on the adaptive classes and 4,096 on
+  Opus 4.5 and the Budget class. Off never shortens an answer.
   A switch turned on beside an effort that means Off returns 400, as stated
   above. The same contradiction written with the `reasoning` object is not
   refused: it reaches the model, and Off governs.
@@ -220,9 +230,9 @@ Limits that remain:
   low `top_p`, a forced tool choice or a prefill, so such a request fails
   there. On beside an effort does not have this limit.
 * Adaptive thinking is still sent beside a forced tool choice, a prefill and
-  `top_k`.
-* Off on an adaptive class is sent the 4,096 token wire default as
-  `max_tokens` when the caller set no limit, not 32,000.
+  `top_k`. Only the forced tool choice has been observed, on Haiku 5.5, which
+  accepted it. Adaptive thinking beside a prefill or beside `top_k` has not
+  been observed on any model.
 * A thinking budget raises the `max_tokens` sent to the provider above what
   the hold was sized for, when the budget is not below the output limit (512
   becomes 8,704 and 4,096 becomes 12,288 at 8,192 tokens of budget). `high`

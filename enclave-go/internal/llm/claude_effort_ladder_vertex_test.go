@@ -21,7 +21,7 @@ func TestClaudeEffortLadderOnTheVertexWire(t *testing.T) {
 		{"claude-haiku-5-5@20261001", `"reasoning_effort":"minimal"`,
 			`{"max_tokens":32000,"output_config":{"effort":"low"},"thinking":{"type":"adaptive"}}`},
 		{"claude-sonnet-5-5@20261001", `"reasoning":{"enabled":false},"reasoning_effort":"high"`,
-			`{"max_tokens":4096,"thinking":{"type":"between_tools"}}`},
+			`{"max_tokens":32000,"thinking":{"type":"between_tools"}}`},
 		{"claude-opus-4-8@20260115", `"reasoning":{"enabled":true},"top_p":0.5,"top_k":40`,
 			`{"max_tokens":32000,"thinking":{"type":"adaptive"},"top_k":40}`},
 		{"claude-haiku-5-5@20261001", `"reasoning":true`,
@@ -39,7 +39,11 @@ func TestClaudeEffortLadderOnTheVertexWire(t *testing.T) {
 		{"claude-opus-6@20270101", `"reasoning_effort":"minimal"`,
 			`{"max_tokens":32000,"output_config":{"effort":"low"},"thinking":{"type":"adaptive"}}`},
 		{"claude-opus-4-8@20260115", `"reasoning":false,"reasoning_effort":"high"`,
-			`{"max_tokens":4096,"thinking":{"type":"disabled"}}`},
+			`{"max_tokens":32000,"thinking":{"type":"disabled"}}`},
+		{"claude-opus-4-8@20260115", `"reasoning":"max"`,
+			`{"max_tokens":32000,"output_config":{"effort":"max"},"thinking":{"type":"adaptive"}}`},
+		{"claude-4-5-sonnet@20250929", `"reasoning":"max","top_k":40`,
+			`{"max_tokens":12288,"thinking":{"budget_tokens":8192,"type":"enabled"}}`},
 	} {
 		req, body := claudeChat(t, tc.fields)
 		native := anthropicChatReasoningBody(tc.id, req, body)

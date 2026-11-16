@@ -368,7 +368,10 @@ func TestClaudeEffortLadderWireTable(t *testing.T) {
 	adaptive := func(effort string) string {
 		return `{"max_tokens":32000,"output_config":{"effort":"` + effort + `"},"thinking":{"type":"adaptive"}}`
 	}
+	// Off on Opus 4.5 keeps the 4,096 wire default. Off on an adaptive class
+	// keeps the 32,000 default of the class when the caller set no limit.
 	const disabled = `{"max_tokens":4096,"thinking":{"type":"disabled"}}`
+	const adaptiveOff = `{"max_tokens":32000,"thinking":{"type":"disabled"}}`
 	for _, tc := range []struct {
 		name, messages, fields string
 		want                   map[string]string
@@ -405,45 +408,54 @@ func TestClaudeEffortLadderWireTable(t *testing.T) {
 		}},
 		// Off governs, and max_tokens keeps no room for the discarded budget.
 		{"Off object beside an effort", user, `"reasoning":{"enabled":false},"reasoning_effort":"high"`, map[string]string{
-			budget: `{"max_tokens":4096}`, opus45: disabled, v46: disabled, full: disabled, haiku55: disabled,
-			sonnet55: `{"max_tokens":4096,"thinking":{"type":"between_tools"}}`,
+			budget: `{"max_tokens":4096}`, opus45: disabled, v46: adaptiveOff, full: adaptiveOff, haiku55: adaptiveOff,
+			sonnet55: `{"max_tokens":32000,"thinking":{"type":"between_tools"}}`,
 		}},
 		{"Off object holding an effort", user, `"reasoning":{"enabled":false,"effort":"high"}`, map[string]string{
-			budget: `{"max_tokens":4096}`, opus45: disabled, v46: disabled,
-			sonnet55: `{"max_tokens":4096,"thinking":{"type":"between_tools"}}`,
+			budget: `{"max_tokens":4096}`, opus45: disabled, v46: adaptiveOff,
+			sonnet55: `{"max_tokens":32000,"thinking":{"type":"between_tools"}}`,
 		}},
 		{"Off object beside an effort, with a cap", user, `"reasoning":{"enabled":false},"reasoning_effort":"high","max_tokens":512`, map[string]string{
 			budget: `{"max_tokens":512}`, opus45: `{"max_tokens":512,"thinking":{"type":"disabled"}}`,
+			v46: `{"max_tokens":512,"thinking":{"type":"disabled"}}`, full: `{"max_tokens":512,"thinking":{"type":"disabled"}}`,
+			sonnet55: `{"max_tokens":512,"thinking":{"type":"between_tools"}}`,
+		}},
+		{"Off object with the caller asking for exactly 4096", user, `"reasoning":{"enabled":false},"max_tokens":4096`, map[string]string{
+			budget: `{"max_tokens":4096}`, opus45: disabled, v46: disabled, full: disabled,
+			sonnet55: `{"max_tokens":4096,"thinking":{"type":"between_tools"}}`,
+		}},
+		{"nothing asked, for comparison with Off", user, `"stream":false`, map[string]string{
+			budget: `{"max_tokens":4096}`, opus45: `{"max_tokens":4096}`, v46: `{"max_tokens":32000}`, full: `{"max_tokens":32000}`, sonnet55: `{"max_tokens":32000}`,
 		}},
 		{"Off switch alone", user, `"thinking":{"type":"disabled"}`, map[string]string{
-			budget: `{"max_tokens":4096}`, opus45: disabled, full: disabled, sonnet55: `{"max_tokens":4096,"thinking":{"type":"between_tools"}}`,
+			budget: `{"max_tokens":4096}`, opus45: disabled, full: adaptiveOff, sonnet55: `{"max_tokens":32000,"thinking":{"type":"between_tools"}}`,
 		}},
 		// Every other spelling of Off that reaches a Claude model governs too.
 		{"bare reasoning false", user, `"reasoning":false`, map[string]string{
-			budget: `{"max_tokens":4096}`, opus45: disabled, v46: disabled, full: disabled, haiku55: disabled, future: disabled,
-			sonnet55: `{"max_tokens":4096,"thinking":{"type":"between_tools"}}`,
+			budget: `{"max_tokens":4096}`, opus45: disabled, v46: adaptiveOff, full: adaptiveOff, haiku55: adaptiveOff, future: adaptiveOff,
+			sonnet55: `{"max_tokens":32000,"thinking":{"type":"between_tools"}}`,
 		}},
 		{"bare reasoning false beside an effort", user, `"reasoning":false,"reasoning_effort":"high"`, map[string]string{
-			budget: `{"max_tokens":4096}`, opus45: disabled, v46: disabled, full: disabled,
-			sonnet55: `{"max_tokens":4096,"thinking":{"type":"between_tools"}}`,
+			budget: `{"max_tokens":4096}`, opus45: disabled, v46: adaptiveOff, full: adaptiveOff,
+			sonnet55: `{"max_tokens":32000,"thinking":{"type":"between_tools"}}`,
 		}},
 		{"reasoning.type disabled beside an effort", user, `"reasoning":{"type":"disabled"},"reasoning_effort":"high"`, map[string]string{
-			budget: `{"max_tokens":4096}`, opus45: disabled, v46: disabled, full: disabled,
-			sonnet55: `{"max_tokens":4096,"thinking":{"type":"between_tools"}}`,
+			budget: `{"max_tokens":4096}`, opus45: disabled, v46: adaptiveOff, full: adaptiveOff,
+			sonnet55: `{"max_tokens":32000,"thinking":{"type":"between_tools"}}`,
 		}},
 		{"effort off", user, `"reasoning_effort":"off"`, map[string]string{
-			budget: `{"max_tokens":4096}`, opus45: disabled, v46: disabled, full: disabled, haiku55: disabled,
-			sonnet55: `{"max_tokens":4096,"thinking":{"type":"between_tools"}}`,
+			budget: `{"max_tokens":4096}`, opus45: disabled, v46: adaptiveOff, full: adaptiveOff, haiku55: adaptiveOff,
+			sonnet55: `{"max_tokens":32000,"thinking":{"type":"between_tools"}}`,
 		}},
 		{"effort disabled in the object", user, `"reasoning":{"effort":"disabled"}`, map[string]string{
-			budget: `{"max_tokens":4096}`, opus45: disabled, v46: disabled, full: disabled,
+			budget: `{"max_tokens":4096}`, opus45: disabled, v46: adaptiveOff, full: adaptiveOff,
 		}},
 		{"effort none", user, `"reasoning_effort":"none"`, map[string]string{
-			budget: `{"max_tokens":4096}`, opus45: disabled, v46: disabled, full: disabled,
-			sonnet55: `{"max_tokens":4096,"thinking":{"type":"between_tools"}}`,
+			budget: `{"max_tokens":4096}`, opus45: disabled, v46: adaptiveOff, full: adaptiveOff,
+			sonnet55: `{"max_tokens":32000,"thinking":{"type":"between_tools"}}`,
 		}},
 		{"On object beside effort off", user, `"reasoning":{"enabled":true},"reasoning_effort":"off"`, map[string]string{
-			budget: `{"max_tokens":4096}`, opus45: disabled, v46: disabled, full: disabled,
+			budget: `{"max_tokens":4096}`, opus45: disabled, v46: adaptiveOff, full: adaptiveOff,
 		}},
 		// An Off word is an effort, so with two efforts the top-level one
 		// decides: Off in the object beside a top-level effort is that effort,
@@ -453,12 +465,47 @@ func TestClaudeEffortLadderWireTable(t *testing.T) {
 			v46: adaptive("high"), full: adaptive("high"), haiku55: adaptive("high"), sonnet55: adaptive("high"), future: adaptive("high"),
 		}},
 		{"a top-level Off word beside an effort in the object", user, `"reasoning":{"effort":"high"},"reasoning_effort":"none"`, map[string]string{
-			budget: `{"max_tokens":4096}`, opus45: disabled, v46: disabled, full: disabled, haiku55: disabled, future: disabled,
-			sonnet55: `{"max_tokens":4096,"thinking":{"type":"between_tools"}}`,
+			budget: `{"max_tokens":4096}`, opus45: disabled, v46: adaptiveOff, full: adaptiveOff, haiku55: adaptiveOff, future: adaptiveOff,
+			sonnet55: `{"max_tokens":32000,"thinking":{"type":"between_tools"}}`,
 		}},
 		{"two efforts, the top-level one wins", user, `"reasoning":{"effort":"high"},"reasoning_effort":"low"`, map[string]string{
 			budget: `{"max_tokens":4096,` + think("1024") + `}`, opus45: `{"max_tokens":4096,"output_config":{"effort":"low"},` + think("1024") + `}`,
 			v46: adaptive("low"), full: adaptive("low"),
+		}},
+		// A bare string in the reasoning field is an effort, read like
+		// reasoning.effort: the same ladder, and a top-level effort wins.
+		{"string effort high", user, `"reasoning":"high"`, map[string]string{
+			budget: `{"max_tokens":12288,` + think("8192") + `}`, opus45: `{"max_tokens":12288,"output_config":{"effort":"high"},` + think("8192") + `}`,
+			v46: adaptive("high"), full: adaptive("high"), haiku55: adaptive("high"), sonnet55: adaptive("high"), future: adaptive("high"),
+		}},
+		{"string effort max", user, `"reasoning":"max"`, map[string]string{
+			budget: `{"max_tokens":12288,` + think("8192") + `}`, opus45: `{"max_tokens":12288,"output_config":{"effort":"high"},` + think("8192") + `}`,
+			v46: adaptive("max"), full: adaptive("max"),
+		}},
+		{"string effort xhigh", user, `"reasoning":"xhigh"`, map[string]string{
+			budget: `{"max_tokens":12288,` + think("8192") + `}`, opus45: `{"max_tokens":12288,"output_config":{"effort":"high"},` + think("8192") + `}`,
+			v46: adaptive("high"), full: adaptive("xhigh"),
+		}},
+		{"string effort minimal", user, `"reasoning":"minimal"`, map[string]string{
+			budget: `{"max_tokens":4096}`, opus45: `{"max_tokens":4096,"output_config":{"effort":"low"}}`, v46: adaptive("low"), full: adaptive("low"),
+		}},
+		{"string effort none", user, `"reasoning":"none"`, map[string]string{
+			budget: `{"max_tokens":4096}`, opus45: disabled, v46: adaptiveOff, full: adaptiveOff,
+			sonnet55: `{"max_tokens":32000,"thinking":{"type":"between_tools"}}`,
+		}},
+		{"string effort beside a top-level effort", user, `"reasoning":"high","reasoning_effort":"low"`, map[string]string{
+			budget: `{"max_tokens":4096,` + think("1024") + `}`, opus45: `{"max_tokens":4096,"output_config":{"effort":"low"},` + think("1024") + `}`,
+			v46: adaptive("low"), full: adaptive("low"),
+		}},
+		{"string Off word beside a top-level effort", user, `"reasoning":"none","reasoning_effort":"high"`, map[string]string{
+			budget: `{"max_tokens":12288,` + think("8192") + `}`, v46: adaptive("high"), full: adaptive("high"),
+		}},
+		{"string effort beside a top-level Off word", user, `"reasoning":"high","reasoning_effort":"none"`, map[string]string{
+			budget: `{"max_tokens":4096}`, opus45: disabled, v46: adaptiveOff, full: adaptiveOff,
+		}},
+		{"string effort + required tool", user, `"reasoning":"high",` + required, map[string]string{
+			budget: `{"max_tokens":4096,"tool_choice":{"type":"any"}}`, opus45: `{"max_tokens":4096,"output_config":{"effort":"high"},"tool_choice":{"type":"any"}}`,
+			full: `{"max_tokens":32000,"output_config":{"effort":"high"},"thinking":{"type":"adaptive"},"tool_choice":{"type":"any"}}`,
 		}},
 		// On beside an effort is that effort, wherever the effort is written.
 		{"On object beside low", user, `"reasoning":{"enabled":true},"reasoning_effort":"low"`, map[string]string{
@@ -668,6 +715,25 @@ func TestClaudeOffSpellingsThatReachDispatch(t *testing.T) {
 	for _, fields := range []string{`"reasoning":false`, `"reasoning":false,"reasoning_effort":"high"`, `"reasoning":{"type":"disabled"}`, `"reasoning":{"type":"disabled"},"reasoning_effort":"high"`, `"reasoning":{"enabled":false,"max_tokens":2048}`} {
 		if got := reasoningWire(t, route, fields); got != `{}` {
 			t.Errorf("%s: got %s, want it to reach the model with no thinking", fields, got)
+		}
+	}
+	// A bare string in the reasoning field is not checked by the contract
+	// layer: it reaches the model alone and beside reasoning_effort, and it
+	// is refused beside a switch like any other reasoning value.
+	for fields, want := range map[string]string{
+		`"reasoning":"high"`:                          `{"thinking":{"budget_tokens":8192,"type":"enabled"}}`,
+		`"reasoning":"max"`:                           `{"thinking":{"budget_tokens":8192,"type":"enabled"}}`,
+		`"reasoning":"none"`:                          `{}`,
+		`"reasoning":"anything"`:                      `{}`,
+		`"reasoning":"high","reasoning_effort":"low"`: `{"thinking":{"budget_tokens":1024,"type":"enabled"}}`,
+	} {
+		if got := reasoningWire(t, route, fields); got != want {
+			t.Errorf("%s: got %s, want %s", fields, got, want)
+		}
+	}
+	for _, fields := range []string{`"thinking":{"type":"enabled"},"reasoning":"high"`, `"enable_thinking":true,"reasoning":"low"`, `"output_config":{"effort":"high"},"reasoning":"low"`} {
+		if got := reasoningWire(t, route, fields); !strings.HasPrefix(got, "refused at ") {
+			t.Errorf("%s: got %s, want a refusal", fields, got)
 		}
 	}
 	// A switch beside the reasoning object never reaches a model.

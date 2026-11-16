@@ -35,7 +35,9 @@ const claudeVersionEnd = `($|[^0-9])`
 // claudeReasoningModels names every Claude model that is not in the full
 // class. An ID is matched lowercased, with "." read as "-", anywhere in the
 // ID, so a catalog ID, a dated snapshot, a Bedrock profile and a Vertex ID
-// all match.
+// all match. Each model is listed family first, as Anthropic names it now
+// (claude-sonnet-4-5), and version first, as older IDs and some deployment
+// names have it (claude-4-5-sonnet, claude-3-7-sonnet).
 //
 // The default is the full class on purpose. A new Claude model reaches the
 // gateway through the catalog, with no change here, and every model since
@@ -47,18 +49,19 @@ var claudeReasoningModels = []struct {
 	match *regexp.Regexp
 	class claudeReasoningClass
 }{
-	{regexp.MustCompile(`claude-opus-4-5` + claudeVersionEnd), claudeOpus45},
-	{regexp.MustCompile(`claude-(opus|sonnet)-4-6` + claudeVersionEnd), claudeV46},
+	{regexp.MustCompile(`claude-opus-4-5` + claudeVersionEnd + `|claude-4-5-opus`), claudeOpus45},
+	{regexp.MustCompile(`claude-(opus|sonnet)-4-6` + claudeVersionEnd + `|claude-4-6-`), claudeV46},
 	// Haiku 4.5, Sonnet 4.5 and Opus 4.1.
-	{regexp.MustCompile(`claude-(sonnet|haiku)-4-5` + claudeVersionEnd), claudeBudget},
-	{regexp.MustCompile(`claude-opus-4-1` + claudeVersionEnd), claudeBudget},
-	// Opus 4 and Sonnet 4. The ID ends at the 4, or what follows is a date, a
-	// Vertex "@", a Bedrock version, or the "-0" of the 4-0 alias. A minor
+	{regexp.MustCompile(`claude-(sonnet|haiku)-4-5` + claudeVersionEnd + `|claude-4-5-(sonnet|haiku)`), claudeBudget},
+	{regexp.MustCompile(`claude-opus-4-1` + claudeVersionEnd + `|claude-4-1-opus`), claudeBudget},
+	// Opus 4 and Sonnet 4. Family first, the ID ends at the 4, or what follows
+	// is a date, a Vertex "@", a ":" or the "-0" of the 4-0 alias. A minor
 	// version does not match, so Sonnet 4.6, Opus 4.7 and any later 4.x fall
-	// through to their own class.
-	{regexp.MustCompile(`claude-(opus|sonnet)-4($|[@:]|-0` + claudeVersionEnd + `|-[0-9]{8}|-v[0-9])`), claudeBudget},
+	// through to their own class. Version first, only the bare 4 is here: any
+	// other version-first 4.x that no row names is in the full class.
+	{regexp.MustCompile(`claude-(opus|sonnet)-4($|[@:]|-0` + claudeVersionEnd + `|-[0-9]{8})|claude-4-(opus|sonnet)`), claudeBudget},
 	// The 3.x families and everything older.
-	{regexp.MustCompile(`claude-(3|v?2|instant)` + claudeVersionEnd), claudeBudget},
+	{regexp.MustCompile(`claude-(3|v?2|instant)` + claudeVersionEnd + `|claude-(opus|sonnet|haiku)-3` + claudeVersionEnd), claudeBudget},
 }
 
 // claudeSonnet55 matches the one model whose Off is between_tools.
@@ -161,8 +164,15 @@ type claudeReasoningAsk struct {
 // in the reasoning object beside a top-level effort is not Off. The contract
 // layer has already refused a switch beside an Off word, so On beside one
 // arrives here only from the reasoning object.
+//
+// A bare string, reasoning "high", is an effort written in the reasoning
+// field. It is read like reasoning.effort: it is the request's effort when
+// there is no top-level one.
 func claudeReasoningAskOf(req *qtypes.OpenAIChatRequest) claudeReasoningAsk {
 	ask := claudeReasoningAsk{effort: chatReasoningEffort(req), budget: adapter.ExplicitThinkingBudget(req.Reasoning) > 0}
+	if word, bare := req.Reasoning.(string); bare && ask.effort == "" {
+		ask.effort = strings.ToLower(strings.TrimSpace(word))
+	}
 	ask.off = adapter.ReasoningEffortOff(ask.effort)
 	switch reasoning := req.Reasoning.(type) {
 	case bool:
@@ -203,7 +213,13 @@ func claudeAdaptiveReasoningBody(model string, class claudeReasoningClass, ask c
 		if claudeSonnet55.MatchString(claudeModelKey(model)) {
 			result.Thinking = map[string]any{"type": "between_tools"}
 		}
+		// No room is kept for a budget that is not sent. A caller who set no
+		// limit keeps the default of the class, the same one a request with
+		// no reasoning ask gets: Off must not shorten the answer.
 		result.AnthropicMaxTokens = 0
+		if anthropicThinkingDefaultCapApplies(req, body) {
+			result.AnthropicMaxTokens = AnthropicThinkingDefaultMaxTokens
+		}
 		return &result
 	case ask.effort != "":
 		step, _ := class.step(ask.effort)
