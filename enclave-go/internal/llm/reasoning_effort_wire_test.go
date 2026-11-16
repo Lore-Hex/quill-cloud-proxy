@@ -69,8 +69,19 @@ func TestAnthropicReasoningPreservesNativeAndFallbackBodies(t *testing.T) {
 		t.Fatal("reinterpreted native Messages body")
 	}
 	original.NativeContent = false
-	if anthropicChatReasoningBody("claude-haiku-4-5", req, original) != original {
-		t.Fatal("changed budget-only model")
+	// A budget-only model has no effort field. Its ladder makes max the 8,192
+	// budget, where the dispatch used to leave such a body alone.
+	got = anthropicChatReasoningBody("claude-haiku-4-5", req, original)
+	if got.Thinking.(map[string]any)["budget_tokens"] != 8192 || got.AnthropicMaxTokens != 12288 || got.OutputConfig.(map[string]any)["effort"] != nil {
+		t.Fatalf("budget-only model: thinking=%#v max_tokens=%d output_config=%#v", got.Thinking, got.AnthropicMaxTokens, got.OutputConfig)
+	}
+	if original.AnthropicMaxTokens != 12288 || original.OutputConfig.(map[string]any)["effort"] != nil || original.Thinking.(map[string]any)["budget_tokens"] != 8192 {
+		t.Fatal("mutated shared fallback body")
+	}
+	// With nothing asked, a budget-only body is sent as built.
+	plain := &qtypes.AnthropicMessagesRequest{MaxTokens: 4096}
+	if anthropicChatReasoningBody("claude-haiku-4-5", &qtypes.OpenAIChatRequest{}, plain) != plain {
+		t.Fatal("changed a budget-only body that asked for nothing")
 	}
 	req.Reasoning = map[string]any{"effort": "high", "max_tokens": 8192}
 	got = anthropicChatReasoningBody("claude-sonnet-4-6", req, original)

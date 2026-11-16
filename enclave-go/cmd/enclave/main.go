@@ -1587,7 +1587,8 @@ func parseChatRequest(body []byte) (*types.OpenAIChatRequest, error) {
 	if validation.ReasoningAlias != nil {
 		// The alias is the whole reasoning control. It already holds a
 		// reasoning_effort sent beside the switch, or drops one the switch
-		// turned off, so the top-level copy must not reach a provider twice.
+		// turned off, so the request keeps no second top-level copy. Where a
+		// provider is sent the effort is decided when its request is built.
 		req.Reasoning = validation.ReasoningAlias
 		req.ReasoningEffort = ""
 	}

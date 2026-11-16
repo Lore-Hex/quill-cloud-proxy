@@ -144,6 +144,15 @@ plaintext provider to work around a failed verification or unavailable cloud.
 
 ## Pin Updates
 
+### 2026-11-15 v1.64 Candidate Review
+
+[The v1.64 review](privatemode-v164-review-2026-11-15.md) records the newly
+reproduced deployment and the operator's conditional recovery-identity approval.
+Production promotion still requires packaged encrypted positive/negative tests,
+current-head CI, and guarded regional qualification. Runtime manifest refresh
+remains forbidden. Confidential aliases may retry only authorized verified
+alternatives; an explicit model with no eligible alternative must fail closed.
+
 ### 2026-11-08 v1.63 Candidate Review
 
 [The v1.63 candidate review](privatemode-v163-review-2026-11-08.md) tracks the

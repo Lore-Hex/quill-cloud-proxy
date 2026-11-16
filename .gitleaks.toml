@@ -71,6 +71,14 @@ regexTarget = "secret"
 regexes = ['''^[0-9a-f]{64}$''']
 
 [[allowlists]]
+description = "Public v1.64 secret-service OCI digest, independently reproduced in run 43789562675; not an API key."
+targetRules = ["generic-api-key"]
+condition = "AND"
+paths = ['''^\.github/workflows/reproduce-privatemode-v164\.yml$''']
+regexTarget = "secret"
+regexes = ['''^3fba87f35ee11fa08acccdae93347943ef17a364246e64165f4ab6e9caba0dc5$''']
+
+[[allowlists]]
 description = """Pinned Rampart artifact checksums verified by model.mjs. \
 Tokenizer file names trigger the generic key rule; allow only SHA-256 hex \
 values in this exact manifest, not credentials or other files."""
