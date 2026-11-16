@@ -651,10 +651,18 @@ phase_compute() {
   # the run early if a prereq is missing — better than producing a
   # half-wired ASG.
   local parent_repo_url="${AWS_ACCOUNT}.dkr.ecr.${AWS_REGION}.amazonaws.com/${PARENT_ECR_REPO_NAME}"
-  local parent_tag
+  local parent_tag parent_digest="${AWS_PARENT_IMAGE_DIGEST:-}"
   local bootstrap_mode="${AWS_BOOTSTRAP_MODE:-legacy}" bootstrap_key
   bootstrap_key=$(python3 "$SCRIPT_DIR/aws_kms_admission.py" parent-key \
     --region "$AWS_REGION" --mode "$bootstrap_mode")
+  if [ "$bootstrap_mode" != legacy ] && [ -z "$parent_digest" ]; then
+    log "  ERROR: attested bootstrap requires an explicitly reviewed AWS_PARENT_IMAGE_DIGEST"
+    return 1
+  fi
+  if [ -n "$parent_digest" ] && ! [[ "$parent_digest" =~ ^sha256:[0-9a-f]{64}$ ]]; then
+    log "  ERROR: AWS_PARENT_IMAGE_DIGEST must be an immutable SHA256 digest"
+    return 1
+  fi
   if [ "$AWS_ACCOUNT" != "330422590279" ] || [ -z "$AWS_EIF_MANIFEST" ] || [ -z "$AWS_EIF_SIGNATURE" ] || [ -z "$AWS_EIF_SOURCE_COMMIT" ]; then
     log "  ERROR: compute requires the approved AWS account and signed CI manifest, signature and source commit"
     return 1
@@ -694,12 +702,30 @@ phase_compute() {
     "$eif_sha" "$eif_size"
   log "  verified EIF: s3://${eif_bucket}/${eif_object_key} PCR0=${eif_pcr0}"
 
-  parent_tag=$(latest_ecr_tag "$PARENT_ECR_REPO_NAME" "parent-aws-release-" || echo "None")
-  if [ "$parent_tag" = "None" ] || [ -z "$parent_tag" ]; then
-    log "  ERROR: no parent image found in ECR ${PARENT_ECR_REPO_NAME}; build via deploy-parent-aws.yml"
+  if [ -z "$parent_digest" ]; then
+    parent_tag=$(latest_ecr_tag "$PARENT_ECR_REPO_NAME" "parent-aws-release-")
+    if [ "$parent_tag" = "None" ] || [ -z "$parent_tag" ]; then
+      log "  ERROR: no parent image found in ECR ${PARENT_ECR_REPO_NAME}"
+      return 1
+    fi
+    parent_digest=$(aws ecr describe-images --region "$AWS_REGION" \
+      --repository-name "$PARENT_ECR_REPO_NAME" --image-ids "imageTag=$parent_tag" \
+      --query 'imageDetails[0].imageDigest' --output text)
+  else
+    local stored_parent_digest
+    stored_parent_digest=$(aws ecr describe-images --region "$AWS_REGION" \
+      --repository-name "$PARENT_ECR_REPO_NAME" --image-ids "imageDigest=$parent_digest" \
+      --query 'imageDetails[0].imageDigest' --output text)
+    if [ "$stored_parent_digest" != "$parent_digest" ]; then
+      log "  ERROR: reviewed parent image is not present in the regional registry"
+      return 1
+    fi
+  fi
+  if ! [[ "$parent_digest" =~ ^sha256:[0-9a-f]{64}$ ]]; then
+    log "  ERROR: registry did not return a valid parent image digest"
     return 1
   fi
-  log "  parent image:  ${parent_repo_url}:${parent_tag}"
+  log "  parent image:  ${parent_repo_url}@${parent_digest}"
 
   # The parent-pump is the Go replacement for the Python TCP pump on
   # the data path. It runs as a separate small (~3.5 MB) container on
@@ -1140,7 +1166,7 @@ aws ecr get-login-password --region ${AWS_REGION} \\
 #                                    as trustedrouter_base_url. The AWS public
 #                                    service is observer-only, so the canonical
 #                                    billing authority is the safe default.
-docker pull ${parent_repo_url}:${parent_tag}
+docker pull ${parent_repo_url}@${parent_digest}
 docker run -d --restart=always --name=quill-parent \\
   --network=host \\
   --device=/dev/vsock \\
@@ -1152,7 +1178,7 @@ docker run -d --restart=always --name=quill-parent \\
   -e QUILL_SECRET_PREFIX=quill/ \\
   -e QUILL_GCP_SA_KMS_ALIAS=alias/${PROJECT_TAG}-cmk \\
   -e QUILL_TR_CONTROL_PLANE_BASE_URL=${TR_CONTROL_PLANE_BASE_URL} \\
-  ${parent_repo_url}:${parent_tag}
+  ${parent_repo_url}@${parent_digest}
 
 # 4b. Parent-pump container (Go) — listens on TCP :8444 and forwards
 # to the enclave's vsock listener (CID 16, port 8001). Replaces the

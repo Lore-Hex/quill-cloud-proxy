@@ -17,7 +17,7 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 class ComputeTests(unittest.TestCase):
-    def run_candidate(self, *, bad_signature=False, missing=False, follows_latest=False, wrong_checksum=False, unadmitted=False, bootstrap_mode="legacy"):
+    def run_candidate(self, *, bad_signature=False, missing=False, follows_latest=False, wrong_checksum=False, unadmitted=False, bootstrap_mode="legacy", parent_digest="", registry_digest=None):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             calls = root / "calls.jsonl"
@@ -27,7 +27,8 @@ import base64, json, os, sys
 a=sys.argv[1:]
 with open(os.environ['CALLS'], 'a') as f: f.write(json.dumps(a)+'\\n')
 command=a[:2]
-if command == ['s3api','head-object']:
+if command == ['ecr','describe-images']: print(os.environ['REGISTRY_DIGEST'])
+elif command == ['s3api','head-object']:
     digest=('f'*64 if os.environ['BAD_CHECKSUM']=='1' else os.environ['DIGEST'])
     print(json.dumps({'ContentLength':4,'ChecksumSHA256':base64.b64encode(bytes.fromhex(digest)).decode()}))
 elif command == ['ec2','describe-security-groups']:
@@ -76,6 +77,8 @@ else: sys.exit('Unexpected AWS operation: '+repr(a))
                    "AWS_EIF_SIGNATURE": str(root / "signature.json"), "AWS_EIF_SOURCE_COMMIT": "a" * 40,
                    "CANDIDATE_TEMPLATE_ONLY": "1", "DRY_RUN": "0", "INSTANCE_TYPE": "m5.xlarge",
                    "AWS_BOOTSTRAP_MODE": bootstrap_mode,
+                   "AWS_PARENT_IMAGE_DIGEST": parent_digest,
+                   "REGISTRY_DIGEST": registry_digest if registry_digest is not None else "sha256:" + "d" * 64,
                    "TR_CONTROL_PLANE_BASE_URL": "https://trustedrouter.com", "CALLS": str(calls), "DIGEST": digest,
                    "LATEST": str(int(follows_latest)), "BAD_CHECKSUM": str(int(wrong_checksum)),
                    "UNADMITTED": str(int(unadmitted))}
@@ -93,6 +96,8 @@ else: sys.exit('Unexpected AWS operation: '+repr(a))
         user_data = (gzip.decompress(raw) if raw[:2] == b"\x1f\x8b" else raw).decode()
         self.assertIn("aws-nitro-enclaves-cli-1.5.0-0.amzn2023", user_data)
         self.assertIn("QUILL_BOOTSTRAP_MODE=legacy", user_data)
+        self.assertIn("quill-parent@sha256:" + "d" * 64, user_data)
+        self.assertNotIn("quill-parent:test", user_data)
         self.assertIn("sha256sum --check --strict", user_data)
         self.assertIn("stat -c %s /opt/quill/enclave.eif.tmp", user_data)
         self.assertIn("quill-enclave-eif-eu-west-1-330422590279", user_data)
@@ -128,6 +133,25 @@ else: sys.exit('Unexpected AWS operation: '+repr(a))
             result, calls = self.run_candidate(bootstrap_mode=mode)
             self.assertNotEqual(result.returncode, 0)
             self.assertEqual(calls, [])
+
+    def test_explicit_parent_digest_is_verified_in_registry(self):
+        digest = "sha256:" + "d" * 64
+        result, calls = self.run_candidate(parent_digest=digest)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        lookup = next(call for call in calls if call[:2] == ["ecr", "describe-images"])
+        self.assertIn("imageDigest=" + digest, lookup)
+
+    def test_invalid_parent_pin_fails_before_cloud(self):
+        for value in ("latest", "sha256:" + "d" * 63, "sha256:" + "D" * 64, "tag;echo unsafe"):
+            result, calls = self.run_candidate(parent_digest=value)
+            self.assertNotEqual(result.returncode, 0)
+            self.assertEqual(calls, [])
+
+    def test_absent_or_mismatched_parent_blocks_template_write(self):
+        for pinned, returned in (("", "None"), ("sha256:" + "d" * 64, "sha256:" + "e" * 64)):
+            result, calls = self.run_candidate(parent_digest=pinned, registry_digest=returned)
+            self.assertNotEqual(result.returncode, 0)
+            self.assertFalse(any(call[1].startswith(("create-", "modify-", "update-")) for call in calls))
 
 
 if __name__ == "__main__":

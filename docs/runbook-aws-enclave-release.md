@@ -110,6 +110,10 @@ Set AWS_REGION explicitly. Compare the template with the recorded live version:
 preserve networking, approved parent/pump images, IAM, capacity, secret paths
 and health settings. Reject unrelated drift. The host AMI and nitro-cli package
 are pinned; user data downloads the EIF and checks its size and SHA256.
+Set AWS_PARENT_IMAGE_DIGEST to the reviewed parent container's SHA256 digest.
+This is mandatory for dual or v2-only bootstrap. The template always embeds
+an immutable parent digest; a tag is resolved once at template generation only
+for the legacy bootstrap stage, never again when a replacement instance boots.
 
 Launch one standalone candidate outside the ASG and every serving target group.
 Give it distinct non-production Project and Name tags so discovery cannot add
