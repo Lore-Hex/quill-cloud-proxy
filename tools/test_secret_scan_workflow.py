@@ -117,6 +117,18 @@ class SecretScanWorkflowTest(unittest.TestCase):
                     self.assertTrue(path.startswith("^"), path)
                     re.compile(path)
 
+    def test_rampart_exception_is_only_manifest_hashes_not_credentials(self):
+        config = tomllib.loads((ROOT / ".gitleaks.toml").read_text())
+        [entry] = [a for a in config["allowlists"] if "Rampart" in a["description"]]
+        self.assertEqual(entry["targetRules"], ["generic-api-key"])
+        self.assertEqual(entry["condition"], "AND")
+        self.assertEqual(entry["regexTarget"], "secret")
+        self.assertEqual(entry["paths"], [r"^enclave-go/rampart/model-sha256\.json$"])
+        self.assertEqual(entry["regexes"], [r"^[0-9a-f]{64}$"])
+        self.assertIsNone(re.fullmatch(entry["paths"][0], "enclave-go/rampart/worker.mjs"))
+        for value in ("not-a-hash", "prefix-" + "a" * 64, "a" * 65):
+            self.assertIsNone(re.fullmatch(entry["regexes"][0], value))
+
 
 if __name__ == "__main__":
     unittest.main()

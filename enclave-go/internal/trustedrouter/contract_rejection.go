@@ -21,7 +21,8 @@ type contractRejection struct {
 // Categories bound alert cardinality; separately retained paths contain names only.
 // Mirror changes in quill-router/services/gateway_contract_warnings.py first.
 var contractParameterCategories = map[string]struct{}{
-	"store": {}, "model": {}, "models": {}, "messages": {}, "input": {},
+	"deidentify": {},
+	"store":      {}, "model": {}, "models": {}, "messages": {}, "input": {},
 	"instructions": {}, "tools": {}, "tool_choice": {}, "parallel_tool_calls": {},
 	"stream": {}, "stream_options": {}, "text": {}, "response_format": {},
 	"temperature": {}, "top_p": {}, "reasoning": {}, "reasoning_effort": {},
@@ -35,6 +36,8 @@ var contractParameterCategories = map[string]struct{}{
 	"modalities": {}, "prompt_cache_retention": {}, "usage": {}, "other": {},
 	"allow_fallbacks":                   {},
 	"cache_control":                     {},
+	"chat_template_kwargs":              {},
+	"client_metadata":                   {},
 	"debug":                             {},
 	"depth":                             {},
 	"frequency_penalty":                 {},

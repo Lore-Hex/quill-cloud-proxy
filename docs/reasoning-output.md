@@ -34,6 +34,150 @@ it is not a setting for hiding reasoning text.
 
 Reference: [Anthropic effort documentation](https://platform.claude.com/docs/en/build-with-claude/effort).
 
+## Thinking switches on chat completions
+
+Chat completions accept three spellings of the switch that turns thinking on
+or off. Each is normalized to `reasoning.enabled`, and none is forwarded as
+sent:
+
+* `thinking: {"type": "enabled"}` or `{"type": "disabled"}`, as DeepSeek and
+  Z.ai document it. `adaptive` and `budget_tokens` are the Claude forms.
+* `enable_thinking: true` or `false`.
+* `chat_template_kwargs: {"enable_thinking": false}` or `{"thinking": false}`,
+  as clients written for vLLM and SGLang servers send it. These two boolean
+  keys are the only ones accepted. Any other key returns a 400 naming it
+  (`chat_template_kwargs.<key>`), because the object is never sent to a
+  provider. An empty object or `null` is treated as omitted.
+
+A switch and `reasoning_effort` are different controls, one for whether the
+model thinks and one for how much, and may be sent together:
+
+```json
+{
+  "model": "z-ai/glm-5.2",
+  "messages": [{"role": "user", "content": "What is 6 times 7?"}],
+  "thinking": {"type": "enabled"},
+  "reasoning_effort": "high"
+}
+```
+
+* On with an effort is thinking at that effort: the same request as
+  `reasoning: {"enabled": true, "effort": "high"}`.
+* Off governs. With a disabled switch the effort is dropped and thinking stays
+  off, as those providers' own APIs behave.
+* On with `reasoning_effort: "none"` contradicts itself and returns 400.
+* `thinking.budget_tokens` with `reasoning_effort` is two depth controls and
+  returns 400.
+* Adaptive thinking takes its effort from `output_config.effort` or
+  `reasoning_effort`, not both.
+* Send one switch. `thinking` beside `enable_thinking` or
+  `chat_template_kwargs`, and any switch beside the `reasoning` object, return
+  400. The boolean spellings may repeat each other when they agree.
+
+Every refusal here happens before billing authorization.
+
+### Claude models: known limits
+
+Nothing in this section is new behavior. It states what the gateway does
+today, because a switch beside `reasoning_effort` now reaches it.
+
+A Claude model takes the adaptive path when its ID contains one of
+`claude-opus-4-6`, `claude-opus-4-7`, `claude-opus-4-8`, `claude-opus-5`,
+`claude-sonnet-4-6`, `claude-sonnet-5` or `claude-fable-5`. A request that
+names an effort is sent there with `thinking: {"type": "adaptive"}` and the
+effort as `output_config.effort`. Every other Claude ID takes the budget
+path, which includes Haiku 4.5, Sonnet 4.5 and Opus 4.5. On the budget path
+the effort becomes a thinking budget:
+1,024 tokens for `low`, 4,096 for `medium`, 8,192 for `high` and `xhigh`.
+On alone is 4,096. Opus 4.5 is also sent the effort as
+`output_config.effort`, as written.
+
+On the budget path, `max`, `minimal` and an effort the gateway does not know
+set no thinking budget. That holds beside an On switch too:
+`thinking: {"type": "enabled"}` with `reasoning_effort: "max"` is the request
+`reasoning: {"enabled": true, "effort": "max"}`, and it is sent with no
+`thinking` at all. Opus 4.5 gets no thinking and `output_config.effort` set
+to `max`, `minimal` or the unknown word as written, none of which Anthropic
+documents for that model. The spelling with the effort outside the object,
+`reasoning: {"enabled": true}` beside `reasoning_effort`, is read differently:
+it thinks at 4,096 tokens whatever the effort says.
+
+An explicit Off written as the `reasoning` object does not govern on the
+budget path, except on Opus 4.5: `reasoning: {"enabled": false}` beside
+`reasoning_effort: "high"` thinks at 8,192 tokens on Haiku 4.5 and Sonnet 4.5.
+On Opus 4.5 the same request is sent `thinking: {"type": "disabled"}`. The
+switch spellings are not affected, because a disabled switch drops the effort.
+
+### OpenAI models that use tools
+
+A first-party OpenAI request uses the Responses tool route when the model ID
+is `gpt-5.5`, `gpt-5.6`, `gpt-6` or `gpt-6.N`, alone or with a `-` suffix,
+except `gpt-5.5-pro`, and the request carries tools or tool history. That
+route takes an effort and has no switch. It used to fail every request that
+carried a switch, when its provider request was prepared. It now honors what
+it can:
+
+* On with an effort is that effort, sent as written. That includes `none`
+  and a word OpenAI does not list: the request is the one the effort alone
+  already sends, and if the model rejects it the next provider is tried.
+* On alone is the request without the switch. These models reason by default.
+* Off is sent as effort `none` for exactly these model IDs, each alone or
+  followed by a `-YYYY-MM-DD` snapshot date: `gpt-5.5`, `gpt-5.6-luna`,
+  `gpt-5.6-sol`, `gpt-5.6-terra`, `gpt-6-luna`, `gpt-6-sol` and
+  `gpt-6.1-terra`. OpenAI documents `none` for them.
+
+Everything else the route cannot honor keeps the failure it had, when the
+provider request is prepared, after billing authorization. That is Off on
+every other model ID of the route (for example `gpt-6-astra` and
+`gpt-6.1-sol`, which document that they reject `none`, any `-pro` model, and
+any member not listed above), and a thinking token budget
+(`thinking.budget_tokens` or `reasoning.max_tokens`), which these models do
+not take. A `reasoning` value that is not an object (`true`, `false` or a
+string) and any other key inside the object (for example `reasoning.type`)
+also fail there, as before: `reasoning: true` is not read as On, though
+`reasoning: {"enabled": true}` is. The failure is retryable, as before: the request goes to the next
+provider authorized for the model, which is sent the `reasoning` object
+unchanged. If there is none, the caller gets the error and the hold is
+refunded.
+
+### Hosts outside the effort list: known limit
+
+Some chat endpoints are known to read a top-level `reasoning_effort`, and are
+always sent the effort there: Meta, OpenAI, Google AI Studio, DeepSeek, Z.ai,
+Kimi, Mistral, Alibaba, Tencent, Tinfoil, Grok, Baseten, Crusoe, Cerebras,
+Fireworks and Privatemode. Every other OpenAI-compatible host is sent the
+reasoning fields as the request holds them. For those hosts the effort of a
+switch plus effort request goes inside the `reasoning` object,
+`"reasoning": {"effort": "high", "enabled": true}`, while an effort sent alone
+goes as top-level `"reasoning_effort": "high"`. So adding a switch to a
+working `reasoning_effort` request changes where such a host finds the
+effort. Which of the two each of those hosts reads has not been observed.
+
+### Open decisions
+
+These are not decided by this release:
+
+* (a) What `max`, `minimal` and unknown efforts should do on the Claude
+  budget path. Two problems come with turning thinking on where it is off
+  today. Anthropic documents thinking as incompatible with a `temperature`
+  other than 1, `top_k`, a `top_p` below 0.95, forced tool use and prefill,
+  so a request that returns 200 today could get a provider 400. A thinking
+  budget also raises the `max_tokens` sent to the provider above what the
+  hold was sized for (512 becomes 8,704 and 4,096 becomes 12,288 at 8,192
+  tokens of budget), as `high` already does.
+* (b) Whether an explicit Off written as the `reasoning` object should govern
+  on the whole Claude budget path. Today
+  `reasoning: {"enabled": false}` beside `reasoning_effort: "high"` thinks on
+  Haiku 4.5 and Sonnet 4.5, and does not on Opus 4.5.
+* (c) Whether to refuse, with a 400 before billing authorization, an Off and
+  a token budget that the OpenAI Responses tool route cannot honor. No host of these models
+  can stop their reasoning or take a token budget, so a refusal is the honest
+  answer. The cost is that requests another host serves today, without the
+  option honored, would start to fail.
+* (d) Where the effort of a switch plus effort request should go on hosts
+  outside the effort list: inside the `reasoning` object as today, top-level
+  as an effort alone goes, or both. It needs a live probe of those hosts.
+
 ## Reasoning visibility
 
 Chat completions accept `include_reasoning` as a boolean compatibility option:

@@ -8,10 +8,12 @@ import (
 	"io"
 	"net/http"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"reflect"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/Lore-Hex/quill-cloud-proxy/enclave-go/internal/spendlease"
 	qtypes "github.com/Lore-Hex/quill-cloud-proxy/enclave-go/internal/types"
@@ -200,6 +202,18 @@ func TestAsyncLiveFrozenMain(t *testing.T) {
 }
 
 func TestAsyncLiveMainAllocationClass(t *testing.T) {
+	// Benchmark reads process-wide counters. Isolate this decoder measurement
+	// from other tests' background workers without changing its allocation bounds.
+	if os.Getenv("ASYNC_LIVE_ALLOCATION_CHILD") != "1" {
+		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cancel()
+		cmd := exec.CommandContext(ctx, os.Args[0], "-test.run=^TestAsyncLiveMainAllocationClass$") //nolint:gosec // Relaunch this test binary with a fixed selector.
+		cmd.Env = append(os.Environ(), "ASYNC_LIVE_ALLOCATION_CHILD=1")
+		if out, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("isolated allocation check: %v\n%s", err, out)
+		}
+		return
+	}
 	// MAIN's decoder ignores arbitrarily large unknown v2 values: 152 B / 2
 	// allocations with Go 1.24.13. Authorization itself is reused outside measure.
 	for _, size := range []int{0, 1024, 1000000} {
