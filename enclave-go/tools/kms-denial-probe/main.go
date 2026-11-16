@@ -68,13 +68,17 @@ func handle(conn net.Conn, attestDocument func([]byte, []byte) ([]byte, error)) 
 		return errors.New("attestation unavailable or oversized")
 	}
 	body, err := json.Marshal(evidence{document, publicKey, nonce, protocol})
-	if err != nil || len(body) > 32<<10 {
+	if err != nil {
 		return errors.New("evidence encoding failed")
 	}
-	if err := binary.Write(conn, binary.BigEndian, uint32(len(body))); err != nil {
-		return errors.New("evidence header write failed")
+	length := len(body)
+	if length <= 0 || length > 32<<10 {
+		return errors.New("evidence frame size")
 	}
-	if _, err := io.Copy(conn, bytes.NewReader(body)); err != nil {
+	var header [4]byte
+	binary.BigEndian.PutUint32(header[:], uint32(length))
+	frame := append(header[:], body...)
+	if _, err := io.Copy(conn, bytes.NewReader(frame)); err != nil {
 		return errors.New("evidence write failed")
 	}
 	return nil
