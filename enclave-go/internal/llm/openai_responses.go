@@ -17,19 +17,36 @@ import (
 // unrelated versions such as gpt-5.60 or gpt-60.
 var openAIResponsesModelFamily = regexp.MustCompile(`^gpt-(5\.[56]|6(\.[0-9]+)?)(-|$)`)
 
+// These models, and their dated snapshots, document reasoning.effort none in
+// OpenAI's model pages and reasoning guide. GPT-6 Astra and GPT-6.1 Sol
+// document that they reject it, and no pro page documents it. For every other
+// member of the family an Off is refused by this route at preparation, as any
+// switch was before, so the request fails over to the next candidate.
+var openAIResponsesEffortNone = regexp.MustCompile(`^gpt-(5\.5|5\.6-(luna|sol|terra)|6-(luna|sol)|6\.1-terra)(-[0-9]{4}-[0-9]{2}-[0-9]{2})?$`)
+
+// openAIResponsesModel reports a model that uses Responses for reasoning with
+// tools on the first-party route, and its ID as that route names it. A catalog
+// ID may carry the author prefix.
+func openAIResponsesModel(model string) (string, bool) {
+	model = strings.TrimPrefix(strings.ToLower(model), "openai/")
+	if !openAIResponsesModelFamily.MatchString(model) {
+		return model, false
+	}
+	// GPT-5.5 Pro does not support streaming; ordinary dispatch and the
+	// Responses translator require an upstream SSE stream, even for JSON callers.
+	if model == "gpt-5.5-pro" || strings.HasPrefix(model, "gpt-5.5-pro-") {
+		return model, false
+	}
+	return model, true
+}
+
 // These first-party models require Responses for reasoning with tools. Do not
 // apply this contract to other providers merely hosting an OpenAI model ID.
 func useOpenAIResponses(provider string, req openAICompatibleRequest) bool {
 	if normalizeDirectProvider(provider) != "openai" {
 		return false
 	}
-	model := strings.TrimPrefix(strings.ToLower(req.Model), "openai/")
-	if !openAIResponsesModelFamily.MatchString(model) {
-		return false
-	}
-	// GPT-5.5 Pro does not support streaming; ordinary dispatch and the
-	// Responses translator require an upstream SSE stream, even for JSON callers.
-	if model == "gpt-5.5-pro" || strings.HasPrefix(model, "gpt-5.5-pro-") {
+	if _, ok := openAIResponsesModel(req.Model); !ok {
 		return false
 	}
 	if len(req.Tools) > 0 {
@@ -41,6 +58,25 @@ func useOpenAIResponses(provider string, req openAICompatibleRequest) bool {
 		}
 	}
 	return false
+}
+
+// responsesUnhonoredReasoning names a reasoning control that the model cannot
+// honor on this route: Off where the model documents no way to stop
+// reasoning, and a thinking token budget, which these models do not take. It
+// is empty for a control the route can honor.
+func responsesUnhonoredReasoning(model string, reasoning any) string {
+	values, _ := reasoning.(map[string]any)
+	if enabled, explicit := values["enabled"].(bool); explicit && !enabled {
+		if !openAIResponsesEffortNone.MatchString(model) {
+			return "this model cannot turn reasoning off"
+		}
+	}
+	for _, key := range []string{"max_tokens", "thinking_budget", "budget_tokens"} {
+		if values[key] != nil {
+			return "this model takes a reasoning effort, not a thinking token budget"
+		}
+	}
+	return ""
 }
 
 func responsesInputError(field string) error {
@@ -154,8 +190,19 @@ func buildOpenAIResponsesRequest(req openAICompatibleRequest) (map[string]any, e
 	return out, nil
 }
 
+// responsesReasoning projects the reasoning control onto Responses, which has
+// an effort and no switch. These models reason by default, so On is the
+// request without the switch: the effort when one was sent, else the model's
+// own default. Off is the documented effort none, and governs an effort sent
+// beside it. What the route cannot honor is the same 400 at preparation that
+// every switch was: a later candidate for the model is still tried.
 func responsesReasoning(req openAICompatibleRequest) (map[string]any, error) {
+	model, _ := openAIResponsesModel(req.Model)
+	if message := responsesUnhonoredReasoning(model, req.Reasoning); message != "" {
+		return nil, &upstreamHTTPError{status: http.StatusBadRequest, body: "OpenAI Responses tool route: " + message}
+	}
 	out := map[string]any{"summary": "auto"}
+	off := false
 	if req.Reasoning != nil {
 		values, ok := req.Reasoning.(map[string]any)
 		if !ok {
@@ -165,6 +212,12 @@ func responsesReasoning(req openAICompatibleRequest) (map[string]any, error) {
 			switch key {
 			case "effort", "summary":
 				out[key] = value
+			case "enabled":
+				enabled, ok := value.(bool)
+				if !ok {
+					return nil, responsesInputError("reasoning option")
+				}
+				off = !enabled
 			default:
 				return nil, responsesInputError("reasoning option")
 			}
@@ -172,6 +225,9 @@ func responsesReasoning(req openAICompatibleRequest) (map[string]any, error) {
 	}
 	if req.ReasoningEffort != "" {
 		out["effort"] = req.ReasoningEffort
+	}
+	if off {
+		out["effort"] = "none"
 	}
 	if out["effort"] == "none" {
 		// None has no reasoning to summarize. Preserve explicit summary values
