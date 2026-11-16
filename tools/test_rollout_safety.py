@@ -165,13 +165,17 @@ class RolloutSafetyTests(unittest.TestCase):
             docker = (ROOT / ("enclave-go/Dockerfile.enclave" + suffix)).read_text()
             self.assertIn("ARG SOURCE_REVISION", docker)
             self.assertIn("trustedrouter.ShadowBuildRevision=${SOURCE_REVISION}", docker)
-        for name in ("release-aws-enclave.sh", "release-gcp.sh", "deploy-azure-aci.sh",
+        for name in ("release-gcp.sh", "deploy-azure-aci.sh",
                      "verify-pcr0.sh", "verify-build.sh"):
             self.assertIn('SOURCE_REVISION=$(git -C "$REPO_ROOT" rev-parse HEAD)',
                           (ROOT / "tools" / name).read_text())
         workflow = (ROOT / ".github/workflows/deploy-enclave-gcp.yml").read_text()
         self.assertIn("--build-arg SOURCE_REVISION=${_SOURCE_REVISION}", workflow)
         self.assertIn("_SOURCE_REVISION=${GITHUB_SHA}", workflow)
+
+        aws_workflow = (ROOT / ".github/workflows/publish-aws-eif.yml").read_text()
+        self.assertIn('--build-arg "SOURCE_REVISION=$GITHUB_SHA"', aws_workflow)
+        self.assertIn('test "$(git rev-parse HEAD)" = "$GITHUB_SHA"', aws_workflow)
 
     def test_shared_deploy_lock_queues_without_evicting_pending_releases(self) -> None:
         import yaml
