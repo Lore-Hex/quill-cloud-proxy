@@ -1547,7 +1547,11 @@ func parseChatRequest(body []byte) (*types.OpenAIChatRequest, error) {
 		req.RepetitionPenalty = validation.RepetitionPenaltyAlias
 	}
 	if validation.ReasoningAlias != nil {
+		// The alias is the whole reasoning control. It already holds a
+		// reasoning_effort sent beside the switch, or drops one the switch
+		// turned off, so the top-level copy must not reach a provider twice.
 		req.Reasoning = validation.ReasoningAlias
+		req.ReasoningEffort = ""
 	}
 	types.RecoverToolCallNames(req.Messages)
 	adapter.ConfigureReasoningVisibility(&req, validation.ExcludeReasoning)

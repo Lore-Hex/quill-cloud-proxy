@@ -26,6 +26,7 @@ var ResponsesCoverage = []ResponsesCoverageItem{
 
 var ResponsesCreateFieldCoverage = []ResponsesCoverageItem{
 	{Path: "background", Kind: "explicit-stub"},
+	{Path: "client_metadata", Kind: "stateless-real"},
 	{Path: "conversation", Kind: "explicit-stub"},
 	{Path: "include", Kind: "stateless-real"},
 	{Path: "input", Kind: "stateless-real"},
