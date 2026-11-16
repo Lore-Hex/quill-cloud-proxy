@@ -1,6 +1,6 @@
 {
   "accepted_pcr0s": [
-    "9ca5c924cbf0fc3f8ae99ced9cf57ef743579e45fc214affef7bda3a7d4d08dcf543d6aab36a30046ed1bd21441b7f6f"
+    "09b5b6c09d30b222a4daeeff057d733ddb3eeb49c4c32f1934f5cb7cce15bf7712655233683204773cbd3f352db8bfe6"
   ],
   "api_base_url": "https://api-aws.trustedrouter.com/v1",
   "attestation_format": "cose-sign1-nitro-attestation-document",
@@ -11,15 +11,14 @@
     "control_plane_prompt_access": false,
     "prompt_output_storage": false
   },
-  "image_digest": "sha256:3c2a5fa3478d4d715bcbf2aef7e5b06f4dce62aba9ac2ddbce44acdeee3b04e5",
-  "measurement_provenance": "All four serving instances (eu-west-3 i-0463208f50a0768e6, i-07952ee4809a08179 on quill-enclave-lt v50; eu-west-1 i-0f6dfb5683fd5c8ef, i-0bd23bb7f652cc81b on v56) were individually verified against this PCR0 over SSM forwards, each with its own module ID, after both regional instance refreshes completed. Launch templates differ from the previous serving versions only in the enclave image digest. The retired 1c9cce6a serving measurement and the stale 432d24f7 transition entry were removed only after complete healthy censuses. Source-to-image provenance is operator-asserted, not independent AWS image reproduction.",
+  "measurement_provenance": "All four serving instances were individually verified against the signed CI PCR0 after both regional refreshes completed: eu-west-3 i-030fe95aced28eb46 and i-027e61337a661daa2 on launch-template version 51; eu-west-1 i-084bdaa3ee4a00042 and i-0ee7b1b2f7d51c0a9 on version 57. Each proof checked the instance module ID, Nitro certificate chain, fresh nonce, certificate and TLS exporter binding, same-socket follow-up, and healthy response; regional inventories remained stable. The retired 9ca5c924 measurement was removed only after this complete census. Both regions boot the same create-only CI EIF, SHA256 c7b1c2ccf4614887a95c1f5d2a20a6b995327bb569737b133927d57348a170ea (605163664 bytes), from protected-main build 43836278088. Its independently authenticated build manifest remains at eif/992618f254c4e5b209c15f0c638a0d69bcc7e0fd/c7b1c2ccf4614887a95c1f5d2a20a6b995327bb569737b133927d57348a170ea/manifest.json. Source-to-image provenance remains operator-asserted; this is not an independent image reproduction. The manifest enclave_image_id is a Docker image ID, not a registry manifest digest.",
   "measurement_type": "nitro-pcr0-sha384",
-  "observed_module_id": "i-0463208f50a0768e6-enc01a1e2df3874a649",
-  "pcr0": "9ca5c924cbf0fc3f8ae99ced9cf57ef743579e45fc214affef7bda3a7d4d08dcf543d6aab36a30046ed1bd21441b7f6f",
+  "observed_module_id": "i-0ee7b1b2f7d51c0a9-enc01a1e48a1fc09b8c",
+  "pcr0": "09b5b6c09d30b222a4daeeff057d733ddb3eeb49c4c32f1934f5cb7cce15bf7712655233683204773cbd3f352db8bfe6",
   "platform": "aws-nitro-enclaves",
   "release_state": "current",
   "reproduce": "tools/verify-pcr0.sh",
-  "source_commit": "09e2c5cd2b42116a4df33148b262da73ae3e9573",
+  "source_commit": "992618f254c4e5b209c15f0c638a0d69bcc7e0fd",
   "source_commit_provenance": "operator-asserted",
   "source_repo": "https://github.com/Lore-Hex/quill-cloud-proxy",
   "tls": {
