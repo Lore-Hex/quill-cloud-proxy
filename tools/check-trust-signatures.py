@@ -22,6 +22,11 @@ a public key without checking the identity (GHSA-fx35-mq7g-6g98); the
 publishers install 2.6.5, and the certificate check refuses such a bundle
 before cosign sees it.
 
+AWS EIF manifests are separate build proofs: only their exact source/digest
+paths are accepted, their bounded schema must match those paths, and their
+bundles must verify under publish-aws-eif.yml on protected main. That identity
+cannot sign a serving trust record, nor can a plane signer sign a build proof.
+
 tools/wait-stage-d-policy.sh, and deploy-enclave-gcp.yml before it builds the
 transitional Stage D set, run this on the Stage D policy and bundle they fetch
 from the trust page, laid out at the path the page serves them from.
@@ -33,6 +38,7 @@ from __future__ import annotations
 
 import base64
 import binascii
+import importlib.util
 import json
 import re
 import subprocess
@@ -82,6 +88,7 @@ SIGNED_BY = {
 # bundle. The path decides the format, so a bundle cannot choose how it is
 # verified.
 PROTOBUF = ("gcp/stage-d-accepted.json", "trust/gcp/stage-d-accepted.json")
+EIF_PATH = re.compile(r"(?:trust/)?eif/[0-9a-f]{40}/[0-9a-f]{64}/manifest\.json\Z")
 
 
 def _glob(pattern: str) -> re.Pattern[str]:
@@ -96,6 +103,8 @@ def _glob(pattern: str) -> re.Pattern[str]:
 
 def plane_of(document: str) -> str | None:
     """The plane whose signer signs the document at this path under trust-page/."""
+    if EIF_PATH.fullmatch(document):
+        return "aws-eif"
     for plane, patterns in SIGNED_BY.items():
         if any(_glob(pattern).match(document) for pattern in patterns):
             return plane
@@ -135,8 +144,29 @@ def _certificate_der(bundle: dict) -> bytes | None:
 def _verify(
     bundle: Path, document: Path, plane: str, new_format: bool, cosign: str, openssl: str
 ) -> str | None:
+    identity = IDENTITY.format(plane=plane)
+    bundle_bytes = None
+    if plane == "aws-eif":
+        # Build proofs have a different authority from serving trust records.
+        # Reuse the bounded CI manifest parser and bind its claims to its path.
+        # GCP-only verifier snapshots do not need this optional sibling tool.
+        try:
+            spec = importlib.util.spec_from_file_location(
+                "aws_eif_manifest", Path(__file__).with_name("aws_eif_manifest.py")
+            )
+            assert spec is not None and spec.loader is not None
+            eif_manifest = importlib.util.module_from_spec(spec)
+            spec.loader.exec_module(eif_manifest)
+            identity = eif_manifest.IDENTITY
+            record = eif_manifest.validate(eif_manifest._read_json(document))
+            if (record["source_commit"] != document.parent.parent.name
+                    or record["eif_sha256"] != document.parent.name):
+                return f"{document}: EIF source or digest differs from its path"
+            bundle_bytes = eif_manifest._read_bytes(bundle, eif_manifest.MAX_BUNDLE_BYTES)
+        except (OSError, ValueError) as exc:
+            return f"{document}: invalid EIF manifest or bundle: {exc}"
     try:
-        content = json.loads(bundle.read_text())
+        content = json.loads(bundle.read_text() if bundle_bytes is None else bundle_bytes)
     except ValueError:
         return f"{bundle} is not a cosign bundle"
     if isinstance(content, dict) and ("mediaType" in content) != new_format:
@@ -160,7 +190,7 @@ def _verify(
         "--bundle",
         str(bundle),
         "--certificate-identity",
-        IDENTITY.format(plane=plane),
+        identity,
         "--certificate-oidc-issuer",
         ISSUER,
         str(document),
@@ -172,7 +202,7 @@ def _verify(
     if result.returncode == 0:
         return None
     reason = (result.stderr.strip().splitlines() or ["no output"])[-1]
-    return f"{document} is not signed by {bundle} under publish-trust-{plane}.yml: {reason}"
+    return f"{document} is not signed by {bundle} under {identity}: {reason}"
 
 
 def problems(site: Path, cosign: str = "cosign", openssl: str = "openssl") -> list[str]:

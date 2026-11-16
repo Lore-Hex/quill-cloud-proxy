@@ -5,6 +5,7 @@ import io
 import json
 import subprocess
 import unittest
+import urllib.error
 from unittest.mock import patch
 
 from tools import aws_eif_admission as admission
@@ -81,15 +82,30 @@ class AdmissionTests(unittest.TestCase):
         path = self.trust / "aws-release.json"
         raw = path.read_bytes()
         with patch.object(admission.urllib.request, "urlopen",
-                          side_effect=[io.BytesIO(raw), io.BytesIO(b"public-signature")]), \
+                          side_effect=[io.BytesIO(raw), io.BytesIO(b"public-signature")]) as fetch, \
              patch.object(admission.subprocess, "run") as run:
             self.assertEqual(admission.require_published(path), self.current)
+        self.assertEqual([call.args[0] for call in fetch.call_args_list], [
+            "https://trust.trustedrouter.com/trust/aws-release.json",
+            "https://trust.trustedrouter.com/trust/aws-release.json.bundle",
+        ])
+        self.assertTrue(all(call.kwargs["timeout"] == 20 for call in fetch.call_args_list))
         self.assertIn(admission.PUBLIC_IDENTITY, run.call_args.args[0])
         with patch.object(admission.urllib.request, "urlopen",
                           side_effect=[io.BytesIO(b"stale"), io.BytesIO(b"signature")]), \
              patch.object(admission.subprocess, "run") as run, \
              self.assertRaisesRegex(ValueError, "not caught up"):
             admission.require_published(path)
+        run.assert_not_called()
+
+    def test_public_http_failure_cannot_widen_runtime(self):
+        error = urllib.error.HTTPError(admission.PUBLIC_RECORD, 404, "Not Found", {}, None)
+        self.addCleanup(error.close)
+        with patch.object(admission, "TRUST", self.trust), \
+             patch.object(admission, "verify_record", return_value=self.record), \
+             patch.object(admission.urllib.request, "urlopen", side_effect=error), \
+             patch.object(admission.subprocess, "run") as run, self.assertRaises(urllib.error.HTTPError):
+            admission.widen_runtime()
         run.assert_not_called()
 
     def test_bad_public_signature_cannot_widen_runtime(self):

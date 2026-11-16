@@ -39,6 +39,10 @@ IDENTITY = (
     "https://github.com/Lore-Hex/quill-cloud-proxy/.github/workflows/"
     "publish-trust-{plane}.yml@refs/heads/main"
 )
+EIF_IDENTITY = (
+    "https://github.com/Lore-Hex/quill-cloud-proxy/.github/workflows/"
+    "publish-aws-eif.yml@refs/heads/main"
+)
 # A throwaway self-signed certificate and public key: test material that signs
 # nothing, so the checker's `openssl x509` parse has real input.
 CERTIFICATE_PEM = b"""-----BEGIN CERTIFICATE-----
@@ -108,7 +112,7 @@ def sign(document: Path, plane: str, key: str = CERTIFICATE) -> None:
     """Write the fake cosign's bundle for the document's current bytes."""
     bundle: dict[str, object] = {
         "fake_sha256": hashlib.sha256(document.read_bytes()).hexdigest(),
-        "fake_identity": IDENTITY.format(plane=plane),
+        "fake_identity": EIF_IDENTITY if plane == "aws-eif" else IDENTITY.format(plane=plane),
     }
     if document.name == "stage-d-accepted.json":
         bundle["mediaType"] = "application/vnd.dev.sigstore.bundle.v0.3+json"
@@ -119,6 +123,21 @@ def sign(document: Path, plane: str, key: str = CERTIFICATE) -> None:
     else:
         bundle["cert"] = key
     document.with_name(document.name + ".bundle").write_text(json.dumps(bundle))
+
+
+def signed_eif(site: Path, prefix: str = "trust/") -> Path:
+    source, digest = "1" * 40, "2" * 64
+    document = site / f"{prefix}eif/{source}/{digest}/manifest.json"
+    document.parent.mkdir(parents=True, exist_ok=True)
+    document.write_text(json.dumps({
+        "schema": "trustedrouter.aws-eif.v1", "source_commit": source,
+        "builder_image": "330422590279.dkr.ecr.eu-west-1.amazonaws.com/quill-enclave-eif-builder@sha256:" + "3" * 64,
+        "enclave_image_id": "sha256:" + "4" * 64,
+        "nitro_cli_version": "1.5.3", "eif_sha256": digest, "eif_size_bytes": 123,
+        "measurements": {name: "5" * 96 for name in ("PCR0", "PCR1", "PCR2")},
+    }))
+    sign(document, "aws-eif")
+    return document
 
 
 def signed_site(root: Path) -> Path:
@@ -216,6 +235,92 @@ class CheckTrustSignatures(unittest.TestCase):
             for pattern in patterns
         }
         self.assertEqual(self.verifications(), expected)
+
+    def test_eif_copies_require_the_distinct_protected_build_identity(self) -> None:
+        paths = [signed_eif(self.site, prefix) for prefix in ("", "trust/")]
+        result = self.check()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        for path in paths:
+            relative = path.relative_to(self.site).as_posix()
+            self.assertEqual(self.verifications()[relative], (EIF_IDENTITY, False))
+
+    def test_eif_rejects_serving_signer_and_other_build_refs(self) -> None:
+        path = signed_eif(self.site)
+        bundle_path = path.with_name(path.name + ".bundle")
+        for identity in (IDENTITY.format(plane="aws"), IDENTITY.format(plane="gcp"),
+                         EIF_IDENTITY.replace("refs/heads/main", "refs/heads/other")):
+            bundle = json.loads(bundle_path.read_text())
+            bundle["fake_identity"] = identity
+            bundle_path.write_text(json.dumps(bundle))
+            result = self.check()
+            self.assertEqual(result.returncode, 1)
+            self.assertIn("publish-aws-eif.yml@refs/heads/main", result.stderr)
+
+    def test_eif_rejects_changed_signed_bytes(self) -> None:
+        path = signed_eif(self.site)
+        path.write_text(path.read_text() + "\n")
+        result = self.check()
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("manifest.json is not signed by", result.stderr)
+
+    def test_eif_source_digest_and_schema_are_checked_before_cosign(self) -> None:
+        for field, value in (("source_commit", "6" * 40), ("eif_sha256", "7" * 64),
+                             ("eif_size_bytes", 0), ("measurements", {})):
+            path = signed_eif(self.site)
+            record = json.loads(path.read_text())
+            record[field] = value
+            path.write_text(json.dumps(record))
+            sign(path, "aws-eif")
+            self.cosign_log.write_text("")
+            result = self.check()
+            self.assertEqual(result.returncode, 1, field)
+            self.assertNotIn(path.relative_to(self.site).as_posix(), self.verifications())
+        path = signed_eif(self.site)
+        path.write_text(path.read_text()[:-1] + ', "eif_size_bytes": 123}')
+        sign(path, "aws-eif")
+        self.assertIn("duplicate JSON field", self.check().stderr)
+
+    def test_eif_requires_bundle_certificate_and_exact_path(self) -> None:
+        path = signed_eif(self.site)
+        sign(path, "aws-eif", key=PUBLIC_KEY)
+        result = self.check()
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("carries no signing certificate", result.stderr)
+        path.with_name(path.name + ".bundle").unlink()
+        self.assertIn("has no bundle beside it", self.check().stderr)
+        for wrong in ("eif/short/" + "2" * 64 + "/manifest.json",
+                      "trust/eif/" + "1" * 40 + "/" + "2" * 64 + "/other.json",
+                      "other/eif/" + "1" * 40 + "/" + "2" * 64 + "/manifest.json"):
+            self.assertIsNone(check.plane_of(wrong))
+
+    def test_eif_build_proof_cannot_authorize_a_serving_record(self) -> None:
+        sign(self.site / "trust/aws-release.json", "aws-eif")
+        result = self.check()
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("publish-trust-aws.yml", result.stderr)
+
+    def test_eif_manifest_and_bundle_are_bounded_before_cosign(self) -> None:
+        for target, size in (("manifest", 16 * 1024 + 1), ("bundle", 2 * 1024 * 1024 + 1)):
+            path = signed_eif(self.site)
+            oversized = path if target == "manifest" else path.with_name(path.name + ".bundle")
+            oversized.write_bytes(b" " * size)
+            self.cosign_log.write_text("")
+            result = self.check()
+            self.assertEqual(result.returncode, 1)
+            self.assertNotIn(path.relative_to(self.site).as_posix(), self.verifications())
+
+    def test_eif_bundle_cannot_choose_another_format(self) -> None:
+        path = signed_eif(self.site)
+        bundle_path = path.with_name(path.name + ".bundle")
+        bundle = json.loads(bundle_path.read_text())
+        bundle["mediaType"] = "application/vnd.dev.sigstore.bundle.v0.3+json"
+        bundle["verificationMaterial"] = {"certificate": {"rawBytes": CERTIFICATE_DER}}
+        bundle_path.write_text(json.dumps(bundle))
+        self.cosign_log.write_text("")
+        result = self.check()
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("is not a legacy bundle", result.stderr)
+        self.assertNotIn(path.relative_to(self.site).as_posix(), self.verifications())
 
     def test_a_bundle_for_the_previous_bytes_is_refused(self) -> None:
         (self.site / "trust/aws-release.json").write_text("a newer record\n")
@@ -433,7 +538,7 @@ class TheWorkflowSteps(unittest.TestCase):
         self.addCleanup(shutil.rmtree, self.root)
         self.site = signed_site(self.root)
         (self.root / "tools").mkdir()
-        for name in ("check-trust-copies.py", "check-trust-signatures.py", "publish-trust-s3.sh"):
+        for name in ("check-trust-copies.py", "check-trust-signatures.py", "publish-trust-s3.sh", "aws_eif_manifest.py"):
             shutil.copy2(REPO / "tools" / name, self.root / "tools" / name)
         self.bin = fake_bin(self.root)
         self.aws_log = self.root / "aws.jsonl"
@@ -469,6 +574,20 @@ class TheWorkflowSteps(unittest.TestCase):
 
         self.assertNotEqual(stopped.returncode, 0)
         self.assertIn("trust/gcp-release.json is not signed by", stopped.stderr)
+
+    def test_publishers_verify_eif_proofs_without_changing_plane_authorities(self) -> None:
+        paths = [signed_eif(self.site, prefix) for prefix in ("", "trust/")]
+        steps = (("publish-trust-page.yml", "Verify each bundle signs its document"),
+                 ("publish-trust-s3.yml", "Publish independent S3 trust mirror"))
+        for step in steps:
+            result = self.run_step(*step)
+            self.assertEqual(result.returncode, 0, result.stderr)
+        self.aws_log.write_text("")
+        sign(paths[0], "aws")
+        for step in steps:
+            result = self.run_step(*step)
+            self.assertNotEqual(result.returncode, 0)
+        self.assertEqual(self.aws_log.read_text(), "")
 
     def test_the_s3_publish_syncs_signed_documents_and_stops_on_a_stale_bundle(self) -> None:
         step = ("publish-trust-s3.yml", "Publish independent S3 trust mirror")
