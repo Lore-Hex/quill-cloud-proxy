@@ -20,6 +20,18 @@ KEYS = {
 
 
 class IAMScopeTests(unittest.TestCase):
+    def test_parser_fuzz_gate_has_fixed_work_and_a_hard_watchdog(self):
+        jobs = yaml.safe_load((ROOT / ".github/workflows/ci.yml").read_text())["jobs"]
+        step = next(item for item in jobs["enclave-go"]["steps"] if item.get("name") == "Fuzz AWS sealed-bootstrap parsers")
+        self.assertEqual(step["if"], "matrix.tags == 'cloud_aws,llm_multi'")
+        self.assertFalse(step.get("continue-on-error", False))
+        self.assertEqual(step["env"]["GOMAXPROCS"], "2")
+        commands = [line.strip() for line in step["run"].splitlines() if line.strip() and not line.lstrip().startswith("#")]
+        self.assertEqual(commands, [
+            f"go test ./internal/bootstrap/awssealed -fuzz={target} -fuzztime=1000000x -parallel=2 -timeout=2m"
+            for target in ("FuzzBundleParser", "FuzzCMSParser")
+        ])
+
     def test_mock_policy_checks_are_enforced_by_required_ci(self):
         jobs = yaml.safe_load((ROOT / ".github/workflows/ci.yml").read_text())["jobs"]
         policy = jobs["aws-secret-policy"]
