@@ -156,6 +156,7 @@ LTX_SECRET="${LTX_SECRET:-trustedrouter-ltx-api-key}"
 RUNWAY_SECRET="${RUNWAY_SECRET:-trustedrouter-runway-api-key}"
 KLING_SECRET="${KLING_SECRET:-trustedrouter-kling-api-key}"
 EXA_SECRET="${EXA_SECRET:-trustedrouter-exa-api-key}"
+CONTEXT_DEV_SECRET="${CONTEXT_DEV_SECRET-trustedrouter-context-dev-api-key}"
 XIAOMI_SECRET="${XIAOMI_SECRET:-trustedrouter-xiaomi-api-key}"
 SYNTH_PANEL_PROMPT_SECRET="${SYNTH_PANEL_PROMPT_SECRET:-trustedrouter-synth-panel-prompt-v1}"
 SYNTH_SYNTHESIS_PROMPT_SECRET="${SYNTH_SYNTHESIS_PROMPT_SECRET:-trustedrouter-synth-synthesis-prompt-v1}"
@@ -340,6 +341,7 @@ for secret in \
   "$RUNWAY_SECRET" \
   "$KLING_SECRET" \
   "$EXA_SECRET" \
+  "$CONTEXT_DEV_SECRET" \
   "$XIAOMI_SECRET" \
   "$SYNTH_PANEL_PROMPT_SECRET" \
   "$SYNTH_SYNTHESIS_PROMPT_SECRET" \

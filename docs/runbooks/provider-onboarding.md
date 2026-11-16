@@ -48,6 +48,14 @@ Run `pytest -x` — should still be green.
 
 ## Step 3: Wire enclave gateway (quill-cloud-proxy)
 
+Provider HTTPS destinations are compiled into the measured image. Include every
+new host in `enclave-go/internal/llm/provider_egress.go` (the direct-provider
+registry is included automatically); use exact hosts, never provider-wide
+wildcards. AWS also requires its matching vsock tunnel and parent policy.
+See [provider egress lockdown](../provider-egress-lockdown.md) for the separate
+attestation, metadata and media-fetch boundaries. Test a redirect and an unknown
+destination are refused as well as the legitimate provider request succeeding.
+
 | File | Change |
 |---|---|
 | `enclave-go/internal/types/types.go` | Add `NewProviderAPIKey string` to `BootstrapData` |
