@@ -115,6 +115,21 @@ after bootstrap and cannot be supplied in bootstrap JSON. Normal Nitro
 console logs are unavailable without debug mode; never enable debug mode to
 obtain this evidence. Keep the distinction between actual mode and policy:
 an `attested` result under `transition` still permits a later fallback boot.
+With the instance's SSM forward open, run the checked-in verifier:
+
+```sh
+python3 -m tools.aws_bootstrap_probe \
+  --manifest "$AWS_EIF_MANIFEST" --signature "$AWS_EIF_SIGNATURE" \
+  --expected-source "$AWS_EIF_SOURCE_COMMIT" \
+  --instance "$INSTANCE_ID" --port 18444 \
+  --policy transition --version "$BUNDLE_VERSION"
+```
+
+This verifies the signed CI manifest, Nitro chain, exact PCR0, expected EC2
+instance, fresh nonce, TLS certificate and exporter before reading health on
+the same connection. It sends no API key or inference request. Use
+`--policy strict` after cutover and require the exact approved bundle version.
+
 A transitional image
 can still fall back on any v2 failure, so it provides no host-resistant
 configuration guarantee. Next release the measured strict image, remove every
