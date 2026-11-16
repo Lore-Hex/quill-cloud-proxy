@@ -150,8 +150,8 @@ default (Privatemode, Maple, Hixtube, Telluvian and both System1Models
 included), so a plain deploy preserves the existing optional providers.
 `azure-seal-bundle.py --check-deploy-manifest` fails CI if a sealed name is
 left unnamed, except names listed with a reason in `SEALED_BUT_DARK_ON_AZURE`
-(Context.dev, pending its Azure activation). Explicitly exporting an empty
-`QUILL_X_SECRET=` still disables a provider for one deploy.
+(Context.dev, pending its Azure activation). To take a sealed provider dark on
+Azure, change its default in the deploy script and add it to that list.
 The generated
 `tools/azure-bundle.manifest` records the exact names and immutable version.
 
