@@ -60,7 +60,9 @@ def check_policy(policy: str, accepted: list[str]) -> None:
         raise ValueError("recipient-only explicit Deny is missing or ambiguous")
     statement = deny[0]
     try:
-        pins = measurements(statement["Condition"]["StringNotEqualsIgnoreCase"]["kms:RecipientAttestation:ImageSha384"])
+        raw_pins = statement["Condition"]["StringNotEqualsIgnoreCase"]["kms:RecipientAttestation:ImageSha384"]
+        # KMS normalizes a singleton condition array to its scalar equivalent.
+        pins = measurements([raw_pins] if isinstance(raw_pins, str) else raw_pins)
         actions = sorted(statement["Action"])
     except (KeyError, TypeError) as exc:
         raise ValueError("recipient-only explicit Deny is malformed") from exc

@@ -154,8 +154,10 @@ jobs:
         env:
           GOMAXPROCS: '2'
         run: |
-          go test ./internal/bootstrap/awssealed -fuzz=FuzzBundleParser -fuzztime=10s -parallel=2
-          go test ./internal/bootstrap/awssealed -fuzz=FuzzCMSParser -fuzztime=10s -parallel=2
+          # Fixed work avoids deadline-driven fuzz shutdown and keeps coverage
+          # consistent between runners. A stalled run still fails the watchdog.
+          go test ./internal/bootstrap/awssealed -fuzz=FuzzBundleParser -fuzztime=1000000x -parallel=2 -timeout=2m
+          go test ./internal/bootstrap/awssealed -fuzz=FuzzCMSParser -fuzztime=1000000x -parallel=2 -timeout=2m
 
       - name: Check reachable Go vulnerabilities (${{ matrix.tags }})
         run: go run golang.org/x/vuln/cmd/govulncheck@v1.9.0 -tags '${{ matrix.tags }}' ./...
