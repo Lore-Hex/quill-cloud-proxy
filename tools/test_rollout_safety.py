@@ -30,6 +30,23 @@ class RolloutSafetyTests(unittest.TestCase):
         self.assertIn("roles/spanner.databaseUser", roles)
         self.assertIn("roles/secretmanager.secretAccessor", roles)
 
+    def test_a_full_provision_does_not_mint_a_second_cross_cloud_key(self) -> None:
+        # Phase "all" provisions and never rotates: with a wrapped key already
+        # in AWS Secrets Manager it returns before the mint. Only the phase
+        # run by name mints, so a full re-run adds no key to the GCP account.
+        script = (ROOT / "tools/deploy-aws-nitro.sh").read_text()
+        phase = script.split("phase_cross_cloud_key() {", 1)[1].split("\n}", 1)[0]
+        guard = phase.index('if [ "$PHASE" = "all" ] && aws secretsmanager describe-secret')
+        mint = phase.index("gcloud iam service-accounts keys create")
+        self.assertLess(guard, mint)
+        self.assertEqual(phase.count("gcloud iam service-accounts keys create"), 1)
+        guarded = phase[guard:mint]
+        self.assertIn('--secret-id "$aws_secret_name"', guarded)
+        self.assertRegex(guarded, r"not minting another\"\n.*\n\s+return\n\s+fi\n")
+        # The guard reads only: it comes before the dry-run branch, so a dry
+        # run of "all" reports the skip instead of a mint it would not do.
+        self.assertLess(guard, phase.index('would mint a new JSON key'))
+
     def test_async_settlement_rollout_pins_and_keyring_allowlist(self) -> None:
         # Step 8 enables negotiation only for the four GCP pilot-serving regions,
         # after router gates are verified. AWS/Azure keep their pre-pilot pins;

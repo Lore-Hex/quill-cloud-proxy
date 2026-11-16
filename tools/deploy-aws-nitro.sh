@@ -33,7 +33,8 @@
 #   compute    Launch template + Auto Scaling Group + NLB + target group
 #   quotas     Submit Service Quotas request for m5.xlarge
 #   cross-cloud-key  Create GCP SA, mint a key, wrap with AWS KMS, store in
-#                    AWS Secrets Manager. Re-running rotates the key.
+#                    AWS Secrets Manager. Run by name it rotates the key;
+#                    as part of "all" it leaves a stored key alone.
 
 set -euo pipefail
 
@@ -1445,9 +1446,14 @@ phase_cross_cloud_key() {
   #   5. Store in AWS Secrets Manager as quill/trustedrouter-aws-cross-cloud-sa-key.
   #   6. Wipe the local plaintext key file.
   #
-  # Re-running this phase ROTATES the key: a new JSON key is minted, the
+  # Running this phase by name ROTATES the key: a new JSON key is minted, the
   # existing AWS secret is updated, and previous key versions are left
   # on the GCP SA for cleanup via a separate rotation policy.
+  #
+  # Phase "all" provisions; it does not rotate. With a wrapped key already
+  # stored it stops after the IAM bindings: every mint adds a key to the GCP
+  # account that nothing here removes, and a full re-run is not a decision
+  # to rotate.
 
   local gcp_project="${GCP_PROJECT:-quill-cloud-proxy}"
   local sa_email="tr-aws-cross-cloud@${gcp_project}.iam.gserviceaccount.com"
@@ -1543,6 +1549,13 @@ phase_cross_cloud_key() {
     fi
   else
     log "    [dry-run] would grant cloudkms.cryptoKeyDecrypter on ${kms_keyring_loc}/${kms_keyring_name}/${kms_key_name}"
+  fi
+
+  if [ "$PHASE" = "all" ] && aws secretsmanager describe-secret \
+       --secret-id "$aws_secret_name" --region "$AWS_REGION" >/dev/null 2>&1; then
+    log "  $aws_secret_name already holds a wrapped key; not minting another"
+    log "  (rotate with --phase cross-cloud-key)"
+    return
   fi
 
   # 3. Mint a JSON key and 4-5. wrap+store. We do this in a temp dir that
