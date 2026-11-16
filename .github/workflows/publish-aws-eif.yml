@@ -1,0 +1,96 @@
+name: Publish measured AWS EIF
+
+on:
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+  id-token: write
+
+concurrency:
+  group: publish-aws-eif
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    env:
+      BUILDER_IMAGE: 330422590279.dkr.ecr.eu-west-1.amazonaws.com/quill-enclave-eif-builder@sha256:7367ca7473a74d70433aa29bbce60ecef6aa0f713f7a361e18f90cd4c1044c06
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Build the measured application from this main commit
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
+          test -z "$(git status --porcelain)"
+          docker buildx build --platform linux/amd64 --load --provenance=false \
+            --file enclave-go/Dockerfile.enclave \
+            --build-arg "SOURCE_REVISION=$GITHUB_SHA" \
+            --build-arg BUILD_TAGS=cloud_aws,llm_multi \
+            --build-arg QUILL_TLS_MODE=acme \
+            --build-arg QUILL_API_HOST=api-aws.trustedrouter.com \
+            --build-arg QUILL_ACME_DNS_GCP_PROJECT=quill-cloud-proxy \
+            --build-arg QUILL_ACME_DNS_MANAGED_ZONE=trustedrouter-com \
+            --tag "quill-enclave:eif-$GITHUB_SHA" enclave-go
+      - uses: Lore-Hex/quill-cloud-proxy/.github/actions/aws-credentials@582cbdee7b7023cfeb915b62a7f635aa1e4662b1 # main 2026-11-13
+        with:
+          role-to-assume: arn:aws:iam::330422590279:role/trustedrouter-github-trust-publisher
+          aws-region: eu-west-1
+      - name: Fetch the pinned builder and convert the already-built image
+        run: |
+          set -euo pipefail
+          aws ecr get-login-password --region eu-west-1 \
+            | docker login --username AWS --password-stdin 330422590279.dkr.ecr.eu-west-1.amazonaws.com
+          docker pull "$BUILDER_IMAGE"
+          docker logout 330422590279.dkr.ecr.eu-west-1.amazonaws.com
+          mkdir -p "$RUNNER_TEMP/aws-eif"
+          docker run --rm --platform linux/amd64 "$BUILDER_IMAGE" --version | tee "$RUNNER_TEMP/nitro-version.txt"
+          grep -Fx 'Nitro CLI 1.5.3' "$RUNNER_TEMP/nitro-version.txt"
+          docker run --rm --platform linux/amd64 \
+            -v /var/run/docker.sock:/var/run/docker.sock \
+            -v "$RUNNER_TEMP/aws-eif:/output" "$BUILDER_IMAGE" build-enclave \
+            --docker-uri "quill-enclave:eif-$GITHUB_SHA" --output-file /output/enclave.eif \
+            > "$RUNNER_TEMP/build-measurements.json"
+          docker run --rm --platform linux/amd64 \
+            -v "$RUNNER_TEMP/aws-eif:/output:ro" "$BUILDER_IMAGE" describe-eif \
+            --eif-path /output/enclave.eif > "$RUNNER_TEMP/describe-measurements.json"
+          diff <(jq -S '.Measurements' "$RUNNER_TEMP/build-measurements.json") \
+               <(jq -S '.Measurements' "$RUNNER_TEMP/describe-measurements.json")
+          python3 -m tools.aws_eif_manifest create \
+            --eif "$RUNNER_TEMP/aws-eif/enclave.eif" \
+            --measurements "$RUNNER_TEMP/describe-measurements.json" \
+            --source-commit "$GITHUB_SHA" --builder-image "$BUILDER_IMAGE" \
+            --image-id "$(docker image inspect --format '{{.Id}}' "quill-enclave:eif-$GITHUB_SHA")" \
+            --nitro-cli-version 1.5.3 > "$RUNNER_TEMP/aws-eif/manifest.json"
+      - uses: Lore-Hex/quill-cloud-proxy/.github/actions/cosign-install@582cbdee7b7023cfeb915b62a7f635aa1e4662b1 # main 2026-11-13
+        with:
+          cosign-release: v2.6.5
+      - name: Sign and verify with this workflow identity
+        env:
+          COSIGN_YES: 'true'
+        run: |
+          set -euo pipefail
+          cosign sign-blob --bundle "$RUNNER_TEMP/aws-eif/manifest.json.bundle" "$RUNNER_TEMP/aws-eif/manifest.json"
+          python3 -m tools.aws_eif_manifest verify \
+            --manifest "$RUNNER_TEMP/aws-eif/manifest.json" \
+            --signature "$RUNNER_TEMP/aws-eif/manifest.json.bundle" \
+            --eif "$RUNNER_TEMP/aws-eif/enclave.eif" --expected-source "$GITHUB_SHA"
+      - uses: Lore-Hex/quill-cloud-proxy/.github/actions/setup-uv@582cbdee7b7023cfeb915b62a7f635aa1e4662b1 # main 2026-11-13
+      - name: Publish create-only artifacts to both regions
+        run: |
+          set -euo pipefail
+          uv run --project parent --frozen --no-dev python -m tools.publish_aws_eif \
+            --manifest "$RUNNER_TEMP/aws-eif/manifest.json" \
+            --signature "$RUNNER_TEMP/aws-eif/manifest.json.bundle" \
+            --eif "$RUNNER_TEMP/aws-eif/enclave.eif" --source-commit "$GITHUB_SHA" \
+            | tee "$RUNNER_TEMP/aws-eif/published.jsonl"
+          {
+            echo '## Verified AWS EIF (not yet admitted or deployed)'
+            echo '```json'
+            cat "$RUNNER_TEMP/aws-eif/manifest.json" "$RUNNER_TEMP/aws-eif/published.jsonl"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
