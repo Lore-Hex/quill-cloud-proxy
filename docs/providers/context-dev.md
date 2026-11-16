@@ -61,6 +61,12 @@ sealed bundle is provisioned. GCP's bootstrap IAM provisioning accepts
 bootstrap field; Azure includes the key in its sealed bundle. Never put this
 credential in a control-plane request body or forward it on HTTP redirects.
 
+The production client uses the shared compiled provider egress guard, with only
+`api.context.dev` added as an exact HTTPS/443 destination. Proxy environment
+variables, private/reserved DNS answers, redirects, subdomains and alternative
+ports remain rejected. AWS's existing fixed tunnel map is not expanded by this
+change, so AWS Context activation also requires its own reviewed tunnel mapping.
+
 GCP provisioning on 2026-11-16 UTC created only version 1 of this new secret,
 verified an exact in-memory readback, and confirmed the sole resource-level
 accessor is the existing `quill-workload` service account, matching Exa.

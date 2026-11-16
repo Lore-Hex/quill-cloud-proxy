@@ -33,7 +33,9 @@ var enclaveWebSearchClient websearch.Client
 var enclaveContextSearchClient websearch.Client
 
 func configureContextSearch(apiKey string) {
-	client, err := websearch.NewContextClient(websearch.ContextOptions{APIKey: apiKey})
+	httpc := llm.NewProviderHTTPClient()
+	httpc.Timeout = 15 * time.Second
+	client, err := websearch.NewContextClient(websearch.ContextOptions{APIKey: apiKey, HTTPClient: httpc})
 	if err != nil {
 		enclaveContextSearchClient = nil
 		return
