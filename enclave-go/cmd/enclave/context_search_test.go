@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -93,6 +94,71 @@ func TestContextWebSearchNoImplicitFallback(t *testing.T) {
 	}
 	if selectedWebSearchClient(&types.ResponseWebSearchConfig{Engine: "unknown"}) != nil {
 		t.Fatal("unknown engine fell back")
+	}
+}
+
+func TestContextWebSearchFailureRefundsOnce(t *testing.T) {
+	for _, route := range []string{"responses", "chat/completions"} {
+		for _, stream := range []bool{false, true} {
+			for _, tc := range []struct {
+				name   string
+				err    error
+				cost   int
+				status int
+			}{
+				{"rate_limited", &websearch.ProviderError{StatusCode: 429, Retryable: true}, 0, 429},
+				{"invalid_usage", errors.New("invalid provider credit usage"), 0, 502},
+				{"over_reserve", nil, 18000, 502},
+			} {
+				t.Run(fmt.Sprintf("%s/stream=%t/%s", route, stream, tc.name), func(t *testing.T) {
+					previousExa, previousContext := enclaveWebSearchClient, enclaveContextSearchClient
+					exa := &fakeResponsesWebSearcher{}
+					searcher := &fakeResponsesWebSearcher{errors: []error{tc.err}, results: []websearch.Result{{CostMicrodollars: tc.cost}}}
+					enclaveWebSearchClient, enclaveContextSearchClient = exa, searcher
+					t.Cleanup(func() { enclaveWebSearchClient, enclaveContextSearchClient = previousExa, previousContext })
+					gateway, recorder, closeGateway := newFusionGatewayRecorder(t)
+					defer closeGateway()
+					server, client := net.Pipe()
+					defer client.Close()
+					go serveOne(context.Background(), server, auth.New(nil), webSearchScriptedLLM{}, nil, nil, gateway, nil)
+					input := `"input":"What changed?","store":false`
+					if route == "chat/completions" {
+						input = `"messages":[{"role":"user","content":"What changed?"}]`
+					}
+					request := fmt.Sprintf(`{"model":"test/model",%s,"tools":[{"type":"web_search","engine":"context"}],"tool_choice":"required","max_tool_calls":1,"stream":%t}`, input, stream)
+					if _, err := fmt.Fprintf(client, "POST /v1/%s HTTP/1.1\r\nAuthorization: Bearer test-key\r\nContent-Type: application/json\r\nContent-Length: %d\r\n\r\n%s", route, len(request), request); err != nil {
+						t.Fatal(err)
+					}
+					response, err := http.ReadResponse(bufio.NewReader(client), nil)
+					if err != nil {
+						t.Fatal(err)
+					}
+					defer response.Body.Close()
+					body, err := io.ReadAll(response.Body)
+					if err != nil {
+						t.Fatal(err)
+					}
+					wantStatus := tc.status
+					if stream {
+						wantStatus = http.StatusOK
+					}
+					if response.StatusCode != wantStatus || !bytes.Contains(body, []byte(`"error"`)) {
+						t.Fatalf("missing failure response: status=%d body=%s", response.StatusCode, body)
+					}
+					if len(searcher.queries) != 1 || len(exa.queries) != 0 {
+						t.Fatal("failed search was retried or fell back to Exa")
+					}
+					recorder.mu.Lock()
+					defer recorder.mu.Unlock()
+					if len(recorder.authorize) != 1 || len(recorder.settle) != 0 || len(recorder.refund) != 1 {
+						t.Fatalf("authorize=%d settle=%d refund=%d; want 1/0/1", len(recorder.authorize), len(recorder.settle), len(recorder.refund))
+					}
+					if recorder.authorize[0]["additional_cost_reservation_microdollars"] != float64(12000) {
+						t.Fatal("incorrect hold before failed search")
+					}
+				})
+			}
+		}
 	}
 }
 
