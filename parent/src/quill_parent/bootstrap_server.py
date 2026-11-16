@@ -152,6 +152,7 @@ _PROVIDER_KEYS: Final[tuple[tuple[str, str], ...]] = (
     ("digitalocean_api_key", "trustedrouter-digitalocean-api-key"),
     ("engy_api_key", "trustedrouter-engy-api-key"),
     ("exa_api_key", "trustedrouter-exa-api-key"),
+    ("context_dev_api_key", "trustedrouter-context-dev-api-key"),
     ("inceptron_api_key", "trustedrouter-inceptron-api-key"),
     ("morph_api_key", "trustedrouter-morph-api-key"),
     ("neurometric_api_key", "trustedrouter-neurometric-api-key"),
@@ -456,6 +457,43 @@ async def _serve_one(client: socket.socket, payload: bytes) -> None:
 
 
 async def serve_forever(
+    *,
+    region: str,
+    secret_prefix: str = "quill/",
+    gcp_sa_kms_alias: str = "alias/quill-enclave-cmk",
+    tr_control_plane_base_url: str | None = None,
+) -> None:
+    """Rollout modes are explicit; dual binds 9101 before starting V1."""
+    from quill_parent import sealed_bootstrap
+
+    mode = os.environ.get("QUILL_BOOTSTRAP_MODE", "legacy")
+
+    async def legacy() -> None:
+        await _serve_legacy_forever(
+            region=region,
+            secret_prefix=secret_prefix,
+            gcp_sa_kms_alias=gcp_sa_kms_alias,
+            tr_control_plane_base_url=tr_control_plane_base_url,
+        )
+
+    if mode == "legacy":
+        await legacy()
+        return
+    if mode not in {"dual", "v2-only"}:
+        raise ValueError("invalid bootstrap mode")
+    relay = sealed_bootstrap.production_relay(
+        region,
+        os.environ.get("QUILL_BOOTSTRAP_V2_CMK_ARN", ""),
+    )
+    # Binding is synchronous and completes before a V1 task can be scheduled.
+    listener = sealed_bootstrap.bind_listener()
+    async with asyncio.TaskGroup() as group:
+        group.create_task(sealed_bootstrap.serve(listener, relay))
+        if mode == "dual":
+            group.create_task(legacy())
+
+
+async def _serve_legacy_forever(
     *,
     region: str,
     secret_prefix: str = "quill/",

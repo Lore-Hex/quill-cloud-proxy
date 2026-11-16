@@ -10,6 +10,7 @@ require (
 	github.com/aws/smithy-go v1.28.5
 	github.com/hajimehoshi/go-mp3 v0.3.4
 	github.com/hf/nsm v0.0.0-20220930140112-cd181bd646b9
+	github.com/mdlayher/socket v0.6.0
 	github.com/mdlayher/vsock v1.3.0
 	golang.org/x/crypto v0.58.0
 	golang.org/x/image v0.47.0
@@ -22,7 +23,6 @@ require (
 	github.com/aws/aws-sdk-go-v2/internal/configsources v1.5.6 // indirect
 	github.com/aws/aws-sdk-go-v2/internal/endpoints/v2 v2.8.6 // indirect
 	github.com/fxamacker/cbor/v2 v2.2.0 // indirect
-	github.com/mdlayher/socket v0.6.0 // indirect
 	github.com/x448/float16 v0.8.4 // indirect
 	golang.org/x/text v0.43.0 // indirect
 )

@@ -53,6 +53,38 @@ func TestContractValuePreviewPrivacy(t *testing.T) {
 		{"usage.include", `{"usage":true}`, ``},
 		{"usage.include", `{"usage":{}}`, ``},
 		{"usage", `{`, ``},
+		// A refused thinking switch shows its shape, never its other members.
+		{"thinking", `{"thinking":{"type":"enabled"}}`, `{"type":"enabled"}`},
+		{"thinking", `{"thinking":{"type":"adaptive","budget_tokens":8000}}`, `{"budget_tokens":8000,"type":"adaptive"}`},
+		{"thinking", `{"thinking":{"type":"auto","display":"private-content","signature":"sk-private-key"}}`, `{"_redacted":true,"type":"auto"}`},
+		{"thinking", `{"thinking":{"type":"private-content","budget_tokens":"private-content"}}`, `{"budget_tokens":"[redacted:string]","type":"[redacted:string]"}`},
+		{"thinking", `{"thinking":{"type":{"secret":"private-content"},"budget_tokens":true,"display":"private-content"}}`, `{"_redacted":true,"budget_tokens":true,"type":"[redacted:object]"}`},
+		{"thinking", `{"thinking":true}`, `"[redacted:boolean]"`},
+		{"thinking", `{"thinking":"private-content"}`, `"[redacted:string]"`},
+		{"thinking.type", `{"thinking":{"type":"disabled"}}`, `"disabled"`},
+		{"thinking.type", `{"thinking":{"type":"private-content"}}`, `"[redacted:string]"`},
+		{"thinking.budget_tokens", `{"thinking":{"budget_tokens":1.5}}`, `1.5`},
+		{"thinking.budget_tokens", `{"thinking":{"budget_tokens":"private-content"}}`, `"[redacted:string]"`},
+		{"thinking.display", `{"thinking":{"display":"private-content"}}`, `"[redacted:string]"`},
+		{"enable_thinking", `{"enable_thinking":false}`, `false`},
+		{"enable_thinking", `{"enable_thinking":"false"}`, `"false"`},
+		{"enable_thinking", `{"enable_thinking":"private-content"}`, `"[redacted:string]"`},
+		{"chat_template_kwargs", `{"chat_template_kwargs":{"enable_thinking":false,"thinking":true}}`, `{"enable_thinking":false,"thinking":true}`},
+		{"chat_template_kwargs", `{"chat_template_kwargs":{"enable_thinking":false,"documents":["private-content"],"prompt":"private-content"}}`, `{"_redacted":true,"enable_thinking":false}`},
+		{"chat_template_kwargs", `{"chat_template_kwargs":{"enable_thinking":{"secret":"private-content"},"thinking":"private-content","prompt":"x"}}`, `{"_redacted":true,"enable_thinking":"[redacted:object]","thinking":"[redacted:string]"}`},
+		{"chat_template_kwargs", `{"chat_template_kwargs":"private-content"}`, `"[redacted:string]"`},
+		{"chat_template_kwargs.thinking", `{"chat_template_kwargs":{"thinking":{"type":"private-content"}}}`, `"[redacted:object]"`},
+		{"chat_template_kwargs.enable_thinking", `{"chat_template_kwargs":{"enable_thinking":"private-content"}}`, `"[redacted:string]"`},
+		{"chat_template_kwargs.documents", `{"chat_template_kwargs":{"documents":"private-content"}}`, `"[redacted:string]"`},
+		{"chat_template_kwargs.add_generation_prompt", `{"chat_template_kwargs":{"add_generation_prompt":true}}`, `"[redacted:boolean]"`},
+		// client_metadata holds client and installation identifiers: no member
+		// of it is configuration, whatever a key is called.
+		{"client_metadata", `{"client_metadata":"private-content"}`, `"[redacted:string]"`},
+		{"client_metadata", `{"client_metadata":["private-content"]}`, `"[redacted:array]"`},
+		{"client_metadata", `{"client_metadata":{"x-codex-installation-id":"private-content","type":"enabled","enable_thinking":true,"temperature":0.7}}`, `"[redacted:object]"`},
+		{"client_metadata.type", `{"client_metadata":{"type":"enabled"}}`, `"[redacted:string]"`},
+		{"client_metadata.enable_thinking", `{"client_metadata":{"enable_thinking":true}}`, `"[redacted:boolean]"`},
+		{"client_metadata.temperature", `{"client_metadata":{"temperature":0.7}}`, `"[redacted:number]"`},
 	} {
 		t.Run(tc.parameter+"/"+tc.body, func(t *testing.T) {
 			got, truncated := ContractParameterValue([]byte(tc.body), tc.parameter)

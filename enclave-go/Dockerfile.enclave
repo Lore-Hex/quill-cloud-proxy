@@ -1,9 +1,8 @@
 # Build container for the Go enclave EIF.
-# Two stages:
-#   - builder: pinned golang base, builds a static-PIE binary
-#   - runtime: scratch — single binary, no shell, no libc, no /etc/*
-# The EIF measurement is a function of the rootfs bytes, so the runtime
-# being literally one binary is what makes the PCR0 small + auditable.
+# Pinned builders assemble the gateway, attestation/provider helpers, and the
+# optional local Rampart worker. The scratch runtime has no shell; Rampart
+# includes Node and its dynamic-library closure. The EIF measurement covers
+# the complete rootfs, including the pinned model and tokenizer.
 #
 # REPRODUCIBILITY: the base image is pinned by sha256 digest, not just by
 # tag. `golang:1.26-bookworm` is mutable (Docker reuses the tag every
@@ -21,7 +20,7 @@ FROM --platform=$BUILDPLATFORM golang:1.27.4-bookworm@sha256:4fa7c968ba93f163567
 ARG TARGETARCH=amd64
 ENV CGO_ENABLED=0 GOOS=linux GOARCH=${TARGETARCH}
 WORKDIR /src
-ADD --checksum=sha256:d76de0050c7e3d16a0938bdc4d2f87f4008ed67fd2e2312b587f0d340540da5d https://codeload.github.com/edgelesssys/privatemode-public/tar.gz/2634ffb82c72339902f26ae071db513add2bdc2f /tmp/privatemode-source.tar.gz
+ADD --checksum=sha256:d7712bfbea9d61cc36372ab30f3d8b989e4f34d89ab70abcefe1852060d044ff https://codeload.github.com/edgelesssys/privatemode-public/tar.gz/3c98e0abf3219a6ebcc29112867a5f004605041b /tmp/privatemode-source.tar.gz
 COPY third_party/privatemode ./third_party/privatemode
 RUN bash third_party/privatemode/build.sh /tmp/privatemode-source.tar.gz /out/privatemode-proxy
 
@@ -68,7 +67,7 @@ RUN go build -trimpath -tags "${BUILD_TAGS}" \
       -ldflags="-s -w -extldflags=-static -X github.com/Lore-Hex/quill-cloud-proxy/enclave-go/internal/trustedrouter.ShadowBuildRevision=${SOURCE_REVISION}" \
       -o /out/quill-enclave ./cmd/enclave
 
-# scratch keeps the EIF tiny and the PCR0 surface minimal.
+# The scratch runtime contains only the explicitly copied runtime components.
 # ─── attest-sidecar binary ──────────────────────────────────────────────────
 #
 # Lives in its own Go module (enclave-go/sidecar/go.mod) so its heavy dep graph
@@ -88,7 +87,15 @@ RUN cd sidecar && go mod download \
 
 RUN mkdir -p /out/rootfs/tmp && chmod 1777 /out/rootfs/tmp
 
+FROM node:24-bookworm-slim@sha256:dc26ae92c9fb15cf6b1d63e20f0944b2efe0f115b20e00be48fb23fceb061c54 AS rampart
+WORKDIR /rampart
+COPY rampart/package.json rampart/package-lock.json ./
+RUN npm ci --ignore-scripts
+COPY rampart/ ./
+RUN node model.mjs && npm test && sh rootfs.sh
+
 FROM scratch
+COPY --from=rampart /rootfs/ /
 COPY --from=maple /out/maple-transport /maple-transport
 COPY --from=maple /src/MAPLE-LICENSE /licenses/maple-MIT.txt
 ENV TR_ASYNC_SETTLE_SHADOW=on

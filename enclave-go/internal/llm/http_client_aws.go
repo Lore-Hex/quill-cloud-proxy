@@ -48,6 +48,7 @@ import (
 //
 // CID is always 3 — the well-known parent CID for Nitro Enclaves.
 var awsProviderTunnels = []vsockhttp.Tunnel{
+	{Host: "api.context.dev", CID: 3, Port: 8138},
 	{Host: "api.hixtube.com", CID: 3, Port: 8117},
 	// LLM provider direct-API endpoints (mirrors the byok.go
 	// directBaseURL switch + tinfoil_attest.go fixed host).
@@ -170,7 +171,7 @@ var awsProviderTunnels = []vsockhttp.Tunnel{
 // the trust story (the enclave can only reach hosts the parent's
 // yaml has authorized).
 func defaultHTTPClient() *http.Client {
-	return vsockhttp.NewClient(awsProviderTunnels)
+	return lockProviderHTTPClient(vsockhttp.NewClient(awsProviderTunnels))
 }
 
 // AWSProviderTunnels exposes the tunnel list so deploy tooling can

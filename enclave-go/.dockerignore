@@ -1,2 +1,4 @@
 **/target
 **/.vendor-sdk
+rampart/node_modules
+rampart/model

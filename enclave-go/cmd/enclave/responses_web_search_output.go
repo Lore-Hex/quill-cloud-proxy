@@ -15,6 +15,7 @@ import (
 
 	"github.com/Lore-Hex/quill-cloud-proxy/enclave-go/internal/adapter"
 	"github.com/Lore-Hex/quill-cloud-proxy/enclave-go/internal/types"
+	"github.com/Lore-Hex/quill-cloud-proxy/enclave-go/internal/websearch"
 )
 
 func serveResponsesWebSearchJSON(
@@ -80,7 +81,7 @@ func responsesWebSearchProviderUsage(outcome responsesWebSearchOutcome) map[stri
 		modelCalls = append(modelCalls, providerUsageCall(fusionCallDetails(call), "web_search"))
 	}
 	totalCost := outcome.TotalCostMicrodollars
-	return pruneEmptyProviderUsage(map[string]any{
+	usage := map[string]any{
 		"orchestration":                         true,
 		"router":                                "web_search",
 		"subcall_count":                         len(modelCalls),
@@ -92,7 +93,15 @@ func responsesWebSearchProviderUsage(outcome responsesWebSearchOutcome) map[stri
 		"operator_web_search_cost_microdollars": outcome.SearchCostMicrodollars,
 		"web_search_elapsed_ms":                 outcome.SearchElapsedMS,
 		"contains_prompt_or_completion":         false,
-	})
+	}
+	if outcome.SearchEngine == "context.dev" {
+		delete(usage, "operator_web_search_cost_microdollars")
+		usage["web_search_engine"] = "context.dev"
+		usage["web_search_pricing_basis"] = "conservative_credit_tariff"
+		usage["web_search_credit_microdollars"] = websearch.ContextCreditMicrodollars
+		usage["web_search_credits"] = outcome.SearchCostMicrodollars / websearch.ContextCreditMicrodollars
+	}
+	return pruneEmptyProviderUsage(usage)
 }
 
 func logResponsesWebSearchEnd(requestLogID string, started time.Time, outcome responsesWebSearchOutcome, err error) {

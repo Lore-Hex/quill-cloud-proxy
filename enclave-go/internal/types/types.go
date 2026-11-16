@@ -21,18 +21,27 @@ type DeviceConfig struct {
 	DeviceID string `json:"device_id"` // opaque ID, used for usage counters
 }
 
+// AWSBootstrapEvidence is produced by the enclave after bootstrap succeeds.
+// It contains no credentials and is never accepted from bootstrap JSON.
+type AWSBootstrapEvidence struct {
+	Policy        string `json:"policy"`
+	Mode          string `json:"mode"`
+	BundleVersion uint64 `json:"bundle_version,omitempty"`
+}
+
 // BootstrapData is what the parent hands to the enclave at startup over vsock.
 //
 // V1 trust caveat: the parent fetches this from S3 + KMS-decrypts on behalf of
 // the enclave, then sends plaintext over vsock. V1.1 will switch to KMS-attested
 // release so the parent never sees the plaintext bedrock_credentials.
 type BootstrapData struct {
-	Devices           []DeviceConfig `json:"devices"`
-	BedrockAccessKey  string         `json:"bedrock_access_key"`
-	BedrockSecretKey  string         `json:"bedrock_secret_key"`
-	BedrockSessionTok string         `json:"bedrock_session_token,omitempty"` // present if creds are short-lived
-	Region            string         `json:"region"`
-	BedrockVsockProxy string         `json:"bedrock_vsock_proxy"` // e.g. "3:8003"
+	AWSBootstrap      *AWSBootstrapEvidence `json:"-"`
+	Devices           []DeviceConfig        `json:"devices"`
+	BedrockAccessKey  string                `json:"bedrock_access_key"`
+	BedrockSecretKey  string                `json:"bedrock_secret_key"`
+	BedrockSessionTok string                `json:"bedrock_session_token,omitempty"` // present if creds are short-lived
+	Region            string                `json:"region"`
+	BedrockVsockProxy string                `json:"bedrock_vsock_proxy"` // e.g. "3:8003"
 
 	// OpenRouter (populated for the openrouter target and Meta Muse in multi). The
 	// API key is pulled from KMS-sealed config alongside the device-key
@@ -66,6 +75,7 @@ type BootstrapData struct {
 	AdvisorWorkerPrompt         string          `json:"advisor_worker_prompt,omitempty"`
 	AdvisorPrompt               string          `json:"advisor_prompt,omitempty"`
 	ExaAPIKey                   string          `json:"exa_api_key,omitempty"`
+	ContextDevAPIKey            string          `json:"context_dev_api_key,omitempty"`
 
 	// Anthropic direct (only populated for the llm_anthropic build target).
 	// Same trust posture as the OpenRouter key — pulled from Secret Manager
@@ -344,8 +354,9 @@ type InferenceReceiptRequest struct {
 
 // OpenAIChatRequest is the inbound shape we accept.
 type OpenAIChatRequest struct {
-	Model  string   `json:"model"`
-	Models []string `json:"models,omitempty"`
+	Deidentify DeidentifyFlag `json:"deidentify,omitempty"`
+	Model      string         `json:"model"`
+	Models     []string       `json:"models,omitempty"`
 	// AllowFallbacks accepts the top-level compatibility spelling used by
 	// several OpenAI-compatible clients. NormalizeFallbackRouting consumes it
 	// into Provider before authorization so it cannot leak to an upstream API.
@@ -583,6 +594,7 @@ type ChatImageURL struct {
 // hosted-tool fields are validated before this struct is used so callers get
 // stable compatibility errors instead of silent no-ops.
 type OpenAIResponsesRequest struct {
+	Deidentify           DeidentifyFlag     `json:"deidentify,omitempty"`
 	Model                string             `json:"model"`
 	Models               []string           `json:"models,omitempty"`
 	Input                any                `json:"input"`
@@ -652,7 +664,8 @@ type ResponseRequestMeta struct {
 	WebSearchCalls       []ResponseWebSearchCall
 	OutputAnnotations    []map[string]any
 	// FunctionNamespaces maps the name a namespaced function is sent to the
-	// provider under to the namespace and name the caller declared it with.
+	// provider under to the namespace and name the caller declared it with,
+	// or replayed a call to it with when the tools no longer declare it.
 	FunctionNamespaces map[string]ResponseNamespacedFunction
 }
 

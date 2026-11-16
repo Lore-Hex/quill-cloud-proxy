@@ -801,10 +801,10 @@ and live encrypted regression results still govern promotion of this candidate.
    and adding only Maple (84 total). No serving container has switched to it.
    For the Maple rollout pin
    `QUILL_AZURE_BUNDLE_VERSION=8df3ba4381d74315b2d1c696e63e839d` and set
-   `QUILL_MAPLE_SECRET=trustedrouter-maple-api-key`. Keep Hixtube, Privatemode,
-   Telluvian and both System1 optional-secret settings; a dry run without
-   Hixtube would omit an existing entry. Recheck for a newer bundle before use.
-   `QUILL_MAPLE_SECRET` still defaults empty until this explicit measured opt-in.
+   `QUILL_MAPLE_SECRET=trustedrouter-maple-api-key`. Recheck for a newer bundle
+   before use. Since 2026-11-16 `QUILL_MAPLE_SECRET` (and the other sealed
+   optional providers) default to their sealed names, and CI rejects a sealed
+   name the deploy leaves unnamed, so a plain deploy keeps every live binding.
 6. Only after those gates, activate the control-plane model and qualified badges.
 
 References: [proxy](https://maple.ai/docs/proxy),

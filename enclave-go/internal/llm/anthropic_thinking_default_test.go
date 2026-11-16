@@ -62,8 +62,16 @@ func TestCallerCapsAndNonThinkingRequestsKeepTheirLimit(t *testing.T) {
 		{"explicit cap, no effort", "claude-opus-5-5", &qtypes.OpenAIChatRequest{MaxTokens: &explicit}, 1000},
 		{"explicit 4096", "claude-opus-5-5", &qtypes.OpenAIChatRequest{MaxTokens: &explicitDefault}, float64(adapter.DefaultMaxTokens)},
 		{"explicit 4096 with effort", "claude-opus-5-5", &qtypes.OpenAIChatRequest{MaxTokens: &explicitDefault, ReasoningEffort: "high"}, float64(adapter.DefaultMaxTokens)},
-		{"thinking off", "claude-opus-5-5", &qtypes.OpenAIChatRequest{ReasoningEffort: "none"}, float64(adapter.DefaultMaxTokens)},
-		{"thinking disabled flag", "claude-opus-5-5", &qtypes.OpenAIChatRequest{Reasoning: map[string]any{"enabled": false}}, float64(adapter.DefaultMaxTokens)},
+		// Off on an adaptive model keeps the default of its class. It used to
+		// be sent the 4096 wire default, which cut an answer short that the
+		// same request without Off would have completed.
+		{"thinking off", "claude-opus-5-5", &qtypes.OpenAIChatRequest{ReasoningEffort: "none"}, AnthropicThinkingDefaultMaxTokens},
+		{"thinking disabled flag", "claude-opus-5-5", &qtypes.OpenAIChatRequest{Reasoning: map[string]any{"enabled": false}}, AnthropicThinkingDefaultMaxTokens},
+		{"thinking off, explicit cap", "claude-opus-5-5", &qtypes.OpenAIChatRequest{MaxTokens: &explicit, ReasoningEffort: "none"}, 1000},
+		{"thinking off, explicit 4096", "claude-opus-5-5", &qtypes.OpenAIChatRequest{MaxTokens: &explicitDefault, Reasoning: map[string]any{"enabled": false}}, float64(adapter.DefaultMaxTokens)},
+		{"thinking off, funded", "claude-opus-5-5", &qtypes.OpenAIChatRequest{InternalOutputTokenLimit: 6000, ReasoningEffort: "none"}, float64(adapter.DefaultMaxTokens)},
+		{"thinking off, budget model", "claude-haiku-4-5", &qtypes.OpenAIChatRequest{ReasoningEffort: "none"}, float64(adapter.DefaultMaxTokens)},
+		{"thinking off, manual-budget model", "claude-opus-4-5", &qtypes.OpenAIChatRequest{Reasoning: map[string]any{"enabled": false}}, float64(adapter.DefaultMaxTokens)},
 		{"non-thinking model", "claude-haiku-4-5", &qtypes.OpenAIChatRequest{}, float64(adapter.DefaultMaxTokens)},
 		{"manual-budget model, no effort", "claude-opus-4-5", &qtypes.OpenAIChatRequest{}, float64(adapter.DefaultMaxTokens)},
 	}

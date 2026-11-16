@@ -48,6 +48,13 @@ aws secretsmanager list-secrets --region "$SRC_REGION" \
 ok=0; skipped=0; failed=0
 while IFS= read -r name; do
   [ -z "$name" ] && continue
+  # Each bundle is sealed under its own regional CMK. This is never optional,
+  # including when the operator overrides the general SKIP list.
+  if [ "$name" = "quill/attested-bootstrap-v2" ]; then
+    echo "  skip     $name (independently sealed per region)"
+    skipped=$((skipped+1))
+    continue
+  fi
   case " $SKIP " in *" $name "*)
     echo "  skip     $name"; skipped=$((skipped+1)); continue ;;
   esac

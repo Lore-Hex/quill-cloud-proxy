@@ -49,6 +49,13 @@ func translateOpenAIStreamToAnthropic(r io.Reader, w io.Writer) error {
 	return translateOpenAIStreamToAnthropicForProvider(r, w, "")
 }
 
+// RelayOpenAIStream translates a provider response body without performing any
+// network I/O. Gateway integration fixtures use this same production relay
+// without granting their local HTTP servers an inference-egress exception.
+func RelayOpenAIStream(r io.Reader, w io.Writer, provider string) error {
+	return translateOpenAIStreamToAnthropicForProvider(r, w, provider)
+}
+
 func translateOpenAIStreamToAnthropicForProvider(r io.Reader, w io.Writer, provider string) error {
 	scanner := bufio.NewScanner(r)
 	scanner.Buffer(make([]byte, 0, 64*1024), 1<<20)

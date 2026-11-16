@@ -167,6 +167,7 @@ BINDINGS: tuple[Binding, ...] = (
     Binding(("QUILL_DATABRICKS_SECRET",), "databricks token", True),
     Binding(("QUILL_DATABRICKS_HOST_SECRET",), "databricks host", False),
     Binding(("QUILL_EXA_SECRET",), "exa key", True),
+    Binding(("QUILL_CONTEXT_DEV_SECRET",), "context.dev key", True),
     Binding(("QUILL_INCEPTRON_SECRET",), "inceptron key", True),
     Binding(("QUILL_KLING_SECRET",), "kling key", True),
     Binding(("QUILL_LTX_SECRET",), "ltx key", True),
@@ -311,9 +312,27 @@ DEPLOY_SCRIPT_PATH = _THIS_DIR / "deploy-azure-aci.sh"
 # QUILL_X_SECRET="${QUILL_X_SECRET:-<default>}" — the deploy's per-provider
 # default. A non-empty default is a NAME the enclave will demand from the
 # bundle; an empty one ("...:-}") is a provider deliberately left dark on Azure.
+# The unset-only form "${QUILL_X_SECRET-<default>}" (an explicit empty export
+# disables the provider) demands its name just the same, so both spellings are
+# parsed; matching only ":-" let those names bypass both checks below.
 _DEPLOY_DEFAULT = re.compile(
-    r'(QUILL_[A-Z0-9_]+_SECRET)="\$\{\1:-([^}]*)\}"'
+    r'(QUILL_[A-Z0-9_]+_SECRET)="\$\{\1:?-([^}]*)\}"'
 )
+
+# Sealed names the deploy deliberately does NOT name by default, each with the
+# reason. Every other name in the sealed bundle must be named by a deploy
+# default. Otherwise a plain `deploy-azure-aci.sh` renders a template without
+# that provider and silently removes it from the live gateways: on 2026-11-16 a
+# Privatemode roll nearly dropped PRIVATEMODE, MAPLE, HIXTUBE, TELLUVIAN and
+# both SYSTEM1MODELS bindings, all sealed and serving, because their defaults
+# stayed empty after the bundle that carries them was sealed. Entries here
+# must be in the manifest and must not be named by default; stale ones fail CI.
+SEALED_BUT_DARK_ON_AZURE: dict[str, str] = {
+    "trustedrouter-context-dev-api-key": (
+        "Azure activation pending (docs/providers/context-dev.md): sealed, but "
+        "not yet enabled on the Azure gateways"
+    ),
+}
 
 
 def deploy_demanded_names(deploy_text: str) -> dict[str, str]:
@@ -348,6 +367,15 @@ def read_manifest_version(manifest_text: str) -> str:
         if line.startswith(marker):
             return line[len(marker):].strip()
     return "unknown"
+
+
+def sealed_but_unnamed(provisioned: set[str], demanded: dict[str, str]) -> list[str]:
+    """Sealed names no deploy default names, minus the documented dark set."""
+    named = set(demanded.values())
+    return sorted(
+        name for name in provisioned
+        if name not in named and name not in SEALED_BUT_DARK_ON_AZURE
+    )
 
 
 def check_deploy_against_manifest() -> int:
@@ -385,6 +413,29 @@ def check_deploy_against_manifest() -> int:
             "      manifest + prints a new QUILL_AZURE_BUNDLE_VERSION to pin), or\n"
             "    * leave the provider dark on Azure by defaulting its secret empty\n"
             '      in deploy-azure-aci.sh:  QUILL_X_SECRET="${QUILL_X_SECRET:-}"'
+        )
+    dropped = sealed_but_unnamed(provisioned, demanded)
+    if dropped:
+        lines = "\n".join(f"    {name}" for name in dropped)
+        fail(
+            f"the sealed Azure bundle (version {version}) carries {len(dropped)} "
+            f"secret(s) that deploy-azure-aci.sh does not name by default:\n{lines}\n\n"
+            "  A plain deploy renders a template without these bindings, and\n"
+            "  applying it silently removes those providers from the live gateways.\n"
+            "  Fix ONE of:\n"
+            "    * name each by default in deploy-azure-aci.sh:\n"
+            '      QUILL_X_SECRET="${QUILL_X_SECRET:-<sealed name>}", or\n'
+            "    * if the provider must stay dark on Azure even though its key is\n"
+            "      sealed, add it to SEALED_BUT_DARK_ON_AZURE with the reason."
+        )
+    stale_dark = sorted(
+        name for name in SEALED_BUT_DARK_ON_AZURE
+        if name not in provisioned or name in set(demanded.values())
+    )
+    if stale_dark:
+        fail(
+            "SEALED_BUT_DARK_ON_AZURE lists name(s) that are no longer sealed-and-"
+            f"dark: {stale_dark}. Remove them so the exception list stays exact."
         )
     print(
         f"[ok] all {len(demanded)} deploy-named secrets are provisioned in the "

@@ -1,0 +1,9 @@
+FROM node:24-bookworm-slim@sha256:dc26ae92c9fb15cf6b1d63e20f0944b2efe0f115b20e00be48fb23fceb061c54 AS rampart
+WORKDIR /rampart
+COPY rampart/package.json rampart/package-lock.json ./
+RUN npm ci --ignore-scripts
+COPY rampart/ ./
+RUN node model.mjs && npm test && sh rootfs.sh
+FROM scratch
+COPY --from=rampart /rootfs/ /
+ENTRYPOINT ["/rampart/node", "--max-old-space-size=256", "/rampart/worker.mjs"]

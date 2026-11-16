@@ -1,255 +1,202 @@
-# Runbook — releasing a new AWS Nitro enclave image
+# Releasing an AWS Nitro enclave
 
-Rolling the AWS enclave changes **PCR0**, because the enclave binary is measured
-and the binary contains build tags, the API host, the TLS mode, and the
-control-plane hostname allowlist. So this is never just "deploy the new image":
-it is a measurement change, and every party that pins the measurement has to
-accept both values for the length of the roll.
+Build once in protected-main CI, admit the signed measurement, then boot.
+An instance is never a source of a new admission value. TLS terminates inside
+the enclave; do not add an ALB, CDN, or other prompt TLS terminator.
 
-Get the order wrong and the failure is not a red dashboard.
-`reconcile-enclave-dns.py` health-gates DNS membership on attestation, so a
-fleet-wide `pcr0_mismatch` **drains healthy instances out of DNS** — the roll
-causes the outage it was meant to avoid.
+This runbook covers the published-EIF release path. It does not complete the
+attested-secret migration. While bootstrap V1 or transitional fallback remains,
+the AWS parent can still read secrets. See
+[the migration plan](design/aws-attested-secret-release.md).
 
----
+## 0. Preconditions and rollback record
 
-## What is fixed, and must not be re-derived
+Start from clean, reviewed, merged main. Required CI must pass. Acquire the
+shared AWS rollout reservation and retain its returned fence through all
+mutations, regional verification, narrowing and rollback. Do not take over
+another cloud's reservation or release someone else's fence.
 
-`tools/release-aws-enclave.sh` pins the build configuration. It is recorded
-there rather than here so the script and the truth cannot drift apart:
+Record the serving instance census, numbered launch templates, ASG desired
+capacities, target health, current signed public record and runtime PCR0 sets.
+Keep a local copy of the complete previous AWS trust record for an abort.
+Verify the live endpoint cryptographically:
 
-| | value | why it is load-bearing |
-|---|---|---|
-| platform | `linux/amd64` | the fleet is x86_64 `m5.xlarge`. `.github/workflows/deploy.yml` builds **arm64** and therefore cannot have produced the running image |
-| build tags | `cloud_aws,llm_multi` | `deploy-aws-nitro.sh` provisions **47** vsock tunnels — anthropic, openai, cerebras, deepseek, mistral, moonshot, z.ai, together. `internal/llm/aws.go` is `llm_bedrock`; those providers are all `llm_multi`. A Bedrock-only enclave could dial none of them |
-| TLS mode | `acme` | the cert is still minted inside the TEE and still bound by attestation; ACME (GCS cache primary, DNS-01 fallback) makes the same leaf verify for CA-only clients, which canonical failover requires. Self-signed until 2026-08-23 |
-| API host | `api-aws.trustedrouter.com` | baked in, and therefore measured |
-
-The build tags were previously undocumented and had to be recovered by
-inference. `cloud_aws,llm_multi` is now in the CI matrix, because an untested
-tag combination in production is how that ambiguity arose.
-
----
-
-## The roll
-
-### 0. Preconditions
-
-* The PCR0 pin is a **SET** on every surface that checks it — quill-cloud-proxy
-  `check_pcr0_pin`, quill-router `_pcr0_pin_matches`. Without this, step 3 is
-  impossible: writing `old,new` against an equality check matches **neither**,
-  because neither value equals the literal joined string.
-* The current control-plane consumers are Fargate `tr-cp-euw1` (eu-west-1)
-  and `tr-cp-euw3` (eu-west-3), both in cluster `tr-cp`. They serve the API
-  and synthetic monitor behind the regional NLBs/Global Accelerator.
-  App Runner `tr-eu` is retired; do not recreate it or treat its absence as
-  permission to skip verification. See quill-router's
-  `docs/storage-portability/HANDOFF.md` and `scripts/deploy/aws_ecs_control_plane.sh`.
-* Start from a clean checkout of merged main. Release-tool fixes require normal
-  PR/CI/merge before changing the fleet. Record the actual enclave build commit,
-  immutable regional image digests, current launch-template versions, healthy
-  instance census, and current public/runtime accepted PCR0 sets for rollback.
-* Both Fargate regions must be stable, serve the same release/image digest,
-  and have healthy targets. Keep 100% minimum healthy capacity, at least 200%
-  maximum capacity, and the deployment circuit breaker with rollback enabled.
-  An unknown, mixed, or incomplete deployment blocks the release.
-* Record the current PCR0 so you can roll back and so step 3 has an "old":
-
-```bash
+~~~bash
 python3 tools/verify-attestation.py --api-host api-aws.trustedrouter.com --attested-cert-only
-```
+~~~
 
-### 1. Publish the image (additive, reversible)
+Both Fargate services, tr-cp-euw1 and tr-cp-euw3 in cluster tr-cp, must be stable
+with healthy targets and matching reviewed control-plane release versions.
+App Runner tr-eu is retired. Use minimum healthy 100%, maximum 200% or greater,
+and rollback-enabled circuit breakers. A mixed or unknown state blocks rollout.
 
-```bash
+The source_commit in the public record describes capabilities of every serving
+enclave. Keep the old commit during a mixed fleet. Do not advance it merely
+because a new image has been built or one candidate works.
+
+## 1. Publish the EIF in CI
+
+~~~bash
 bash tools/release-aws-enclave.sh --apply
-```
+~~~
 
-Refuses to run against a dirty `enclave-go`, because an image that matches no
-commit has an unreproducible PCR0.
+This dispatches publish-aws-eif.yml on main. It neither builds locally nor
+rolls the fleet. Wait for success and inspect the workflow's exact source SHA,
+signed manifest, PCR0/1/2, immutable builder digest and both regional object
+locations. A newer main commit at dispatch must not be confused with the
+operator's earlier checkout.
 
-If the reviewed image is already published in both regions, verify its digest
-and reuse it. Tool-only fixes do not require rebuilding the enclave. Run the
-read-only gate without rebuilding or pushing:
+The workflow is the canonical build recipe: linux/amd64, cloud_aws,llm_multi,
+ACME, api-aws.trustedrouter.com, and the measured Cloud DNS configuration.
+The pinned builder produces one EIF; both regions receive identical bytes.
+Do not use deploy.yml or host-side build-enclave.
 
-```bash
-bash tools/release-aws-enclave.sh --verify-only
-```
+Download the manifest, its Cosign bundle and EIF from the reported regional
+release path. Authenticate them before use:
 
-### 2. Launch an isolated candidate without replacing serving capacity
+~~~bash
+python3 -m tools.aws_eif_manifest verify \
+  --manifest /path/manifest.json --signature /path/manifest.json.bundle \
+  --eif /path/enclave.eif --expected-source <full-ci-source-sha>
+~~~
 
-Create a candidate launch-template version in **eu-west-3** first. Launch one
-standalone EC2 candidate from it, outside the serving ASG and its load balancer.
-Do not change the serving ASG's launch-template version or replace its instances
-yet. Existing healthy capacity must remain intact.
+The verifier pins the publisher workflow identity and GitHub OIDC issuer,
+checks source, size and hash, and rejects incomplete or malformed metadata.
+Bucket names are quill-enclave-eif-<region>-330422590279. Release objects are
+create-only under releases/<source>/<eif-sha256>/.
 
-Clone the existing launch-template version and change only the enclave image
-reference. Preserve compressed user data, parent/pump images, secrets, IAM,
-networking, and health/failover configuration. Override the standalone
-candidate's instance tags with distinct non-production `Project` and `Name`
-values so tag-based discovery cannot promote it. Confirm the bootstrap does
-not register targets or write routing DNS. Verify the candidate is absent from
-ASG membership, all serving target groups, and routing DNS before probing it.
+For an independent rebuild, use a clean checkout of that exact source SHA
+and set AWS_EIF_MANIFEST and AWS_EIF_SIGNATURE before running
+tools/verify-pcr0.sh. It uses the manifest's immutable builder and compares
+against the signed CI PCR0, not a potentially older public primary.
 
-An ASG refresh checkpoint is not candidate isolation: an ASG can register a
-replacement with the load balancer before pausing. A candidate with an
-unpublished PCR0 must never carry normal traffic, even briefly. Use SSM only
-until step 3 is complete; do not register or promote the standalone candidate.
+## 2. Admit before boot
 
-### 3. Learn the new PCR0 and widen the pin
+Prepare the local AWS trust change from the CI proof:
 
-PCR0 does not exist until `nitro-cli build-enclave` has run on an instance, so
-it can only be read after step 2:
+~~~bash
+python3 -m tools.aws_eif_admission prepare \
+  --manifest /path/manifest.json --signature /path/manifest.json.bundle \
+  --expected-source <full-ci-source-sha> --write
+~~~
 
-Use the official AWS Session Manager plugin and an SSM TCP forward to each
-instance's enclave listener (8444). The public NLB's port 443 is not the
-per-instance port; do not open security groups or add a TLS terminator.
+This retains old PCR0s and all serving provenance, adds the CI candidate and
+its signed manifest, and marks it unobserved. Review only the AWS trust files,
+merge normally and wait for publish-trust-aws.yml and public publication.
+The signer re-verifies the CI proof before signing a candidate admission.
 
-```bash
-# Keep this session open in a separate terminal; use the instance's region.
-aws ssm start-session --region eu-west-3 --target <instance-id> \
+Under the AWS reservation, widen the runtime consumers:
+
+~~~bash
+python3 -m tools.aws_eif_admission widen-runtime
+~~~
+
+This requires byte-for-byte public publication signed by the AWS trust workflow,
+checks the rollout fence, preserves old runtime pins and serving source, then
+checks the published set. It updates Fargate one region at a time and stops on
+a failed health gate. Do not proceed with a failed or incomplete pin update.
+
+Once Phase 4 attested CMKs exist, this gate must also widen accepted_pcr0 in
+both regional key policies, through reviewed Terraform and Joseph's KMS-write
+approval, before any candidate boot. Public/runtime admission alone is not KMS
+admission. Never restore wildcard decrypt access to get past a denial.
+
+## 3. Isolated candidate, eu-west-3 first
+
+Use the verified manifest and signature with AWS_EIF_SOURCE_COMMIT set to its
+full source SHA. Generate a numbered candidate template with
+CANDIDATE_TEMPLATE_ONLY=1 and deploy-aws-nitro.sh --apply --phase compute.
+Set AWS_REGION explicitly. Compare the template with the recorded live version:
+preserve networking, approved parent/pump images, IAM, capacity, secret paths
+and health settings. Reject unrelated drift. The host AMI and nitro-cli package
+are pinned; user data downloads the EIF and checks its size and SHA256.
+Set AWS_PARENT_IMAGE_DIGEST and AWS_PARENT_PUMP_IMAGE_DIGEST to the approved
+existing `sha256:...` values when preserving those images. The generator checks
+that each digest exists in the exact regional repository and emits immutable
+references. Without explicit values it resolves release tags once at template
+creation, never at host boot; a different parent still requires review.
+An explicit AWS_PARENT_IMAGE_DIGEST is mandatory for dual or v2-only bootstrap;
+only the legacy bootstrap stage permits resolving the parent release tag.
+
+Launch one standalone candidate outside the ASG and every serving target group.
+Give it distinct non-production Project and Name tags so discovery cannot add
+it. Confirm no DNS writes or target registration occur during boot, and confirm
+its IP is absent from serving DNS before probing. An ASG refresh checkpoint is
+not isolation: replacements may register before the checkpoint.
+
+Use SSM, without opening a security group or changing TLS:
+
+~~~bash
+aws ssm start-session --region eu-west-3 --target <candidate-instance-id> \
   --document-name AWS-StartPortForwardingSession \
   --parameters '{"portNumber":["8444"],"localPortNumber":["18444"]}'
 
-python3 tools/verify-attestation.py \
-  --api-host api-aws.trustedrouter.com --connect-ip 127.0.0.1 --port 18444 \
-  --attested-cert-only
-```
+python3 -m tools.aws_eif_admission verify-candidate \
+  --manifest /path/manifest.json --signature /path/manifest.json.bundle \
+  --expected-source <full-ci-source-sha> --port 18444
+~~~
 
-This authenticates the Nitro root chain, certificate and channel bindings
-while keeping the public API SNI. Confirm the module ID belongs to the intended
-instance. Once learned, pass `--expected-pcr0 <new-PCR0>` on subsequent probes.
-Stop each SSM session after verification. Capture alone parses a measurement;
-it does not replace this cryptographic verification.
+The probe verifies the Nitro chain, certificate and session bindings and
+requires exact equality with CI PCR0. Check the module ID belongs to this
+candidate. A different measurement aborts; never widen to what the host reports.
 
-Then publish **both** measurements (set order is immaterial) everywhere PCR0 is
-pinned. Widen before rolling further; never narrow before the roll completes.
-Use the exact verified candidate's forward in the capture command below, not a
-load-balanced endpoint that could still return the outgoing enclave. Wait for
-both Fargate pin updates, AWS trust signing, public trust publication, and
-attestation/status health before proceeding. Do not modify another cloud's
-trust files or deploy router code as part of this pin-only update.
+## 4. Sequential regional rollout
 
-### 4. Roll the rest
+After the candidate passes, refresh eu-west-3 with the explicit numbered
+template and automatic rollback to the previous numbered template. Never use
+$Latest or $Default. Preserve 100% healthy capacity. If using checkpoints,
+end CheckpointPercentages at 100; a list ending at 50 is a partial refresh.
 
-Only after the candidate's PCR0 is accepted by both runtime pin consumers and
-the signed public trust set, refresh the eu-west-3 ASG using the reviewed
-candidate launch-template version. Maintain 100% healthy capacity, enable
-rollback with explicit numbered desired configuration, and gate subsequent
-replacements on per-instance attestation and health. The standalone candidate
-stays outside production and can be terminated after that region is verified.
+Verify every member's template, serving target health, module ID and exact
+CI PCR0 over its own SSM forward. A Successful refresh is not a fleet census.
+Keep the standalone candidate isolated; terminate it after verification.
 
-When using instance-refresh checkpoints, end `CheckpointPercentages` at `100`
-(for example, `[50, 100]`). A list ending at `50` requests a partial refresh;
-it does not pause halfway and then replace the rest. A `Successful` refresh
-therefore does not by itself prove the fleet is current. Check every ASG member,
-its launch-template version, serving target health and individual attestation.
-Keep the previous numbered launch template as the rollback configuration until
-the complete refresh and bake have succeeded.
+Finish eu-west-3 before repeating the isolated-candidate and refresh gates in
+eu-west-1. Both regions MUST report the same CI PCR0. Regional variation is a
+failure, not an excuse to add another measurement.
 
-Finish and verify eu-west-3 before starting eu-west-1. Use an isolated candidate
-there too, because a different regional host image/build toolchain must not be
-assumed to produce the same PCR0. If its verified PCR0 differs, publish and
-verify the expanded accepted set before any eu-west-1 replacement. For every
-replacement, use an SSM forward and verify the expected PCR0/module ID; then
-recheck the canonical endpoint and status:
+## 5. Narrow only after full verification
 
-```bash
-python3 tools/verify-attestation.py --api-host api-aws.trustedrouter.com --attested-cert-only
-curl -s https://aws.trustedrouter.com/status.json | python3 -c \
-  "import sys,json; d=json.load(sys.stdin)['data']; print(d['overall_status'], len(d.get('recent_events') or []))"
-```
+Once every serving instance matches CI, capture that already-authenticated
+measurement through one of the verified SSM forwards:
 
-### 5. Narrow the pin
-
-Only once every instance reports the new measurement. Leaving the set widened
-means a rolled-back instance would still verify, which defeats the point of
-pinning at all.
-
----
-
-## Rollback
-
-Point the launch template back at the previous tag and refresh. The old PCR0 is
-still in the pinned set at that stage, which is the reason step 5 comes last.
-
----
-
-## What must NOT be done
-
-* **Do not run `.github/workflows/deploy.yml`.** It builds arm64, which this
-  fleet cannot execute, and it moves the `enclave-latest` alias as a side
-  effect. It used to sign and republish trust artifacts too; it no longer
-  touches them.
-
-  This instruction is correct, but for a long time it was the *only* thing said
-  about trust artifacts here — and since `deploy.yml` was the only workflow that
-  signed and published them, forbidding it quietly meant nothing ever republished
-  the AWS measurement. `trust-page/pcr0.txt` carried a value matching no running
-  enclave from the initial commit until 2026-08-15 as a direct result.
-
-  Publishing the AWS measurement is now a separate step that does not involve
-  `deploy.yml` at all — see "Publish the measurement" below. Do that instead.
-* **Do not narrow the pin before the roll finishes** — the un-rolled instances
-  fail, and the DNS reconciler drains them.
-* **Do not put anything that terminates TLS in front of the enclave.** The
-  attestation binds the leaf minted inside the TEE; an ALB or CDN voids it.
-
-Launch-template user data is gzip-compressed because the measured egress
-allowlist is larger than EC2's 16 KiB raw limit. To inspect it during an
-incident, decode and inflate it before reading:
-
-```bash
-aws ec2 describe-launch-template-versions \
-  --launch-template-name quill-enclave-lt --versions <version> \
-  --query 'LaunchTemplateVersions[0].LaunchTemplateData.UserData' \
-  --output text | base64 --decode | gzip --decompress
-```
-
-
-## Publish the measurement
-
-PCR0 does not exist until an instance boots, so it is read from a live
-attestation rather than computed at build time:
-
-```bash
-# during the roll, while old instances are still serving
-python3 tools/capture-plane-measurements.py --plane aws --write --keep-accepted \
-    --repin-aws-monitor --aws-forward-port 18444 --source-commit <enclave-build-sha>
-
-# after the last instance is refreshed and verified, narrow the pin
+~~~bash
 python3 tools/capture-plane-measurements.py --plane aws --write \
-    --repin-aws-monitor --aws-forward-port 18444 --source-commit <enclave-build-sha>
-```
+  --repin-aws-monitor --aws-forward-port 18444 --source-commit <full-ci-source-sha>
+~~~
 
-`--source-commit` is the commit that BUILT the enclave now running, and it has
-no default. A release-tool fix may have moved HEAD since the image was built;
-always pass the image's source commit, not the current tooling commit.
-If nobody can name it, omit the flag and the
-record records `not-configured`, which makes quill-router's envelope-format
-ordering gate refuse control-plane deploys against this cloud until a real
-commit is published. A commit that is in this repository but is not the one
-that built the running enclave is the one error nothing downstream can detect:
-it makes the gate read a real file at the wrong commit.
+Review the result: only the intended PCR0 remains, source_commit is the actual
+image build commit, and the temporary candidate reference is removed. Merge
+the AWS trust change normally; wait for signing and public publication.
+Narrow attested CMK policies too when Phase 4 is active, with approval.
+Retain only rollback images satisfying the current secret-release security
+policy. Never fall back to V1 after the strict cutover.
 
-Review and commit only the AWS files produced under `trust-page/`, then merge
-through the normal PR/CI procedure. That fires `publish-trust-aws.yml`, which
-signs the record under the AWS-only identity a verifier pins. Wait for signing
-and publication, and verify the public accepted set before rolling further.
+Recheck each regional member, runtime pins, public signatures and canonical
+status before releasing the reservation:
 
-`--repin-aws-monitor` now updates only the two current Fargate services. It
-preflights both before mutation, clones each task definition (including tags),
-changes only `TR_ATTESTATION_EXPECTED_PCR0`, waits for stability and actual
-healthy serving tasks/targets, and restores/verifies the previous task
-definition on failure. With `--keep-accepted`, existing runtime pins are retained
-alongside the published pins and newly captured PCR0. A failed region stops the
-sequence; do not advance the enclave fleet while it is unresolved.
+~~~bash
+bash tools/release-aws-enclave.sh --verify-only
+python3 tools/verify-attestation.py --api-host api-aws.trustedrouter.com --attested-cert-only
+~~~
 
-`--keep-accepted` is not optional during a roll. Without it you publish a set
-that excludes the instances that have not rolled yet, and anyone verifying
-against one of them is told the enclave does not match its published
-measurement.
+## Abort and required drill
 
-`tools/release-aws-enclave.sh` now refuses to exit 0 while the published set
-disagrees with what is running, so a skipped publish fails the release rather
-than passing quietly.
+Before any fleet promotion, deliberately verify the isolated candidate against
+a wrong nonzero expected PCR0 using verify-attestation.py --expected-pcr0.
+The verifier must fail. Record the failure and confirm the production ASGs,
+targets and DNS still contain only the unchanged serving fleet.
+
+Terminate the isolated candidate, restore the saved pre-admission AWS trust
+record and accepted-set files through review, wait for signed publication, and
+restore runtime pins to that exact set. Restore regional KMS sets too once
+attested keys exist. Verify every original instance remains accepted and healthy.
+Do not remove a measurement while any serving instance still uses it.
+
+For a failure after promotion, first roll the affected region back to the
+recorded previous numbered template while both measurements are still accepted.
+Verify all instances and health before narrowing. Never rebuild a rollback
+artifact or learn its measurement from a failing host.
+
+Record the abort/narrow drill and one complete successful release before
+depending on this flow for attested-secret boot availability.

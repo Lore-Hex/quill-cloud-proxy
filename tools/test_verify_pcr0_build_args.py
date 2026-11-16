@@ -1,4 +1,4 @@
-"""verify-pcr0.sh must build the enclave exactly the way release-aws-enclave.sh does.
+"""Independent rebuilds must match the protected-main EIF publisher.
 
 PCR0 measures the enclave image file, and the build args are baked into that
 image. If the reproducible-build script and the real release script disagree on
@@ -16,16 +16,22 @@ Run: python3 tools/test_verify_pcr0_build_args.py
 from __future__ import annotations
 
 import re
+import shlex
 import unittest
 from pathlib import Path
 
+import yaml
+
 TOOLS = Path(__file__).resolve().parent
 REPO_ROOT = TOOLS.parent
-RELEASE = TOOLS / "release-aws-enclave.sh"
+RELEASE = REPO_ROOT / ".github/workflows/publish-aws-eif.yml"
 VERIFY = TOOLS / "verify-pcr0.sh"
 
 # Every build input that lands in the measurement.
-MEASURED_ARGS = ("BUILD_TAGS", "QUILL_TLS_MODE", "QUILL_API_HOST", "PLATFORM")
+MEASURED_ARGS = (
+    "BUILD_TAGS", "QUILL_TLS_MODE", "QUILL_API_HOST", "PLATFORM",
+    "QUILL_ACME_DNS_GCP_PROJECT", "QUILL_ACME_DNS_MANAGED_ZONE",
+)
 
 
 def _assignments(script: Path) -> dict[str, str]:
@@ -38,24 +44,59 @@ def _assignments(script: Path) -> dict[str, str]:
     return found
 
 
+def _ci_build() -> str:
+    steps = yaml.safe_load(RELEASE.read_text())["jobs"]["publish"]["steps"]
+    return next(step["run"] for step in steps if "docker buildx build" in step.get("run", ""))
+
+
+def _ci_arguments() -> dict[str, str]:
+    args = shlex.split(_ci_build().replace("\\\n", " "))
+    result = {"PLATFORM": args[args.index("--platform") + 1]}
+    for index, value in enumerate(args):
+        if value == "--build-arg":
+            name, setting = args[index + 1].split("=", 1)
+            result[name] = setting
+    return result
+
+
 class VerifyPcr0BuildArgs(unittest.TestCase):
     def test_native_builder_cross_compiles_for_target_architecture(self) -> None:
         dockerfile = (REPO_ROOT / "enclave-go/Dockerfile.enclave").read_text()
         self.assertRegex(dockerfile, r"(?m)^FROM --platform=\$BUILDPLATFORM golang:[^\s]+ AS builder$")
         self.assertIn("ARG TARGETARCH=amd64", dockerfile)
         self.assertIn("ENV CGO_ENABLED=0 GOOS=linux GOARCH=${TARGETARCH}", dockerfile)
-        # Go stages run natively and cross-compile; the musl Rust helper uses
-        # the target platform (native or emulated). The final
+        # Go stages run natively and cross-compile; the Rust and Node helpers
+        # use the target platform (native or emulated). The final
         # runtime must retain Docker's requested target architecture.
         stages = [line for line in dockerfile.splitlines() if line.startswith("FROM ")]
-        self.assertEqual(len(stages), 4)
+        self.assertEqual(len(stages), 5)
         self.assertRegex(stages[0], r"^FROM --platform=\$BUILDPLATFORM golang:[^\s]+ AS privatemode$")
         self.assertRegex(stages[1], r"^FROM rust:1\.94\.1-alpine@sha256:[0-9a-f]{64} AS maple$")
         self.assertRegex(stages[2], r"^FROM --platform=\$BUILDPLATFORM golang:[^\s]+ AS builder$")
         self.assertEqual(dockerfile.count("ARG TARGETARCH=amd64"), 2)
         self.assertEqual(dockerfile.count("ENV CGO_ENABLED=0 GOOS=linux GOARCH=${TARGETARCH}"), 2)
-        self.assertEqual(stages[3], "FROM scratch")
+        self.assertRegex(stages[3], r"^FROM node:24-bookworm-slim@sha256:[0-9a-f]{64} AS rampart$")
+        self.assertEqual(stages[4], "FROM scratch")
+        self.assertIn("COPY --from=rampart /rootfs/ /", dockerfile)
         self.assertIn("COPY --from=maple /out/maple-transport /maple-transport", dockerfile)
+
+    def test_every_gateway_packages_the_verified_target_platform_rampart_worker(self) -> None:
+        for name in (
+            "Dockerfile.enclave",
+            "Dockerfile.enclave.gcp",
+            "Dockerfile.enclave.gcp.anthropic",
+            "Dockerfile.enclave.gcp.multi",
+            "Dockerfile.enclave.azure.multi",
+        ):
+            with self.subTest(dockerfile=name):
+                dockerfile = (REPO_ROOT / "enclave-go" / name).read_text()
+                self.assertRegex(
+                    dockerfile,
+                    r"(?m)^FROM node:24-bookworm-slim@sha256:[0-9a-f]{64} AS rampart$",
+                )
+                self.assertIn("RUN npm ci --ignore-scripts", dockerfile)
+                self.assertIn("RUN node model.mjs && npm test && sh rootfs.sh", dockerfile)
+                self.assertIn("COPY --from=rampart /rootfs/ /", dockerfile)
 
     def test_azure_source_build_uses_acr_compatible_syntax_and_verifies_archive(self) -> None:
         dockerfile = (REPO_ROOT / "enclave-go/Dockerfile.enclave.azure.multi").read_text()
@@ -69,7 +110,7 @@ class VerifyPcr0BuildArgs(unittest.TestCase):
         self.assertLess(recipe.index("sha256sum -c -"), recipe.index("tar -xzf"))
 
     def test_measured_build_args_match_the_release_script(self) -> None:
-        release = _assignments(RELEASE)
+        release = _ci_arguments()
         verify = _assignments(VERIFY)
         for name in MEASURED_ARGS:
             self.assertIn(name, release, f"{RELEASE.name} no longer defines {name}")
@@ -87,7 +128,7 @@ class VerifyPcr0BuildArgs(unittest.TestCase):
         # is measured. release-aws-enclave.sh once read "$REPO_ROOT" without
         # assigning it: under set -u the command substitution failed inside the
         # argument and the image built with SOURCE_REVISION empty.
-        for script in (RELEASE, VERIFY):
+        for script in (VERIFY,):
             text = script.read_text()
             self.assertIn(
                 '--build-arg "SOURCE_REVISION=$(git -C "$REPO_ROOT" rev-parse HEAD)"',
@@ -96,6 +137,16 @@ class VerifyPcr0BuildArgs(unittest.TestCase):
             )
             assigned = re.search(r'(?m)^REPO_ROOT="', text) is not None
             self.assertTrue(assigned, f"{script.name} reads $REPO_ROOT without assigning it")
+        self.assertEqual(_ci_arguments()["SOURCE_REVISION"], "$GITHUB_SHA")
+        self.assertIn('test "$(git rev-parse HEAD)" = "$GITHUB_SHA"', _ci_build())
+
+    def test_all_measured_arguments_are_passed_to_both_builds(self) -> None:
+        for script in (VERIFY,):
+            text = script.read_text()
+            for name in MEASURED_ARGS:
+                flag = (f'--platform "${name}"' if name == "PLATFORM"
+                        else f'--build-arg "{name}=${{{name}}}"')
+                self.assertIn(flag, text, f"{script.name} defines but does not pass {name}")
 
     def test_verify_script_builds_from_paths_that_exist(self) -> None:
         text = VERIFY.read_text()
@@ -114,15 +165,14 @@ class VerifyPcr0BuildArgs(unittest.TestCase):
                 target.is_dir(), f"verify-pcr0.sh cd's into a missing directory: {target}"
             )
 
-    def test_compares_against_a_published_file_that_exists(self) -> None:
-        published = re.search(r'PUBLISHED_FILE="\$REPO_ROOT/([^"]+)"', VERIFY.read_text())
-        self.assertIsNotNone(published, "verify-pcr0.sh no longer names a published PCR0 file")
-        assert published is not None
-        self.assertTrue(
-            (REPO_ROOT / published.group(1)).is_file(),
-            f"verify-pcr0.sh compares against {published.group(1)}, which does not exist. "
-            "Comparing against a missing file silently skips the only check that matters.",
-        )
+    def test_compares_against_authenticated_ci_measurement(self) -> None:
+        text = VERIFY.read_text()
+        self.assertIn('aws_eif_manifest.py" verify --manifest "$AWS_EIF_MANIFEST"', text)
+        self.assertIn('--signature "$AWS_EIF_SIGNATURE" --expected-source', text)
+        self.assertIn('if [ "$PCR0" != "$EXPECTED_PCR0" ]', text)
+        self.assertIn('docker pull "$BUILDER_IMAGE"', text)
+        self.assertNotIn('sudo nitro-cli', text)
+        self.assertNotIn('PUBLISHED_FILE=', text)
 
 
 class PublishedMeasurementsAgreeAcrossPaths(unittest.TestCase):

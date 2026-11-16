@@ -1,7 +1,7 @@
 # Multi-provider Azure confidential-container build (AMD SEV-SNP, ACI).
 #
 # Modelled line for line on Dockerfile.enclave.gcp.multi — same Go toolchain,
-# same two binaries, same scratch runtime — with the build tags swapped to
+# same gateway/helpers and scratch runtime — with the build tags swapped to
 # `cloud_azure,llm_multi` and three Azure-specific differences called out
 # below. Keeping the two files structurally parallel is deliberate: they are
 # the same workload on different hardware, and a diff between them should show
@@ -26,7 +26,7 @@ FROM golang:1.27.4-bookworm@sha256:4fa7c968ba93f1635670522dbb01a2c78150443e13857
 ENV CGO_ENABLED=0 GOOS=linux GOARCH=amd64
 WORKDIR /src
 RUN curl --fail --show-error --silent --location --retry 3 --max-time 300 \
-    https://codeload.github.com/edgelesssys/privatemode-public/tar.gz/2634ffb82c72339902f26ae071db513add2bdc2f \
+    https://codeload.github.com/edgelesssys/privatemode-public/tar.gz/3c98e0abf3219a6ebcc29112867a5f004605041b \
     -o /tmp/privatemode-source.tar.gz
 COPY third_party/privatemode ./third_party/privatemode
 RUN bash third_party/privatemode/build.sh /tmp/privatemode-source.tar.gz /out/privatemode-proxy
@@ -100,8 +100,16 @@ RUN cd sidecar && go mod download \
 # person builds on.
 RUN mkdir -p /out/rootfs/tmp && chmod 1777 /out/rootfs/tmp
 
-# ─── Scratch runtime, both binaries ─────────────────────────────────────────
+# Local privacy worker, included in the measured scratch runtime.
+FROM node:24-bookworm-slim@sha256:dc26ae92c9fb15cf6b1d63e20f0944b2efe0f115b20e00be48fb23fceb061c54 AS rampart
+WORKDIR /rampart
+COPY rampart/package.json rampart/package-lock.json ./
+RUN npm ci --ignore-scripts
+COPY rampart/ ./
+RUN node model.mjs && npm test && sh rootfs.sh
+
 FROM scratch
+COPY --from=rampart /rootfs/ /
 COPY --from=maple /out/maple-transport /maple-transport
 COPY --from=maple /src/MAPLE-LICENSE /licenses/maple-MIT.txt
 COPY --from=privatemode /out/privatemode-proxy /privatemode-proxy

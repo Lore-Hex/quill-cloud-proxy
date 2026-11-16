@@ -1,0 +1,11 @@
+{
+  "name": "trustedrouter-rampart-worker",
+  "private": true,
+  "type": "module",
+  "scripts": { "test": "node --test worker.test.mjs", "model": "node model.mjs" },
+  "overrides": { "sharp": "0.35.5" },
+  "dependencies": {
+    "@nationaldesignstudio/rampart": "0.1.3",
+    "@huggingface/transformers": "3.7.5"
+  }
+}

@@ -160,6 +160,18 @@ func TestStartupProductionHandoff(t *testing.T) {
 }
 
 func TestStartupAdmissionBoundary(t *testing.T) {
+	// AllocsPerRun reads process-wide counters. Other tests' background
+	// workers must not contribute allocations to this request-hook boundary.
+	if os.Getenv("STARTUP_ADMISSION_BOUNDARY_CHILD") != "1" {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		cmd := exec.CommandContext(ctx, os.Args[0], "-test.run=^TestStartupAdmissionBoundary$") //nolint:gosec // Relaunch this test binary with a fixed selector.
+		cmd.Env = append(os.Environ(), "STARTUP_ADMISSION_BOUNDARY_CHILD=1")
+		if out, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("isolated admission boundary failed: %v\n%s", err, out)
+		}
+		return
+	}
 	h, _, _, _ := startupFixture(t)
 	h.now = func() time.Time { panic("retention sampled startup clock") }
 	for _, ready := range []bool{false, true} {

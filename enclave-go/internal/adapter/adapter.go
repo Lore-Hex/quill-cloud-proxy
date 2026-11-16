@@ -197,6 +197,26 @@ func anthropicThinkingFromChat(req *types.OpenAIChatRequest, maxTokens int) any 
 	if !ok {
 		return nil
 	}
+	return anthropicBudgetThinking(req, budget, maxTokens)
+}
+
+// AnthropicBudgetThinking is the Claude thinking object for a token budget and
+// the max_tokens that leaves room for it, built exactly as ToAnthropic builds
+// them. The Claude dispatch calls it when the selected model's effort ladder
+// names a budget the shared projection did not. Thinking is nil, and the
+// limit 0, when the budget cannot be sent.
+func AnthropicBudgetThinking(req *types.OpenAIChatRequest, budget, maxTokens int) (any, int) {
+	if req == nil {
+		return nil, 0
+	}
+	thinking := anthropicBudgetThinking(req, budget, maxTokens)
+	if thinking == nil {
+		return nil, 0
+	}
+	return thinking, anthropicMaxTokensForThinking(maxTokens, thinking)
+}
+
+func anthropicBudgetThinking(req *types.OpenAIChatRequest, budget, maxTokens int) any {
 	if limit := req.InternalOutputTokenLimit; limit > 0 {
 		if limit <= 1024 {
 			return nil
@@ -259,10 +279,8 @@ func anthropicThinkingBudgetFromReasoning(reasoning any) (int, bool) {
 	case string:
 		return anthropicReasoningEffortBudget(value)
 	case map[string]any:
-		for _, key := range []string{"max_tokens", "thinking_budget", "budget_tokens"} {
-			if n := intFromAny(value[key]); n > 0 {
-				return n, true
-			}
+		if n := ExplicitThinkingBudget(value); n > 0 {
+			return n, true
 		}
 		if effort, _ := value["effort"].(string); effort != "" {
 			return anthropicReasoningEffortBudget(effort)
@@ -275,6 +293,18 @@ func anthropicThinkingBudgetFromReasoning(reasoning any) (int, bool) {
 		}
 	}
 	return 0, false
+}
+
+// ExplicitThinkingBudget is the thinking token budget a reasoning object
+// names, or 0 when it names none.
+func ExplicitThinkingBudget(reasoning any) int {
+	value, _ := reasoning.(map[string]any)
+	for _, key := range []string{"max_tokens", "thinking_budget", "budget_tokens"} {
+		if n := intFromAny(value[key]); n > 0 {
+			return n
+		}
+	}
+	return 0
 }
 
 func anthropicReasoningEffortBudget(effort string) (int, bool) {

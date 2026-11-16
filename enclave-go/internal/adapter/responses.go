@@ -2,6 +2,8 @@ package adapter
 
 import (
 	"bufio"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -25,8 +27,10 @@ func RejectUnsupportedResponsesInputTokenFields(raw map[string]json.RawMessage) 
 }
 
 var supportedResponsesCreateFields = map[string]struct{}{
+	"deidentify":             {},
 	"background":             {},
 	"cache_control":          {},
+	"client_metadata":        {},
 	"conversation":           {},
 	"debug":                  {},
 	"frequency_penalty":      {},
@@ -137,6 +141,15 @@ func validateResponsesFields(raw map[string]json.RawMessage, allowed map[string]
 	}
 	if err := rejectPromptCacheRetention(raw["prompt_cache_retention"]); err != nil {
 		return err
+	}
+	// Codex sends client_metadata: identifiers for its vendor's own backend.
+	// They change nothing here, so only the shape is checked. The request
+	// type has no field for it, so no provider, log or report receives it.
+	if value, ok := raw["client_metadata"]; ok && !isJSONNull(value) {
+		var fields map[string]json.RawMessage
+		if err := json.Unmarshal(value, &fields); err != nil {
+			return &AdapterError{Status: 400, Message: "client_metadata must be an object", Context: "client_metadata"}
+		}
 	}
 	if value, ok := raw["reasoning"]; ok {
 		if err := validateReasoningConfig(value); err != nil {
@@ -273,7 +286,10 @@ func ResponsesToChat(req *types.OpenAIResponsesRequest) (*types.OpenAIChatReques
 			Content: req.Instructions,
 		})
 	}
-	inputMessages, err := responseInputMessages(req.Input, namespaces)
+	// tool_choice above can only name a declared function. Replayed history
+	// may also call functions the tools no longer declare.
+	names := newResponseFunctionNames(tools, namespaces, req.Input)
+	inputMessages, err := responseInputMessages(req.Input, names)
 	if err != nil {
 		return nil, err
 	}
@@ -286,6 +302,7 @@ func ResponsesToChat(req *types.OpenAIResponsesRequest) (*types.OpenAIChatReques
 		maxTokens = req.MaxTokens
 	}
 	chat := &types.OpenAIChatRequest{
+		Deidentify:          req.Deidentify,
 		Model:               req.Model,
 		Models:              req.Models,
 		Messages:            messages,
@@ -334,7 +351,7 @@ func ResponsesToChat(req *types.OpenAIResponsesRequest) (*types.OpenAIChatReques
 			Reasoning:            req.Reasoning,
 			Store:                false,
 			WebSearch:            webSearch,
-			FunctionNamespaces:   namespaces,
+			FunctionNamespaces:   names.namespaces,
 		},
 	}
 	reasoning, _ := req.Reasoning.(map[string]any)
@@ -431,7 +448,92 @@ func sentFunctionName(namespaces map[string]types.ResponseNamespacedFunction, na
 	return ""
 }
 
-func responseInputMessages(input any, namespaces map[string]types.ResponseNamespacedFunction) ([]types.OpenAIChatMessage, error) {
+// responseFunctionNames holds the provider-facing function names of one
+// Responses request, so a replayed call can be given one of its own.
+type responseFunctionNames struct {
+	// namespaces maps a provider-facing name to the namespaced function it
+	// stands for: one the tools declare, or one only replayed calls name.
+	namespaces map[string]types.ResponseNamespacedFunction
+	// sentAs is namespaces inverted.
+	sentAs map[types.ResponseNamespacedFunction]string
+	// taken holds every other provider-facing name in the request: the
+	// functions sent as tools and the calls replayed without a namespace.
+	taken map[string]struct{}
+}
+
+func newResponseFunctionNames(tools []any, namespaces map[string]types.ResponseNamespacedFunction, input any) *responseFunctionNames {
+	names := &responseFunctionNames{
+		namespaces: namespaces,
+		sentAs:     make(map[types.ResponseNamespacedFunction]string, len(namespaces)),
+		taken:      map[string]struct{}{},
+	}
+	for sent, declared := range namespaces {
+		names.sentAs[declared] = sent
+	}
+	for _, tool := range tools {
+		if m, ok := tool.(map[string]any); ok {
+			names.taken[chatToolName(m)] = struct{}{}
+		}
+	}
+	items, _ := input.([]any)
+	if item, ok := input.(map[string]any); ok {
+		items = []any{item}
+	}
+	for _, item := range items {
+		m, _ := item.(map[string]any)
+		itemType := stringValue(m["type"])
+		if itemType == "custom_tool_call" || (itemType == "function_call" && strings.TrimSpace(stringValue(m["namespace"])) == "") {
+			names.taken[strings.TrimSpace(stringValue(m["name"]))] = struct{}{}
+		}
+	}
+	return names
+}
+
+// sent is the provider-facing name of a replayed call to a namespaced
+// function. A function the tools declare keeps the name it was sent under.
+// Any other is history: the tool list changed between turns, or the call was
+// made through another backend. It is sent as namespace__name, the name a
+// collision gives a declared function, and never under a name the request
+// already uses. So the model cannot take it for a declared function, a call
+// to a declared function is still answered as declared, and a call to this
+// one is answered with the namespace and name the caller replayed.
+func (n *responseFunctionNames) sent(namespace, name string) string {
+	function := types.ResponseNamespacedFunction{Namespace: namespace, Name: name}
+	if sent, ok := n.sentAs[function]; ok {
+		return sent
+	}
+	inUse := func(candidate string) bool {
+		_, taken := n.taken[candidate]
+		_, namespaced := n.namespaces[candidate]
+		return taken || namespaced
+	}
+	sent := namespace + "__" + name
+	if !providerFunctionName.MatchString(sent) || inUse(sent) {
+		// Not a name providers accept (a character outside [A-Za-z0-9_-], or
+		// over 64), or one already in use. Keep a readable prefix and tell
+		// this function apart by a digest of its exact namespace and name.
+		prefix := notProviderFunctionNameCharacter.ReplaceAllString(sent, "_")
+		prefix = prefix[:min(len(prefix), 55)]
+		for attempt := 0; ; attempt++ {
+			digest := sha256.Sum256([]byte(fmt.Sprintf("%d\x00%s\x00%s", attempt, namespace, name)))
+			sent = prefix + "_" + hex.EncodeToString(digest[:4])
+			if !inUse(sent) {
+				break
+			}
+		}
+	}
+	if n.namespaces == nil {
+		n.namespaces = map[string]types.ResponseNamespacedFunction{}
+	}
+	n.namespaces[sent] = function
+	n.sentAs[function] = sent
+	return sent
+}
+
+func responseInputMessages(input any, names *responseFunctionNames) ([]types.OpenAIChatMessage, error) {
+	if names == nil {
+		names = newResponseFunctionNames(nil, nil, input)
+	}
 	switch value := input.(type) {
 	case string:
 		if strings.TrimSpace(value) == "" {
@@ -441,7 +543,7 @@ func responseInputMessages(input any, namespaces map[string]types.ResponseNamesp
 	case []any:
 		out := make([]types.OpenAIChatMessage, 0, len(value))
 		for index, item := range value {
-			message, drop, err := responseInputMessage(item, index, namespaces)
+			message, drop, err := responseInputMessage(item, index, names)
 			if err != nil {
 				return nil, err
 			}
@@ -461,7 +563,7 @@ func responseInputMessages(input any, namespaces map[string]types.ResponseNamesp
 		}
 		return out, nil
 	case map[string]any:
-		message, drop, err := responseInputMessage(value, 0, namespaces)
+		message, drop, err := responseInputMessage(value, 0, names)
 		if err != nil {
 			return nil, err
 		}
@@ -475,7 +577,7 @@ func responseInputMessages(input any, namespaces map[string]types.ResponseNamesp
 }
 
 // responseInputMessage explicitly marks replay-only items for dropping.
-func responseInputMessage(item any, index int, namespaces map[string]types.ResponseNamespacedFunction) (message types.OpenAIChatMessage, drop bool, err error) {
+func responseInputMessage(item any, index int, names *responseFunctionNames) (message types.OpenAIChatMessage, drop bool, err error) {
 	if text, ok := item.(string); ok {
 		return types.OpenAIChatMessage{Role: "user", Content: text}, false, nil
 	}
@@ -512,16 +614,11 @@ func responseInputMessage(item any, index int, namespaces map[string]types.Respo
 		if err != nil {
 			return message, false, err
 		}
-		// A replayed call to a namespaced function names it as declared.
+		// A replayed call to a namespaced function names it as declared, or
+		// as history when the tools no longer declare it.
 		if namespace := strings.TrimSpace(stringValue(m["namespace"])); namespace != "" {
 			call := &message.ToolCalls[0].Function
-			sent := sentFunctionName(namespaces, namespace, call.Name)
-			if sent == "" {
-				return types.OpenAIChatMessage{}, false, &AdapterError{
-					Status: 400, Message: "function_call names a function no namespace declares", Context: fmt.Sprintf("input[%d].namespace", index),
-				}
-			}
-			call.Name = sent
+			call.Name = names.sent(namespace, call.Name)
 		}
 		return message, false, nil
 	case "custom_tool_call":
@@ -2390,6 +2487,8 @@ func chatToolsFromResponsesTools(tools []any) ([]any, map[string]types.ResponseN
 // providerFunctionName is the function name every chat provider accepts.
 var providerFunctionName = regexp.MustCompile(`^[A-Za-z0-9_-]{1,64}$`)
 
+var notProviderFunctionNameCharacter = regexp.MustCompile(`[^A-Za-z0-9_-]`)
+
 func chatToolName(tool map[string]any) string {
 	fn, _ := tool["function"].(map[string]any)
 	return stringValue(fn["name"])
@@ -2503,7 +2602,7 @@ func containsWebSearchTool(tools []any) bool {
 func parseResponsesWebSearchTool(tool map[string]any) (*types.ResponseWebSearchConfig, error) {
 	toolType := stringValue(tool["type"])
 	allowed := map[string]struct{}{
-		"type": {}, "search_context_size": {}, "filters": {}, "user_location": {},
+		"type": {}, "engine": {}, "search_context_size": {}, "filters": {}, "user_location": {},
 		"external_web_access": {}, "return_token_budget": {}, "search_content_types": {}, "image_settings": {},
 	}
 	for key, value := range tool {
@@ -2514,6 +2613,13 @@ func parseResponsesWebSearchTool(tool map[string]any) (*types.ResponseWebSearchC
 	config := &types.ResponseWebSearchConfig{
 		ToolType: toolType, RouteType: "responses.web_search", Engine: "exa",
 		Mode: "auto", SearchContextSize: "medium", MaxResults: 5,
+	}
+	if engine, present := tool["engine"]; present && engine != nil {
+		parsed, err := parseExaWebSearchParameters(map[string]any{"engine": engine}, "tools")
+		if err != nil {
+			return nil, err
+		}
+		config.Engine = parsed.Engine
 	}
 	if size := strings.TrimSpace(stringValue(tool["search_context_size"])); size != "" {
 		switch size {

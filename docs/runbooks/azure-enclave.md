@@ -144,12 +144,14 @@ The NextBit EU rollout bundle is `71b52c822f1e417cb032e6513a1902a4`, sealed on
 October 14, 2026. It preserves all 75 prior logical entries from
 `dc8d8615cf8642c7a8cbf86b80c22006` and adds the separate NextBit EU key.
 Pin `QUILL_AZURE_BUNDLE_VERSION=71b52c822f1e417cb032e6513a1902a4` for this
-rollout; uploading a bundle alone does not change any serving container. Keep
-`QUILL_PRIVATEMODE_SECRET=trustedrouter-privatemode-api-key` and
-`QUILL_TELLUVIAN_SECRET=trustedrouter-telluvian-api-key`, together with
-`QUILL_SYSTEM1MODELS_GLOBAL_SECRET=trustedrouter-system1models-global-api-key`
-and `QUILL_SYSTEM1MODELS_EU_SECRET=trustedrouter-system1models-eu-api-key`, set
-when resealing and deploying so these existing optional providers are preserved.
+rollout; uploading a bundle alone does not change any serving container.
+Every provider key sealed in the bundle is named by a `deploy-azure-aci.sh`
+default (Privatemode, Maple, Hixtube, Telluvian and both System1Models
+included), so a plain deploy preserves the existing optional providers.
+`azure-seal-bundle.py --check-deploy-manifest` fails CI if a sealed name is
+left unnamed, except names listed with a reason in `SEALED_BUT_DARK_ON_AZURE`
+(Context.dev, pending its Azure activation). To take a sealed provider dark on
+Azure, change its default in the deploy script and add it to that list.
 The generated
 `tools/azure-bundle.manifest` records the exact names and immutable version.
 

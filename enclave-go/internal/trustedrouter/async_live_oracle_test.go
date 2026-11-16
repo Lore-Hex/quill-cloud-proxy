@@ -8,10 +8,13 @@ import (
 	"io"
 	"net/http"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"reflect"
+	"runtime"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/Lore-Hex/quill-cloud-proxy/enclave-go/internal/spendlease"
 	qtypes "github.com/Lore-Hex/quill-cloud-proxy/enclave-go/internal/types"
@@ -199,13 +202,71 @@ func TestAsyncLiveFrozenMain(t *testing.T) {
 	}
 }
 
+func benchmarkAsyncLiveAllocations(f func(*testing.B)) testing.BenchmarkResult {
+	// Match testing.AllocsPerRun: the counters are process-wide, so prevent
+	// parallel runtime activity from contaminating this isolated measurement.
+	defer runtime.GOMAXPROCS(runtime.GOMAXPROCS(1))
+	return testing.Benchmark(f)
+}
+
+func asyncLiveAllocationBytesBound() int64 {
+	if liveOracleRace {
+		return 160
+	}
+	return 152
+}
+
+var asyncLiveAllocationRegressionSink []byte
+
+func TestAsyncLiveAllocationBenchmarkIsolation(t *testing.T) {
+	previous := runtime.GOMAXPROCS(2)
+	defer runtime.GOMAXPROCS(previous)
+	raw := []byte(`{"billing_shadow_policy":"x","billing_shadow_exclusion":"x"}`)
+	var a Authorization
+	observedProcessors := 0
+	result := benchmarkAsyncLiveAllocations(func(b *testing.B) {
+		observedProcessors = runtime.GOMAXPROCS(0)
+		if observedProcessors != 1 {
+			b.Fatalf("allocation measurement uses %d processors; want one", observedProcessors)
+		}
+		for i := 0; i < b.N; i++ {
+			a = Authorization{}
+			if err := json.Unmarshal(raw, &a); err != nil {
+				b.Fatal(err)
+			}
+			asyncLiveAllocationRegressionSink = make([]byte, 16)
+		}
+	})
+	if observedProcessors != 1 {
+		t.Fatalf("allocation measurement uses %d processors; want one", observedProcessors)
+	}
+	if got := runtime.GOMAXPROCS(0); got != 2 {
+		t.Fatalf("allocation measurement left %d processors; want restored two", got)
+	}
+	if result.AllocsPerOp() <= 2 || result.AllocedBytesPerOp() <= asyncLiveAllocationBytesBound() {
+		t.Fatalf("extra allocation escaped the guard: %d B / %d allocations", result.AllocedBytesPerOp(), result.AllocsPerOp())
+	}
+}
+
 func TestAsyncLiveMainAllocationClass(t *testing.T) {
+	// Benchmark reads process-wide counters. Isolate this decoder measurement
+	// from other tests' background workers without changing its allocation bounds.
+	if os.Getenv("ASYNC_LIVE_ALLOCATION_CHILD") != "1" {
+		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cancel()
+		cmd := exec.CommandContext(ctx, os.Args[0], "-test.run=^TestAsyncLiveMainAllocationClass$") //nolint:gosec // Relaunch this test binary with a fixed selector.
+		cmd.Env = append(os.Environ(), "ASYNC_LIVE_ALLOCATION_CHILD=1")
+		if out, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("isolated allocation check: %v\n%s", err, out)
+		}
+		return
+	}
 	// MAIN's decoder ignores arbitrarily large unknown v2 values: 152 B / 2
 	// allocations with Go 1.24.13. Authorization itself is reused outside measure.
 	for _, size := range []int{0, 1024, 1000000} {
 		raw := []byte(`{"billing_shadow_policy":"` + strings.Repeat("x", size) + `","billing_shadow_exclusion":"` + strings.Repeat("x", size) + `"}`)
 		var a Authorization
-		result := testing.Benchmark(func(b *testing.B) {
+		result := benchmarkAsyncLiveAllocations(func(b *testing.B) {
 			for i := 0; i < b.N; i++ {
 				a = Authorization{}
 				if err := json.Unmarshal(raw, &a); err != nil {
@@ -213,13 +274,13 @@ func TestAsyncLiveMainAllocationClass(t *testing.T) {
 				}
 			}
 		})
-		bytesBound := int64(152)
-		if liveOracleRace {
-			bytesBound = 160
+		if result.N == 0 {
+			t.Fatal("allocation benchmark did not complete")
 		}
+		bytesBound := asyncLiveAllocationBytesBound()
 		t.Logf("off optional size=%d: %d B / %d allocations", size, result.AllocedBytesPerOp(), result.AllocsPerOp())
 		if result.AllocsPerOp() > 2 || result.AllocedBytesPerOp() > bytesBound {
-			t.Fatalf("F2 size %d: %d B / %d allocs; main 152 / 2", size, result.AllocedBytesPerOp(), result.AllocsPerOp())
+			t.Fatalf("F2 size %d: %d B / %d allocs; main 152 / 2 (N=%d, total bytes=%d, total allocs=%d)", size, result.AllocedBytesPerOp(), result.AllocsPerOp(), result.N, result.MemBytes, result.MemAllocs)
 		}
 		v := reflect.ValueOf(a)
 		for _, name := range []string{"BillingShadowPolicy", "BillingShadowExclusion"} {

@@ -322,6 +322,7 @@ def test_build_payload_iterates_all_known_providers() -> None:
         "digitalocean_api_key",
         "engy_api_key",
         "exa_api_key",
+        "context_dev_api_key",
         "inceptron_api_key",
         "morph_api_key",
         "neurometric_api_key",

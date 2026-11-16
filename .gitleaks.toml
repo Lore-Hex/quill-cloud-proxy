@@ -15,6 +15,19 @@
 useDefault = true
 
 [[allowlists]]
+description = "Already-public EdgeBit Nitro SDK test private key, pinned upstream source and notices beside the fixture. Never used by a workload."
+targetRules = ["private-key"]
+paths = ['''^enclave-go/internal/bootstrap/awssealed/testdata/upstream-kms\.json$''']
+
+[[allowlists]]
+description = "Exact public expected AES key from the same pinned EdgeBit KMS interoperability fixture. Never used by a workload."
+targetRules = ["generic-api-key"]
+condition = "AND"
+paths = ['''^enclave-go/internal/bootstrap/awssealed/testdata/upstream-kms\.json$''']
+regexTarget = "secret"
+regexes = ['''^3be82c440f06cb4d44c4c2ec3bf30d472407d3a9125aa4c1842b98f6bdd26e41$''']
+
+[[allowlists]]
 description = """Generated, deterministic test vectors. JWS/JWT strings are \
 signed with keys whose seeds are committed beside them (shared with \
 quill-router's tests/fixtures); the generic-api-key hits are sha256 digests \
@@ -54,5 +67,23 @@ as a key; only bare 64-hex digests in this one file are allowed."""
 targetRules = ["generic-api-key"]
 condition = "AND"
 paths = ['''^\.github/workflows/reproduce-privatemode-v163\.yml$''']
+regexTarget = "secret"
+regexes = ['''^[0-9a-f]{64}$''']
+
+[[allowlists]]
+description = "Public v1.64 secret-service OCI digest, independently reproduced in run 43789562675; not an API key."
+targetRules = ["generic-api-key"]
+condition = "AND"
+paths = ['''^\.github/workflows/reproduce-privatemode-v164\.yml$''']
+regexTarget = "secret"
+regexes = ['''^3fba87f35ee11fa08acccdae93347943ef17a364246e64165f4ab6e9caba0dc5$''']
+
+[[allowlists]]
+description = """Pinned Rampart artifact checksums verified by model.mjs. \
+Tokenizer file names trigger the generic key rule; allow only SHA-256 hex \
+values in this exact manifest, not credentials or other files."""
+targetRules = ["generic-api-key"]
+condition = "AND"
+paths = ['''^enclave-go/rampart/model-sha256\.json$''']
 regexTarget = "secret"
 regexes = ['''^[0-9a-f]{64}$''']

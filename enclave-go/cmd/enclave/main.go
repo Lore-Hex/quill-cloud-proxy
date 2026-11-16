@@ -242,6 +242,7 @@ func main() {
 		fmt.Fprintf(os.Stderr, "bootstrap fetch failed: %v\n", err)
 		os.Exit(1)
 	}
+	recordAWSBootstrapEvidence(boot.AWSBootstrap)
 
 	// Only the AWS build may wire a GCP service-account credential. Azure has
 	// cloud-local sealed provider secrets and a cloud-local encrypted ACME
@@ -254,6 +255,7 @@ func main() {
 	configureFusionPrompts(boot)
 	configureAdvisorPrompts(boot)
 	configureResponsesWebSearch(boot.ExaAPIKey)
+	configureContextSearch(boot.ContextDevAPIKey)
 	configureModelSelector(boot.ProviderAPIKeys["telluvian"])
 
 	// 2. Build registries. Capture a canonical hash of the device list
@@ -1230,6 +1232,43 @@ func serveOneRequest(
 		return
 	}
 	req.NormalizeRouterModelAliases()
+	if req.Deidentify {
+		if !deidentifyDirectModels(&req) {
+			writeOpenAIError(conn, 400, "deidentify requires a direct model and local function tools", "invalid_request_error", "deidentify_unsupported", "deidentify")
+			return
+		}
+		var privacyErr error
+		body, br, privacyErr = prepareDeidentified(ctx, true, body, routeType, br)
+		if privacyErr != nil {
+			writeDeidentifyError(conn, routeType, privacyErr)
+			return
+		}
+		if routeType == "responses" {
+			clean, parseErr := parseResponsesRequest(body)
+			if parseErr != nil {
+				writeDeidentifyError(conn, routeType, parseErr)
+				return
+			}
+			chat, parseErr := adapter.ResponsesToChat(clean)
+			if parseErr != nil {
+				writeDeidentifyError(conn, routeType, parseErr)
+				return
+			}
+			req = *chat
+			originalInput = clean.Input
+		} else {
+			clean, parseErr := parseChatRequest(body)
+			if parseErr != nil {
+				writeDeidentifyError(conn, routeType, parseErr)
+				return
+			}
+			req = *clean
+			originalInput = req.Messages
+		}
+		req.InferenceReceipt = receiptRequest
+		req.NormalizeMaxTokens()
+		req.NormalizeRouterModelAliases()
+	}
 	requestedModel := req.Model
 	if err := req.NormalizeFallbackRouting(); err != nil {
 		writeOpenAIError(conn, 400, err.Error(), "invalid_request_error", "bad_request", "allow_fallbacks")
@@ -1546,7 +1585,12 @@ func parseChatRequest(body []byte) (*types.OpenAIChatRequest, error) {
 		req.RepetitionPenalty = validation.RepetitionPenaltyAlias
 	}
 	if validation.ReasoningAlias != nil {
+		// The alias is the whole reasoning control. It already holds a
+		// reasoning_effort sent beside the switch, or drops one the switch
+		// turned off, so the request keeps no second top-level copy. Where a
+		// provider is sent the effort is decided when its request is built.
 		req.Reasoning = validation.ReasoningAlias
+		req.ReasoningEffort = ""
 	}
 	types.RecoverToolCallNames(req.Messages)
 	adapter.ConfigureReasoningVisibility(&req, validation.ExcludeReasoning)
@@ -2451,6 +2495,19 @@ func serveMessages(
 		}
 		writeAnthropicError(conn, 400, "invalid JSON")
 		return
+	}
+	if native.Deidentify {
+		var privacyErr error
+		body, br, privacyErr = prepareDeidentified(ctx, true, body, "messages", br)
+		if privacyErr != nil {
+			writeDeidentifyError(conn, "messages", privacyErr)
+			return
+		}
+		native = adapter.AnthropicNativeRequest{}
+		if json.Unmarshal(body, &native) != nil {
+			writeDeidentifyError(conn, "messages", nil)
+			return
+		}
 	}
 	native.Model = types.CanonicalRouterModelID(native.Model)
 	req := adapter.MessagesToChatShim(&native)

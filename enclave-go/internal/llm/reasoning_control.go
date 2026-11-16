@@ -40,13 +40,7 @@ func applyChatReasoningEffort(provider string, req *qtypes.OpenAIChatRequest, bo
 	if effort == "" {
 		return
 	}
-	// The shared Anthropic projection synthesizes a budget for old Claude
-	// models. It is not a native thinking configuration for other providers.
-	if body != nil && !body.NativeContent {
-		if thinking, ok := wire.Thinking.(map[string]any); ok && thinking["budget_tokens"] != nil {
-			wire.Thinking = nil
-		}
-	}
+	dropSynthesizedThinkingBudget(body, wire)
 	switch normalizeDirectProvider(provider) {
 	case "meta", "openai", "gemini", "google-ai-studio", "deepseek", "zai", "kimi", "mistral", "alibaba", "tencent", "tinfoil", "grok", "baseten", "crusoe", "cerebras", "fireworks":
 		// These chat endpoints consume top-level reasoning_effort. Responses
@@ -54,6 +48,62 @@ func applyChatReasoningEffort(provider string, req *qtypes.OpenAIChatRequest, bo
 		// silently used upstream defaults (including when effort was "none").
 		wire.ReasoningEffort = effort
 		wire.Reasoning = nil
+	case "deepinfra", "io-net", "nebius", "novita", "parasail", "together":
+		// Hosts outside the effort list, each observed on 2026-11-16
+		// (docs/reasoning-output.md) to accept a top-level reasoning_effort,
+		// alone and together with the reasoning object, and to accept it alone
+		// on a model that does not reason. Five of them showed a clear
+		// difference between low and high at the top level. Novita's was small
+		// there and clear with both fields. Together and Nebius, and probably
+		// Parasail, ignore an effort that is only inside the object. So here an
+		// effort of low, medium or high written only inside the object also
+		// goes top-level, and the object stays as the request holds it. Beside
+		// reasoning.enabled=false nothing is added. A request that itself
+		// holds both that Off and a top-level effort is sent with both, as
+		// before. A native Messages request is passed through: its thinking
+		// object is forwarded as written and nothing is derived from it.
+		//
+		// Served requests change here, so the list holds only what was
+		// observed. Add a host after it has been observed, not before. Every
+		// other host is sent the reasoning fields as the request holds them.
+		native := body != nil && body.NativeContent
+		if !native && strings.TrimSpace(req.ReasoningEffort) == "" && !chatReasoningExplicitlyOff(req) && topLevelCopiedEffort(effort) {
+			wire.ReasoningEffort = effort
+		}
+	}
+}
+
+// topLevelCopiedEffort reports the efforts copied top-level for the observed
+// hosts. The probe sent low and high. Medium was not probed: it is copied
+// because it sits between those two. Any other word (none, off, minimal,
+// xhigh, max, auto, an unknown one) stays inside the object alone, because a
+// host that validates the top-level field could refuse it.
+func topLevelCopiedEffort(effort string) bool {
+	switch effort {
+	case "low", "medium", "high":
+		return true
+	}
+	return false
+}
+
+// chatReasoningExplicitlyOff reports a reasoning object that says
+// enabled=false. A missing or non-boolean enabled is not Off.
+func chatReasoningExplicitlyOff(req *qtypes.OpenAIChatRequest) bool {
+	if req == nil {
+		return false
+	}
+	values, _ := req.Reasoning.(map[string]any)
+	enabled, explicit := values["enabled"].(bool)
+	return explicit && !enabled
+}
+
+// The shared Anthropic projection synthesizes a budget for old Claude models.
+// It is not a native thinking configuration for other providers.
+func dropSynthesizedThinkingBudget(body *qtypes.AnthropicMessagesRequest, wire *openAICompatibleRequest) {
+	if body != nil && !body.NativeContent {
+		if thinking, ok := wire.Thinking.(map[string]any); ok && thinking["budget_tokens"] != nil {
+			wire.Thinking = nil
+		}
 	}
 }
 
