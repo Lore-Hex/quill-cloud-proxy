@@ -126,6 +126,15 @@ parent inline policy. Existing signer, artifact and legacy resources must not
 change. Use the off-host sealer for independently encrypted regional bundles;
 never configure Secrets Manager replication for these secrets.
 
+After provisioning, enable `attested-release.json` in a reviewed commit with
+`required=true` and the exact `key_arns` map from Terraform's
+`attested_bootstrap` output. Do not use aliases in this pin file. The pre-boot
+gate then reads both keys and refuses an unavailable key, a weakened explicit
+Deny, or any disagreement with the published accepted set. Before enabling
+this stage, narrow rollback targets to verified Phase 3-or-later images.
+Never turn this file off to bypass a failed gate. It is disabled only during
+the initial, explicitly non-confidential migration stages.
+
 After creation, prove the live recipient-only and parent-privilege negative
 controls before any serving dependency on these keys. A mocked Terraform
 policy test is not live KMS evidence. Later releases must widen this variable
