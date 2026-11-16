@@ -623,6 +623,12 @@ func buildPinnedTransport(fp string) *http.Transport {
 }
 
 func (r *attestedRoundTripper) RoundTrip(req *http.Request) (*http.Response, error) {
+	if !approvedPinnedProviderRequest(req, tinfoilEnclaveHost) {
+		if req != nil && req.Body != nil {
+			_ = req.Body.Close()
+		}
+		return nil, errProviderEgress
+	}
 	if err := r.ensureFresh(req.Context()); err != nil {
 		return nil, fmt.Errorf("tinfoil attestation freshness check failed: %w", err)
 	}

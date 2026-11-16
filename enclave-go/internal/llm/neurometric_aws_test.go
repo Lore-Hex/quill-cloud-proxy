@@ -58,8 +58,20 @@ func TestAWSNeurometricLegacyRouteHasMeasuredTunnel(t *testing.T) {
 	if response != nil {
 		_ = response.Body.Close()
 	}
+	if !errors.Is(err, errProviderEgress) {
+		t.Fatalf("client did not enforce the shared provider allowlist: %v", err)
+	}
+	guard, ok := client.httpc.Transport.(*providerEgressTransport)
+	if !ok {
+		t.Fatalf("missing request-level guard: %T", client.httpc.Transport)
+	}
+	// The independent lower-level AWS tunnel restriction must remain intact.
+	response, err = guard.base.RoundTrip(req)
+	if response != nil {
+		_ = response.Body.Close()
+	}
 	var unconfigured *vsockhttp.UnconfiguredHostError
 	if !errors.As(err, &unconfigured) || unconfigured.Host != "unconfigured.invalid" {
-		t.Fatalf("client did not enforce the AWS hostname allowlist: %v", err)
+		t.Fatalf("underlying transport lost the AWS hostname allowlist: %v", err)
 	}
 }

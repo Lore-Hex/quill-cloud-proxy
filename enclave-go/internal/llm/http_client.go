@@ -2,7 +2,6 @@ package llm
 
 import (
 	"crypto/tls"
-	"net"
 	"net/http"
 	"time"
 
@@ -12,19 +11,15 @@ import (
 const defaultStreamingHTTPTimeout = 10 * time.Minute
 
 func pooledHTTPClient(timeout time.Duration) *http.Client {
-	dialer := &net.Dialer{
-		Timeout:   10 * time.Second,
-		KeepAlive: 30 * time.Second,
-	}
 	tlsConfig := &tls.Config{
 		MinVersion: tls.VersionTLS12,
 		NextProtos: []string{"h2", "http/1.1"},
 	}
 	registry := &upstreamcert.Registry{}
 	transport := &http.Transport{
-		Proxy:                 http.ProxyFromEnvironment,
-		DialContext:           dialer.DialContext,
-		DialTLSContext:        registry.DialTLSContext(dialer.DialContext, tlsConfig, 10*time.Second),
+		Proxy:                 nil,
+		DialContext:           providerDialContext,
+		DialTLSContext:        registry.DialTLSContext(providerDialContext, tlsConfig, 10*time.Second),
 		TLSClientConfig:       tlsConfig,
 		ForceAttemptHTTP2:     true,
 		MaxIdleConns:          1024,
@@ -33,8 +28,8 @@ func pooledHTTPClient(timeout time.Duration) *http.Client {
 		TLSHandshakeTimeout:   10 * time.Second,
 		ExpectContinueTimeout: 1 * time.Second,
 	}
-	return &http.Client{
+	return lockProviderHTTPClient(&http.Client{
 		Timeout:   timeout,
 		Transport: &upstreamcert.Transport{Base: transport, Registry: registry},
-	}
+	})
 }
