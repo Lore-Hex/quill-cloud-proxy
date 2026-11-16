@@ -28,6 +28,11 @@ the expected result; malformed-document, invalid-ciphertext, network, or
 timeout errors do not. A returned plaintext or recipient ciphertext fails the
 gate immediately. Never print such material into logs.
 
+`python3 -m tools.verify_aws_denial_probe` checks the evidence locally before
+any negative call. Supply the recorded `describe-eif` measurements, exact
+instance, original challenge, mode, and each current accepted PCR0. Its output
+is deliberately labeled as test-evidence authentication, not a KMS test result.
+
 Use the instance role, not the operator, for the negative calls. Leave the
 published-image positive test to the real bootstrap flow. Record API request
 IDs and failure codes, then remove only the task-owned probe resources.
