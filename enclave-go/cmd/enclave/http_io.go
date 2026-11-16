@@ -1196,6 +1196,9 @@ func upstreamErrorResponse(err error) (int, string) {
 	if asAdapterErr(err, &aerr) {
 		return aerr.Status, aerr.Message
 	}
+	if _, ok := providerCircuitOpenFrom(err); ok {
+		return http.StatusServiceUnavailable, providerCircuitOpenMessage
+	}
 	if message, ok := clientInputErrorMessage(err); ok {
 		return 400, message
 	}
@@ -1238,6 +1241,10 @@ func writeUpstreamError(w io.Writer, route string, err error, authorization *tru
 		}
 	}
 	encoded, _ := json.Marshal(body)
+	if circuitErr, ok := providerCircuitOpenFrom(err); ok {
+		writeJSONResponseWithHeaders(w, status, encoded, providerCircuitRetryHeaders(circuitErr.retryAfter))
+		return
+	}
 	writeJSONResponse(w, status, encoded)
 }
 

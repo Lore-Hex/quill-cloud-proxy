@@ -215,6 +215,20 @@ func responseBody(err error) (int, string, bool) {
 	return status, s[match[1]:], true
 }
 
+// Status reports the HTTP status a provider failure actually carries. Unlike
+// Parse, which falls back to 502 for anything it cannot read, it says false
+// for a failure with no status at all (a refused connection, a timeout).
+func Status(err error) (int, bool) {
+	if err == nil {
+		return 0, false
+	}
+	status, _, ok := responseBody(err)
+	if !ok || status < 100 || status >= 600 {
+		return 0, false
+	}
+	return status, true
+}
+
 func Parse(err error) Detail {
 	d := Detail{Status: 502, Message: "provider error", Type: "provider_error"}
 	if err == nil {
