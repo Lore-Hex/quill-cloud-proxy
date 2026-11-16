@@ -168,6 +168,9 @@ func providerDialWith(ctx context.Context, network, address string, resolver IPR
 	defer cancel()
 	ips, err := resolver.LookupNetIP(ctx, "ip", host)
 	if err != nil || len(ips) == 0 {
+		if ctx.Err() != nil {
+			return nil, ctx.Err()
+		}
 		return nil, errors.New("provider egress: DNS lookup failed")
 	}
 	for _, ip := range ips {
@@ -175,11 +178,19 @@ func providerDialWith(ctx context.Context, network, address string, resolver IPR
 			return nil, errProviderEgress
 		}
 	}
+	// Keep a blackholed address from consuming the entire connection budget
+	// before another already-vetted address can be tried.
+	perAddress := max(2*time.Second, 10*time.Second/time.Duration(len(ips)))
 	for _, ip := range ips {
-		conn, dialErr := dial(ctx, network, net.JoinHostPort(ip.Unmap().String(), port))
+		dialCtx, cancelDial := context.WithTimeout(ctx, perAddress)
+		conn, dialErr := dial(dialCtx, network, net.JoinHostPort(ip.Unmap().String(), port))
+		cancelDial()
 		if dialErr == nil {
 			return conn, nil
 		}
+	}
+	if ctx.Err() != nil {
+		return nil, ctx.Err()
 	}
 	return nil, errors.New("provider egress: approved endpoint unavailable")
 }
