@@ -1,0 +1,10 @@
+{
+  "config.json": "003b84bbcd489f5e782fe5cad8f3249c3653ec880089abb1ccc398a0d895e3e6",
+  "tokenizer.json": "98ade711428b42a1b5343c403a73344535e92de8e19359cdb567ef34da210259",
+  "tokenizer_config.json": "0088a6f8bcdd4014184fb068b83ebb12896a9db2bb269a71f73de83fef24bceb",
+  "special_tokens_map.json": "5d5b662e421ea9fac075174bb0688ee0d9431699900b90662acd44b2a350503a",
+  "vocab.txt": "0fbe6b50061feabb9be68af471e9aa6df07a4bc428bdca4b0eff1fcd3612dee5",
+  "onnx/model_q4.onnx": "9f27d24949b0581701071ea5ef522d77ccd3f50c525cc91eac4d265b0fc2afe5",
+  "LICENSE": "57fec6ca5de5e18ced1a10b36c87c0988fdc170f03f73e8ae2f20f5de42a884e",
+  "MODEL_CARD.md": "88ae1e74ebbf1ca0ba33948e06ad784099a3fdb102dd6eac7599f15b5e061c40"
+}

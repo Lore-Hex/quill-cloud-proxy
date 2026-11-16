@@ -27,6 +27,7 @@ func RejectUnsupportedResponsesInputTokenFields(raw map[string]json.RawMessage) 
 }
 
 var supportedResponsesCreateFields = map[string]struct{}{
+	"deidentify":             {},
 	"background":             {},
 	"cache_control":          {},
 	"client_metadata":        {},
@@ -301,6 +302,7 @@ func ResponsesToChat(req *types.OpenAIResponsesRequest) (*types.OpenAIChatReques
 		maxTokens = req.MaxTokens
 	}
 	chat := &types.OpenAIChatRequest{
+		Deidentify:          req.Deidentify,
 		Model:               req.Model,
 		Models:              req.Models,
 		Messages:            messages,
