@@ -218,6 +218,10 @@ func invokeProviderStream(
 					ttfbCaptured = true
 					ttfbTimer.Stop()
 				},
+				// The provider answering is the success the circuit counts:
+				// resolving here frees a half-open probe at acceptance, not
+				// after the whole generation.
+				onAccept: func() { providerCircuits.Succeed(circuitTicket) },
 			}
 			if x := shadowobserve.FromContext(ctx); x != nil {
 				model := option.UpstreamModel
@@ -854,9 +858,18 @@ type routeSelectingWriter struct {
 	committed   bool
 	opened      bool
 	onFirstByte func()
+	onAccept    func()
+	acceptOnce  sync.Once
 	phases      *requesttiming.Timer
 	invocation  *requesttiming.Invocation
 	firstByte   sync.Once
+}
+
+// accept runs onAccept once, the first time the provider answers.
+func (w *routeSelectingWriter) accept() {
+	if w.onAccept != nil {
+		w.acceptOnce.Do(w.onAccept)
+	}
 }
 
 func (w *routeSelectingWriter) selectRoute() {
@@ -864,6 +877,7 @@ func (w *routeSelectingWriter) selectRoute() {
 	// silence before and between raw body bytes for the selected provider.
 	w.phases.FirstByte(w.invocation)
 	w.committed = true
+	w.accept()
 	if w.onFirstByte != nil {
 		w.firstByte.Do(w.onFirstByte)
 	}
@@ -872,6 +886,7 @@ func (w *routeSelectingWriter) selectRoute() {
 
 func (w *routeSelectingWriter) UpstreamOpened() bool {
 	w.opened = true
+	w.accept()
 	if w.streaming {
 		w.selectRoute()
 	}
@@ -880,7 +895,10 @@ func (w *routeSelectingWriter) UpstreamOpened() bool {
 
 // UpstreamAnswered records a 2xx head from a client that buffers the whole
 // body (upstreamerror.Answered). It never commits the response.
-func (w *routeSelectingWriter) UpstreamAnswered() { w.opened = true }
+func (w *routeSelectingWriter) UpstreamAnswered() {
+	w.opened = true
+	w.accept()
+}
 
 // Accepted reports whether the provider answered this attempt: a 2xx head
 // (providers signal it through upstreamerror.Open) or any output.

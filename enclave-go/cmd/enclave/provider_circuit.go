@@ -38,6 +38,15 @@ const maxProviderRouteMemoryCircuits = 64
 // because a half-open circuit's one probe is still in flight.
 const providerCircuitProbeRetry = time.Second
 
+// providerCircuitStreakWindows ages out failure streaks. A streak that has not
+// opened its circuit within this many open windows of its first failure (or a
+// circuit not reopened within this many windows of its last open) starts over.
+// The incident pattern collects three failures in under a second, and a real
+// outage on a quiet route is seen by its tenants within minutes; three
+// sporadic failures more than five windows (five minutes by default) apart are
+// independent noise, not an outage.
+const providerCircuitStreakWindows = 5
+
 // providerCircuitRegistry is the per-gateway-instance provider circuit breaker.
 // Every circuit is keyed by provider|region|full model id, and there are two
 // kinds:
@@ -81,6 +90,9 @@ type providerCircuitRegistry struct {
 	opens     atomic.Uint64
 	fastFails atomic.Uint64
 	skips     atomic.Uint64
+	// probeSeq numbers half-open probes so only the current holder can
+	// resolve one (a probe whose lease lapsed must not clear its successor).
+	probeSeq uint64
 }
 
 type providerCircuitState struct {
@@ -93,6 +105,7 @@ type providerCircuitState struct {
 	openedAt    time.Time
 	openUntil   time.Time
 	probeUntil  time.Time
+	probeID     uint64
 	updatedAt   time.Time
 }
 
@@ -102,6 +115,14 @@ func (s providerCircuitState) open(now time.Time) bool {
 
 func (s providerCircuitState) halfOpen(now time.Time) bool {
 	return !s.openedAt.IsZero() && !s.open(now)
+}
+
+// expired reports whether a streak aged out: the circuit is not open and more
+// than providerCircuitStreakWindows open windows passed since it last opened,
+// or since its first failure when it never opened.
+func (s providerCircuitState) expired(now time.Time, openFor time.Duration) bool {
+	start := s.freshSince()
+	return !s.open(now) && !start.IsZero() && now.Sub(start) > time.Duration(providerCircuitStreakWindows)*openFor
 }
 
 // freshSince is the earliest attempt start whose outcome still describes this
@@ -307,74 +328,98 @@ func (r *providerCircuitRegistry) Blocked(option llm.InvokeOptions, tenant strin
 	return r.routeBlockedLocked(route, now)
 }
 
-// providerCircuitTicket is one admitted attempt. Exactly one of Succeed, Fail
-// or Release resolves it, which also frees any half-open probe it holds.
+// providerCircuitTicket is one admitted attempt. The first of Succeed, Fail
+// or Release resolves it (later calls do nothing), which also frees any
+// half-open probe it holds. The provider accepting the call resolves it as a
+// success at once, so a probe never holds its circuit for a whole generation.
 type providerCircuitTicket struct {
 	route     providerCircuitRoute
 	tenant    string
 	startedAt time.Time
-	probes    []string
-	active    bool
+	probes    map[string]uint64
+	resolved  bool // guarded by the registry's mu
 }
 
 // Admit decides whether an attempt may call the provider. A half-open
 // circuit admits one probe; until that probe resolves (or its lease of one
-// open window passes) every other attempt is refused.
-func (r *providerCircuitRegistry) Admit(option llm.InvokeOptions, tenant string) (providerCircuitTicket, time.Duration, bool) {
+// open window passes) every other attempt is refused. It returns nil, true for
+// an attempt no circuit tracks.
+func (r *providerCircuitRegistry) Admit(option llm.InvokeOptions, tenant string) (*providerCircuitTicket, time.Duration, bool) {
 	route := providerCircuitRouteFor(option, tenant)
 	if r == nil || !route.tracked() {
-		return providerCircuitTicket{}, 0, true
+		return nil, 0, true
 	}
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	now, active := r.activeLocked()
 	if !active {
-		return providerCircuitTicket{}, 0, true
+		return nil, 0, true
+	}
+	for _, key := range route.keys() {
+		if state, ok := r.states[key]; ok && state.expired(now, r.openFor) {
+			delete(r.states, key)
+		}
 	}
 	if wait, blocked := r.routeBlockedLocked(route, now); blocked {
-		return providerCircuitTicket{}, wait, false
+		return nil, wait, false
 	}
-	ticket := providerCircuitTicket{route: route, tenant: tenant, startedAt: now, active: true}
+	ticket := &providerCircuitTicket{route: route, tenant: tenant, startedAt: now}
 	for _, key := range route.keys() {
 		if state, ok := r.states[key]; ok && state.halfOpen(now) {
+			r.probeSeq++
 			state.probeUntil = now.Add(r.openFor)
+			state.probeID = r.probeSeq
 			r.states[key] = state
-			ticket.probes = append(ticket.probes, key)
+			if ticket.probes == nil {
+				ticket.probes = map[string]uint64{}
+			}
+			ticket.probes[key] = r.probeSeq
 		}
 	}
 	return ticket, 0, true
 }
 
-func (r *providerCircuitRegistry) releaseProbeLocked(ticket providerCircuitTicket, key string) {
-	for _, probe := range ticket.probes {
-		if probe != key {
-			continue
-		}
-		if state, ok := r.states[key]; ok {
-			state.probeUntil = time.Time{}
-			r.states[key] = state
-		}
+// releaseProbeLocked frees key's probe slot if this ticket still holds it.
+func (r *providerCircuitRegistry) releaseProbeLocked(ticket *providerCircuitTicket, key string, state *providerCircuitState) {
+	if id, held := ticket.probes[key]; held && state.probeID == id {
+		state.probeUntil = time.Time{}
+		state.probeID = 0
 	}
 }
 
+// resolveLocked marks the ticket resolved and reports whether it was not yet.
+func (r *providerCircuitRegistry) resolveLocked(ticket *providerCircuitTicket) bool {
+	if ticket == nil || ticket.resolved {
+		return false
+	}
+	ticket.resolved = true
+	return true
+}
+
 // Release resolves an attempt whose outcome says nothing about the provider
-// (a client disconnect, an error after the provider answered, a client error).
-func (r *providerCircuitRegistry) Release(ticket providerCircuitTicket) {
-	if r == nil || !ticket.active {
+// (a client disconnect, a client error, a local failure).
+func (r *providerCircuitRegistry) Release(ticket *providerCircuitTicket) {
+	if r == nil || ticket == nil {
 		return
 	}
 	r.mu.Lock()
 	defer r.mu.Unlock()
+	if !r.resolveLocked(ticket) {
+		return
+	}
 	for _, key := range ticket.route.keys() {
-		r.releaseProbeLocked(ticket, key)
+		if state, ok := r.states[key]; ok {
+			r.releaseProbeLocked(ticket, key, &state)
+			r.states[key] = state
+		}
 	}
 }
 
 // Tripped reports whether one of the attempt's circuits has opened in its
 // current streak (open or half-open), or the attempt is a probe. Such an
 // attempt gets one try instead of same-provider retries.
-func (r *providerCircuitRegistry) Tripped(ticket providerCircuitTicket) bool {
-	if r == nil || !ticket.active {
+func (r *providerCircuitRegistry) Tripped(ticket *providerCircuitTicket) bool {
+	if r == nil || ticket == nil {
 		return false
 	}
 	if len(ticket.probes) > 0 {
@@ -392,12 +437,15 @@ func (r *providerCircuitRegistry) Tripped(ticket providerCircuitTicket) bool {
 
 // Succeed closes the attempt's circuits, unless the attempt started before
 // the circuit's current failures (or its open) began.
-func (r *providerCircuitRegistry) Succeed(ticket providerCircuitTicket) {
-	if r == nil || !ticket.active {
+func (r *providerCircuitRegistry) Succeed(ticket *providerCircuitTicket) {
+	if r == nil || ticket == nil {
 		return
 	}
 	r.mu.Lock()
 	defer r.mu.Unlock()
+	if !r.resolveLocked(ticket) {
+		return
+	}
 	if _, active := r.activeLocked(); !active {
 		return
 	}
@@ -407,7 +455,8 @@ func (r *providerCircuitRegistry) Succeed(ticket providerCircuitTicket) {
 			continue
 		}
 		if ticket.startedAt.Before(state.freshSince()) {
-			r.releaseProbeLocked(ticket, key)
+			r.releaseProbeLocked(ticket, key, &state)
+			r.states[key] = state
 			continue
 		}
 		delete(r.states, key)
@@ -417,27 +466,30 @@ func (r *providerCircuitRegistry) Succeed(ticket providerCircuitTicket) {
 // Fail counts one provider-down failure and reports whether it opened a
 // circuit (from closed or half-open). A failure from an attempt that started
 // before the circuit last opened is stale and does not count.
-func (r *providerCircuitRegistry) Fail(ticket providerCircuitTicket) bool {
-	if r == nil || !ticket.active {
+func (r *providerCircuitRegistry) Fail(ticket *providerCircuitTicket) bool {
+	if r == nil || ticket == nil {
 		return false
 	}
 	r.mu.Lock()
 	defer r.mu.Unlock()
+	if !r.resolveLocked(ticket) {
+		return false
+	}
 	now, active := r.activeLocked()
 	if !active {
 		return false
 	}
 	opened := false
 	if key := ticket.route.tenant; key != "" {
-		state := r.stateForFailureLocked(key)
+		state, exists := r.stateForFailureLocked(key, now)
 		if state.openedAt.IsZero() || !ticket.startedAt.Before(state.openedAt) {
 			state.failures++
 			opened = r.markFailureLocked(&state, now, state.failures >= r.threshold) || opened
 		}
-		r.storeAfterFailureLocked(ticket, key, state)
+		r.storeAfterFailureLocked(ticket, key, state, exists)
 	}
 	if key := ticket.route.shared; key != "" {
-		state := r.stateForFailureLocked(key)
+		state, exists := r.stateForFailureLocked(key, now)
 		if ticket.tenant != "" && (state.openedAt.IsZero() || !ticket.startedAt.Before(state.openedAt)) {
 			known := false
 			for _, tenant := range state.tenants {
@@ -453,7 +505,7 @@ func (r *providerCircuitRegistry) Fail(ticket providerCircuitTicket) bool {
 				state.tenants = nil
 			}
 		}
-		r.storeAfterFailureLocked(ticket, key, state)
+		r.storeAfterFailureLocked(ticket, key, state, exists)
 	}
 	if opened {
 		r.opens.Add(1)
@@ -461,7 +513,9 @@ func (r *providerCircuitRegistry) Fail(ticket providerCircuitTicket) bool {
 	return opened
 }
 
-func (r *providerCircuitRegistry) stateForFailureLocked(key string) providerCircuitState {
+// stateForFailureLocked returns key's state, started over when its streak
+// aged out (the probe slot survives so its holder can still be matched).
+func (r *providerCircuitRegistry) stateForFailureLocked(key string, now time.Time) (providerCircuitState, bool) {
 	if r.states == nil {
 		r.states = map[string]providerCircuitState{}
 	}
@@ -469,7 +523,10 @@ func (r *providerCircuitRegistry) stateForFailureLocked(key string) providerCirc
 	if !exists && len(r.states) >= r.stateLimit() {
 		r.evictOldestLocked()
 	}
-	return state
+	if exists && state.expired(now, r.openFor) {
+		state = providerCircuitState{probeUntil: state.probeUntil, probeID: state.probeID, updatedAt: state.updatedAt}
+	}
+	return state, exists
 }
 
 func (r *providerCircuitRegistry) markFailureLocked(state *providerCircuitState, now time.Time, trip bool) bool {
@@ -489,18 +546,12 @@ func (r *providerCircuitRegistry) markFailureLocked(state *providerCircuitState,
 	return true
 }
 
-func (r *providerCircuitRegistry) storeAfterFailureLocked(ticket providerCircuitTicket, key string, state providerCircuitState) {
-	for _, probe := range ticket.probes {
-		if probe == key {
-			state.probeUntil = time.Time{}
-		}
-	}
-	if state.updatedAt.IsZero() {
+func (r *providerCircuitRegistry) storeAfterFailureLocked(ticket *providerCircuitTicket, key string, state providerCircuitState, exists bool) {
+	r.releaseProbeLocked(ticket, key, &state)
+	if !exists && state.updatedAt.IsZero() {
 		// A failure that counted nowhere (stale, or an unknown tenant on a
 		// shared circuit) leaves no state behind.
-		if _, exists := r.states[key]; !exists {
-			return
-		}
+		return
 	}
 	r.states[key] = state
 }
@@ -942,21 +993,21 @@ func providerDownFailure(err error, finalFirstByteBudget bool) bool {
 }
 
 // recordProviderCircuitOutcome resolves one candidate attempt (after its
-// same-provider retries). A completed response closes its circuits. A failure
-// counts only when the request was still live and the provider never answered
-// (no 2xx head, no output): once a provider answers, a later error is about
-// this stream, not the provider being down. A client disconnect cancels ctx and
-// counts as nothing.
+// same-provider retries) unless the provider's acceptance already resolved it
+// as a success. A failure counts only when the request was still live and the
+// provider never answered (no 2xx head, no output): once a provider answers, a
+// later error is about this stream, not the provider being down. A client
+// disconnect cancels ctx and counts as nothing.
 func recordProviderCircuitOutcome(
 	ctx context.Context,
-	ticket providerCircuitTicket,
+	ticket *providerCircuitTicket,
 	option llm.InvokeOptions,
 	err error,
 	writer *routeSelectingWriter,
 	finalFirstByteBudget bool,
 	requestLogID string,
 ) {
-	if !ticket.active {
+	if ticket == nil {
 		return
 	}
 	if err == nil {

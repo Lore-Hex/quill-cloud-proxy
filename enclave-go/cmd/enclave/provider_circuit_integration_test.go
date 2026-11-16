@@ -758,3 +758,196 @@ func TestProviderCircuitFusionRefusalCarriesRetryAfter(t *testing.T) {
 	response, body := readRawHTTPResponse(t, out.Bytes())
 	assertProviderCircuitRefusal(t, "fusion", response, body, "20")
 }
+
+// runCircuitInvocation runs one invocation of options for workspace through
+// invokeProviderStream with the given provider behaviour.
+func runCircuitInvocation(ctx context.Context, workspace string, provider llm.Client, options ...llm.InvokeOptions) error {
+	pr, pw := io.Pipe()
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		invokeProviderStream(ctx, provider, &types.OpenAIChatRequest{Model: options[0].Model},
+			&types.AnthropicMessagesRequest{}, pw, options, true, &trustedrouter.Authorization{WorkspaceID: workspace},
+			newSelectedRouteTracker(), "circuit-invocation", false, false)
+	}()
+	_, err := io.ReadAll(pr)
+	<-done
+	return err
+}
+
+var circuitDown = streamingProviderFunc(func(context.Context, io.Writer, llm.InvokeOptions) error {
+	return providerCircuitUpstreamStatus(503)
+})
+
+// A half-open probe that the provider accepted has proven the provider is
+// back: it must free the route at acceptance, not after its whole stream.
+func TestProviderCircuitAcceptedProbeFreesTheRouteWhileItStreams(t *testing.T) {
+	clock := enableProviderCircuitsForTest(t)
+	const model = "circuit-accept/glm-5.3-flash"
+	const provider = "circuit-accept"
+	plane := newProviderCircuitControlPlane(t, model, providerCircuitTestCandidate{provider, "circuit-accept/glm-5.3-flash@circuit-accept/prepaid"})
+	upstream := &providerCircuitTestUpstream{}
+	upstream.setFailure(provider, providerCircuitUpstreamStatus(503))
+	openSharedCircuit(t, plane, upstream, model, "circuit-accept")
+	clock.Advance(61 * time.Second)
+	upstream.setFailure(provider, nil)
+
+	entered, release := upstream.holdNextCall(true)
+	defer release()
+	probeDone := make(chan int, 1)
+	go func() {
+		raw := fmt.Sprintf("POST /v1/chat/completions HTTP/1.1\r\nAuthorization: Bearer circuit-accept-probe\r\nContent-Type: application/json\r\nContent-Length: %d\r\nConnection: close\r\n\r\n%s", len(chatBodyForCircuit(model, false)), chatBodyForCircuit(model, false))
+		conn := newScriptedConn(raw, nil)
+		serveOne(context.Background(), conn, auth.New(nil), upstream, nil, nil, plane.gateway, nil)
+		response, err := http.ReadResponse(bufioReader(conn.writes.Bytes()), nil)
+		if err != nil {
+			probeDone <- 0
+			return
+		}
+		probeDone <- response.StatusCode
+	}()
+	<-entered // the probe was accepted and its output is still flowing
+	before := upstream.total()
+	response, body := serveProviderCircuitRequest(t, plane, upstream, "circuit-accept-other", "/v1/chat/completions", chatBodyForCircuit(model, false))
+	if response.StatusCode != http.StatusOK || upstream.total() != before+1 {
+		t.Fatalf("another tenant was held off by an accepted probe: status=%d body=%s calls %d->%d", response.StatusCode, body, before, upstream.total())
+	}
+	release()
+	if status := <-probeDone; status != http.StatusOK {
+		t.Fatalf("probe status=%d, want 200", status)
+	}
+}
+
+// A probe whose lease lapsed must not free the slot of the probe that
+// replaced it.
+func TestProviderCircuitLapsedProbeCannotReleaseItsSuccessor(t *testing.T) {
+	clock := enableProviderCircuitsForTest(t)
+	option := llm.InvokeOptions{Provider: "circuit-lease", Model: "circuit-lease/model", EndpointID: "lease", UsageType: "Credits"}
+	const workspace = "ws-lease"
+	tenant := providerCircuitTenant(&trustedrouter.Authorization{WorkspaceID: workspace})
+	for i := 0; i < 3; i++ {
+		_ = runCircuitInvocation(context.Background(), workspace, circuitDown, option)
+	}
+	clock.Advance(61 * time.Second)
+
+	entered := make(chan struct{}, 2)
+	hanging := streamingProviderFunc(func(ctx context.Context, _ io.Writer, _ llm.InvokeOptions) error {
+		entered <- struct{}{}
+		<-ctx.Done()
+		return ctx.Err()
+	})
+	start := func() (context.CancelFunc, chan struct{}) {
+		ctx, cancel := context.WithCancel(context.Background())
+		done := make(chan struct{})
+		go func() {
+			defer close(done)
+			_ = runCircuitInvocation(ctx, workspace, hanging, option)
+		}()
+		<-entered
+		return cancel, done
+	}
+	cancelFirst, firstDone := start()
+	clock.Advance(61 * time.Second) // the first probe's lease lapses
+	cancelSecond, secondDone := start()
+	defer func() { cancelSecond(); <-secondDone }()
+	cancelFirst() // the old probe gives up while its successor is in flight
+	<-firstDone
+	if _, blocked := providerCircuits.Blocked(option, tenant); !blocked {
+		t.Fatal("a lapsed probe freed its successor's slot: a second probe would be admitted")
+	}
+}
+
+// Failure streaks age out: sporadic failures more than five open windows
+// apart are noise, not an outage.
+func TestProviderCircuitFailureStreaksAgeOut(t *testing.T) {
+	clock := enableProviderCircuitsForTest(t)
+	option := llm.InvokeOptions{Provider: "circuit-age", Model: "circuit-age/model", EndpointID: "age", UsageType: "Credits"}
+	tenantOf := func(workspace string) string {
+		return providerCircuitTenant(&trustedrouter.Authorization{WorkspaceID: workspace})
+	}
+	// Each check runs right after the third failure, while a circuit that
+	// opened on it would still be open.
+	spaced := func(gap time.Duration, workspaces ...string) {
+		for i, workspace := range workspaces {
+			if i > 0 {
+				clock.Advance(gap)
+			}
+			_ = runCircuitInvocation(context.Background(), workspace, circuitDown, option)
+		}
+	}
+	// One tenant, three failures six minutes apart: no open circuit.
+	spaced(6*time.Minute, "ws-age-sporadic", "ws-age-sporadic", "ws-age-sporadic")
+	if _, blocked := providerCircuits.Blocked(option, tenantOf("ws-age-sporadic")); blocked {
+		t.Fatal("three failures six minutes apart opened the tenant circuit")
+	}
+	// Three tenants six minutes apart: no shared circuit.
+	clock.Advance(6 * time.Minute)
+	spaced(6*time.Minute, "ws-age-a", "ws-age-b", "ws-age-c")
+	if _, blocked := providerCircuits.Blocked(option, tenantOf("ws-age-new")); blocked {
+		t.Fatal("three tenants failing six minutes apart opened the shared circuit")
+	}
+	// The same failures two minutes apart are an outage.
+	clock.Advance(6 * time.Minute)
+	spaced(2*time.Minute, "ws-age-close", "ws-age-close", "ws-age-close")
+	if _, blocked := providerCircuits.Blocked(option, tenantOf("ws-age-close")); !blocked {
+		t.Fatal("three failures two minutes apart did not open the tenant circuit")
+	}
+	// An opened circuit left idle for more than five windows starts over: one
+	// failure after that does not reopen it.
+	clock.Advance(6 * time.Minute)
+	_ = runCircuitInvocation(context.Background(), "ws-age-close", circuitDown, option)
+	if _, blocked := providerCircuits.Blocked(option, tenantOf("ws-age-close")); blocked {
+		t.Fatal("one failure after a long idle reopened an old circuit")
+	}
+}
+
+type circuitCallerInputError struct{ err error }
+
+func (e *circuitCallerInputError) Error() string              { return e.err.Error() }
+func (e *circuitCallerInputError) Unwrap() error              { return e.err }
+func (e *circuitCallerInputError) ClientInputMessage() string { return "invalid image input" }
+
+// An image fetch that failed on our own control plane (a 5xx from
+// fetch-image) is caller input, not the provider failing, even after the
+// provider attempt's credential redaction rebuilt the error.
+func TestProviderCircuitCountsNoCallerInputFailureAfterRedaction(t *testing.T) {
+	_, redact := upstreamerror.WithCredentialRedaction(context.Background(), "provider-key")
+	fetch := &circuitCallerInputError{err: fmt.Errorf("trustedrouter: /internal/gateway/fetch-image http 502: bad gateway")}
+	if providerDownFailure(redact(fmt.Errorf("llm/openai: %w", fetch)), false) {
+		t.Fatal("a redacted caller-input failure counted as the provider being down")
+	}
+}
+
+// Fusion refused after panel members already settled must not tell the
+// client a retry is free.
+func TestProviderCircuitFusionRefusalAfterChargedPanelIsNotFreeToRetry(t *testing.T) {
+	enableProviderCircuitsForTest(t)
+	trGateway, recorder, closeGateway := newFusionGatewayRecorder(t)
+	defer closeGateway()
+	judge := llm.InvokeOptions{Provider: "test", Model: "circuit-judge/model", EndpointID: "circuit-judge/model@test/prepaid", UsageType: "Credits"}
+	for i := 0; i < 3; i++ {
+		_ = runCircuitInvocation(context.Background(), "ws_1", circuitDown, judge)
+	}
+	maxTokens := 512
+	req := &types.OpenAIChatRequest{Model: trustedRouterLiberty40Model, MaxTokens: &maxTokens, Messages: []types.OpenAIChatMessage{{Role: "user", Content: "Reply with a short local test answer."}}}
+	config := fusionConfig{
+		Enabled:             true,
+		AnalysisModels:      []string{"circuit-panel-a/model", "circuit-panel-b/model"},
+		SelectionStrategy:   "synthesize",
+		MaxCompletionTokens: 512,
+	}
+	config.BuiltInPanelPrompt, config.BuiltInFinalPrompt = fusionBuiltInPrompts(false)
+	var out bytes.Buffer
+	serveFusionNonStreaming(context.Background(), &out, &fusionEchoLLM{}, req, config,
+		[]string{"circuit-final/model"}, []string{judge.Model}, trGateway, nil, "local-liberty-key", req.Messages, "fusion-spent")
+	response, body := readRawHTTPResponse(t, out.Bytes())
+	recorder.mu.Lock()
+	settled := len(recorder.settle)
+	recorder.mu.Unlock()
+	if settled == 0 {
+		t.Fatalf("fixture: no panel member settled (status=%d body=%s)", response.StatusCode, body)
+	}
+	if response.StatusCode != http.StatusServiceUnavailable || response.Header.Get("Retry-After") == "" || response.Header.Get("X-Should-Retry") != "false" {
+		t.Fatalf("status=%d headers=%v body=%s, want 503 with Retry-After and x-should-retry: false", response.StatusCode, response.Header, body)
+	}
+}
