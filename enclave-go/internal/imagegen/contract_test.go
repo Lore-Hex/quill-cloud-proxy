@@ -18,6 +18,9 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+	"time"
+
+	"github.com/Lore-Hex/quill-cloud-proxy/enclave-go/internal/llm"
 )
 
 func TestModelRegistryIsExactAndDefensivelyCopied(t *testing.T) {
@@ -398,6 +401,39 @@ func TestBFLPollingBacksOffAcrossTransientStatus(t *testing.T) {
 	}
 	if requests != 4 || len(result.Images) != 1 {
 		t.Fatalf("requests=%d result=%#v", requests, result)
+	}
+}
+
+func TestBFLDoesNotRetryDeniedEgress(t *testing.T) {
+	// The real guard rejects this before DNS or any network connection.
+	response, denied := llm.NewProviderHTTPClient().Get("https://unapproved.invalid/")
+	if response != nil {
+		_ = response.Body.Close()
+	}
+	if !llm.IsProviderEgressDenied(denied) {
+		t.Fatalf("expected egress policy error, got %v", denied)
+	}
+	resolved, err := Parse([]byte(`{"model":"black-forest-labs/flux-2-klein-4b","prompt":"test"}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	requests := 0
+	client := &http.Client{Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+		requests++
+		if req.Method == http.MethodPost {
+			return &http.Response{
+				StatusCode: http.StatusOK,
+				Body:       io.NopCloser(strings.NewReader(`{"id":"job-one","polling_url":"https://api.bfl.ai/v1/get_result?id=job-one"}`)),
+				Header:     make(http.Header),
+			}, nil
+		}
+		return nil, denied
+	})}
+	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
+	defer cancel()
+	_, err = NewRegistry(ProviderKeys{BFL: "bfl-key"}, client).Generate(ctx, resolved, "", "bfl-denied")
+	if !llm.IsProviderEgressDenied(err) || requests != 2 {
+		t.Fatalf("policy error retried or hidden: requests=%d err=%v", requests, err)
 	}
 }
 

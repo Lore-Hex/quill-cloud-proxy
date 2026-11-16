@@ -78,6 +78,23 @@ func TestDefaultProviderClientAlwaysEnforcesPolicy(t *testing.T) {
 	}
 }
 
+func TestProviderEgressIncludesNativeMediaAndSearchEndpoints(t *testing.T) {
+	// BFL's returned polling URL is regional; the EU2 fixture is covered too.
+	// Global/EU/US are documented at https://docs.bfl.ai/quick_start/generating_images.
+	for _, host := range []string{
+		"api.bfl.ai", "api.eu.bfl.ai", "api.us.bfl.ai", "api.eu2.bfl.ai",
+		"api.decart.ai", "external.api.recraft.ai", "api.krea.ai", "fal.run",
+		"queue.fal.run", "design-api.sourceful.com", "api.ltx.io",
+		"api.dev.runwayml.com", "api-singapore.klingai.com", "api.exa.ai",
+		"aiplatform.googleapis.com", "us-central1-aiplatform.googleapis.com",
+		"eastus2.tts.speech.microsoft.com", "api.elevenlabs.io",
+	} {
+		if !approvedProviderHost(host) {
+			t.Errorf("missing native adapter host: %s", host)
+		}
+	}
+}
+
 func TestProviderEgressRejectsBeforeTransport(t *testing.T) {
 	for _, raw := range []string{
 		"https://attacker.example/v1?secret=do-not-log", "http://api.openai.com/v1",

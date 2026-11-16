@@ -51,7 +51,8 @@ var providerEgressHosts = func() map[string]struct{} {
 		"us-central1-aiplatform.googleapis.com", "us-east1-aiplatform.googleapis.com",
 		"us-east4-aiplatform.googleapis.com", "us-west1-aiplatform.googleapis.com",
 		"europe-west4-aiplatform.googleapis.com",
-		"external.api.recraft.ai", "api.bfl.ai", "api.us1.bfl.ai", "api.eu1.bfl.ai",
+		"external.api.recraft.ai", "api.bfl.ai", "api.us.bfl.ai", "api.eu.bfl.ai",
+		"api.us1.bfl.ai", "api.eu1.bfl.ai", "api.eu2.bfl.ai",
 		"api.decart.ai", "api.ltx.io", "api.dev.runwayml.com", "api-singapore.klingai.com",
 		"queue.fal.run", "eastus2.tts.speech.microsoft.com", "api.exa.ai",
 		"ark-acg-ap-southeast-1.tos-ap-southeast-1.volces.com",
@@ -62,6 +63,10 @@ var providerEgressHosts = func() map[string]struct{} {
 }()
 
 var errProviderEgress = errors.New("provider egress: destination is not approved")
+
+// IsProviderEgressDenied lets asynchronous adapters distinguish a permanent
+// policy rejection from a transient provider/network error when polling.
+func IsProviderEgressDenied(err error) bool { return errors.Is(err, errProviderEgress) }
 
 func approvedProviderHost(host string) bool {
 	_, ok := providerEgressHosts[strings.ToLower(host)]

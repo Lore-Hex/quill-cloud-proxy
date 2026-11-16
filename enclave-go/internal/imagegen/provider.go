@@ -463,6 +463,9 @@ func (r *Registry) generateBFL(
 		pollReq.Header.Set("Accept", "application/json")
 		pollBody, pollStatus, pollErr := r.doLimited(pollReq, maxProviderErrorBytes)
 		if pollErr != nil {
+			if llm.IsProviderEgressDenied(pollErr) {
+				return nil, pollErr
+			}
 			pollDelay = nextImagePollDelay(pollDelay)
 			continue
 		}
