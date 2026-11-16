@@ -66,6 +66,7 @@ type BootstrapData struct {
 	AdvisorWorkerPrompt         string          `json:"advisor_worker_prompt,omitempty"`
 	AdvisorPrompt               string          `json:"advisor_prompt,omitempty"`
 	ExaAPIKey                   string          `json:"exa_api_key,omitempty"`
+	ContextDevAPIKey            string          `json:"context_dev_api_key,omitempty"`
 
 	// Anthropic direct (only populated for the llm_anthropic build target).
 	// Same trust posture as the OpenRouter key — pulled from Secret Manager
@@ -344,8 +345,9 @@ type InferenceReceiptRequest struct {
 
 // OpenAIChatRequest is the inbound shape we accept.
 type OpenAIChatRequest struct {
-	Model  string   `json:"model"`
-	Models []string `json:"models,omitempty"`
+	Deidentify DeidentifyFlag `json:"deidentify,omitempty"`
+	Model      string         `json:"model"`
+	Models     []string       `json:"models,omitempty"`
 	// AllowFallbacks accepts the top-level compatibility spelling used by
 	// several OpenAI-compatible clients. NormalizeFallbackRouting consumes it
 	// into Provider before authorization so it cannot leak to an upstream API.
@@ -583,6 +585,7 @@ type ChatImageURL struct {
 // hosted-tool fields are validated before this struct is used so callers get
 // stable compatibility errors instead of silent no-ops.
 type OpenAIResponsesRequest struct {
+	Deidentify           DeidentifyFlag     `json:"deidentify,omitempty"`
 	Model                string             `json:"model"`
 	Models               []string           `json:"models,omitempty"`
 	Input                any                `json:"input"`

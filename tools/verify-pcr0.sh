@@ -32,6 +32,8 @@ PLATFORM="linux/amd64"
 BUILD_TAGS="cloud_aws,llm_multi"
 QUILL_TLS_MODE="acme"
 QUILL_API_HOST="api-aws.trustedrouter.com"
+QUILL_ACME_DNS_GCP_PROJECT="quill-cloud-proxy"
+QUILL_ACME_DNS_MANAGED_ZONE="trustedrouter-com"
 
 cd "$REPO_ROOT"
 docker buildx build --no-cache \
@@ -41,6 +43,8 @@ docker buildx build --no-cache \
   --build-arg "BUILD_TAGS=${BUILD_TAGS}" \
   --build-arg "QUILL_TLS_MODE=${QUILL_TLS_MODE}" \
   --build-arg "QUILL_API_HOST=${QUILL_API_HOST}" \
+  --build-arg "QUILL_ACME_DNS_GCP_PROJECT=${QUILL_ACME_DNS_GCP_PROJECT}" \
+  --build-arg "QUILL_ACME_DNS_MANAGED_ZONE=${QUILL_ACME_DNS_MANAGED_ZONE}" \
   --provenance=false \
   --load \
   -t "$IMAGE_TAG" \

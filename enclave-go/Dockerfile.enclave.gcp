@@ -1,9 +1,8 @@
 # Build container for the GCP Confidential Space target.
 # Mirrors Dockerfile.enclave but builds with `-tags 'cloud_gcp,llm_vertex'` to swap the LLM
 # provider from AWS Bedrock to Google Vertex AI. The runtime is still
-# `FROM scratch` so the workload-image measurement (the OCI digest that
-# Confidential Space's vTPM attests) covers exactly one binary + the CA
-# bundle.
+# `FROM scratch`; the workload-image measurement covers the gateway, CA
+# bundle, and the pinned local Rampart runtime/model.
 #
 # Architecture is amd64 here — Confidential Space VMs use AMD SEV-SNP
 # (and Intel TDX) on x86_64 hosts; AMD-on-ARM Confidential Computing
@@ -31,7 +30,15 @@ ENV CGO_ENABLED=0 GOOS=linux GOARCH=amd64
 RUN go build -trimpath -tags 'cloud_gcp,llm_vertex' -ldflags="-s -w -extldflags=-static -X github.com/Lore-Hex/quill-cloud-proxy/enclave-go/internal/trustedrouter.ShadowBuildRevision=${SOURCE_REVISION}" \
       -o /out/quill-enclave ./cmd/enclave
 
+FROM node:24-bookworm-slim@sha256:dc26ae92c9fb15cf6b1d63e20f0944b2efe0f115b20e00be48fb23fceb061c54 AS rampart
+WORKDIR /rampart
+COPY rampart/package.json rampart/package-lock.json ./
+RUN npm ci --ignore-scripts
+COPY rampart/ ./
+RUN node model.mjs && npm test && sh rootfs.sh
+
 FROM scratch
+COPY --from=rampart /rootfs/ /
 COPY --from=builder /etc/ssl/certs/ca-certificates.crt /etc/ssl/certs/ca-certificates.crt
 COPY --from=builder /out/quill-enclave /quill-enclave
 
