@@ -294,6 +294,81 @@ func TestClaudeOnBesideAnEffortIsThatEffort(t *testing.T) {
 	}
 }
 
+// Decision 9: On alone is adaptive thinking on the full class, whose models
+// refuse a thinking budget. No effort is named, so the model thinks at its
+// own depth. Every other class is still sent the 4,096 token budget.
+func TestClaudeOnAlonePerClass(t *testing.T) {
+	ons := []string{`"reasoning":{"enabled":true}`, `"reasoning":true`, `"reasoning":{"type":"enabled"}`}
+	const budget = `{"max_tokens":8192,"thinking":{"budget_tokens":4096,"type":"enabled"}}`
+	for _, tc := range []struct {
+		ids  []string
+		want string
+	}{
+		{claudeFullIDs, `{"max_tokens":32000,"thinking":{"type":"adaptive"}}`},
+		{claudeV46IDs, budget},
+		{claudeOpus45IDs, budget},
+		{claudeBudgetIDs, budget},
+	} {
+		for _, id := range tc.ids {
+			for _, on := range ons {
+				if got := claudeWire(t, id, on); got != tc.want {
+					t.Errorf("%s %s:\n got %s\nwant %s", id, on, got, tc.want)
+				}
+			}
+		}
+	}
+	const explicit = `{"max_tokens":4096,"thinking":{"budget_tokens":2048,"type":"enabled"}}`
+	for _, id := range claudeFullIDs {
+		for _, tc := range []struct{ name, fields, want string }{
+			{"a caller cap is sent as set", `"reasoning":{"enabled":true},"max_tokens":512`, `{"max_tokens":512,"thinking":{"type":"adaptive"}}`},
+			{"top_p is not sent, top_k is", `"reasoning":{"enabled":true},"temperature":0.2,"top_k":40,"top_p":0.5`, `{"max_tokens":32000,"thinking":{"type":"adaptive"},"top_k":40}`},
+			{"a forced tool choice is sent", `"reasoning":true,"tool_choice":"required",` + claudeTestTools, `{"max_tokens":32000,"thinking":{"type":"adaptive"},"tool_choice":{"type":"any"}}`},
+			// A budget the caller named is left for the provider to refuse.
+			{"explicit budget", `"reasoning":{"max_tokens":2048}`, explicit},
+			{"On with an explicit budget", `"reasoning":{"enabled":true,"max_tokens":2048}`, explicit},
+			{"On with budget_tokens", `"reasoning":{"enabled":true,"budget_tokens":2048}`, explicit},
+			{"On with thinking_budget", `"reasoning":{"type":"enabled","thinking_budget":2048}`, explicit},
+			{"On beside an effort", `"reasoning":{"enabled":true},"reasoning_effort":"high"`, `{"max_tokens":32000,"output_config":{"effort":"high"},"thinking":{"type":"adaptive"}}`},
+			{"nothing asked", ``, `{"max_tokens":32000}`},
+			{"a bare false asks nothing", `"reasoning":false`, `{"max_tokens":32000}`},
+		} {
+			if got := claudeWire(t, id, tc.fields, "top_p", "top_k", "tool_choice"); got != tc.want {
+				t.Errorf("%s %s:\n got %s\nwant %s", id, tc.name, got, tc.want)
+			}
+		}
+		// Max tokens and sampling are treated exactly as an effort treats
+		// them: the same request with an effort differs only by the effort.
+		for _, extra := range []string{``, `,"max_tokens":512`, `,"max_tokens":20000`, `,"temperature":0.2,"top_k":40,"top_p":0.5`, `,"top_p":0.97`, `,"tool_choice":"required",` + claudeTestTools} {
+			withEffort := claudeWire(t, id, `"reasoning":{"enabled":true,"effort":"high"}`+extra, "temperature", "top_p", "top_k", "tool_choice")
+			want := strings.Replace(withEffort, `"output_config":{"effort":"high"},`, ``, 1)
+			if got := claudeWire(t, id, `"reasoning":{"enabled":true}`+extra, "temperature", "top_p", "top_k", "tool_choice"); got != want || want == withEffort {
+				t.Errorf("%s On alone%s:\n got %s\nwant %s", id, extra, got, want)
+			}
+		}
+		// The wire builder drops temperature for most of these IDs by itself,
+		// so check the dispatched body too.
+		req, body := claudeChat(t, `"reasoning":{"enabled":true},"temperature":0.2,"top_k":40,"top_p":0.5`)
+		native := anthropicChatReasoningBody(id, req, body)
+		if native.Temperature != nil || native.TopP != nil || native.TopK == nil || *native.TopK != 40 || native.OutputConfig != nil {
+			t.Errorf("%s On alone: temperature=%v top_p=%v top_k=%v output_config=%v", id, native.Temperature, native.TopP, native.TopK, native.OutputConfig)
+		}
+		if got := claudeControls(t, bedrock.BuildRequestShape(native), "thinking", "output_config", "max_tokens", "temperature", "top_p", "top_k"); got != `{"max_tokens":32000,"thinking":{"type":"adaptive"},"top_k":40}` {
+			t.Errorf("%s On alone on the Bedrock wire: got %s", id, got)
+		}
+	}
+	// On alone inside a funded allowance: max_tokens is the authorization.
+	for _, total := range []int{1, 1024, 1025, 8192, 60000} {
+		for _, hint := range []any{true, map[string]any{"enabled": true}} {
+			req, body, authorized := fundedrequest.New(t, total, hint, "")
+			native := anthropicChatReasoningBody("claude-opus-5-5", req, body)
+			fundedrequest.Check(t, buildAnthropicWireRequest("claude-opus-5-5", native.Messages, native), authorized, false)
+			if thinking, _ := native.Thinking.(map[string]any); len(thinking) != 1 || thinking["type"] != "adaptive" {
+				t.Errorf("funded total=%d %v: thinking=%v", total, hint, native.Thinking)
+			}
+		}
+	}
+}
+
 // Decision 4: budget thinking is never sent with sampling Anthropic refuses
 // beside it. Without thinking the caller's sampling is sent untouched.
 func TestClaudeBudgetThinkingDropsRefusedSampling(t *testing.T) {

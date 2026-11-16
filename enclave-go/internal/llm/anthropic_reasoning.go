@@ -158,17 +158,9 @@ func anthropicChatReasoningBody(model string, req *qtypes.OpenAIChatRequest, bod
 }
 
 func claudeAdaptiveReasoningBody(model string, class claudeReasoningClass, ask claudeReasoningAsk, req *qtypes.OpenAIChatRequest, body *qtypes.AnthropicMessagesRequest) *qtypes.AnthropicMessagesRequest {
-	if ask.effort == "" {
-		// A body whose thinking is already configured keeps its own limit.
-		if body.Thinking == nil && anthropicThinkingDefaultCapApplies(req, body) {
-			result := *body
-			result.AnthropicMaxTokens = AnthropicThinkingDefaultMaxTokens
-			return &result
-		}
-		return body
-	}
 	result := *body
-	if ask.effort == "none" {
+	switch {
+	case ask.effort == "none":
 		result.Thinking = map[string]any{"type": "disabled"}
 		// Sonnet 5.5 refuses disabled and names this as its Off: it does not
 		// think before responding. Opus 5.5 and Fable 5 have no Off at all.
@@ -177,12 +169,26 @@ func claudeAdaptiveReasoningBody(model string, class claudeReasoningClass, ask c
 		}
 		result.AnthropicMaxTokens = 0
 		return &result
-	}
-	result.OutputConfig = claudeOutputConfigWithEffort(body, class.step(ask.effort).effort)
-	// An explicit caller budget still takes precedence over an effort-derived
-	// thinking mode. The provider validates whether its model accepts budgets.
-	if values, ok := req.Reasoning.(map[string]any); ok && values["max_tokens"] != nil {
-		return &result
+	case ask.effort != "":
+		result.OutputConfig = claudeOutputConfigWithEffort(body, class.step(ask.effort).effort)
+		// An explicit caller budget still takes precedence over an effort-derived
+		// thinking mode. The provider validates whether its model accepts budgets.
+		if values, ok := req.Reasoning.(map[string]any); ok && values["max_tokens"] != nil {
+			return &result
+		}
+	case class == claudeFull && ask.on && !ask.budget:
+		// On alone. The full class refuses a thinking budget, so the 4,096
+		// tokens the shared projection wrote for On cannot be sent. On is
+		// adaptive thinking with no effort named: the model's own depth. The
+		// 4.6 models still take the budget, and a budget the caller named is
+		// left for the provider to judge.
+	default:
+		// A body whose thinking is already configured keeps its own limit.
+		if body.Thinking == nil && anthropicThinkingDefaultCapApplies(req, body) {
+			result.AnthropicMaxTokens = AnthropicThinkingDefaultMaxTokens
+			return &result
+		}
+		return body
 	}
 	result.Thinking = map[string]any{"type": "adaptive"}
 	result.AnthropicMaxTokens = 0

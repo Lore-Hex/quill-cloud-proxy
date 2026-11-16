@@ -135,7 +135,11 @@ The switch and the effort work together:
   `reasoning: {"enabled": true}` beside `reasoning_effort: "low"` sends what
   `reasoning_effort: "low"` alone sends, and so does
   `reasoning: {"enabled": true, "effort": "low"}`.
-* On alone, with no effort, is a 4,096 token budget.
+* On alone, with no effort, depends on the class. The Full class refuses a
+  thinking budget, so On alone is sent there as
+  `thinking: {"type": "adaptive"}` with no effort: the model thinks at its
+  own default depth. The 4.6 class, Opus 4.5 and the Budget class are sent a
+  4,096 token budget.
 * A token budget the caller names (`thinking.budget_tokens` or
   `reasoning.max_tokens`) is sent as written, and the provider judges it.
 
@@ -156,19 +160,20 @@ from a budget the caller named:
   Thinking the caller asked for explicitly, with On or with a token budget,
   is still sent, and the provider judges it.
 
-The adaptive classes are unchanged here: with an effort they are sent no
-`temperature` and no `top_p`, and `top_k` is sent as written. An adaptive
-model whose caller set no output limit is sent `max_tokens` of 32,000,
-because adaptive thinking counts against the limit.
+Adaptive thinking, from an effort or from On alone, is sent with no
+`temperature` and no `top_p`, and `top_k` is sent as written. A model of the
+adaptive classes whose caller set no output limit is sent `max_tokens` of
+32,000, because adaptive thinking counts against the limit. A request that
+carries a thinking budget keeps the limit that budget sets.
 
 Limits that remain:
 
 * Opus 5.5 and Fable 5.x cannot be turned off. Off sends them
   `thinking: {"type": "disabled"}`, and Anthropic refuses that for those
   models.
-* On alone, with no effort, is a 4,096 token budget on every class. Haiku 5.5
-  refuses budget thinking, so On alone fails there. On beside an effort
-  works.
+* A token budget the caller names is sent as written to every class. The
+  Full class refuses a thinking budget, so that request fails there. Use an
+  effort, or On alone, on those models.
 * A thinking budget raises the `max_tokens` sent to the provider above what
   the hold was sized for, when the budget is not below the output limit (512
   becomes 8,704 and 4,096 becomes 12,288 at 8,192 tokens of budget). `high`

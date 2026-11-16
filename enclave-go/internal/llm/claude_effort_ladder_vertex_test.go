@@ -22,6 +22,14 @@ func TestClaudeEffortLadderOnTheVertexWire(t *testing.T) {
 			`{"max_tokens":32000,"output_config":{"effort":"low"},"thinking":{"type":"adaptive"}}`},
 		{"claude-sonnet-5-5@20261001", `"reasoning":{"enabled":false},"reasoning_effort":"high"`,
 			`{"max_tokens":4096,"thinking":{"type":"between_tools"}}`},
+		{"claude-opus-4-8@20260115", `"reasoning":{"enabled":true},"top_p":0.5,"top_k":40`,
+			`{"max_tokens":32000,"thinking":{"type":"adaptive"},"top_k":40}`},
+		{"claude-haiku-5-5@20261001", `"reasoning":true`,
+			`{"max_tokens":32000,"thinking":{"type":"adaptive"}}`},
+		{"claude-sonnet-4-6@20260217", `"reasoning":{"enabled":true}`,
+			`{"max_tokens":8192,"thinking":{"budget_tokens":4096,"type":"enabled"}}`},
+		{"claude-opus-4-8@20260115", `"reasoning":{"enabled":true,"max_tokens":2048}`,
+			`{"max_tokens":4096,"thinking":{"budget_tokens":2048,"type":"enabled"}}`},
 	} {
 		req, body := claudeChat(t, tc.fields)
 		native := anthropicChatReasoningBody(tc.id, req, body)
