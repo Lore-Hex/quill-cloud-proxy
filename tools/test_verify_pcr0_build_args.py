@@ -25,7 +25,10 @@ RELEASE = TOOLS / "release-aws-enclave.sh"
 VERIFY = TOOLS / "verify-pcr0.sh"
 
 # Every build input that lands in the measurement.
-MEASURED_ARGS = ("BUILD_TAGS", "QUILL_TLS_MODE", "QUILL_API_HOST", "PLATFORM")
+MEASURED_ARGS = (
+    "BUILD_TAGS", "QUILL_TLS_MODE", "QUILL_API_HOST", "PLATFORM",
+    "QUILL_ACME_DNS_GCP_PROJECT", "QUILL_ACME_DNS_MANAGED_ZONE",
+)
 
 
 def _assignments(script: Path) -> dict[str, str]:
@@ -96,6 +99,14 @@ class VerifyPcr0BuildArgs(unittest.TestCase):
             )
             assigned = re.search(r'(?m)^REPO_ROOT="', text) is not None
             self.assertTrue(assigned, f"{script.name} reads $REPO_ROOT without assigning it")
+
+    def test_all_measured_arguments_are_passed_to_both_builds(self) -> None:
+        for script in (RELEASE, VERIFY):
+            text = script.read_text()
+            for name in MEASURED_ARGS:
+                flag = (f'--platform "${name}"' if name == "PLATFORM"
+                        else f'--build-arg "{name}=${{{name}}}"')
+                self.assertIn(flag, text, f"{script.name} defines but does not pass {name}")
 
     def test_verify_script_builds_from_paths_that_exist(self) -> None:
         text = VERIFY.read_text()
