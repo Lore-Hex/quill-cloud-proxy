@@ -15,6 +15,11 @@ from tools import test_aws_eif_manifest as fixtures
 class AdmissionTests(unittest.TestCase):
     def setUp(self):
         fixtures.EIFManifestTests.setUp(self)
+        # Policy validation has its own tests; admission-flow tests never read
+        # whichever production keys happen to be enabled in this checkout.
+        kms = patch.object(admission.aws_kms_admission, "check_keys")
+        kms.start()
+        self.addCleanup(kms.stop)
         self.trust = self.root / "trust-page" / "trust"
         self.trust.mkdir(parents=True)
         self.current = {

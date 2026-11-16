@@ -24,6 +24,8 @@ class KMSAdmissionTests(unittest.TestCase):
         directory = tempfile.TemporaryDirectory()
         self.addCleanup(directory.cleanup)
         self.path = Path(directory.name) / "keys.json"
+        self.disabled_path = Path(directory.name) / "disabled-keys.json"
+        self.disabled_path.write_text(json.dumps({"schema_version": 1, "required": False, "key_arns": {}}))
         self.pins = ["a" * 96, "b" * 96]
         self.config = {"schema_version": 1, "required": True, "key_arns": {
             region: f"arn:aws:kms:{region}:330422590279:key/11111111-1111-1111-1111-111111111111"
@@ -45,9 +47,9 @@ class KMSAdmissionTests(unittest.TestCase):
         self.assertEqual({call.args[0] for call in aws.call_args_list}, gate.REGIONS)
         self.assertEqual({call.args[1] for call in aws.call_args_list}, {"describe-key", "get-key-policy"})
 
-    def test_disabled_default_performs_no_cloud_calls(self):
+    def test_disabled_configuration_performs_no_cloud_calls(self):
         with patch.object(gate, "aws_json") as aws:
-            gate.check_keys(self.pins)
+            gate.check_keys(self.pins, config_path=self.disabled_path)
         aws.assert_not_called()
 
     def test_malformed_or_partial_configuration_fails_before_cloud(self):
@@ -72,6 +74,27 @@ class KMSAdmissionTests(unittest.TestCase):
             with self.assertRaises(ValueError):
                 gate.check_policy(json.dumps(policy(pins)), self.pins)
         gate.check_policy(json.dumps(policy(list(reversed(self.pins)))), self.pins)
+
+    def test_kms_singleton_serialization_keeps_exact_admission(self):
+        pin = self.pins[0]
+        gate.check_policy(json.dumps(policy(pin)), [pin])
+        gate.check_policy(json.dumps(policy([pin])), [pin])
+        for actual, expected in ((pin, self.pins), (self.pins[1], [pin]),
+                                 ("0" * 96, [pin]), ("*", [pin]),
+                                 (None, [pin]), (True, [pin]), (123, [pin]),
+                                 ([pin, pin], [pin]), ({"pin": pin}, [pin])):
+            with self.subTest(actual=actual), self.assertRaises(ValueError):
+                gate.check_policy(json.dumps(policy(actual)), expected)
+
+    def test_both_live_keys_may_use_singleton_condition_values(self):
+        self.pins = [self.pins[0]]
+        def response(region, command, *args):
+            if command == "get-key-policy":
+                return {"Policy": json.dumps(policy(self.pins[0]))}
+            return self.reply(region, command, *args)
+        with patch.object(gate, "aws_json", side_effect=response) as aws:
+            gate.check_keys(self.pins, config_path=self.path)
+        self.assertEqual(aws.call_count, 4)
 
     def test_weakened_denial_cannot_pass(self):
         for change in ({"Effect": "Allow"}, {"Principal": {"AWS": "parent"}},
@@ -98,14 +121,14 @@ class KMSAdmissionTests(unittest.TestCase):
                              self.config["key_arns"]["eu-west-3"])
         self.assertEqual(gate.parent_key("eu-west-1", "legacy", config_path=self.path), "")
         with self.assertRaises(ValueError):
-            gate.parent_key("eu-west-1", "dual")
+            gate.parent_key("eu-west-1", "dual", config_path=self.disabled_path)
         with self.assertRaises(ValueError):
             gate.parent_key("eu-west-1", "legacy; injected", config_path=self.path)
         with self.assertRaises(ValueError):
             gate.parent_key("us-west-2", "dual", config_path=self.path)
 
     def test_legacy_iam_cannot_be_reintroduced_after_attested_activation(self):
-        gate.require_legacy_provisioning()
+        gate.require_legacy_provisioning(config_path=self.disabled_path)
         with self.assertRaisesRegex(ValueError, "retired"):
             gate.require_legacy_provisioning(config_path=self.path)
 
