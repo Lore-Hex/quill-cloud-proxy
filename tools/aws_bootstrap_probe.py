@@ -29,7 +29,18 @@ def verifier() -> Any:
     return module
 
 
-def validate_health(body: bytes, policy: str, version: int) -> dict[str, Any]:
+def validate_expectation(policy: str, version: int, mode: str) -> None:
+    if policy not in {"transition", "strict"} or mode not in {"attested", "legacy"} or type(version) is not int:
+        raise ValueError("invalid bootstrap expectation")
+    if mode == "legacy":
+        if policy != "transition" or version != 0:
+            raise ValueError("legacy evidence is only valid for transition policy with version zero")
+    elif not 1 <= version <= (1 << 53) - 1:
+        raise ValueError("invalid attested bundle version")
+
+
+def validate_health(body: bytes, policy: str, version: int, *, mode: str = "attested") -> dict[str, Any]:
+    validate_expectation(policy, version, mode)
     if not 0 < len(body) <= 16 << 10:
         raise ValueError("health response size")
     result = json.loads(body, object_pairs_hook=aws_eif_manifest._unique_object)
@@ -37,21 +48,22 @@ def validate_health(body: bytes, policy: str, version: int) -> dict[str, Any]:
         raise ValueError("enclave is not healthy")
     evidence = result.get("aws_bootstrap")
     if not isinstance(evidence, dict) or set(evidence) != {"policy", "mode", "bundle_version"}:
-        raise ValueError("attested bootstrap evidence missing")
-    if evidence["mode"] != "attested" or evidence["policy"] != policy:
+        raise ValueError("enclave-owned bootstrap evidence missing")
+    if evidence["mode"] != mode or evidence["policy"] != policy:
         raise ValueError("enclave bootstrap mode/policy mismatch")
     if type(evidence["bundle_version"]) is not int or evidence["bundle_version"] != version:
         raise ValueError("enclave bootstrap version mismatch")
     return evidence
 
 
-def probe(*, pcr0: str, instance: str, port: int, policy: str, version: int) -> dict[str, Any]:
+def probe(*, pcr0: str, instance: str, port: int, policy: str, version: int, mode: str = "attested") -> dict[str, Any]:
     if re.fullmatch(r"[0-9a-f]{96}", pcr0) is None or pcr0 == "0" * 96:
         raise ValueError("non-debug CI measurement required")
     if re.fullmatch(r"i-(?:[0-9a-f]{8}|[0-9a-f]{17})", instance) is None:
         raise ValueError("explicit candidate instance required")
-    if not 1 <= port <= 65535 or policy not in {"transition", "strict"} or type(version) is not int or not 1 <= version <= (1 << 53) - 1:
+    if not 1 <= port <= 65535:
         raise ValueError("invalid bootstrap expectation")
+    validate_expectation(policy, version, mode)
     verify = verifier()
     # Trust comes from the Nitro chain and its binding to this exact TLS leaf
     # and session, not the host's CA configuration or a second HTTP connection.
@@ -88,7 +100,7 @@ def probe(*, pcr0: str, instance: str, port: int, policy: str, version: int) -> 
             status, _, body = verify._read_http_response(conn, raw, "bootstrap health", deadline=deadline)
             if status.split(" ", 2)[1:2] != ["200"]:
                 raise ValueError("bootstrap health HTTP failure")
-            evidence = validate_health(body, policy, version)
+            evidence = validate_health(body, policy, version, mode=mode)
             return {"instance": instance, "module_id": module_id, "pcr0": pcr0, "bootstrap": evidence}
         finally:
             with contextlib.suppress(Exception):
@@ -105,9 +117,12 @@ def main() -> None:
     parser.add_argument("--port", required=True, type=int)
     parser.add_argument("--policy", required=True, choices=("transition", "strict"))
     parser.add_argument("--version", required=True, type=int)
+    parser.add_argument("--mode", default="attested", choices=("attested", "legacy"),
+                        help="legacy is only for the Phase 3 transition check, never an attested-delivery claim")
     args = parser.parse_args()
     artifact = aws_eif_manifest.verify(args.manifest, args.signature, expected_source=args.expected_source)
-    result = probe(pcr0=artifact["measurements"]["PCR0"], instance=args.instance, port=args.port, policy=args.policy, version=args.version)
+    result = probe(pcr0=artifact["measurements"]["PCR0"], instance=args.instance, port=args.port,
+                   policy=args.policy, version=args.version, mode=args.mode)
     print(json.dumps(result, sort_keys=True))
 
 
