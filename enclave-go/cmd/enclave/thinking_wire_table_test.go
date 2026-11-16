@@ -3,6 +3,7 @@ package main
 import (
 	"encoding/json"
 	"errors"
+	"strings"
 	"testing"
 
 	"github.com/Lore-Hex/quill-cloud-proxy/enclave-go/internal/adapter"
@@ -358,6 +359,10 @@ func TestClaudeEffortLadderWireTable(t *testing.T) {
 		full     = "claude-opus-5"
 		sonnet55 = "claude-sonnet-5-5"
 		haiku55  = "claude-haiku-5-5"
+		// A Claude ID no table names is in the full class. Sonnet 4 is one of
+		// the 4.0 models, matched by what follows the 4.
+		future  = "claude-opus-6"
+		sonnet4 = "claude-sonnet-4"
 	)
 	think := func(tokens string) string { return `"thinking":{"budget_tokens":` + tokens + `,"type":"enabled"}` }
 	adaptive := func(effort string) string {
@@ -384,6 +389,7 @@ func TestClaudeEffortLadderWireTable(t *testing.T) {
 		{"high", user, `"reasoning_effort":"high"`, map[string]string{
 			budget: `{"max_tokens":12288,` + think("8192") + `}`, opus45: `{"max_tokens":12288,"output_config":{"effort":"high"},` + think("8192") + `}`,
 			v46: adaptive("high"), full: adaptive("high"), haiku55: adaptive("high"),
+			future: adaptive("high"), sonnet4: `{"max_tokens":12288,` + think("8192") + `}`,
 		}},
 		{"xhigh", user, `"reasoning_effort":"xhigh"`, map[string]string{
 			budget: `{"max_tokens":12288,` + think("8192") + `}`, opus45: `{"max_tokens":12288,"output_config":{"effort":"high"},` + think("8192") + `}`,
@@ -411,6 +417,36 @@ func TestClaudeEffortLadderWireTable(t *testing.T) {
 		}},
 		{"Off switch alone", user, `"thinking":{"type":"disabled"}`, map[string]string{
 			budget: `{"max_tokens":4096}`, opus45: disabled, full: disabled, sonnet55: `{"max_tokens":4096,"thinking":{"type":"between_tools"}}`,
+		}},
+		// Every other spelling of Off that reaches a Claude model governs too.
+		{"bare reasoning false", user, `"reasoning":false`, map[string]string{
+			budget: `{"max_tokens":4096}`, opus45: disabled, v46: disabled, full: disabled, haiku55: disabled, future: disabled,
+			sonnet55: `{"max_tokens":4096,"thinking":{"type":"between_tools"}}`,
+		}},
+		{"bare reasoning false beside an effort", user, `"reasoning":false,"reasoning_effort":"high"`, map[string]string{
+			budget: `{"max_tokens":4096}`, opus45: disabled, v46: disabled, full: disabled,
+			sonnet55: `{"max_tokens":4096,"thinking":{"type":"between_tools"}}`,
+		}},
+		{"reasoning.type disabled beside an effort", user, `"reasoning":{"type":"disabled"},"reasoning_effort":"high"`, map[string]string{
+			budget: `{"max_tokens":4096}`, opus45: disabled, v46: disabled, full: disabled,
+			sonnet55: `{"max_tokens":4096,"thinking":{"type":"between_tools"}}`,
+		}},
+		{"effort off", user, `"reasoning_effort":"off"`, map[string]string{
+			budget: `{"max_tokens":4096}`, opus45: disabled, v46: disabled, full: disabled, haiku55: disabled,
+			sonnet55: `{"max_tokens":4096,"thinking":{"type":"between_tools"}}`,
+		}},
+		{"effort disabled in the object", user, `"reasoning":{"effort":"disabled"}`, map[string]string{
+			budget: `{"max_tokens":4096}`, opus45: disabled, v46: disabled, full: disabled,
+		}},
+		{"effort none", user, `"reasoning_effort":"none"`, map[string]string{
+			budget: `{"max_tokens":4096}`, opus45: disabled, v46: disabled, full: disabled,
+			sonnet55: `{"max_tokens":4096,"thinking":{"type":"between_tools"}}`,
+		}},
+		{"On object beside effort off", user, `"reasoning":{"enabled":true},"reasoning_effort":"off"`, map[string]string{
+			budget: `{"max_tokens":4096}`, opus45: disabled, v46: disabled, full: disabled,
+		}},
+		{"an Off word in the object beside a top-level effort", user, `"reasoning":{"effort":"none"},"reasoning_effort":"high"`, map[string]string{
+			budget: `{"max_tokens":4096}`, opus45: disabled, v46: disabled, full: disabled,
 		}},
 		// On beside an effort is that effort, wherever the effort is written.
 		{"On object beside low", user, `"reasoning":{"enabled":true},"reasoning_effort":"low"`, map[string]string{
@@ -444,7 +480,7 @@ func TestClaudeEffortLadderWireTable(t *testing.T) {
 			budget: `{"max_tokens":8192,` + think("4096") + `}`, opus45: `{"max_tokens":8192,"output_config":{"effort":"ultra"},` + think("4096") + `}`,
 		}},
 		{"On + minimal + required tool", user, `"thinking":{"type":"enabled"},"reasoning_effort":"minimal",` + required, map[string]string{
-			budget: `{"max_tokens":4096,` + think("1024") + `,"tool_choice":{"type":"any"}}`, opus45: `{"max_tokens":4096,"output_config":{"effort":"low"},` + think("1024") + `,"tool_choice":{"type":"any"}}`,
+			budget: `{"max_tokens":4096,"tool_choice":{"type":"any"}}`, opus45: `{"max_tokens":4096,"output_config":{"effort":"low"},"tool_choice":{"type":"any"}}`,
 		}},
 		{"On + minimal + sampling", user, `"reasoning":{"enabled":true,"effort":"minimal"},"temperature":0.2,"top_k":40,"top_p":0.5`, map[string]string{
 			budget: `{"max_tokens":4096,` + think("1024") + `}`, opus45: `{"max_tokens":4096,"output_config":{"effort":"low"},` + think("1024") + `}`,
@@ -461,6 +497,7 @@ func TestClaudeEffortLadderWireTable(t *testing.T) {
 		{"On alone, bare true", user, `"reasoning":true`, map[string]string{
 			budget: `{"max_tokens":8192,` + think("4096") + `}`, v46: `{"max_tokens":8192,` + think("4096") + `}`,
 			full: `{"max_tokens":32000,"thinking":{"type":"adaptive"}}`, haiku55: `{"max_tokens":32000,"thinking":{"type":"adaptive"}}`,
+			future: `{"max_tokens":32000,"thinking":{"type":"adaptive"}}`, sonnet4: `{"max_tokens":8192,` + think("4096") + `}`,
 		}},
 		{"On alone, reasoning.type", user, `"reasoning":{"type":"enabled"}`, map[string]string{
 			opus45: `{"max_tokens":8192,` + think("4096") + `}`, v46: `{"max_tokens":8192,` + think("4096") + `}`,
@@ -531,18 +568,40 @@ func TestClaudeEffortLadderWireTable(t *testing.T) {
 		{"effort + cap + prefill", prefill, `"reasoning_effort":"high","max_tokens":512`, map[string]string{
 			budget: `{"max_tokens":512}`, opus45: `{"max_tokens":512,"output_config":{"effort":"high"}}`,
 		}},
-		// Thinking the caller asked for explicitly is left for the provider.
+		// Only a budget the caller named in tokens is left for the provider.
 		{"explicit budget + required tool", user, `"thinking":{"type":"enabled","budget_tokens":2048},` + required, map[string]string{
 			budget: `{"max_tokens":4096,` + think("2048") + `,"tool_choice":{"type":"any"}}`, opus45: `{"max_tokens":4096,` + think("2048") + `,"tool_choice":{"type":"any"}}`,
 		}},
+		{"explicit budget + prefill", prefill, `"reasoning":{"max_tokens":2048}`, map[string]string{
+			budget: `{"max_tokens":4096,` + think("2048") + `}`, opus45: `{"max_tokens":4096,` + think("2048") + `}`,
+		}},
+		// A forced tool choice or a prefill beats every budget the gateway
+		// chose, the ones that come from On included.
 		{"On switch + required tool", user, `"thinking":{"type":"enabled"},` + required, map[string]string{
-			budget: `{"max_tokens":8192,` + think("4096") + `,"tool_choice":{"type":"any"}}`,
+			budget: `{"max_tokens":4096,"tool_choice":{"type":"any"}}`, opus45: `{"max_tokens":4096,"tool_choice":{"type":"any"}}`,
+			sonnet4: `{"max_tokens":4096,"tool_choice":{"type":"any"}}`,
+		}},
+		{"On switch + prefill", prefill, `"thinking":{"type":"enabled"}`, map[string]string{
+			budget: `{"max_tokens":4096}`, opus45: `{"max_tokens":4096}`,
 		}},
 		{"On switch + effort + required tool", user, `"thinking":{"type":"enabled"},"reasoning_effort":"high",` + required, map[string]string{
-			budget: `{"max_tokens":12288,` + think("8192") + `,"tool_choice":{"type":"any"}}`, opus45: `{"max_tokens":12288,"output_config":{"effort":"high"},` + think("8192") + `,"tool_choice":{"type":"any"}}`,
+			budget: `{"max_tokens":4096,"tool_choice":{"type":"any"}}`, opus45: `{"max_tokens":4096,"output_config":{"effort":"high"},"tool_choice":{"type":"any"}}`,
+		}},
+		{"On switch + max + required tool", user, `"thinking":{"type":"enabled"},"reasoning_effort":"max",` + required, map[string]string{
+			budget: `{"max_tokens":4096,"tool_choice":{"type":"any"}}`, opus45: `{"max_tokens":4096,"output_config":{"effort":"high"},"tool_choice":{"type":"any"}}`,
+		}},
+		{"On switch + unknown effort + named tool", user, `"enable_thinking":true,"reasoning_effort":"ultra",` + named, map[string]string{
+			budget: `{"max_tokens":4096,"tool_choice":{"name":"lookup","type":"tool"}}`, opus45: `{"max_tokens":4096,"output_config":{"effort":"ultra"},"tool_choice":{"name":"lookup","type":"tool"}}`,
 		}},
 		{"On switch + effort + prefill", prefill, `"thinking":{"type":"enabled"},"reasoning_effort":"high"`, map[string]string{
-			budget: `{"max_tokens":12288,` + think("8192") + `}`,
+			budget: `{"max_tokens":4096}`, opus45: `{"max_tokens":4096,"output_config":{"effort":"high"}}`,
+		}},
+		// The adaptive classes are not changed: adaptive thinking is sent
+		// beside a forced tool choice, which Haiku 5.5 was seen to accept.
+		{"adaptive effort + required tool", user, `"reasoning_effort":"high",` + required, map[string]string{
+			full:    `{"max_tokens":32000,"output_config":{"effort":"high"},"thinking":{"type":"adaptive"},"tool_choice":{"type":"any"}}`,
+			haiku55: `{"max_tokens":32000,"output_config":{"effort":"high"},"thinking":{"type":"adaptive"},"tool_choice":{"type":"any"}}`,
+			future:  `{"max_tokens":32000,"output_config":{"effort":"high"},"thinking":{"type":"adaptive"},"tool_choice":{"type":"any"}}`,
 		}},
 	} {
 		for upstream, want := range tc.want {
@@ -554,6 +613,50 @@ func TestClaudeEffortLadderWireTable(t *testing.T) {
 					t.Errorf("%s (%s):\n got %s\nwant %s", tc.name, spelling, got, want)
 				}
 			}
+		}
+	}
+}
+
+// TestClaudeOffSpellingsThatReachDispatch records which contradictions the
+// contract layer stops and which reach a Claude model, where Off governs. A
+// switch turned on beside an effort that means Off is refused before billing
+// authorization, and so is any switch beside the reasoning object. The same
+// contradiction written with the reasoning object is not validated, so it
+// reaches the dispatch.
+func TestClaudeOffSpellingsThatReachDispatch(t *testing.T) {
+	route := wireRoute{kind: "claude", provider: "anthropic", model: "anthropic/claude-haiku-4-5", upstream: "claude-haiku-4-5"}
+	for _, word := range []string{"none", "off", "disable", "disabled"} {
+		for field, on := range map[string]string{
+			"thinking":             `"thinking":{"type":"enabled"}`,
+			"enable_thinking":      `"enable_thinking":true`,
+			"chat_template_kwargs": `"chat_template_kwargs":{"enable_thinking":true}`,
+		} {
+			if got := reasoningWire(t, route, on+`,"reasoning_effort":"`+word+`"`); got != "refused at "+field {
+				t.Errorf("%s beside %s: got %s, want a refusal", on, word, got)
+			}
+		}
+		for _, fields := range []string{
+			`"reasoning":{"enabled":true},"reasoning_effort":"` + word + `"`,
+			`"reasoning":{"enabled":true,"effort":"` + word + `"}`,
+			`"reasoning":true,"reasoning_effort":"` + word + `"`,
+			`"reasoning_effort":"` + word + `"`,
+			`"reasoning":{"effort":"` + word + `"}`,
+			`"reasoning":{"effort":"` + word + `"},"reasoning_effort":"high"`,
+		} {
+			if got := reasoningWire(t, route, fields); got != `{}` {
+				t.Errorf("%s: got %s, want it to reach the model with no thinking", fields, got)
+			}
+		}
+	}
+	for _, fields := range []string{`"reasoning":false`, `"reasoning":false,"reasoning_effort":"high"`, `"reasoning":{"type":"disabled"}`, `"reasoning":{"type":"disabled"},"reasoning_effort":"high"`, `"reasoning":{"enabled":false,"max_tokens":2048}`} {
+		if got := reasoningWire(t, route, fields); got != `{}` {
+			t.Errorf("%s: got %s, want it to reach the model with no thinking", fields, got)
+		}
+	}
+	// A switch beside the reasoning object never reaches a model.
+	for _, fields := range []string{`"thinking":{"type":"enabled"},"reasoning":{"effort":"none"}`, `"enable_thinking":false,"reasoning":{"enabled":true}`, `"thinking":{"type":"disabled"},"reasoning":false`} {
+		if got := reasoningWire(t, route, fields); !strings.HasPrefix(got, "refused at ") {
+			t.Errorf("%s: got %s, want a refusal", fields, got)
 		}
 	}
 }

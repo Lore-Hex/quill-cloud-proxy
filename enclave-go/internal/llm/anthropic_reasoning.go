@@ -1,6 +1,7 @@
 package llm
 
 import (
+	"regexp"
 	"strings"
 
 	"github.com/Lore-Hex/quill-cloud-proxy/enclave-go/internal/adapter"
@@ -12,39 +13,56 @@ import (
 type claudeReasoningClass string
 
 const (
-	// claudeFull thinks adaptively at low, medium, high, xhigh or max.
+	// claudeFull thinks adaptively at low, medium, high, xhigh or max, and
+	// refuses a thinking budget. Every Claude ID that claudeReasoningModels
+	// does not name is here.
 	claudeFull claudeReasoningClass = "full"
-	// claudeV46 thinks adaptively at low, medium, high or max.
+	// claudeV46 thinks adaptively at low, medium, high or max, and still
+	// takes a thinking budget.
 	claudeV46 claudeReasoningClass = "v46"
 	// claudeOpus45 takes a thinking token budget beside an effort of low,
 	// medium or high.
 	claudeOpus45 claudeReasoningClass = "opus45"
-	// claudeBudget takes a thinking token budget and has no effort field.
-	// Every Claude ID that claudeReasoningModels does not name is here.
+	// claudeBudget takes a thinking token budget and has no effort field. It
+	// is a closed list of older models.
 	claudeBudget claudeReasoningClass = "budget"
 )
 
-// claudeReasoningModels names the Claude models that are not budget-only. An
-// ID is matched lowercased, with "." read as "-", by substring, so a catalog
-// ID, a dated snapshot, a Bedrock profile and a Vertex ID all match. A new
-// Claude model must be added here or it takes the budget path, which the
-// newer models refuse: TestEveryKnownClaudeModelHasAReasoningClass fails for
-// an ID in a route table that the test's own table does not list.
+// claudeVersionEnd follows a version number in a model ID: the ID ends there,
+// or what follows is not another digit. So 4-5 never matches 4-50.
+const claudeVersionEnd = `($|[^0-9])`
+
+// claudeReasoningModels names every Claude model that is not in the full
+// class. An ID is matched lowercased, with "." read as "-", anywhere in the
+// ID, so a catalog ID, a dated snapshot, a Bedrock profile and a Vertex ID
+// all match.
+//
+// The default is the full class on purpose. A new Claude model reaches the
+// gateway through the catalog, with no change here, and every model since
+// Opus 4.7 refuses a thinking budget. So the budget classes are closed lists
+// of models that exist, and an ID nobody listed is sent adaptive thinking.
+// TestEveryKnownClaudeModelHasAReasoningClass pins the class of every Claude
+// ID written in the source.
 var claudeReasoningModels = []struct {
-	id    string
+	match *regexp.Regexp
 	class claudeReasoningClass
 }{
-	{"claude-opus-4-5", claudeOpus45},
-	{"claude-opus-4-6", claudeV46},
-	{"claude-sonnet-4-6", claudeV46},
-	{"claude-opus-4-7", claudeFull},
-	{"claude-opus-4-8", claudeFull},
-	{"claude-opus-5", claudeFull},
-	{"claude-sonnet-5", claudeFull},
-	{"claude-haiku-5", claudeFull},
-	{"claude-fable-5", claudeFull},
-	{"claude-mythos-5", claudeFull},
+	{regexp.MustCompile(`claude-opus-4-5` + claudeVersionEnd), claudeOpus45},
+	{regexp.MustCompile(`claude-(opus|sonnet)-4-6` + claudeVersionEnd), claudeV46},
+	// Haiku 4.5, Sonnet 4.5 and Opus 4.1.
+	{regexp.MustCompile(`claude-(sonnet|haiku)-4-5` + claudeVersionEnd), claudeBudget},
+	{regexp.MustCompile(`claude-opus-4-1` + claudeVersionEnd), claudeBudget},
+	// Opus 4 and Sonnet 4. The ID ends at the 4, or what follows is a date, a
+	// Vertex "@", a Bedrock version, or the "-0" of the 4-0 alias. A minor
+	// version does not match, so Sonnet 4.6, Opus 4.7 and any later 4.x fall
+	// through to their own class.
+	{regexp.MustCompile(`claude-(opus|sonnet)-4($|[@:]|-0` + claudeVersionEnd + `|-[0-9]{8}|-v[0-9])`), claudeBudget},
+	// The 3.x families and everything older.
+	{regexp.MustCompile(`claude-(3|v?2|instant)` + claudeVersionEnd), claudeBudget},
 }
+
+// claudeSonnet55 matches the one model whose Off is between_tools.
+var claudeSonnet55 = regexp.MustCompile(`claude-sonnet-5-5` + claudeVersionEnd)
 
 // claudeReasoningClassOf is the class of a model ID, and false for an ID that
 // is not a Claude model: its body is sent as built.
@@ -54,11 +72,11 @@ func claudeReasoningClassOf(model string) (claudeReasoningClass, bool) {
 		return "", false
 	}
 	for _, known := range claudeReasoningModels {
-		if strings.Contains(model, known.id) {
+		if known.match.MatchString(model) {
 			return known.class, true
 		}
 	}
-	return claudeBudget, true
+	return claudeFull, true
 }
 
 // claudeModelKey is a model ID in the form the class table matches.
@@ -123,8 +141,11 @@ const (
 
 // claudeReasoningAsk is what a chat request asks of a Claude model.
 type claudeReasoningAsk struct {
-	// effort is the effort word, lowercased. It is "none" when the request
-	// turns thinking off, which governs over any effort beside it.
+	// off is true when the request turns thinking off. Off governs over an
+	// On, an effort and a budget beside it.
+	off bool
+	// effort is the effort word, lowercased. With two efforts in a request
+	// it is the top-level one.
 	effort string
 	// on is true when the caller turned thinking on, not only named a depth.
 	on bool
@@ -132,21 +153,23 @@ type claudeReasoningAsk struct {
 	budget bool
 }
 
+// claudeReasoningAskOf reads the request. Off is any of: reasoning.enabled
+// false, a bare reasoning false, reasoning.type disabled, and an effort of
+// none, off, disable or disabled, top-level or in the reasoning object. The
+// contract layer has already refused a switch beside one of those words, so
+// On beside an Off word arrives here only from the reasoning object.
 func claudeReasoningAskOf(req *qtypes.OpenAIChatRequest) claudeReasoningAsk {
 	ask := claudeReasoningAsk{effort: chatReasoningEffort(req), budget: adapter.ExplicitThinkingBudget(req.Reasoning) > 0}
+	ask.off = adapter.ReasoningEffortOff(ask.effort)
 	switch reasoning := req.Reasoning.(type) {
 	case bool:
-		ask.on = reasoning
+		ask.on, ask.off = reasoning, ask.off || !reasoning
 	case map[string]any:
-		if mode, _ := reasoning["type"].(string); strings.EqualFold(mode, "enabled") || strings.EqualFold(mode, "adaptive") {
-			ask.on = true
-		}
-		if enabled, present := reasoning["enabled"].(bool); present {
-			ask.on = enabled
-			if !enabled {
-				ask.effort = "none"
-			}
-		}
+		mode, _ := reasoning["type"].(string)
+		enabled, switched := reasoning["enabled"].(bool)
+		inner, _ := reasoning["effort"].(string)
+		ask.on = (switched && enabled) || strings.EqualFold(mode, "enabled") || strings.EqualFold(mode, "adaptive")
+		ask.off = ask.off || (switched && !enabled) || strings.EqualFold(mode, "disabled") || adapter.ReasoningEffortOff(inner)
 	}
 	return ask
 }
@@ -171,11 +194,11 @@ func anthropicChatReasoningBody(model string, req *qtypes.OpenAIChatRequest, bod
 func claudeAdaptiveReasoningBody(model string, class claudeReasoningClass, ask claudeReasoningAsk, req *qtypes.OpenAIChatRequest, body *qtypes.AnthropicMessagesRequest) *qtypes.AnthropicMessagesRequest {
 	result := *body
 	switch {
-	case ask.effort == "none":
+	case ask.off:
 		result.Thinking = map[string]any{"type": "disabled"}
 		// Sonnet 5.5 refuses disabled and names this as its Off: it does not
 		// think before responding. Opus 5.5 and Fable 5 have no Off at all.
-		if strings.Contains(claudeModelKey(model), "claude-sonnet-5-5") {
+		if claudeSonnet55.MatchString(claudeModelKey(model)) {
 			result.Thinking = map[string]any{"type": "between_tools"}
 		}
 		result.AnthropicMaxTokens = 0
@@ -188,7 +211,7 @@ func claudeAdaptiveReasoningBody(model string, class claudeReasoningClass, ask c
 		if values, ok := req.Reasoning.(map[string]any); ok && values["max_tokens"] != nil {
 			return &result
 		}
-	case class == claudeFull && ask.on && !ask.budget:
+	case class == claudeFull && ask.on && !ask.budget && !claudeAllowanceTooSmallToThink(req):
 		// On alone. The full class refuses a thinking budget, so the 4,096
 		// tokens the shared projection wrote for On cannot be sent. On is
 		// adaptive thinking with no effort named: the model's own depth. The
@@ -212,14 +235,24 @@ func claudeAdaptiveReasoningBody(model string, class claudeReasoningClass, ask c
 	return &result
 }
 
+// claudeAllowanceTooSmallToThink is true for a funded allowance that cannot
+// hold thinking and an answer. The shared projection writes no budget for
+// one, and On alone asks for no adaptive thinking inside one either.
+func claudeAllowanceTooSmallToThink(req *qtypes.OpenAIChatRequest) bool {
+	return req.InternalOutputTokenLimit > 0 && req.InternalOutputTokenLimit <= claudeMinimumBudget
+}
+
 // claudeBudgetReasoningBody serves Opus 4.5 and the budget-only models, whose
 // thinking is a token budget. The shared projection has already written a
 // budget for On alone and for a budget the caller named, and those stand.
 // What the selected model's ladder decides is settled here.
 func claudeBudgetReasoningBody(class claudeReasoningClass, ask claudeReasoningAsk, req *qtypes.OpenAIChatRequest, body *qtypes.AnthropicMessagesRequest) *qtypes.AnthropicMessagesRequest {
+	if ask == (claudeReasoningAsk{}) && body.Thinking == nil {
+		return body
+	}
 	result := *body
 	switch {
-	case ask.effort == "none":
+	case ask.off:
 		// Off governs, even beside an effort or a budget. Nothing is left of
 		// the room the shared projection made for a budget that is not sent.
 		result.Thinking = nil
@@ -239,8 +272,7 @@ func claudeBudgetReasoningBody(class claudeReasoningClass, ask claudeReasoningAs
 		// On beside an effort is that effort, so the ladder's budget replaces
 		// whatever the shared projection chose.
 		budget := step.budget
-		switch {
-		case ask.on && budget == 0:
+		if ask.on && budget == 0 {
 			// On is an explicit ask, so it always turns thinking on. Beside an
 			// effort below the ladder it is the smallest budget. Beside a word
 			// the ladder does not know it is what On alone asks for.
@@ -248,18 +280,19 @@ func claudeBudgetReasoningBody(class claudeReasoningClass, ask claudeReasoningAs
 			if listed {
 				budget = claudeMinimumBudget
 			}
-		case !ask.on && claudeRefusesThinking(body):
-			// Thinking that only an effort asked for gives way where Anthropic
-			// refuses thinking outright. Thinking the caller turned on is left
-			// for the provider to judge.
-			budget = 0
 		}
 		result.Thinking, result.AnthropicMaxTokens = adapter.AnthropicBudgetThinking(req, budget, body.MaxTokens)
 	}
-	if thinking, ok := result.Thinking.(map[string]any); !ok || thinking["budget_tokens"] == nil {
-		if ask.effort == "" {
-			return body
-		}
+	thinking, _ := result.Thinking.(map[string]any)
+	if thinking["budget_tokens"] == nil {
+		return &result
+	}
+	// A forced tool choice or a prefill beats any budget the gateway chose,
+	// from an effort or from On. Anthropic refuses budget thinking beside
+	// them every time, so sending it has one outcome. Only a budget the
+	// caller named in tokens is left for the provider to judge.
+	if !ask.budget && claudeRefusesThinking(body) {
+		result.Thinking, result.AnthropicMaxTokens = nil, 0
 		return &result
 	}
 	// Anthropic refuses these beside budget thinking: a temperature other

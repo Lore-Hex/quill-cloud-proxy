@@ -114,6 +114,60 @@ func TestClaudeReasoningClassOfEveryIDSpelling(t *testing.T) {
 	}
 }
 
+// A Claude ID that no table entry names is in the full class. A new model
+// reaches the gateway through the catalog with no change to this code, and
+// every model since Opus 4.7 refuses a thinking budget, so the default must
+// be adaptive thinking.
+func TestUnlistedClaudeModelIsInTheFullClass(t *testing.T) {
+	for _, id := range []string{
+		"claude-opus-6", "claude-sonnet-4-7", "claude-haiku-6", "claude-fable-6-1", "claude-opus-4-9", "claude-haiku-4-6", "claude-sonnet-4-8",
+		"anthropic/claude-opus-6.1", "us.anthropic.claude-haiku-6", "claude-opus-7@20280101", "claude-sonnet-6-5-20270101", "claude-atlas-1",
+		// A longer version number is a different model from the one it starts with.
+		"claude-opus-4-10", "claude-opus-4-50", "claude-sonnet-4-50", "claude-sonnet-4-60", "claude-haiku-4-50",
+	} {
+		if got, claude := claudeReasoningClassOf(id); !claude || got != claudeFull {
+			t.Errorf("%s: class %q (claude=%t), want %q", id, got, claude, claudeFull)
+		}
+		if got := claudeWire(t, id, `"reasoning_effort":"high"`); got != `{"max_tokens":32000,"output_config":{"effort":"high"},"thinking":{"type":"adaptive"}}` {
+			t.Errorf("%s effort: got %s", id, got)
+		}
+		if got := claudeWire(t, id, `"reasoning":{"enabled":true}`); got != `{"max_tokens":32000,"thinking":{"type":"adaptive"}}` {
+			t.Errorf("%s On alone: got %s", id, got)
+		}
+	}
+}
+
+// The budget class is a closed list: the 3.x families and older, Opus 4 and
+// Sonnet 4 in every spelling, Opus 4.1, Sonnet 4.5 and Haiku 4.5. The 4.0
+// entries match by what follows the 4, so they never take in a later 4.x.
+func TestClaudeBudgetClassIsAClosedList(t *testing.T) {
+	for _, id := range []string{
+		"claude-sonnet-4", "claude-opus-4", "anthropic/claude-sonnet-4", "anthropic/claude-opus-4",
+		"claude-sonnet-4-20250514", "claude-opus-4-20250514", "claude-sonnet-4@20250514", "claude-opus-4@20250514",
+		"us.anthropic.claude-sonnet-4-20250514-v1:0", "anthropic.claude-opus-4-20250514-v1:0", "claude-sonnet-4-0", "claude-opus-4-0", "anthropic/claude-opus-4.0",
+		"claude-opus-4-1", "anthropic/claude-opus-4.1", "claude-opus-4-1-20250805", "claude-opus-4-1@20250805", "us.anthropic.claude-opus-4-1-20250805-v1:0",
+		"claude-sonnet-4-5", "anthropic/claude-sonnet-4.5", "claude-sonnet-4-5-20250929", "claude-sonnet-4-5@20250929", "us.anthropic.claude-sonnet-4-5-20250929-v1:0",
+		"claude-haiku-4-5", "anthropic/claude-haiku-4.5", "claude-haiku-4-5-20251001", "claude-haiku-4-5@20251001", "us.anthropic.claude-haiku-4-5-20251001-v1:0",
+		"claude-3-opus-20240229", "claude-3-haiku-20240307", "claude-3-5-sonnet-20241022", "claude-3-5-haiku-20241022", "claude-3-7-sonnet-20250219",
+		"anthropic/claude-3.7-sonnet", "anthropic/claude-3-5-sonnet", "anthropic.claude-3-5-sonnet-20241022-v2:0", "claude-3-7-sonnet@20250219",
+		"claude-2", "claude-2.1", "anthropic.claude-v2:1", "claude-instant-1.2", "anthropic.claude-instant-v1",
+	} {
+		if got, claude := claudeReasoningClassOf(id); !claude || got != claudeBudget {
+			t.Errorf("%s: class %q (claude=%t), want %q", id, got, claude, claudeBudget)
+		}
+	}
+	// The neighbours of the 4.0 models keep their own classes.
+	for id, want := range map[string]claudeReasoningClass{
+		"claude-opus-4-5": claudeOpus45, "claude-opus-4-5-20251101": claudeOpus45,
+		"claude-sonnet-4-6": claudeV46, "claude-opus-4-6": claudeV46, "claude-sonnet-4-6@20260217": claudeV46,
+		"claude-opus-4-7": claudeFull, "claude-opus-4-8": claudeFull, "claude-sonnet-4-7": claudeFull, "claude-sonnet-4-7-20270101": claudeFull,
+	} {
+		if got, _ := claudeReasoningClassOf(id); got != want {
+			t.Errorf("%s: class %q, want %q", id, got, want)
+		}
+	}
+}
+
 // A model that is not Claude can share the Anthropic wire. Its body is sent
 // exactly as the shared projection built it, whatever the request asks.
 func TestNonClaudeModelOnTheAnthropicWireIsSentAsBuilt(t *testing.T) {
@@ -206,17 +260,57 @@ func TestClaudeLadderBudgetsMatchTheSharedProjection(t *testing.T) {
 	}
 }
 
+// claudeOffSpellings is every way a chat request that reaches the dispatch
+// turns thinking off: reasoning.enabled false, a bare reasoning false,
+// reasoning.type disabled, and an effort of none, off, disable or disabled,
+// top-level or in the reasoning object. Each is also written beside an On, an
+// effort or a budget, which it governs. The first entry is the plain one.
+var claudeOffSpellings = []string{
+	`"reasoning":{"enabled":false},"reasoning_effort":"high"`,
+	`"reasoning":{"enabled":false,"effort":"high"}`,
+	`"reasoning":{"enabled":false},"reasoning_effort":"max"`,
+	`"reasoning":{"enabled":false,"max_tokens":8192}`,
+	`"reasoning":{"enabled":false}`,
+	`"reasoning":{"enabled":false,"type":"enabled"}`,
+	`"reasoning":false`,
+	`"reasoning":false,"reasoning_effort":"high"`,
+	`"reasoning":{"type":"disabled"}`,
+	`"reasoning":{"type":"disabled"},"reasoning_effort":"high"`,
+	`"reasoning":{"type":"disabled","effort":"max"}`,
+	`"reasoning":{"type":"disabled","max_tokens":8192}`,
+	`"reasoning_effort":"none"`,
+	`"reasoning_effort":"off"`,
+	`"reasoning_effort":"disable"`,
+	`"reasoning_effort":"disabled"`,
+	`"reasoning_effort":"NONE"`,
+	`"reasoning":{"effort":"none"}`,
+	`"reasoning":{"effort":"off"}`,
+	`"reasoning":{"effort":"disable"}`,
+	`"reasoning":{"effort":"disabled"}`,
+	// On beside an Off word. A switch beside one is refused before dispatch,
+	// so this arrives only from the reasoning object.
+	`"reasoning":{"enabled":true},"reasoning_effort":"none"`,
+	`"reasoning":{"enabled":true},"reasoning_effort":"off"`,
+	`"reasoning":{"enabled":true,"effort":"disabled"}`,
+	`"reasoning":true,"reasoning_effort":"off"`,
+	`"reasoning":{"type":"enabled"},"reasoning_effort":"none"`,
+	// An Off word in either place governs over an effort in the other.
+	`"reasoning":{"effort":"none"},"reasoning_effort":"high"`,
+	`"reasoning":{"effort":"high"},"reasoning_effort":"none"`,
+	// An Off word beside a named budget.
+	`"reasoning":{"max_tokens":8192},"reasoning_effort":"off"`,
+	`"reasoning":{"max_tokens":8192,"effort":"none"}`,
+}
+
 // Decision 1: Off governs on every class, even beside an effort or a budget,
 // and max_tokens keeps no room for a budget that is not sent.
 func TestClaudeOffGovernsOnEveryClass(t *testing.T) {
-	offs := []string{
-		`"reasoning":{"enabled":false},"reasoning_effort":"high"`,
-		`"reasoning":{"enabled":false,"effort":"high"}`,
-		`"reasoning":{"enabled":false},"reasoning_effort":"max"`,
-		`"reasoning":{"enabled":false,"max_tokens":8192}`,
-		`"reasoning":{"enabled":false}`,
-		`"reasoning":{"enabled":true},"reasoning_effort":"none"`,
-		`"reasoning_effort":"none"`,
+	offs := claudeOffSpellings
+	var fullWithDisabled []string
+	for _, id := range claudeFullIDs {
+		if !claudeSonnet55.MatchString(claudeModelKey(id)) {
+			fullWithDisabled = append(fullWithDisabled, id)
+		}
 	}
 	for _, tc := range []struct {
 		ids  []string
@@ -225,6 +319,8 @@ func TestClaudeOffGovernsOnEveryClass(t *testing.T) {
 		{claudeBudgetIDs, `{"max_tokens":4096}`},
 		{claudeOpus45IDs, `{"max_tokens":4096,"thinking":{"type":"disabled"}}`},
 		{claudeV46IDs, `{"max_tokens":4096,"thinking":{"type":"disabled"}}`},
+		{fullWithDisabled, `{"max_tokens":4096,"thinking":{"type":"disabled"}}`},
+		{[]string{"claude-opus-6", "claude-sonnet-4-7"}, `{"max_tokens":4096,"thinking":{"type":"disabled"}}`},
 	} {
 		for _, id := range tc.ids {
 			for _, off := range offs {
@@ -243,7 +339,7 @@ func TestClaudeOffGovernsOnEveryClass(t *testing.T) {
 
 // Decision 6: Sonnet 5.5 names between_tools as its Off. No other model does.
 func TestClaudeSonnet55OffIsBetweenTools(t *testing.T) {
-	offs := []string{`"reasoning":{"enabled":false}`, `"reasoning":{"enabled":false},"reasoning_effort":"high"`, `"reasoning":{"enabled":false,"effort":"max"}`, `"reasoning_effort":"none"`}
+	offs := claudeOffSpellings
 	for _, id := range []string{"claude-sonnet-5-5", "anthropic/claude-sonnet-5.5", "us.anthropic.claude-sonnet-5-5", "claude-sonnet-5-5@20261001", "claude-sonnet-5-5-20261001"} {
 		if class, _ := claudeReasoningClassOf(id); class != claudeFull {
 			t.Errorf("%s: class %q", id, class)
@@ -352,10 +448,10 @@ func TestClaudeOnAlwaysThinksOnBudgetClasses(t *testing.T) {
 			{"On object beside an unknown word", `"reasoning":{"enabled":true},"reasoning_effort":"ultra"`, `{"max_tokens":8192,` + effort("ultra") + onDepth + `}`},
 			{"On object holding an unknown word", `"reasoning":{"enabled":true,"effort":"ultra"}`, `{"max_tokens":8192,` + effort("ultra") + onDepth + `}`},
 			{"bare true beside an unknown word", `"reasoning":true,"reasoning_effort":"ultra"`, `{"max_tokens":8192,` + effort("ultra") + onDepth + `}`},
-			// Thinking the caller turned on is left for the provider to judge.
-			{"On + minimal + required tool", `"reasoning":{"enabled":true,"effort":"minimal"},` + anyTool, `{"max_tokens":4096,` + effort("low") + floor + `,"tool_choice":{"type":"any"}}`},
-			{"On + minimal + prefill", `"reasoning":{"enabled":true},"reasoning_effort":"minimal",` + prefill, `{"max_tokens":4096,` + effort("low") + floor + `}`},
-			{"On + unknown word + required tool", `"reasoning":{"enabled":true,"effort":"ultra"},` + anyTool, `{"max_tokens":8192,` + effort("ultra") + onDepth + `,"tool_choice":{"type":"any"}}`},
+			// A forced tool choice or a prefill beats the budget On adds too.
+			{"On + minimal + required tool", `"reasoning":{"enabled":true,"effort":"minimal"},` + anyTool, `{"max_tokens":4096,` + effort("low") + `"tool_choice":{"type":"any"}}`},
+			{"On + minimal + prefill", `"reasoning":{"enabled":true},"reasoning_effort":"minimal",` + prefill, `{"max_tokens":4096` + strings.TrimSuffix(","+effort("low"), ",") + `}`},
+			{"On + unknown word + required tool", `"reasoning":{"enabled":true,"effort":"ultra"},` + anyTool, `{"max_tokens":4096,` + effort("ultra") + `"tool_choice":{"type":"any"}}`},
 			// The budget is sent as a request Anthropic accepts.
 			{"On + minimal + sampling", `"reasoning":{"enabled":true,"effort":"minimal"},"temperature":0.2,"top_k":40,"top_p":0.5`, `{"max_tokens":4096,` + effort("low") + floor + `}`},
 			{"On + minimal with a cap", `"reasoning":{"enabled":true,"effort":"minimal"},"max_tokens":512`, `{"max_tokens":1536,` + effort("low") + floor + `}`},
@@ -367,7 +463,7 @@ func TestClaudeOnAlwaysThinksOnBudgetClasses(t *testing.T) {
 			{"minimal alone", `"reasoning_effort":"minimal"`, `{"max_tokens":4096` + strings.TrimSuffix(","+effort("low"), ",") + `}`},
 			{"minimal alone, in the object", `"reasoning":{"effort":"minimal"}`, `{"max_tokens":4096` + strings.TrimSuffix(","+effort("low"), ",") + `}`},
 			{"an unknown word alone", `"reasoning_effort":"ultra"`, `{"max_tokens":4096` + strings.TrimSuffix(","+effort("ultra"), ",") + `}`},
-			{"a bare false beside minimal is not On", `"reasoning":false,"reasoning_effort":"minimal"`, `{"max_tokens":4096` + strings.TrimSuffix(","+effort("low"), ",") + `}`},
+			{"a bare false beside minimal is Off", `"reasoning":false,"reasoning_effort":"minimal"`, off},
 			// A budget the caller named stands.
 			{"named budget beside minimal", `"reasoning":{"enabled":true,"max_tokens":2048},"reasoning_effort":"minimal"`, `{"max_tokens":4096,` + effort("low") + `"thinking":{"budget_tokens":2048,"type":"enabled"}}`},
 		} {
@@ -432,7 +528,6 @@ func TestClaudeOnAlonePerClass(t *testing.T) {
 			{"On with thinking_budget", `"reasoning":{"type":"enabled","thinking_budget":2048}`, explicit},
 			{"On beside an effort", `"reasoning":{"enabled":true},"reasoning_effort":"high"`, `{"max_tokens":32000,"output_config":{"effort":"high"},"thinking":{"type":"adaptive"}}`},
 			{"nothing asked", ``, `{"max_tokens":32000}`},
-			{"a bare false asks nothing", `"reasoning":false`, `{"max_tokens":32000}`},
 		} {
 			if got := claudeWire(t, id, tc.fields, "top_p", "top_k", "tool_choice"); got != tc.want {
 				t.Errorf("%s %s:\n got %s\nwant %s", id, tc.name, got, tc.want)
@@ -458,14 +553,24 @@ func TestClaudeOnAlonePerClass(t *testing.T) {
 			t.Errorf("%s On alone on the Bedrock wire: got %s", id, got)
 		}
 	}
-	// On alone inside a funded allowance: max_tokens is the authorization.
-	for _, total := range []int{1, 1024, 1025, 8192, 60000} {
-		for _, hint := range []any{true, map[string]any{"enabled": true}} {
-			req, body, authorized := fundedrequest.New(t, total, hint, "")
-			native := anthropicChatReasoningBody("claude-opus-5-5", req, body)
-			fundedrequest.Check(t, buildAnthropicWireRequest("claude-opus-5-5", native.Messages, native), authorized, false)
-			if thinking, _ := native.Thinking.(map[string]any); len(thinking) != 1 || thinking["type"] != "adaptive" {
-				t.Errorf("funded total=%d %v: thinking=%v", total, hint, native.Thinking)
+	// On alone inside a funded allowance: max_tokens is the authorization. An
+	// allowance of 1,024 tokens or less cannot hold thinking and an answer,
+	// so no thinking is sent and the body goes out as built.
+	for _, total := range []int{1, 512, 1024, 1025, 8192, 60000} {
+		for _, hint := range []any{true, map[string]any{"enabled": true}, map[string]any{"type": "enabled"}} {
+			for _, model := range []string{"claude-opus-5-5", "claude-haiku-5-5", "claude-opus-6"} {
+				req, body, authorized := fundedrequest.New(t, total, hint, "")
+				native := anthropicChatReasoningBody(model, req, body)
+				fundedrequest.Check(t, buildAnthropicWireRequest(model, native.Messages, native), authorized, false)
+				if total <= 1024 {
+					if native != body || native.Thinking != nil || native.OutputConfig != nil {
+						t.Errorf("%s funded total=%d %v: thinking=%v output_config=%v, want the body as built", model, total, hint, native.Thinking, native.OutputConfig)
+					}
+					continue
+				}
+				if thinking, _ := native.Thinking.(map[string]any); len(thinking) != 1 || thinking["type"] != "adaptive" {
+					t.Errorf("%s funded total=%d %v: thinking=%v", model, total, hint, native.Thinking)
+				}
 			}
 		}
 	}
@@ -521,9 +626,12 @@ func TestClaudeAdaptiveSamplingIsUnchanged(t *testing.T) {
 	}
 }
 
-// Decision 5: a forced tool choice or an assistant prefill beats an effort.
-// Thinking the caller asked for explicitly is still sent.
-func TestClaudeForcedToolOrPrefillBeatsAnEffort(t *testing.T) {
+// Decision 5: a forced tool choice or an assistant prefill beats any thinking
+// budget the gateway chose, from an effort, from On alone, from On beside an
+// effort, and from the budget On adds. Anthropic refuses budget thinking
+// beside them every time. Only a budget the caller named in tokens is still
+// sent, for the provider to judge.
+func TestClaudeForcedToolOrPrefillBeatsAGatewayChosenBudget(t *testing.T) {
 	const (
 		prefill = `"messages":[{"role":"user","content":"test"},{"role":"assistant","content":"{"}]`
 		named   = `"tool_choice":{"type":"function","function":{"name":"lookup"}},` + claudeTestTools
@@ -539,25 +647,92 @@ func TestClaudeForcedToolOrPrefillBeatsAnEffort(t *testing.T) {
 			}
 			return ""
 		}
+		bare := func(word string) string { return strings.TrimSuffix(","+effort(word), ",") }
 		for _, tc := range []struct{ name, fields, want string }{
 			{"effort + required tool", `"reasoning_effort":"high",` + anyTool, `{"max_tokens":4096,` + effort("high") + `"tool_choice":{"type":"any"}}`},
 			{"effort + named tool", `"reasoning_effort":"high",` + named, `{"max_tokens":4096,` + effort("high") + `"tool_choice":{"name":"lookup","type":"tool"}}`},
 			{"max + required tool", `"reasoning":{"effort":"max"},` + anyTool, `{"max_tokens":4096,` + effort("high") + `"tool_choice":{"type":"any"}}`},
 			{"effort + required tool keeps sampling", `"reasoning_effort":"high","temperature":0.2,` + anyTool, `{"max_tokens":4096,` + effort("high") + `"temperature":0.2,"tool_choice":{"type":"any"}}`},
-			{"effort + prefill", `"reasoning_effort":"high",` + prefill, `{"max_tokens":4096` + strings.TrimSuffix(","+effort("high"), ",") + `}`},
-			{"effort + cap + prefill", `"reasoning_effort":"high","max_tokens":512,` + prefill, `{"max_tokens":512` + strings.TrimSuffix(","+effort("high"), ",") + `}`},
+			{"effort + prefill", `"reasoning_effort":"high",` + prefill, `{"max_tokens":4096` + bare("high") + `}`},
+			{"effort + cap + prefill", `"reasoning_effort":"high","max_tokens":512,` + prefill, `{"max_tokens":512` + bare("high") + `}`},
 			{"effort + auto tool thinks", `"reasoning_effort":"high",` + auto, `{"max_tokens":12288,` + effort("high") + budget + `,"tool_choice":{"type":"auto"}}`},
 			{"effort + tools, no choice, thinks", `"reasoning_effort":"high",` + claudeTestTools, `{"max_tokens":12288,` + effort("high") + budget + `}`},
-			{"explicit budget + required tool", `"reasoning":{"max_tokens":8192},` + anyTool, `{"max_tokens":12288,` + budget + `,"tool_choice":{"type":"any"}}`},
-			{"explicit budget + prefill", `"reasoning":{"max_tokens":8192},` + prefill, `{"max_tokens":12288,` + budget + `}`},
-			{"On + required tool", `"reasoning":{"enabled":true},` + anyTool, `{"max_tokens":8192,"thinking":{"budget_tokens":4096,"type":"enabled"},"tool_choice":{"type":"any"}}`},
-			{"On + effort + required tool", `"reasoning":{"enabled":true,"effort":"high"},` + anyTool, `{"max_tokens":12288,` + effort("high") + budget + `,"tool_choice":{"type":"any"}}`},
-			{"On + top-level effort + prefill", `"reasoning":{"enabled":true},"reasoning_effort":"high",` + prefill, `{"max_tokens":12288,` + effort("high") + budget + `}`},
+			// On is a budget the gateway chose as well.
+			{"On + required tool", `"reasoning":{"enabled":true},` + anyTool, `{"max_tokens":4096,"tool_choice":{"type":"any"}}`},
+			{"On + named tool", `"reasoning":{"enabled":true},` + named, `{"max_tokens":4096,"tool_choice":{"name":"lookup","type":"tool"}}`},
+			{"On + prefill", `"reasoning":{"enabled":true},` + prefill, `{"max_tokens":4096}`},
+			{"bare true + required tool", `"reasoning":true,` + anyTool, `{"max_tokens":4096,"tool_choice":{"type":"any"}}`},
+			{"On + cap + required tool", `"reasoning":{"enabled":true},"max_tokens":512,` + anyTool, `{"max_tokens":512,"tool_choice":{"type":"any"}}`},
+			{"On + auto tool thinks", `"reasoning":{"enabled":true},` + auto, `{"max_tokens":8192,"thinking":{"budget_tokens":4096,"type":"enabled"},"tool_choice":{"type":"auto"}}`},
+			{"On + effort + required tool", `"reasoning":{"enabled":true,"effort":"high"},` + anyTool, `{"max_tokens":4096,` + effort("high") + `"tool_choice":{"type":"any"}}`},
+			{"On + max + required tool", `"reasoning":{"enabled":true,"effort":"max"},` + anyTool, `{"max_tokens":4096,` + effort("high") + `"tool_choice":{"type":"any"}}`},
+			{"On + top-level effort + prefill", `"reasoning":{"enabled":true},"reasoning_effort":"high",` + prefill, `{"max_tokens":4096` + bare("high") + `}`},
+			{"On + top-level effort + required tool keeps sampling", `"reasoning":true,"reasoning_effort":"low","temperature":0.2,` + anyTool, `{"max_tokens":4096,` + effort("low") + `"temperature":0.2,"tool_choice":{"type":"any"}}`},
+			// A budget the caller named in tokens is left for the provider.
+			{"named budget + required tool", `"reasoning":{"max_tokens":8192},` + anyTool, `{"max_tokens":12288,` + budget + `,"tool_choice":{"type":"any"}}`},
+			{"named budget + prefill", `"reasoning":{"max_tokens":8192},` + prefill, `{"max_tokens":12288,` + budget + `}`},
+			{"On with a named budget + required tool", `"reasoning":{"enabled":true,"max_tokens":8192},` + anyTool, `{"max_tokens":12288,` + budget + `,"tool_choice":{"type":"any"}}`},
+			{"budget_tokens + required tool", `"reasoning":{"budget_tokens":8192},` + anyTool, `{"max_tokens":12288,` + budget + `,"tool_choice":{"type":"any"}}`},
+			{"thinking_budget + named tool", `"reasoning":{"thinking_budget":8192},` + named, `{"max_tokens":12288,` + budget + `,"tool_choice":{"name":"lookup","type":"tool"}}`},
+			{"named budget beside an effort + required tool", `"reasoning":{"max_tokens":8192,"effort":"high"},` + anyTool, `{"max_tokens":12288,` + effort("high") + budget + `,"tool_choice":{"type":"any"}}`},
 		} {
 			if got := claudeWire(t, id, tc.fields, "tool_choice", "temperature"); got != tc.want {
 				t.Errorf("%s %s:\n got %s\nwant %s", id, tc.name, got, tc.want)
 			}
 		}
+	}
+}
+
+// The same rule as a property, over every way the gateway comes to choose a
+// budget: none of them is ever on the wire beside a forced tool choice or a
+// prefill, on any budget class ID. A budget the caller named always is.
+func TestClaudeNoGatewayChosenBudgetBesideAForcedToolOrPrefill(t *testing.T) {
+	var chosen []string
+	for _, word := range []string{"minimal", "low", "medium", "high", "xhigh", "max", "ultra"} {
+		chosen = append(chosen,
+			`"reasoning_effort":"`+word+`"`, `"reasoning":{"effort":"`+word+`"}`, `"reasoning":"`+word+`"`,
+			`"reasoning":{"enabled":true,"effort":"`+word+`"}`, `"reasoning":{"enabled":true},"reasoning_effort":"`+word+`"`,
+			`"reasoning":true,"reasoning_effort":"`+word+`"`, `"reasoning":{"type":"enabled"},"reasoning_effort":"`+word+`"`,
+			`"reasoning":{"type":"adaptive","effort":"`+word+`"}`)
+	}
+	chosen = append(chosen, `"reasoning":{"enabled":true}`, `"reasoning":true`, `"reasoning":{"type":"enabled"}`, `"reasoning":{"type":"adaptive"}`)
+	namedBudgets := []string{
+		`"reasoning":{"max_tokens":2048}`, `"reasoning":{"budget_tokens":2048}`, `"reasoning":{"thinking_budget":2048}`,
+		`"reasoning":{"enabled":true,"max_tokens":2048}`, `"reasoning":{"max_tokens":2048,"effort":"high"}`, `"reasoning":{"max_tokens":2048},"reasoning_effort":"max"`,
+	}
+	refusers := map[string]string{
+		"required tool": `,"tool_choice":"required",` + claudeTestTools,
+		"named tool":    `,"tool_choice":{"type":"function","function":{"name":"lookup"}},` + claudeTestTools,
+		"prefill":       `,"messages":[{"role":"user","content":"test"},{"role":"assistant","content":"{"}]`,
+		"prefill + cap": `,"max_tokens":512,"messages":[{"role":"user","content":"test"},{"role":"assistant","content":"{"}]`,
+	}
+	budgeted := func(id, fields string) (bool, int) {
+		req, body := claudeChat(t, fields)
+		native := anthropicChatReasoningBody(id, req, body)
+		thinking, _ := native.Thinking.(map[string]any)
+		return thinking["budget_tokens"] != nil, native.AnthropicDispatchMaxTokens() - body.MaxTokens
+	}
+	thinks := 0
+	for _, id := range append(append([]string{}, claudeBudgetIDs...), claudeOpus45IDs...) {
+		for name, refuser := range refusers {
+			for _, fields := range chosen {
+				if has, room := budgeted(id, fields+refuser); has || room != 0 {
+					t.Errorf("%s %s + %s: budget thinking sent=%t, max_tokens raised by %d", id, fields, name, has, room)
+				}
+				// The control: without the refuser the same request can think.
+				if has, _ := budgeted(id, fields); has {
+					thinks++
+				}
+			}
+			for _, fields := range namedBudgets {
+				if has, _ := budgeted(id, fields+refuser); !has {
+					t.Errorf("%s %s + %s: the budget the caller named was dropped", id, fields, name)
+				}
+			}
+		}
+	}
+	if thinks == 0 {
+		t.Fatal("no request in this test thinks without a forced tool or prefill: the property proves nothing")
 	}
 }
 

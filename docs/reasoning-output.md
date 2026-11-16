@@ -83,23 +83,30 @@ A reasoning effort is a request for depth. On a Claude model it never makes
 the request fail and it is never ignored: each model is sent the nearest thing
 it has. The gateway reads the class of a model from its ID after routing has
 chosen the model, so a fallback model is sent its own class's request. The
-same rules hold on every Claude route: Anthropic, Bedrock and Vertex.
+same rules hold on every Claude route: Anthropic, Bedrock, Vertex and Azure.
 
 | Class | Models | How it thinks | Efforts it has |
 | --- | --- | --- | --- |
-| Full | Opus 4.7, 4.8, 5 and 5.5, Sonnet 5 and 5.5, Haiku 5.5, Fable 5.x, Mythos 5.x | adaptive | `low`, `medium`, `high`, `xhigh`, `max` |
-| 4.6 | Opus 4.6, Sonnet 4.6 | adaptive | `low`, `medium`, `high`, `max` |
+| Full | every Claude model the rows below do not name: Opus 4.7, 4.8, 5 and 5.5, Sonnet 5 and 5.5, Haiku 5.5, Fable 5.x, Mythos 5.x, and any newer model | adaptive | `low`, `medium`, `high`, `xhigh`, `max` |
+| 4.6 | Opus 4.6, Sonnet 4.6 | adaptive, and a token budget still works | `low`, `medium`, `high`, `max` |
 | Opus 4.5 | Opus 4.5 | token budget, plus an effort | `low`, `medium`, `high` |
-| Budget | every other Claude model: Haiku 4.5, Sonnet 4.5, Opus 4 and 4.1, Sonnet 4, the 3.x models | token budget | none |
+| Budget | Haiku 4.5, Sonnet 4.5, Opus 4.1, Opus 4, Sonnet 4, the 3.x families and older | token budget | none |
 
-A model is in the Full class when its ID, lowercased and with `.` read as
-`-`, contains `claude-opus-4-7`, `claude-opus-4-8`, `claude-opus-5`,
-`claude-sonnet-5`, `claude-haiku-5`, `claude-fable-5` or `claude-mythos-5`. It
-is in the 4.6 class when it contains `claude-opus-4-6` or `claude-sonnet-4-6`,
-and it is Opus 4.5 when it contains `claude-opus-4-5`. Every other Claude ID
-is in the Budget class. A test fails when a route table names a Claude model
-that has not been given a class, so a new model cannot land in the Budget
-class unnoticed.
+The class is read from the model ID, lowercased and with `.` read as `-`. The
+Budget class is a closed list: an ID that contains `claude-haiku-4-5`,
+`claude-sonnet-4-5` or `claude-opus-4-1`; Opus 4 and Sonnet 4, which are
+`claude-opus-4` and `claude-sonnet-4` where the ID ends at the `4` or goes on
+with a date, a Vertex `@`, a Bedrock version or `-0`; and the `claude-3`,
+`claude-2` and `claude-instant` families. Opus 4.5 is an ID that contains
+`claude-opus-4-5`. The 4.6 class is `claude-opus-4-6` and `claude-sonnet-4-6`.
+Every other Claude ID is in the Full class.
+
+That default is deliberate. A new Claude model reaches the gateway through
+the catalog, with no gateway change, and every model since Opus 4.7 refuses a
+thinking budget. So a model the gateway has never been told about is sent
+adaptive thinking. A test pins the class of every Claude ID that the
+gateway's own tables name, so an older model cannot leave the Budget class,
+and a newer one cannot be put in it, unnoticed.
 
 An adaptive model is sent `thinking: {"type": "adaptive"}` and the effort as
 `output_config.effort`. A budget model is sent
@@ -120,17 +127,28 @@ down. `minimal` is below every ladder. It becomes the lowest effort where the
 model has an effort field. Where the only control is a token budget it sets
 no thinking, because the smallest budget Anthropic takes is 1,024 tokens.
 
+When a request carries two efforts, a top-level `reasoning_effort` and a
+`reasoning.effort` inside the object, the top-level one wins. That holds on
+every Claude class, and it is the rule on the other providers that are sent
+one effort. The one exception is Off: an effort that means Off governs from
+either place.
+
 The switch and the effort work together:
 
-* Off governs on every class. `reasoning: {"enabled": false}`, or any switch
-  spelling of Off, sends no thinking, even beside an effort or a token
-  budget. The Budget class is sent no `thinking` field. Opus 4.5 and the
-  adaptive classes are sent `thinking: {"type": "disabled"}`. Sonnet 5.5 is
-  sent `thinking: {"type": "between_tools"}`, the Off that Anthropic names
-  for that model: it does not think before responding, and the short updates
-  it writes between tool calls come back as thinking blocks. An effort of
-  `none` is the same request as Off. The `max_tokens` sent is the caller's
-  own, with no room added for a budget that is not sent.
+* Off governs on every class. Off is any of these: `reasoning: {"enabled":
+  false}`; a bare `reasoning: false`; `reasoning: {"type": "disabled"}`; any
+  switch spelling of Off; and an effort of `none`, `off`, `disable` or
+  `disabled`, top-level or in the `reasoning` object. Off sends no thinking,
+  even beside an On, an effort or a token budget. The Budget class is sent no
+  `thinking` field. Opus 4.5 and the adaptive classes are sent
+  `thinking: {"type": "disabled"}`. Sonnet 5.5 is sent
+  `thinking: {"type": "between_tools"}`, the Off that Anthropic names for
+  that model: it does not think before responding, and the short updates it
+  writes between tool calls come back as thinking blocks. The `max_tokens`
+  sent is the caller's own, with no room added for a budget that is not sent.
+  A switch turned on beside an effort that means Off returns 400, as stated
+  above. The same contradiction written with the `reasoning` object is not
+  refused: it reaches the model, and Off governs.
 * On beside an effort is that effort, wherever the effort is written.
   `reasoning: {"enabled": true}` beside `reasoning_effort: "low"` sends what
   `reasoning_effort: "low"` alone sends, and so does
@@ -143,26 +161,30 @@ The switch and the effort work together:
   thinking budget, so On alone is sent there as
   `thinking: {"type": "adaptive"}` with no effort: the model thinks at its
   own default depth. The 4.6 class, Opus 4.5 and the Budget class are sent a
-  4,096 token budget.
-* A token budget the caller names (`thinking.budget_tokens` or
-  `reasoning.max_tokens`) is sent as written, and the provider judges it.
+  4,096 token budget. Inside an orchestration step whose output allowance is
+  1,024 tokens or less, On alone sends no thinking on any class, because
+  there is no room to think and answer.
+* A token budget the caller names, as `thinking.budget_tokens` or
+  `reasoning.max_tokens`, is sent as the thinking budget, and the provider
+  judges it. On Opus 4.5 and the Budget class `reasoning.budget_tokens` and
+  `reasoning.thinking_budget` are read the same way.
 
 Budget thinking is sent as a request Anthropic accepts. This applies to Opus
-4.5 and the Budget class, whether the budget came from an effort, from On or
-from a budget the caller named:
+4.5 and the Budget class:
 
 * Anthropic refuses budget thinking beside a `temperature` other than 1,
   beside `top_k`, and beside a `top_p` below 0.95. The gateway does not send
-  those fields with a thinking budget. A `temperature` of exactly 1 and a
-  `top_p` of 0.95 or more are sent. A request with no thinking keeps all of
-  its sampling fields.
-* A forced tool choice or an assistant prefill beats an effort. Anthropic
-  refuses thinking when `tool_choice` forces a tool (`"required"`, or a named
-  function) and when the last message is from the assistant. In those
-  requests thinking that only an effort asked for is not sent, and
-  `max_tokens` is not raised for it. Opus 4.5 is still sent its effort.
-  Thinking the caller asked for explicitly, with On or with a token budget,
-  is still sent, and the provider judges it.
+  those fields with a thinking budget, whether the budget came from an
+  effort, from On or from a budget the caller named. A `temperature` of
+  exactly 1 and a `top_p` of 0.95 or more are sent. A request with no
+  thinking keeps all of its sampling fields.
+* A forced tool choice or an assistant prefill beats any thinking budget the
+  gateway chose. Anthropic refuses budget thinking every time `tool_choice`
+  forces a tool (`"required"`, or a named function) and every time the last
+  message is from the assistant. In those requests a budget that came from
+  an effort, from On alone or from On beside an effort is not sent, and
+  `max_tokens` is not raised for it. Opus 4.5 is still sent its effort. Only
+  a token budget the caller named is still sent, and the provider judges it.
 
 Adaptive thinking, from an effort or from On alone, is sent with no
 `temperature` and no `top_p`, and `top_k` is sent as written. A model of the
@@ -174,20 +196,53 @@ Limits that remain:
 
 * Opus 5.5 and Fable 5.x cannot be turned off. Off sends them
   `thinking: {"type": "disabled"}`, and Anthropic refuses that for those
-  models.
-* A token budget the caller names is sent as written to every class. The
+  models. Whether Mythos 5.x accepts `disabled` has not been observed.
+* A token budget the caller names is sent to the Full class too, and the
   Full class refuses a thinking budget, so that request fails there. Use an
   effort, or On alone, on those models.
+* On the adaptive classes only `reasoning.max_tokens` is honoured as a
+  named budget beside an effort. `reasoning.budget_tokens` and
+  `reasoning.thinking_budget` beside an effort are not sent there: the
+  request thinks adaptively at the effort.
+* On alone on the 4.6 class is a 4,096 token budget that is sent with the
+  caller's sampling fields, tool choice and messages as written. Anthropic
+  refuses budget thinking beside a `temperature` other than 1, `top_k`, a
+  low `top_p`, a forced tool choice or a prefill, so such a request fails
+  there. On beside an effort does not have this limit.
+* Adaptive thinking is still sent beside a forced tool choice, a prefill and
+  `top_k`.
+* Off on an adaptive class is sent the 4,096 token wire default as
+  `max_tokens` when the caller set no limit, not 32,000.
 * A thinking budget raises the `max_tokens` sent to the provider above what
   the hold was sized for, when the budget is not below the output limit (512
   becomes 8,704 and 4,096 becomes 12,288 at 8,192 tokens of budget). `high`
   has always done this. `max` on the Budget class now does too.
+* A caller limit just above the budget leaves almost no room for the answer:
+  `max` with `max_tokens: 8193` may think for 8,192 of the 8,193 tokens.
+  `high` has always behaved this way.
 * An effort the gateway does not know is not on any ladder. It is sent as
   written in `output_config.effort` to the adaptive classes and to Opus 4.5,
   and Anthropic refuses a word that is not one of its own. Without On it
   sets no thinking on Opus 4.5 and on the Budget class.
-* Off is the object `reasoning: {"enabled": false}` or a switch. A bare
-  `reasoning: false` is not read as Off.
+
+Observed on Anthropic's API on 2026-11-16. These are the answers the rules
+above were built on:
+
+* Haiku 5.5 refuses budget thinking: 400, `"thinking.type.enabled" is not
+  supported for this model`. On alone on Sonnet 5 and on Opus 4.8, when it
+  was still sent as a budget, got the same error.
+* Haiku 5.5 accepts `thinking: {"type": "disabled"}` (200) and refuses
+  `between_tools` (400).
+* Haiku 5.5 accepts adaptive thinking beside a forced tool choice (200, with
+  a tool call).
+* Sonnet 5.5 refuses `disabled` and names `between_tools` in the error
+  (400). It accepts `thinking: {"type": "between_tools"}` (200).
+* Opus 5.5 refuses `disabled` (400).
+* Sonnet 4.6 refuses effort `xhigh` (400, supported levels: high, low, max,
+  medium) and effort `minimal` (400).
+* Opus 4.5 refuses effort `max` (400, supported levels: high, low, medium).
+* Haiku 4.5 refuses budget thinking beside `temperature: 0.2` and beside a
+  forced tool choice (400 each).
 
 ### OpenAI models that use tools
 

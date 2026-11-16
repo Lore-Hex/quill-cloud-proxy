@@ -21,12 +21,16 @@ const claudeAlias = "alias"
 // enclave's non-test Go source, with the reasoning class it must have. The
 // classes are documented in docs/reasoning-output.md, "Claude models".
 //
-// An ID that is not here fails TestEveryKnownClaudeModelHasAReasoningClass.
-// That is the point: a Claude model no class names takes the budget path, and
-// the newer models refuse budget thinking outright (Haiku 5.5 answered every
-// effort with a 400 until it was listed). Before adding an ID, find out which
-// thinking and effort values the model accepts, then name its class here and,
-// unless it is budget-only, in claudeReasoningModels.
+// An ID that is not here fails TestEveryKnownClaudeModelHasAReasoningClass,
+// so the class of every model the gateway names is a decision someone made.
+// A Claude ID that claudeReasoningModels does not name is in the full class,
+// which is right for a new model: every model since Opus 4.7 refuses a
+// thinking budget. This list is what keeps an older model in the source from
+// leaving its budget class, and a newer one from being put in it, unnoticed.
+// It cannot see a model that arrives only through the catalog, which is why
+// the default is the full class. Before adding an ID, find out which thinking
+// and effort values the model accepts, then name its class here and, unless
+// it is in the full class, in claudeReasoningModels.
 var knownClaudeModelClasses = map[string]string{
 	// Catalog IDs.
 	"anthropic/claude-3-5-sonnet": "budget",
@@ -68,12 +72,8 @@ var knownClaudeModelClasses = map[string]string{
 	"us.anthropic.claude-haiku-5-5":               "full",
 	// The class table's own match strings in anthropic_reasoning.go.
 	"claude-opus-4-5":   "opus45",
-	"claude-opus-4-6":   "v46",
-	"claude-opus-5":     "full",
+	"claude-opus-4-1":   "budget",
 	"claude-sonnet-5-5": "full",
-	"claude-haiku-5":    "full",
-	"claude-fable-5":    "full",
-	"claude-mythos-5":   "full",
 	// Fusion aliases.
 	"~anthropic/claude-latest":        claudeAlias,
 	"~anthropic/claude-opus-latest":   claudeAlias,
@@ -129,8 +129,9 @@ func claudeModelLiterals(t *testing.T) map[string]string {
 	return found
 }
 
-// TestEveryKnownClaudeModelHasAReasoningClass is the guard that keeps a new
-// Claude model from falling onto the budget path unnoticed.
+// TestEveryKnownClaudeModelHasAReasoningClass pins the class of every Claude
+// model ID in the source: each legacy spelling stays in its budget class and
+// each newer model stays out of it.
 func TestEveryKnownClaudeModelHasAReasoningClass(t *testing.T) {
 	found := claudeModelLiterals(t)
 	ids := make([]string, 0, len(found))
@@ -142,9 +143,9 @@ func TestEveryKnownClaudeModelHasAReasoningClass(t *testing.T) {
 		want, listed := knownClaudeModelClasses[id]
 		if !listed {
 			got, _ := claudeReasoningClassOf(id)
-			t.Errorf("%s (in %s) is a Claude model ID that knownClaudeModelClasses does not list. It would take the %q path today. "+
+			t.Errorf("%s (in %s) is a Claude model ID that knownClaudeModelClasses does not list. It is in the %q class today. "+
 				"Find out which thinking and effort values the model accepts, add it to claudeReasoningModels in anthropic_reasoning.go "+
-				"unless it is budget-only, and list it in this test with its class.", id, found[id], got)
+				"unless it is in the full class, and list it in this test with its class.", id, found[id], got)
 			continue
 		}
 		if want == claudeAlias {
