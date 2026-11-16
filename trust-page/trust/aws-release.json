@@ -1,33 +1,24 @@
 {
   "accepted_pcr0s": [
-    "09b5b6c09d30b222a4daeeff057d733ddb3eeb49c4c32f1934f5cb7cce15bf7712655233683204773cbd3f352db8bfe6",
     "36e9bb20a8dd78ad2b25fdec5fead81cb5cbde19d86cad13a5da513fda6baa25758263ef6b017c1d5c4a83b23af16202"
   ],
   "api_base_url": "https://api-aws.trustedrouter.com/v1",
   "attestation_format": "cose-sign1-nitro-attestation-document",
   "attestation_root": "https://aws-nitro-enclaves.amazonaws.com/AWS_NitroEnclaves_Root-G1.zip",
-  "candidate_eif": {
-    "manifest": "eif/95676bb4e4076a31f83422463ffb96ee5f6aaf10/de6e757966005bef2561499dccb1c7fd0c1e18995338e1e64b0745556ac1ff52/manifest.json",
-    "manifest_sha256": "46e3098e4762e3da74c19b40f3149215f100fd8b5383ad6a760dfdda5f093dcd",
-    "observed_serving": false,
-    "pcr0": "36e9bb20a8dd78ad2b25fdec5fead81cb5cbde19d86cad13a5da513fda6baa25758263ef6b017c1d5c4a83b23af16202",
-    "signing_identity": "https://github.com/Lore-Hex/quill-cloud-proxy/.github/workflows/publish-aws-eif.yml@refs/heads/main",
-    "source_commit": "95676bb4e4076a31f83422463ffb96ee5f6aaf10"
-  },
   "data_policy": {
     "client_telemetry_content_free": true,
     "client_telemetry_disclosure": "https://trustedrouter.com/docs/telemetry",
     "control_plane_prompt_access": false,
     "prompt_output_storage": false
   },
-  "measurement_provenance": "All four serving instances were individually verified against the signed CI PCR0 after both regional refreshes completed: eu-west-3 i-030fe95aced28eb46 and i-027e61337a661daa2 on launch-template version 51; eu-west-1 i-084bdaa3ee4a00042 and i-0ee7b1b2f7d51c0a9 on version 57. Each proof checked the instance module ID, Nitro certificate chain, fresh nonce, certificate and TLS exporter binding, same-socket follow-up, and healthy response; regional inventories remained stable. The retired 9ca5c924 measurement was removed only after this complete census. Both regions boot the same create-only CI EIF, SHA256 c7b1c2ccf4614887a95c1f5d2a20a6b995327bb569737b133927d57348a170ea (605163664 bytes), from protected-main build 43836278088. Its independently authenticated build manifest remains at eif/992618f254c4e5b209c15f0c638a0d69bcc7e0fd/c7b1c2ccf4614887a95c1f5d2a20a6b995327bb569737b133927d57348a170ea/manifest.json. Source-to-image provenance remains operator-asserted; this is not an independent image reproduction. The manifest enclave_image_id is a Docker image ID, not a registry manifest digest.",
+  "measurement_provenance": "All four serving gateways were individually verified against the signed CI PCR0 after staged regional replacement: Paris launch-template version 52 and Dublin version 58. Each proof checked the expected instance, Nitro chain, fresh nonce, TLS certificate and exporter binding, and bootstrap health over the same verified connection. Both regional refreshes and their final observation periods completed successfully; final inventories contained exactly two healthy new targets per region and no old targets. Both regions use the create-only CI EIF with SHA256 de6e757966005bef2561499dccb1c7fd0c1e18995338e1e64b0745556ac1ff52 (605253777 bytes), from protected-main publisher run 43890482411. Its independently authenticated manifest remains at eif/95676bb4e4076a31f83422463ffb96ee5f6aaf10/de6e757966005bef2561499dccb1c7fd0c1e18995338e1e64b0745556ac1ff52/manifest.json. Source-to-image provenance remains operator-asserted; this is not an independent image reproduction. Both runtime pin consumers were narrowed to this measurement only after the complete serving census.",
   "measurement_type": "nitro-pcr0-sha384",
-  "observed_module_id": "i-0ee7b1b2f7d51c0a9-enc01a1e48a1fc09b8c",
-  "pcr0": "09b5b6c09d30b222a4daeeff057d733ddb3eeb49c4c32f1934f5cb7cce15bf7712655233683204773cbd3f352db8bfe6",
+  "observed_module_id": "i-0235c8105fdd59d70-enc01a1e559f62412aa",
+  "pcr0": "36e9bb20a8dd78ad2b25fdec5fead81cb5cbde19d86cad13a5da513fda6baa25758263ef6b017c1d5c4a83b23af16202",
   "platform": "aws-nitro-enclaves",
-  "release_state": "rolling",
+  "release_state": "current",
   "reproduce": "tools/verify-pcr0.sh",
-  "source_commit": "992618f254c4e5b209c15f0c638a0d69bcc7e0fd",
+  "source_commit": "95676bb4e4076a31f83422463ffb96ee5f6aaf10",
   "source_commit_provenance": "operator-asserted",
   "source_repo": "https://github.com/Lore-Hex/quill-cloud-proxy",
   "tls": {
