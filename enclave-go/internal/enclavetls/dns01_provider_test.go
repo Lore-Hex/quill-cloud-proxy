@@ -12,6 +12,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -815,9 +816,9 @@ func TestWaitTXTRetriesArePaced(t *testing.T) {
 	cloudDNSChangePollInterval = 20 * time.Millisecond
 	t.Cleanup(func() { cloudDNSChangePollInterval = old })
 
-	var gets int
+	var gets atomic.Int64
 	p, srv := newTestProvider(t, func(w http.ResponseWriter, r *http.Request) {
-		gets++
+		gets.Add(1)
 		w.WriteHeader(http.StatusTooManyRequests)
 	})
 	p.HTTPClient = redirect(t, srv)
@@ -828,8 +829,8 @@ func TestWaitTXTRetriesArePaced(t *testing.T) {
 		t.Fatalf("error = %v, want the deadline", err)
 	}
 	// 300ms at one call per 20ms is about 15; a hot loop makes hundreds.
-	if gets < 2 || gets > 30 {
-		t.Fatalf("made %d calls in 300ms; retries are not paced", gets)
+	if count := gets.Load(); count < 2 || count > 30 {
+		t.Fatalf("made %d calls in 300ms; retries are not paced", count)
 	}
 }
 

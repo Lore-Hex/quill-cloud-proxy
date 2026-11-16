@@ -14,7 +14,7 @@ import (
 
 	"github.com/Lore-Hex/quill-cloud-proxy/enclave-go/internal/llm"
 	"github.com/Lore-Hex/quill-cloud-proxy/enclave-go/internal/trustedrouter"
-	"github.com/Lore-Hex/quill-cloud-proxy/enclave-go/internal/types"
+	"github.com/Lore-Hex/quill-cloud-proxy/enclave-go/internal/upstreamerror"
 )
 
 func TestGatewayMalformedContentChunkSettles(t *testing.T) {
@@ -42,8 +42,13 @@ func TestGatewayMalformedContentChunkSettles(t *testing.T) {
 		return &http.Response{StatusCode: 200, Header: make(http.Header), Body: io.NopCloser(strings.NewReader(body)), Request: r}, nil
 	})})
 	client := &scriptedProviderStreamClient{invoke: func(_ llm.InvokeOptions, w io.Writer) error {
-		return llm.InvokeOpenAICompatibleStreaming(t.Context(), "openai", provider.URL, "test-key",
-			&types.OpenAIChatRequest{Model: "model-a", Stream: true}, &types.AnthropicMessagesRequest{}, w, "model-a")
+		response, err := provider.Client().Get(provider.URL)
+		if err != nil {
+			return err
+		}
+		defer response.Body.Close()
+		upstreamerror.Open(w)
+		return llm.RelayOpenAIStream(response.Body, w, "openai")
 	}}
 	auth := &trustedrouter.Authorization{AuthorizationID: "malformed-chunk", Model: "model-a", Provider: "openai", EndpointID: "first", UsageType: "Credits"}
 	var out bytes.Buffer
