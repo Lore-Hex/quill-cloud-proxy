@@ -180,7 +180,7 @@ func TestNearAIClientRejectsUnknownModelsAndBYOKCannotBypassAttestation(t *testi
 }
 
 func TestNearAISingleConnectionRejectsUnpinnedDomainsAndRedials(t *testing.T) {
-	for _, domain := range []string{"near.ai", "GLM-5-2.completions.near.ai", "x.completions.near.ai:443"} {
+	for _, domain := range []string{"near.ai", "GLM-5-2.completions.near.ai", "x.completions.near.ai:443", "unreviewed.completions.near.ai"} {
 		if _, _, err := newNearAISingleConnection(domain); err == nil {
 			t.Fatalf("invalid domain %q accepted", domain)
 		}

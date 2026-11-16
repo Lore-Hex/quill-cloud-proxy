@@ -34,7 +34,8 @@ func maybeServeChatWebSearch(
 		writeAdapterOpenAIError(conn, err)
 		return true
 	}
-	if enclaveWebSearchClient == nil {
+	searcher := selectedWebSearchClient(req.Response.WebSearch)
+	if searcher == nil {
 		writeOpenAIError(conn, 503, "web search is unavailable", "server_error", "web_search_unavailable", "tools")
 		return true
 	}
@@ -59,7 +60,7 @@ func maybeServeChatWebSearch(
 	requestedModel := req.Model
 	started := time.Now()
 	if !req.Stream {
-		outcome, err := executeResponsesWebSearch(ctx, req, runner, enclaveWebSearchClient, rootID, nil)
+		outcome, err := executeResponsesWebSearch(ctx, req, runner, searcher, rootID, nil)
 		if err != nil {
 			logResponsesWebSearchEnd(requestLogID, started, outcome, err)
 			writeResponsesWebSearchError(conn, err)
@@ -79,7 +80,7 @@ func maybeServeChatWebSearch(
 	if err := emitter.Start(); err != nil {
 		return true
 	}
-	outcome, err := executeResponsesWebSearch(ctx, req, runner, enclaveWebSearchClient, rootID, emitter)
+	outcome, err := executeResponsesWebSearch(ctx, req, runner, searcher, rootID, emitter)
 	if err != nil {
 		logResponsesWebSearchEnd(requestLogID, started, outcome, err)
 		_ = emitter.Fail(err)
@@ -153,12 +154,16 @@ func annotateChatWebSearchUsage(body []byte, outcome responsesWebSearchOutcome) 
 }
 
 func chatWebSearchProvenance(outcome responsesWebSearchOutcome) ([]string, []types.ProviderSearchResult) {
+	engine := outcome.SearchEngine
+	if engine == "" {
+		engine = "exa"
+	}
 	citations := append([]string(nil), outcome.Final.Result.Citations...)
 	results := append([]types.ProviderSearchResult(nil), outcome.Final.Result.SearchResults...)
 	for _, source := range uniqueWebSearchSources(outcome.WebCalls) {
 		citations = append(citations, source.URL)
 		results = append(results, types.ProviderSearchResult{
-			Title: source.Title, URL: source.URL, Snippet: source.Content, Source: "exa",
+			Title: source.Title, URL: source.URL, Snippet: source.Content, Source: engine,
 		})
 	}
 	return citations, results
