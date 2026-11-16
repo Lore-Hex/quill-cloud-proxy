@@ -177,3 +177,8 @@ After activation, `deploy-aws-nitro.sh --phase cross-cloud-key` also refuses
 before any GCP key mint or legacy secret write. That command cannot rotate a
 credential used inside the sealed bundle. Use the complete off-host publication
 procedure and coordinate credential revocation separately.
+
+After the gated retirement, compute defaults to `v2-only` and the activated
+key configuration rejects both `legacy` and `dual` before any cloud call.
+An explicit immutable parent-image digest remains required. Do not merge
+this retirement change while any serving parent still needs the V1 listener.

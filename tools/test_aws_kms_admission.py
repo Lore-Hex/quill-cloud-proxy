@@ -116,10 +116,12 @@ class KMSAdmissionTests(unittest.TestCase):
         aws.assert_not_called()
 
     def test_parent_modes_use_only_pinned_regional_key(self):
-        for mode in ("dual", "v2-only"):
-            self.assertEqual(gate.parent_key("eu-west-3", mode, config_path=self.path),
-                             self.config["key_arns"]["eu-west-3"])
-        self.assertEqual(gate.parent_key("eu-west-1", "legacy", config_path=self.path), "")
+        self.assertEqual(gate.parent_key("eu-west-3", "v2-only", config_path=self.path),
+                         self.config["key_arns"]["eu-west-3"])
+        self.assertEqual(gate.parent_key("eu-west-1", "legacy", config_path=self.disabled_path), "")
+        for mode in ("legacy", "dual"):
+            with self.assertRaisesRegex(ValueError, "listener is retired"):
+                gate.parent_key("eu-west-1", mode, config_path=self.path)
         with self.assertRaises(ValueError):
             gate.parent_key("eu-west-1", "dual", config_path=self.disabled_path)
         with self.assertRaises(ValueError):
