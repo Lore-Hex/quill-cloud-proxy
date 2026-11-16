@@ -28,7 +28,11 @@ func WithCredentialRedaction(ctx context.Context, values ...string) (context.Con
 		}
 		c.mu.Lock()
 		defer c.mu.Unlock()
-		return &Error{Status: status, Body: sanitize(body, c.values...)}
+		redacted := &Error{Status: status, Body: sanitize(body, c.values...)}
+		if IsLocal(err) {
+			return &Local{Err: redacted}
+		}
+		return redacted
 	}
 }
 

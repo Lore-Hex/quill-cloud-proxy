@@ -1242,7 +1242,7 @@ func writeUpstreamError(w io.Writer, route string, err error, authorization *tru
 	}
 	encoded, _ := json.Marshal(body)
 	if circuitErr, ok := providerCircuitOpenFrom(err); ok {
-		writeJSONResponseWithHeaders(w, status, encoded, providerCircuitRetryHeaders(circuitErr.retryAfter))
+		writeJSONResponseWithHeaders(w, status, encoded, providerCircuitRetryHeaders(circuitErr))
 		return
 	}
 	writeJSONResponse(w, status, encoded)

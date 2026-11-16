@@ -59,7 +59,17 @@ func newBedrockRuntimeWithHTTP(apiKey string, httpc *http.Client) *bedrockRuntim
 	}
 }
 
+// requireZeroRetention is the gateway's own policy check, not inference: its
+// failures are marked Local so the provider circuit breaker never reads them
+// as Bedrock being down.
 func (c *bedrockRuntimeClient) requireZeroRetention(ctx context.Context) error {
+	if err := c.checkZeroRetention(ctx); err != nil {
+		return &upstreamerror.Local{Err: err}
+	}
+	return nil
+}
+
+func (c *bedrockRuntimeClient) checkZeroRetention(ctx context.Context) error {
 	// No cached positive result: every dispatch checks all allowed US destinations.
 	// The account policy additionally blocks incompatible models inside Bedrock.
 	ctx, cancel := context.WithTimeout(ctx, 8*time.Second)

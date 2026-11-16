@@ -34,11 +34,31 @@ const defaultProviderRouteMemorySeconds = 30
 // marked incomplete and never refuses a request.
 const maxProviderRouteMemoryCircuits = 64
 
-// providerCircuitRegistry is a per-gateway-instance circuit breaker keyed by
-// provider|region|model-family. threshold consecutive provider-down failures
-// open a circuit for openFor. When the window passes the circuit is half-open:
-// traffic probes it, a success closes it, and a failure reopens it at once,
-// because failures are only reset by a success.
+// providerCircuitProbeRetry is the Retry-After for an attempt turned away
+// because a half-open circuit's one probe is still in flight.
+const providerCircuitProbeRetry = time.Second
+
+// providerCircuitRegistry is the per-gateway-instance provider circuit breaker.
+// Every circuit is keyed by provider|region|full model id, and there are two
+// kinds:
+//
+//   - A tenant circuit (the authorizing workspace, or the key when there is no
+//     workspace): threshold consecutive provider-down failures by that tenant
+//     open it. It is what refuses a tenant that keeps retrying a dead route,
+//     before authorize. BYOK routes only ever have this kind: a tenant's own
+//     provider account says nothing about anyone else's.
+//   - A shared circuit per Credits route: it opens only when threshold
+//     DISTINCT tenants failed provider-down since the last success, so no one
+//     tenant, whose failures are refunded and cost it nothing, can take a route
+//     away from everyone else.
+//
+// An open circuit refuses attempts for openFor. Then it is half-open: one probe
+// at a time, the others still refused. Only a success from an attempt that
+// started after the circuit opened (or, before it opens, after its first
+// failure) closes it; a stream that was already running proves nothing about
+// the outage. Failures keep counting: a tenant circuit reopens on its next
+// failure, a shared one once threshold distinct tenants failed since it last
+// opened.
 //
 // Every field is read under mu: tests reconfigure the process-wide registry
 // while goroutines left over from earlier tests may still consult it.
@@ -54,7 +74,7 @@ type providerCircuitRegistry struct {
 	// routes remembers, per credential and routing policy, which circuits the
 	// control plane last authorized. Candidates are only known after
 	// authorize, so this is what lets a request be refused BEFORE authorize
-	// (no hold, no refund) when every one of them is open. See FastFail.
+	// (no hold, no refund) when every one of them refuses. See FastFail.
 	routes   map[string]providerRouteMemory
 	routeTTL time.Duration
 
@@ -64,28 +84,118 @@ type providerCircuitRegistry struct {
 }
 
 type providerCircuitState struct {
-	failures  int
-	openUntil time.Time
-	updatedAt time.Time
+	// failures counts a tenant circuit's consecutive provider-down failures.
+	failures int
+	// tenants holds the distinct tenants that failed a shared circuit since
+	// its last success or open (at most threshold digests).
+	tenants     []string
+	streakStart time.Time
+	openedAt    time.Time
+	openUntil   time.Time
+	probeUntil  time.Time
+	updatedAt   time.Time
 }
 
-// providerRouteMemory holds circuit keys only (provider, region and model
-// family): no credential, endpoint secret, prompt or request content.
+func (s providerCircuitState) open(now time.Time) bool {
+	return !s.openUntil.IsZero() && now.Before(s.openUntil)
+}
+
+func (s providerCircuitState) halfOpen(now time.Time) bool {
+	return !s.openedAt.IsZero() && !s.open(now)
+}
+
+// freshSince is the earliest attempt start whose outcome still describes this
+// circuit: after it opened, or after its first failure.
+func (s providerCircuitState) freshSince() time.Time {
+	if !s.openedAt.IsZero() {
+		return s.openedAt
+	}
+	return s.streakStart
+}
+
+// providerCircuitRoute names the circuits one candidate passes through.
+type providerCircuitRoute struct {
+	shared string
+	tenant string
+}
+
+func (r providerCircuitRoute) keys() []string {
+	keys := make([]string, 0, 2)
+	if r.shared != "" {
+		keys = append(keys, r.shared)
+	}
+	if r.tenant != "" {
+		keys = append(keys, r.tenant)
+	}
+	return keys
+}
+
+func (r providerCircuitRoute) tracked() bool { return r.shared != "" || r.tenant != "" }
+
+func providerCircuitRouteFor(option llm.InvokeOptions, tenant string) providerCircuitRoute {
+	if !providerCircuitTracked(option) {
+		return providerCircuitRoute{}
+	}
+	base := providerCircuitKey(option)
+	byok := strings.EqualFold(strings.TrimSpace(option.UsageType), "BYOK")
+	route := providerCircuitRoute{}
+	if !byok {
+		route.shared = base
+	}
+	if tenant != "" {
+		usage := "credits"
+		if byok {
+			usage = "byok"
+		}
+		route.tenant = "tenant:" + tenant + "|" + usage + "|" + base
+	}
+	return route
+}
+
+// providerCircuitTenant is a digest of who is paying for the attempt: the
+// workspace, or the API key when the authorization names no workspace. A
+// tenant can mint keys freely, so the workspace is what is counted. Empty when
+// unknown; such attempts are not counted.
+func providerCircuitTenant(authorization *trustedrouter.Authorization) string {
+	if authorization == nil {
+		return ""
+	}
+	kind, id := "workspace", strings.TrimSpace(authorization.WorkspaceID)
+	if id == "" {
+		kind, id = "key", strings.TrimSpace(authorization.APIKeyHash)
+	}
+	if id == "" {
+		return ""
+	}
+	sum := sha256.Sum256([]byte("quill/provider-circuit-tenant/v1\x00" + kind + "\x00" + id))
+	return hex.EncodeToString(sum[:16])
+}
+
+// providerRouteMemory holds circuit keys only: provider, region, model and a
+// tenant digest. No credential, endpoint secret, prompt or request content.
 type providerRouteMemory struct {
-	circuits  []string
+	circuits  []providerCircuitRoute
 	complete  bool
-	minInput  int
-	minOutput int
+	minDemand int
 	expiresAt time.Time
 }
 
-// providerRouteDemand is what authorize filters endpoints by besides the
-// routing policy: estimated input tokens and requested output tokens. A larger
-// demand can only remove candidates (context window, output cap), so a set
-// remembered from a request no larger than this one still covers it.
-type providerRouteDemand struct {
-	input  int
-	output int
+// providerRouteDemand is the one number authorize fits endpoints by:
+// estimated input tokens plus max_tokens, or 0 when the caller set none
+// (quill-router candidates_fitting_context). A larger demand can only remove
+// candidates, so a set remembered from a request no larger than this one still
+// covers it.
+type providerRouteDemand int
+
+func providerRouteDemandFor(req *types.OpenAIChatRequest) providerRouteDemand {
+	if req == nil {
+		return 0
+	}
+	demand := trustedrouter.EstimateInputTokens(req)
+	if req.MaxTokens != nil && *req.MaxTokens > 0 {
+		demand += *req.MaxTokens
+	}
+	return providerRouteDemand(demand)
 }
 
 func newProviderCircuitRegistryFromEnv() *providerCircuitRegistry {
@@ -131,8 +241,7 @@ func circuitEnvInt(name string, fallback int) int {
 }
 
 // providerCircuitTracked excludes options without a provider. They are the
-// legacy single-upstream path with no authorize or refund to protect, and they
-// would all share one "unknown" circuit.
+// legacy single-upstream path with no authorize or refund to protect.
 func providerCircuitTracked(option llm.InvokeOptions) bool {
 	return strings.TrimSpace(option.Provider) != ""
 }
@@ -149,97 +258,251 @@ func (r *providerCircuitRegistry) activeLocked() (time.Time, bool) {
 	return r.now(), true
 }
 
-func (r *providerCircuitRegistry) Allow(option llm.InvokeOptions) bool {
-	_, open := r.OpenRemaining(option)
-	return !open
-}
-
-// OpenRemaining reports whether the option's circuit is open now and how long
-// until its window passes.
-func (r *providerCircuitRegistry) OpenRemaining(option llm.InvokeOptions) (time.Duration, bool) {
-	if r == nil || !providerCircuitTracked(option) {
+// blockedLocked reports whether key refuses new attempts: open, or half-open
+// with its probe in flight.
+func (r *providerCircuitRegistry) blockedLocked(key string, now time.Time) (time.Duration, bool) {
+	if key == "" {
 		return 0, false
 	}
-	key := providerCircuitKey(option)
+	state, ok := r.states[key]
+	if !ok {
+		return 0, false
+	}
+	if state.open(now) {
+		return state.openUntil.Sub(now), true
+	}
+	if state.halfOpen(now) && now.Before(state.probeUntil) {
+		return providerCircuitProbeRetry, true
+	}
+	return 0, false
+}
+
+// routeBlockedLocked: an attempt needs every circuit on its route, so it waits
+// for the last of them.
+func (r *providerCircuitRegistry) routeBlockedLocked(route providerCircuitRoute, now time.Time) (time.Duration, bool) {
+	var wait time.Duration
+	blocked := false
+	for _, key := range route.keys() {
+		if keyWait, keyBlocked := r.blockedLocked(key, now); keyBlocked {
+			blocked = true
+			wait = max(wait, keyWait)
+		}
+	}
+	return wait, blocked
+}
+
+// Blocked reports whether a candidate's circuits refuse new attempts, and how
+// long until they might not.
+func (r *providerCircuitRegistry) Blocked(option llm.InvokeOptions, tenant string) (time.Duration, bool) {
+	route := providerCircuitRouteFor(option, tenant)
+	if r == nil || !route.tracked() {
+		return 0, false
+	}
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	now, active := r.activeLocked()
 	if !active {
 		return 0, false
 	}
-	state, ok := r.states[key]
-	if !ok || state.openUntil.IsZero() || !now.Before(state.openUntil) {
-		return 0, false
-	}
-	return state.openUntil.Sub(now), true
+	return r.routeBlockedLocked(route, now)
 }
 
-// Tripped reports whether failures reached the threshold: the circuit is open,
-// or its window passed and it is half-open. A tripped provider gets one try per
-// request instead of same-provider retries, so a failed probe reopens the
-// circuit after one round trip.
-func (r *providerCircuitRegistry) Tripped(option llm.InvokeOptions) bool {
-	if r == nil || !providerCircuitTracked(option) {
+// providerCircuitTicket is one admitted attempt. Exactly one of Succeed, Fail
+// or Release resolves it, which also frees any half-open probe it holds.
+type providerCircuitTicket struct {
+	route     providerCircuitRoute
+	tenant    string
+	startedAt time.Time
+	probes    []string
+	active    bool
+}
+
+// Admit decides whether an attempt may call the provider. A half-open
+// circuit admits one probe; until that probe resolves (or its lease of one
+// open window passes) every other attempt is refused.
+func (r *providerCircuitRegistry) Admit(option llm.InvokeOptions, tenant string) (providerCircuitTicket, time.Duration, bool) {
+	route := providerCircuitRouteFor(option, tenant)
+	if r == nil || !route.tracked() {
+		return providerCircuitTicket{}, 0, true
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	now, active := r.activeLocked()
+	if !active {
+		return providerCircuitTicket{}, 0, true
+	}
+	if wait, blocked := r.routeBlockedLocked(route, now); blocked {
+		return providerCircuitTicket{}, wait, false
+	}
+	ticket := providerCircuitTicket{route: route, tenant: tenant, startedAt: now, active: true}
+	for _, key := range route.keys() {
+		if state, ok := r.states[key]; ok && state.halfOpen(now) {
+			state.probeUntil = now.Add(r.openFor)
+			r.states[key] = state
+			ticket.probes = append(ticket.probes, key)
+		}
+	}
+	return ticket, 0, true
+}
+
+func (r *providerCircuitRegistry) releaseProbeLocked(ticket providerCircuitTicket, key string) {
+	for _, probe := range ticket.probes {
+		if probe != key {
+			continue
+		}
+		if state, ok := r.states[key]; ok {
+			state.probeUntil = time.Time{}
+			r.states[key] = state
+		}
+	}
+}
+
+// Release resolves an attempt whose outcome says nothing about the provider
+// (a client disconnect, an error after the provider answered, a client error).
+func (r *providerCircuitRegistry) Release(ticket providerCircuitTicket) {
+	if r == nil || !ticket.active {
+		return
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	for _, key := range ticket.route.keys() {
+		r.releaseProbeLocked(ticket, key)
+	}
+}
+
+// Tripped reports whether one of the attempt's circuits has opened in its
+// current streak (open or half-open), or the attempt is a probe. Such an
+// attempt gets one try instead of same-provider retries.
+func (r *providerCircuitRegistry) Tripped(ticket providerCircuitTicket) bool {
+	if r == nil || !ticket.active {
 		return false
 	}
-	key := providerCircuitKey(option)
+	if len(ticket.probes) > 0 {
+		return true
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	for _, key := range ticket.route.keys() {
+		if state, ok := r.states[key]; ok && !state.openedAt.IsZero() {
+			return true
+		}
+	}
+	return false
+}
+
+// Succeed closes the attempt's circuits, unless the attempt started before
+// the circuit's current failures (or its open) began.
+func (r *providerCircuitRegistry) Succeed(ticket providerCircuitTicket) {
+	if r == nil || !ticket.active {
+		return
+	}
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	if _, active := r.activeLocked(); !active {
-		return false
-	}
-	state, ok := r.states[key]
-	return ok && state.failures >= r.threshold
-}
-
-func (r *providerCircuitRegistry) RecordSuccess(option llm.InvokeOptions) {
-	if r == nil || !providerCircuitTracked(option) {
 		return
 	}
-	key := providerCircuitKey(option)
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	if _, active := r.activeLocked(); !active {
-		return
+	for _, key := range ticket.route.keys() {
+		state, ok := r.states[key]
+		if !ok {
+			continue
+		}
+		if ticket.startedAt.Before(state.freshSince()) {
+			r.releaseProbeLocked(ticket, key)
+			continue
+		}
+		delete(r.states, key)
 	}
-	delete(r.states, key)
 }
 
-// RecordFailure counts one provider-down failure and reports whether it opened
-// the circuit: a closed or half-open circuit that reached the threshold. A
-// failure while the circuit is already open extends the window but is not a
-// new open.
-func (r *providerCircuitRegistry) RecordFailure(option llm.InvokeOptions) bool {
-	if r == nil || !providerCircuitTracked(option) {
+// Fail counts one provider-down failure and reports whether it opened a
+// circuit (from closed or half-open). A failure from an attempt that started
+// before the circuit last opened is stale and does not count.
+func (r *providerCircuitRegistry) Fail(ticket providerCircuitTicket) bool {
+	if r == nil || !ticket.active {
 		return false
 	}
-	key := providerCircuitKey(option)
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	now, active := r.activeLocked()
 	if !active {
 		return false
+	}
+	opened := false
+	if key := ticket.route.tenant; key != "" {
+		state := r.stateForFailureLocked(key)
+		if state.openedAt.IsZero() || !ticket.startedAt.Before(state.openedAt) {
+			state.failures++
+			opened = r.markFailureLocked(&state, now, state.failures >= r.threshold) || opened
+		}
+		r.storeAfterFailureLocked(ticket, key, state)
+	}
+	if key := ticket.route.shared; key != "" {
+		state := r.stateForFailureLocked(key)
+		if ticket.tenant != "" && (state.openedAt.IsZero() || !ticket.startedAt.Before(state.openedAt)) {
+			known := false
+			for _, tenant := range state.tenants {
+				known = known || tenant == ticket.tenant
+			}
+			if !known {
+				state.tenants = append(state.tenants, ticket.tenant)
+			}
+			trip := len(state.tenants) >= r.threshold
+			opened = r.markFailureLocked(&state, now, trip) || opened
+			if trip {
+				// Reopening needs threshold NEW distinct tenants.
+				state.tenants = nil
+			}
+		}
+		r.storeAfterFailureLocked(ticket, key, state)
+	}
+	if opened {
+		r.opens.Add(1)
+	}
+	return opened
+}
+
+func (r *providerCircuitRegistry) stateForFailureLocked(key string) providerCircuitState {
+	if r.states == nil {
+		r.states = map[string]providerCircuitState{}
 	}
 	state, exists := r.states[key]
 	if !exists && len(r.states) >= r.stateLimit() {
 		r.evictOldestLocked()
 	}
-	wasOpen := !state.openUntil.IsZero() && now.Before(state.openUntil)
-	state.failures++
-	state.updatedAt = now
-	opened := false
-	if state.failures >= r.threshold {
-		state.openUntil = now.Add(r.openFor)
-		opened = !wasOpen
+	return state
+}
+
+func (r *providerCircuitRegistry) markFailureLocked(state *providerCircuitState, now time.Time, trip bool) bool {
+	if state.streakStart.IsZero() {
+		state.streakStart = now
 	}
-	if r.states == nil {
-		r.states = map[string]providerCircuitState{}
+	state.updatedAt = now
+	if !trip {
+		return false
+	}
+	wasOpen := state.open(now)
+	state.openUntil = now.Add(r.openFor)
+	if wasOpen {
+		return false
+	}
+	state.openedAt = now
+	return true
+}
+
+func (r *providerCircuitRegistry) storeAfterFailureLocked(ticket providerCircuitTicket, key string, state providerCircuitState) {
+	for _, probe := range ticket.probes {
+		if probe == key {
+			state.probeUntil = time.Time{}
+		}
+	}
+	if state.updatedAt.IsZero() {
+		// A failure that counted nowhere (stale, or an unknown tenant on a
+		// shared circuit) leaves no state behind.
+		if _, exists := r.states[key]; !exists {
+			return
+		}
 	}
 	r.states[key] = state
-	if opened {
-		r.opens.Add(1)
-	}
-	return opened
 }
 
 func (r *providerCircuitRegistry) stateLimit() int {
@@ -263,41 +526,24 @@ func (r *providerCircuitRegistry) evictOldestLocked() {
 	}
 }
 
-// allOpenLocked reports whether every circuit key is open, and the time until
-// the earliest window passes.
-func (r *providerCircuitRegistry) allOpenLocked(now time.Time, circuits []string) (time.Duration, bool) {
-	if len(circuits) == 0 {
-		return 0, false
-	}
-	var earliest time.Time
-	for _, key := range circuits {
-		state, ok := r.states[key]
-		if !ok || state.openUntil.IsZero() || !now.Before(state.openUntil) {
-			return 0, false
-		}
-		if earliest.IsZero() || state.openUntil.Before(earliest) {
-			earliest = state.openUntil
-		}
-	}
-	return earliest.Sub(now), true
-}
-
 // RememberRoutes records the circuits an authorize returned for this
 // credential and routing policy. Sets for the same key are unioned and the
 // smallest demand kept, so the memory only ever grows more conservative until
-// it expires.
-func (r *providerCircuitRegistry) RememberRoutes(key string, demand providerRouteDemand, options []llm.InvokeOptions) {
+// it expires. A new entry is written only when one of the candidates already
+// has a recorded failure: healthy traffic never touches the table.
+func (r *providerCircuitRegistry) RememberRoutes(key string, demand providerRouteDemand, options []llm.InvokeOptions, tenant string) {
 	if r == nil || key == "" || len(options) == 0 {
 		return
 	}
-	circuits := make([]string, 0, len(options))
+	routes := make([]providerCircuitRoute, 0, len(options))
 	complete := true
 	for _, option := range options {
-		if !providerCircuitTracked(option) {
+		route := providerCircuitRouteFor(option, tenant)
+		if !route.tracked() {
 			complete = false
 			continue
 		}
-		circuits = append(circuits, providerCircuitKey(option))
+		routes = append(routes, route)
 	}
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -305,29 +551,36 @@ func (r *providerCircuitRegistry) RememberRoutes(key string, demand providerRout
 	if !active || r.routeTTL <= 0 {
 		return
 	}
-	if r.routes == nil {
-		r.routes = map[string]providerRouteMemory{}
-	}
 	memory, ok := r.routes[key]
 	if ok && !now.Before(memory.expiresAt) {
 		ok = false
 	}
 	if !ok {
+		failing := false
+		for _, route := range routes {
+			for _, circuit := range route.keys() {
+				_, recorded := r.states[circuit]
+				failing = failing || recorded
+			}
+		}
+		if !failing {
+			delete(r.routes, key)
+			return
+		}
+		if r.routes == nil {
+			r.routes = map[string]providerRouteMemory{}
+		}
 		if _, exists := r.routes[key]; !exists && len(r.routes) >= r.stateLimit() {
 			r.evictOldestRouteLocked()
 		}
-		memory = providerRouteMemory{complete: true, minInput: demand.input, minOutput: demand.output}
+		memory = providerRouteMemory{complete: true, minDemand: int(demand)}
 	}
 	memory.complete = memory.complete && complete
-	memory.minInput = min(memory.minInput, demand.input)
-	memory.minOutput = min(memory.minOutput, demand.output)
-	for _, circuit := range circuits {
+	memory.minDemand = min(memory.minDemand, int(demand))
+	for _, route := range routes {
 		known := false
 		for _, existing := range memory.circuits {
-			if existing == circuit {
-				known = true
-				break
-			}
+			known = known || existing == route
 		}
 		if known {
 			continue
@@ -336,7 +589,7 @@ func (r *providerCircuitRegistry) RememberRoutes(key string, demand providerRout
 			memory.complete = false
 			break
 		}
-		memory.circuits = append(memory.circuits, circuit)
+		memory.circuits = append(memory.circuits, route)
 	}
 	memory.expiresAt = now.Add(r.routeTTL)
 	r.routes[key] = memory
@@ -356,11 +609,11 @@ func (r *providerCircuitRegistry) evictOldestRouteLocked() {
 	}
 }
 
-// FastFail decides, before authorize, whether this request can only meet open
-// circuits: the remembered set for its credential and routing policy is
-// complete and unexpired, its demand is at least the remembered smallest
-// demand, and every remembered circuit is open. It returns the time until the
-// earliest circuit's window passes.
+// FastFail decides, before authorize, whether this request can only meet
+// refusing circuits: the remembered set for its credential and routing policy
+// is complete and unexpired, its demand is at least the smallest remembered
+// demand, and every remembered candidate's circuits refuse. It returns the
+// time until the earliest candidate might admit an attempt.
 func (r *providerCircuitRegistry) FastFail(key string, demand providerRouteDemand) (time.Duration, bool) {
 	if r == nil || key == "" {
 		return 0, false
@@ -381,16 +634,24 @@ func (r *providerCircuitRegistry) FastFail(key string, demand providerRouteDeman
 		r.mu.Unlock()
 		return 0, false
 	}
-	if !memory.complete || demand.input < memory.minInput || demand.output < memory.minOutput {
+	if !memory.complete || len(memory.circuits) == 0 || int(demand) < memory.minDemand {
 		r.mu.Unlock()
 		return 0, false
 	}
-	wait, refused := r.allOpenLocked(now, memory.circuits)
-	r.mu.Unlock()
-	if refused {
-		r.fastFails.Add(1)
+	earliest := time.Duration(-1)
+	for _, route := range memory.circuits {
+		wait, blocked := r.routeBlockedLocked(route, now)
+		if !blocked {
+			r.mu.Unlock()
+			return 0, false
+		}
+		if earliest < 0 || wait < earliest {
+			earliest = wait
+		}
 	}
-	return wait, refused
+	r.mu.Unlock()
+	r.fastFails.Add(1)
+	return earliest, true
 }
 
 type providerCircuitStats struct {
@@ -420,7 +681,7 @@ func (r *providerCircuitRegistry) Stats() providerCircuitStats {
 	stats.TrackedCircuits = len(r.states)
 	stats.RouteMemory = len(r.routes)
 	for _, state := range r.states {
-		if !state.openUntil.IsZero() && now.Before(state.openUntil) {
+		if state.open(now) {
 			stats.OpenCircuits++
 		}
 	}
@@ -455,36 +716,18 @@ func startProviderCircuitStats(ctx context.Context, w io.Writer, interval time.D
 	}()
 }
 
+// providerCircuitKey is provider|region|model with the full model id: one
+// model's outage must not refuse its siblings on the same provider.
 func providerCircuitKey(option llm.InvokeOptions) string {
 	provider := strings.TrimSpace(option.Provider)
 	if provider == "" {
 		provider = "unknown"
 	}
-	region := currentRegion()
-	modelFamily := providerCircuitModelFamily(option.Model)
-	return provider + "|" + region + "|" + modelFamily
-}
-
-func providerCircuitModelFamily(model string) string {
-	model = strings.TrimSpace(model)
+	model := strings.TrimSpace(option.Model)
 	if model == "" {
-		return "unknown"
+		model = "unknown"
 	}
-	if before, _, ok := strings.Cut(model, ":"); ok {
-		model = before
-	}
-	parts := strings.Split(model, "/")
-	if len(parts) < 2 {
-		return model
-	}
-	slug := parts[1]
-	for _, sep := range []string{"-", "_", "."} {
-		if idx := strings.Index(slug, sep); idx > 0 {
-			slug = slug[:idx]
-			break
-		}
-	}
-	return parts[0] + "/" + slug
+	return provider + "|" + currentRegion() + "|" + model
 }
 
 func currentRegion() string {
@@ -551,21 +794,11 @@ func providerRouteMemoryKey(ctx context.Context, bearer, routeType string, req *
 	return hex.EncodeToString(sum[:])
 }
 
-func providerRouteDemandFor(req *types.OpenAIChatRequest) providerRouteDemand {
-	if req == nil {
-		return providerRouteDemand{}
-	}
-	return providerRouteDemand{
-		input:  trustedrouter.EstimateInputTokens(req),
-		output: trustedrouter.AuthorizeOutputTokenEstimate(req),
-	}
-}
-
 // providerCircuitFastFail refuses a request before authorize when every
-// circuit its credential and routing policy last authorized is open, so no
-// credit or key hold is taken and no refund follows. It writes the 503 and
-// reports true when it refused.
-func providerCircuitFastFail(w io.Writer, key string, demand providerRouteDemand, routeType, model, requestLogID string) bool {
+// candidate its credential and routing policy last authorized is refused by a
+// circuit, so no credit or key hold is taken and no refund follows. It writes
+// the 503 and reports true when it refused.
+func providerCircuitFastFail(ctx context.Context, w io.Writer, key string, demand providerRouteDemand, routeType, model, requestLogID string) bool {
 	wait, refused := providerCircuits.FastFail(key, demand)
 	if !refused {
 		return false
@@ -574,16 +807,26 @@ func providerCircuitFastFail(w io.Writer, key string, demand providerRouteDemand
 		"enclave.provider_circuit_fast_fail request_log_id=%q route=%q model=%q retry_after_seconds=%d\n",
 		requestLogID, routeType, model, retryAfterSeconds(wait),
 	)
-	writeProviderCircuitOpen(w, routeType, wait)
+	writeProviderCircuitOpen(w, routeType, &providerCircuitOpenError{retryAfter: wait, spent: polyphemusSelectionCharged(ctx)})
 	return true
+}
+
+// polyphemusSelectionCharged reports whether this request already paid for a
+// Polyphemus model selection, so re-sending it would pay for another.
+func polyphemusSelectionCharged(ctx context.Context) bool {
+	receipt := polyphemusReceiptFromContext(ctx)
+	return receipt != nil && receipt.CostMicrodollars > 0
 }
 
 const providerCircuitOpenMessage = "All providers for this model are temporarily unavailable. Retry after the Retry-After interval."
 
 // providerCircuitOpenError is returned when every authorized candidate was
-// skipped by an open circuit, so no provider was called.
+// refused by a circuit, so no provider was called.
 type providerCircuitOpenError struct {
 	retryAfter time.Duration
+	// spent: something on this request was already charged (a Polyphemus
+	// selection), so re-sending is not free.
+	spent bool
 }
 
 func (e *providerCircuitOpenError) Error() string { return "provider circuit open" }
@@ -604,23 +847,42 @@ func retryAfterSeconds(wait time.Duration) int {
 	return seconds
 }
 
-// providerCircuitRetryHeaders: Retry-After is when the earliest circuit's
-// window passes; x-should-retry is true because no provider ran and nothing was
-// billed (writeRetryableError's convention).
-func providerCircuitRetryHeaders(wait time.Duration) map[string]string {
+// providerCircuitRetryHeaders: Retry-After is when the earliest circuit might
+// admit an attempt. x-should-retry is true because no provider ran and nothing
+// was billed (writeRetryableError's convention), and false when the request
+// already paid for something (writeSpentError's).
+func providerCircuitRetryHeaders(err *providerCircuitOpenError) map[string]string {
+	if err == nil {
+		err = &providerCircuitOpenError{}
+	}
+	shouldRetry := "true"
+	if err.spent {
+		shouldRetry = "false"
+	}
 	return map[string]string{
-		"Retry-After":     strconv.Itoa(retryAfterSeconds(wait)),
-		shouldRetryHeader: "true",
+		"Retry-After":     strconv.Itoa(retryAfterSeconds(err.retryAfter)),
+		shouldRetryHeader: shouldRetry,
 	}
 }
 
-func writeProviderCircuitOpen(w io.Writer, routeType string, wait time.Duration) {
-	headers := providerCircuitRetryHeaders(wait)
+func writeProviderCircuitOpen(w io.Writer, routeType string, err *providerCircuitOpenError) {
+	headers := providerCircuitRetryHeaders(err)
 	if routeType == "messages" {
 		writeAnthropicErrorWithSourceHeaders(w, 503, providerCircuitOpenMessage, "provider", headers)
 		return
 	}
 	writeErrorWithSourceHeaders(w, 503, providerCircuitOpenMessage, "provider", headers)
+}
+
+// writeProviderCircuitError renders err as the circuit refusal when it is one,
+// for routes with their own error renderers (images, fusion, decide).
+func writeProviderCircuitError(w io.Writer, routeType string, err error) bool {
+	circuitErr, ok := providerCircuitOpenFrom(err)
+	if !ok {
+		return false
+	}
+	writeProviderCircuitOpen(w, routeType, circuitErr)
+	return true
 }
 
 // providerCircuitTransportFailures are errorClass values meaning the provider
@@ -653,10 +915,11 @@ var providerCircuitTransportFailures = map[string]bool{
 //     detector. A non-final candidate's short budget is a failover trigger that
 //     silent-reasoning models legitimately exceed, so it never counts.
 //
-// Client errors (4xx), local input errors, a 2xx with no bytes, a closed
-// downstream pipe and cancellation never count.
+// Client errors (4xx), local input errors, the gateway's own failures
+// (credentials, policy checks), a 2xx with no bytes, a closed downstream pipe
+// and cancellation never count.
 func providerDownFailure(err error, finalFirstByteBudget bool) bool {
-	if err == nil || isClientInputError(err) {
+	if err == nil || isClientInputError(err) || upstreamerror.IsLocal(err) {
 		return false
 	}
 	var aerr *adapter.AdapterError
@@ -678,47 +941,49 @@ func providerDownFailure(err error, finalFirstByteBudget bool) bool {
 	return providerCircuitTransportFailures[errorClass(err)]
 }
 
-// recordProviderCircuitOutcome records one candidate attempt (after its
-// same-provider retries). A completed response closes the circuit. A failure
-// counts only when the request was still live and the provider never accepted
-// the call (no 2xx head, no output): once a provider answers, a later error is
-// about this stream, not the provider being down. A client disconnect cancels
-// ctx and counts as nothing.
+// recordProviderCircuitOutcome resolves one candidate attempt (after its
+// same-provider retries). A completed response closes its circuits. A failure
+// counts only when the request was still live and the provider never answered
+// (no 2xx head, no output): once a provider answers, a later error is about
+// this stream, not the provider being down. A client disconnect cancels ctx and
+// counts as nothing.
 func recordProviderCircuitOutcome(
 	ctx context.Context,
+	ticket providerCircuitTicket,
 	option llm.InvokeOptions,
 	err error,
 	writer *routeSelectingWriter,
 	finalFirstByteBudget bool,
 	requestLogID string,
 ) {
-	if !providerCircuitTracked(option) {
+	if !ticket.active {
 		return
 	}
 	if err == nil {
-		providerCircuits.RecordSuccess(option)
+		providerCircuits.Succeed(ticket)
 		return
 	}
 	if ctx.Err() != nil || writer.Accepted() || !providerDownFailure(err, finalFirstByteBudget) {
+		providerCircuits.Release(ticket)
 		return
 	}
-	if providerCircuits.RecordFailure(option) {
+	if providerCircuits.Fail(ticket) {
 		fmt.Fprintf(os.Stderr,
-			"enclave.provider_circuit_open request_log_id=%q circuit=%q err=%q\n",
-			requestLogID, providerCircuitKey(option), errorClass(err),
+			"enclave.provider_circuit_open request_log_id=%q provider=%q model=%q byok=%t err=%q\n",
+			requestLogID, option.Provider, option.Model, ticket.route.shared == "", errorClass(err),
 		)
 	}
 }
 
-// laterCandidateAllowed reports whether any later candidate's circuit admits
-// traffic. Candidates without a model inherit the current one, as in the
+// laterCandidateAllowed reports whether any later candidate's circuits admit
+// an attempt. Candidates without a model inherit the current one, as in the
 // invocation loop.
-func laterCandidateAllowed(options []llm.InvokeOptions, model string) bool {
+func laterCandidateAllowed(options []llm.InvokeOptions, model, tenant string) bool {
 	for _, option := range options {
 		if option.Model == "" {
 			option.Model = model
 		}
-		if providerCircuits.Allow(option) {
+		if _, blocked := providerCircuits.Blocked(option, tenant); !blocked {
 			return true
 		}
 	}

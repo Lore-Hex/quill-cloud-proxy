@@ -1835,11 +1835,6 @@ func RequestLookupHash(ctx context.Context, bearer string) string {
 	return requestLookupHash(ctx, bearer)
 }
 
-// AuthorizeOutputTokenEstimate is the max_output_tokens authorize sends.
-func AuthorizeOutputTokenEstimate(req *qtypes.OpenAIChatRequest) int {
-	return outputTokenEstimate(req)
-}
-
 func outputTokenEstimate(req *qtypes.OpenAIChatRequest) int {
 	if req.MaxTokens != nil && *req.MaxTokens > 0 {
 		return *req.MaxTokens

@@ -132,7 +132,8 @@ func invokeProviderStream(
 	var winningBytes int
 	var winningTTFBms, winningTotalMs int64
 	attempted := 0
-	var circuitWait time.Duration
+	circuitWait := time.Duration(-1)
+	tenant := providerCircuitTenant(authorization)
 	for i, option := range options {
 		if err := ctx.Err(); err != nil {
 			finishFailure(err)
@@ -141,13 +142,15 @@ func invokeProviderStream(
 		if option.Model == "" {
 			option.Model = req.Model
 		}
-		// An open circuit is skipped without calling the provider; the next
-		// candidate takes over as if this one had failed fast.
-		if wait, open := providerCircuits.OpenRemaining(option); open {
+		// A candidate whose circuit refuses is skipped without calling the
+		// provider; the next candidate takes over as if this one failed fast.
+		circuitTicket, wait, admitted := providerCircuits.Admit(option, tenant)
+		if !admitted {
 			providerCircuits.skips.Add(1)
-			if circuitWait == 0 || wait < circuitWait {
+			if circuitWait < 0 || wait < circuitWait {
 				circuitWait = wait
 			}
+			selectedRoute.RecordCircuitSkip(option, &providerCircuitOpenError{retryAfter: wait})
 			fmt.Fprintf(os.Stderr,
 				"enclave.provider_circuit_skip request_log_id=%q request_id=%q attempt=%d/%d model=%q provider=%q endpoint=%q\n",
 				requestLogID, requestID, i+1, len(options), option.Model, option.Provider, option.EndpointID,
@@ -158,6 +161,7 @@ func invokeProviderStream(
 		selectedRoute.RecordCandidateAttempt(option)
 		req.Model = option.Model
 		if err := adapter.RejectUnsupportedN(req); err != nil {
+			providerCircuits.Release(circuitTicket)
 			lastErr = withInvokeAttemptError(err, option)
 			fmt.Fprintf(os.Stderr,
 				"enclave.invoke_complete request_log_id=%q request_id=%q outcome=fail attempts=%d fallbacks=%d total_ms=%d last_err=%q\n",
@@ -169,7 +173,7 @@ func invokeProviderStream(
 		// The TTFB budget exists to fall over to the next candidate fast; the LAST
 		// candidate has nothing to fall over to, so give it a longer budget for slow
 		// reasoning first bytes. Candidates behind open circuits are not "next".
-		isLast := !laterCandidateAllowed(options[i+1:], req.Model)
+		isLast := !laterCandidateAllowed(options[i+1:], req.Model, tenant)
 		budget := firstByteBudget
 		if isLast && useLongLastCandidateBudget {
 			budget = finalCandidateFirstByteBudget
@@ -280,7 +284,7 @@ func invokeProviderStream(
 			// A tripped circuit (open, or half-open and probing) gets one try:
 			// a failed probe must reopen it after one round trip, not after
 			// the same-provider backoff schedule.
-			if providerCircuits.Tripped(option) && providerDownFailure(err, false) {
+			if providerCircuits.Tripped(circuitTicket) && providerDownFailure(err, false) {
 				break
 			}
 			backoff := transientUpstreamBackoff(tryN)
@@ -297,7 +301,7 @@ func invokeProviderStream(
 				break
 			}
 		}
-		recordProviderCircuitOutcome(ctx, option, err, candidateWriter,
+		recordProviderCircuitOutcome(ctx, circuitTicket, option, err, candidateWriter,
 			ttfbExpired && isLast && useLongLastCandidateBudget, requestLogID)
 
 		if err == nil {
@@ -324,7 +328,7 @@ func invokeProviderStream(
 		}
 		attemptErr := withInvokeAttemptError(err, option)
 		lastErr = preferredProviderError(lastErr, attemptErr)
-		if !trEnabled || candidateWriter.ResponseCommitted() || !laterCandidateAllowed(options[i+1:], req.Model) || !retryableInvokeError(err) {
+		if !trEnabled || candidateWriter.ResponseCommitted() || !laterCandidateAllowed(options[i+1:], req.Model, tenant) || !retryableInvokeError(err) {
 			fmt.Fprintf(os.Stderr,
 				"enclave.invoke_complete request_log_id=%q request_id=%q outcome=fail attempts=%d fallbacks=%d total_ms=%d last_err=%q\n",
 				requestLogID, requestID, i+1, i, time.Since(overallStart).Milliseconds(), errorClass(err),
@@ -348,7 +352,7 @@ func invokeProviderStream(
 	}
 	if attempted == 0 {
 		// Every candidate was behind an open circuit: no provider was called.
-		circuitErr := &providerCircuitOpenError{retryAfter: circuitWait}
+		circuitErr := &providerCircuitOpenError{retryAfter: max(circuitWait, 0), spent: polyphemusSelectionCharged(ctx)}
 		fmt.Fprintf(os.Stderr,
 			"enclave.invoke_complete request_log_id=%q request_id=%q outcome=fail attempts=0 fallbacks=0 total_ms=%d last_err=%q\n",
 			requestLogID, requestID, time.Since(overallStart).Milliseconds(), errorClass(circuitErr),
@@ -525,6 +529,9 @@ type selectedRouteTracker struct {
 	selected bool
 	routes   []routeAttempt
 	failures []string
+	// skipped counts candidates routed around because their provider
+	// circuit refused, without an attempt.
+	skipped int
 }
 
 type routeAttempt struct {
@@ -637,6 +644,32 @@ func (t *selectedRouteTracker) RecordFallbackFailure(option llm.InvokeOptions, e
 		}
 		t.failures = append(t.failures, option.Provider+"|"+option.EndpointID+"|"+class)
 	}
+}
+
+// RecordCircuitSkip records a candidate skipped because its provider circuit
+// refused. It is listed with the fallback failures, so settlement analytics
+// see what was routed around.
+func (t *selectedRouteTracker) RecordCircuitSkip(option llm.InvokeOptions, err error) {
+	if t == nil {
+		return
+	}
+	t.RecordFallbackFailure(option, err)
+	t.mu.Lock()
+	t.skipped++
+	t.mu.Unlock()
+}
+
+// RoutedAround is what settlement reports as route_fallbacks: the candidates
+// routed around before the one that served, attempted (FallbackCount) or
+// skipped by an open circuit. FallbackCount stays attempts only.
+func (t *selectedRouteTracker) RoutedAround() int {
+	if t == nil {
+		return 0
+	}
+	t.mu.Lock()
+	skipped := t.skipped
+	t.mu.Unlock()
+	return t.FallbackCount() + skipped
 }
 
 func (t *selectedRouteTracker) Failures() []string {
@@ -844,6 +877,10 @@ func (w *routeSelectingWriter) UpstreamOpened() bool {
 	}
 	return w.streaming
 }
+
+// UpstreamAnswered records a 2xx head from a client that buffers the whole
+// body (upstreamerror.Answered). It never commits the response.
+func (w *routeSelectingWriter) UpstreamAnswered() { w.opened = true }
 
 // Accepted reports whether the provider answered this attempt: a 2xx head
 // (providers signal it through upstreamerror.Open) or any output.

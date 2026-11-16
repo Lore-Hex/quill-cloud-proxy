@@ -3882,6 +3882,9 @@ func writeFusionError(ctx context.Context, conn io.Writer, trGateway *trustedrou
 		writeGatewayAuthorizationError(conn, err)
 		return
 	}
+	if writeProviderCircuitError(conn, "fusion", err) {
+		return
+	}
 	writeErrorWithSourceHeaders(conn, statusFromControlPlaneError(err), messageFromControlPlaneError(err, "fusion failed"), "router", retryHeadersFromControlPlaneError(err))
 }
 

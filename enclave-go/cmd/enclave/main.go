@@ -1379,7 +1379,7 @@ func serveOneRequest(
 		// routing policy was last authorized for has an open circuit.
 		routeMemoryKey = providerRouteMemoryKey(ctx, bearer, routeType, &req)
 		routeDemand = providerRouteDemandFor(&req)
-		if providerCircuitFastFail(conn, routeMemoryKey, routeDemand, routeType, req.Model, requestLogID) {
+		if providerCircuitFastFail(ctx, conn, routeMemoryKey, routeDemand, routeType, req.Model, requestLogID) {
 			return
 		}
 		spendLeasePlan, err = trGateway.PrepareSpendLeaseAdmission(ctx, bearer, &req, routeType, requestStarted)
@@ -1445,7 +1445,7 @@ func serveOneRequest(
 			writeError(conn, 502, "BYOK provider key unavailable")
 			return
 		}
-		providerCircuits.RememberRoutes(routeMemoryKey, routeDemand, invokeOptions)
+		providerCircuits.RememberRoutes(routeMemoryKey, routeDemand, invokeOptions, providerCircuitTenant(authorization))
 		if len(invokeOptions) > 0 && invokeOptions[0].Model != "" {
 			req.Model = invokeOptions[0].Model
 		} else {
@@ -1495,7 +1495,7 @@ func serveOneRequest(
 				writeError(conn, 502, "BYOK provider key unavailable")
 				return
 			}
-			providerCircuits.RememberRoutes(routeMemoryKey, routeDemand, invokeOptions)
+			providerCircuits.RememberRoutes(routeMemoryKey, routeDemand, invokeOptions, providerCircuitTenant(authorization))
 			if len(invokeOptions) > 0 && invokeOptions[0].Model != "" {
 				req.Model = invokeOptions[0].Model
 			} else {
@@ -1822,7 +1822,7 @@ func serveResponsesNonStreaming(
 		RouteType:         "responses",
 		SelectedModel:     selectedModel,
 		SelectedEndpoint:  selectedEndpoint,
-		RouteFallbacks:    selectedRoute.FallbackCount(),
+		RouteFallbacks:    selectedRoute.RoutedAround(),
 		RouteFailures:     selectedRoute.Failures(),
 		User:              req.User,
 		SessionID:         req.SessionID,
@@ -1930,7 +1930,7 @@ func serveChatNonStreaming(
 		RouteType:         "chat.completions",
 		SelectedModel:     selectedModel,
 		SelectedEndpoint:  selectedEndpoint,
-		RouteFallbacks:    selectedRoute.FallbackCount(),
+		RouteFallbacks:    selectedRoute.RoutedAround(),
 		RouteFailures:     selectedRoute.Failures(),
 		User:              req.User,
 		SessionID:         req.SessionID,
@@ -2169,7 +2169,7 @@ func serveStreaming(
 			Streamed: true, RouteType: routeType,
 			SelectedModel:    selectedRoute.Model(req.Model, authorization),
 			SelectedEndpoint: selectedRoute.Endpoint("", authorization),
-			RouteFallbacks:   selectedRoute.FallbackCount(),
+			RouteFallbacks:   selectedRoute.RoutedAround(),
 			RouteFailures:    selectedRoute.Failures(),
 			User:             req.User, SessionID: req.SessionID, Trace: req.Trace, Metadata: req.Metadata,
 			ServiceTier: requestedServiceTierForSettlement(req),
@@ -2575,7 +2575,7 @@ func serveMessages(
 	if trEnabled {
 		routeMemoryKey := providerRouteMemoryKey(ctx, bearer, "messages", req)
 		routeDemand := providerRouteDemandFor(req)
-		if providerCircuitFastFail(conn, routeMemoryKey, routeDemand, "messages", req.Model, requestLogID) {
+		if providerCircuitFastFail(ctx, conn, routeMemoryKey, routeDemand, "messages", req.Model, requestLogID) {
 			return
 		}
 		authorization, err = trGateway.AuthorizeWithRoute(ctx, bearer, req, "messages")
@@ -2589,7 +2589,7 @@ func serveMessages(
 			writeAnthropicError(conn, 502, "BYOK provider key unavailable")
 			return
 		}
-		providerCircuits.RememberRoutes(routeMemoryKey, routeDemand, invokeOptions)
+		providerCircuits.RememberRoutes(routeMemoryKey, routeDemand, invokeOptions, providerCircuitTenant(authorization))
 		if len(invokeOptions) > 0 && invokeOptions[0].Model != "" {
 			req.Model = invokeOptions[0].Model
 		} else {
@@ -2644,7 +2644,7 @@ func serveMessages(
 			RouteType:        "messages",
 			SelectedModel:    selectedModel,
 			SelectedEndpoint: selectedEndpoint,
-			RouteFallbacks:   selectedRoute.FallbackCount(),
+			RouteFallbacks:   selectedRoute.RoutedAround(),
 			RouteFailures:    selectedRoute.Failures(),
 			Metadata:         req.Metadata,
 		}
@@ -2722,7 +2722,7 @@ func serveMessages(
 			RouteType:         "messages",
 			SelectedModel:     selectedRoute.Model(req.Model, authorization),
 			SelectedEndpoint:  selectedRoute.Endpoint("", authorization),
-			RouteFallbacks:    selectedRoute.FallbackCount(),
+			RouteFallbacks:    selectedRoute.RoutedAround(),
 			RouteFailures:     selectedRoute.Failures(),
 			Metadata:          req.Metadata,
 		}

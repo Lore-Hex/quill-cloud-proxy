@@ -1,13 +1,14 @@
 package main
 
 import (
+	"bufio"
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
-	"os"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -15,22 +16,12 @@ import (
 	"time"
 
 	"github.com/Lore-Hex/quill-cloud-proxy/enclave-go/internal/auth"
+	"github.com/Lore-Hex/quill-cloud-proxy/enclave-go/internal/decide"
 	"github.com/Lore-Hex/quill-cloud-proxy/enclave-go/internal/llm"
 	"github.com/Lore-Hex/quill-cloud-proxy/enclave-go/internal/trustedrouter"
 	"github.com/Lore-Hex/quill-cloud-proxy/enclave-go/internal/types"
 	"github.com/Lore-Hex/quill-cloud-proxy/enclave-go/internal/upstreamerror"
 )
-
-// TestMain isolates the process-wide provider circuit registry. Package tests
-// share one process, so provider failures that one test scripts would open
-// circuits for the next. Tests that exercise the breaker enable it with
-// enableProviderCircuitsForTest and their own provider names.
-func TestMain(m *testing.M) {
-	providerCircuits.mu.Lock()
-	providerCircuits.enabled = false
-	providerCircuits.mu.Unlock()
-	os.Exit(m.Run())
-}
 
 type providerCircuitTestClock struct{ nanos atomic.Int64 }
 
@@ -43,32 +34,38 @@ func newProviderCircuitTestClock() *providerCircuitTestClock {
 func (c *providerCircuitTestClock) Now() time.Time          { return time.Unix(0, c.nanos.Load()).UTC() }
 func (c *providerCircuitTestClock) Advance(d time.Duration) { c.nanos.Add(int64(d)) }
 
-// enableProviderCircuitsForTest turns on the production defaults (threshold 3,
-// 60 s open window) against a controllable clock, and makes same-provider
-// retry backoff instant.
+// resetProviderCircuitsForTest gives a test a clean process-wide breaker with
+// the production defaults (threshold 3, 60 s open, 30 s route memory) on the
+// given clock. Package tests share one process, and each test's scripted
+// provider failures describe its own world, not the next test's.
+func resetProviderCircuitsForTest(t *testing.T, now func() time.Time) {
+	t.Helper()
+	registry := providerCircuits
+	reset := func(clock func() time.Time) {
+		registry.mu.Lock()
+		registry.enabled = true
+		registry.threshold = 3
+		registry.openFor = time.Minute
+		registry.now = clock
+		registry.states = map[string]providerCircuitState{}
+		registry.routes = map[string]providerRouteMemory{}
+		registry.mu.Unlock()
+	}
+	reset(now)
+	t.Cleanup(func() { reset(time.Now) })
+}
+
+// enableProviderCircuitsForTest resets the breaker onto a controllable clock
+// and makes same-provider retry backoff instant.
 func enableProviderCircuitsForTest(t *testing.T) *providerCircuitTestClock {
 	t.Helper()
 	t.Setenv("QUILL_KEEPALIVE", "off")
 	t.Setenv("QUILL_USAGE_HEARTBEAT", "off")
 	clock := newProviderCircuitTestClock()
-	registry := providerCircuits
-	registry.mu.Lock()
-	registry.enabled = true
-	registry.threshold = 3
-	registry.openFor = time.Minute
-	registry.now = clock.Now
-	registry.states = map[string]providerCircuitState{}
-	registry.mu.Unlock()
+	resetProviderCircuitsForTest(t, clock.Now)
 	oldSleep := sleepBeforeTransientRetry
 	sleepBeforeTransientRetry = func(ctx context.Context, _ time.Duration) error { return ctx.Err() }
-	t.Cleanup(func() {
-		sleepBeforeTransientRetry = oldSleep
-		registry.mu.Lock()
-		registry.enabled = false
-		registry.now = time.Now
-		registry.states = map[string]providerCircuitState{}
-		registry.mu.Unlock()
-	})
+	t.Cleanup(func() { sleepBeforeTransientRetry = oldSleep })
 	return clock
 }
 
@@ -78,13 +75,15 @@ type providerCircuitTestCandidate struct {
 }
 
 // providerCircuitControlPlane is a fake control plane that counts the billing
-// calls the breaker exists to avoid.
+// calls the breaker exists to avoid. Each credential is its own workspace.
 type providerCircuitControlPlane struct {
 	server     *httptest.Server
 	gateway    *trustedrouter.Client
 	authorizes atomic.Int32
 	refunds    atomic.Int32
 	settles    atomic.Int32
+	mu         sync.Mutex
+	settled    []map[string]any
 }
 
 func newProviderCircuitControlPlane(t *testing.T, model string, candidates ...providerCircuitTestCandidate) *providerCircuitControlPlane {
@@ -98,12 +97,15 @@ func newProviderCircuitControlPlane(t *testing.T, model string, candidates ...pr
 		})
 	}
 	plane.server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var body map[string]any
+		_ = json.NewDecoder(r.Body).Decode(&body)
+		credential, _ := body["api_key_lookup_hash"].(string)
 		switch r.URL.Path {
 		case "/internal/gateway/authorize":
 			n := plane.authorizes.Add(1)
 			encoded, _ := json.Marshal(map[string]any{"data": map[string]any{
 				"authorization_id": fmt.Sprintf("auth_circuit_%d", n),
-				"workspace_id":     "ws_circuit", "api_key_hash": "key_circuit",
+				"workspace_id":     "ws_" + credential[:min(12, len(credential))], "api_key_hash": "key_" + credential[:min(12, len(credential))],
 				"model": model, "upstream_model": model, "requested_model": model,
 				"endpoint_id": candidates[0].endpoint, "provider": candidates[0].provider,
 				"usage_type": "Credits", "limit_usage_type": "Credits",
@@ -115,6 +117,9 @@ func newProviderCircuitControlPlane(t *testing.T, model string, candidates ...pr
 			_, _ = io.WriteString(w, `{"data":{"refunded":true}}`)
 		case "/internal/gateway/settle":
 			plane.settles.Add(1)
+			plane.mu.Lock()
+			plane.settled = append(plane.settled, body)
+			plane.mu.Unlock()
 			_, _ = io.WriteString(w, `{"data":{"settled":true,"generation_id":"gen_circuit","cost_microdollars":1}}`)
 		default:
 			_, _ = io.WriteString(w, `{"data":{"workspace_id":"ws_circuit","api_key_hash":"key_circuit"}}`)
@@ -129,12 +134,15 @@ func (p *providerCircuitControlPlane) counts() (authorizes, refunds, settles int
 	return p.authorizes.Load(), p.refunds.Load(), p.settles.Load()
 }
 
-// providerCircuitTestUpstream fails per provider as scripted and records every
-// upstream call it receives.
+// providerCircuitTestUpstream fails per provider as scripted, optionally
+// holds calls at a gate, and records every upstream call it receives.
 type providerCircuitTestUpstream struct {
-	mu    sync.Mutex
-	calls []string
-	fail  map[string]error
+	mu      sync.Mutex
+	calls   []string
+	fail    map[string]error
+	gate    chan struct{}
+	entered chan struct{}
+	partial bool
 }
 
 func (u *providerCircuitTestUpstream) InvokeStreaming(
@@ -151,12 +159,39 @@ func (u *providerCircuitTestUpstream) InvokeStreaming(
 	u.mu.Lock()
 	u.calls = append(u.calls, option.Provider)
 	err := u.fail[option.Provider]
+	gate, entered, partial := u.gate, u.entered, u.partial
+	u.gate, u.entered = nil, nil
 	u.mu.Unlock()
 	if err != nil {
 		return err
 	}
+	if gate != nil {
+		split := 0
+		if partial {
+			// Accepted: output is already flowing when the call is held.
+			split = strings.Index(providerStreamTestResponse, "event: content_block_delta")
+			if _, writeErr := io.WriteString(out, providerStreamTestResponse[:split]); writeErr != nil {
+				return writeErr
+			}
+		}
+		close(entered)
+		<-gate
+		_, err = io.WriteString(out, providerStreamTestResponse[split:])
+		return err
+	}
 	_, err = io.WriteString(out, providerStreamTestResponse)
 	return err
+}
+
+// holdNextCall makes the next call wait until the returned release is
+// called; entered closes once that call is in progress.
+func (u *providerCircuitTestUpstream) holdNextCall(partial bool) (entered <-chan struct{}, release func()) {
+	u.mu.Lock()
+	defer u.mu.Unlock()
+	gate, in := make(chan struct{}), make(chan struct{})
+	u.gate, u.entered, u.partial = gate, in, partial
+	var once sync.Once
+	return in, func() { once.Do(func() { close(gate) }) }
 }
 
 func (u *providerCircuitTestUpstream) setFailure(provider string, err error) {
@@ -212,6 +247,8 @@ func serveProviderCircuitRequest(
 	return readRawHTTPResponse(t, conn.writes.Bytes())
 }
 
+func bufioReader(raw []byte) *bufio.Reader { return bufio.NewReader(bytes.NewReader(raw)) }
+
 func chatBodyForCircuit(model string, stream bool) string {
 	return fmt.Sprintf(`{"model":%q,"stream":%t,"messages":[{"role":"user","content":"hello"}]}`, model, stream)
 }
@@ -236,108 +273,104 @@ func assertNotProviderCircuitRefusal(t *testing.T, step string, response *http.R
 	}
 }
 
-func TestProviderCircuitOpensAndFailsFastBeforeAuthorize(t *testing.T) {
+// openSharedCircuit fails one request from each of three tenants.
+func openSharedCircuit(t *testing.T, plane *providerCircuitControlPlane, upstream llm.Client, model, prefix string) {
+	t.Helper()
+	for _, tenant := range []string{"a", "b", "c"} {
+		response, body := serveProviderCircuitRequest(t, plane, upstream, prefix+"-"+tenant, "/v1/chat/completions", chatBodyForCircuit(model, false))
+		assertNotProviderCircuitRefusal(t, "opening tenant "+tenant, response, body)
+	}
+}
+
+func TestProviderCircuitHammeringTenantFailsFastWithoutAffectingOthers(t *testing.T) {
 	clock := enableProviderCircuitsForTest(t)
 	const model = "circuit-solo/glm-5.3-flash"
 	const provider = "circuit-solo"
 	plane := newProviderCircuitControlPlane(t, model, providerCircuitTestCandidate{provider, "circuit-solo/glm-5.3-flash@circuit-solo/prepaid"})
 	upstream := &providerCircuitTestUpstream{}
 	upstream.setFailure(provider, providerCircuitUpstreamStatus(502))
-	const bearer = "circuit-solo-key"
+	const hammer = "circuit-solo-hammer"
 
-	// Three failed requests (each tries the provider three times before
-	// giving up) open the circuit. Each one is authorized and refunded.
+	// Three failed requests (each tries the provider three times) open the
+	// hammering tenant's own circuit. Each one is authorized and refunded.
 	for i := 1; i <= 3; i++ {
-		response, body := serveProviderCircuitRequest(t, plane, upstream, bearer, "/v1/chat/completions", chatBodyForCircuit(model, false))
+		response, body := serveProviderCircuitRequest(t, plane, upstream, hammer, "/v1/chat/completions", chatBodyForCircuit(model, false))
 		if response.StatusCode != http.StatusBadGateway {
 			t.Fatalf("failure %d: status=%d body=%s, want relayed 502", i, response.StatusCode, body)
 		}
 		assertNotProviderCircuitRefusal(t, fmt.Sprintf("failure %d", i), response, body)
 	}
-	if authorizes, refunds, _ := plane.counts(); authorizes != 3 || refunds != 3 {
-		t.Fatalf("after opening: authorizes=%d refunds=%d, want 3/3", authorizes, refunds)
-	}
-	if got := upstream.total(); got != 9 {
-		t.Fatalf("upstream calls=%d, want 9", got)
+	if authorizes, refunds, _ := plane.counts(); authorizes != 3 || refunds != 3 || upstream.total() != 9 {
+		t.Fatalf("after opening: authorizes=%d refunds=%d upstream=%d, want 3/3/9", authorizes, refunds, upstream.total())
 	}
 
-	// The fourth request is refused before authorize: no hold, no refund, no
-	// upstream call, and the client is told when to come back.
-	response, body := serveProviderCircuitRequest(t, plane, upstream, bearer, "/v1/chat/completions", chatBodyForCircuit(model, false))
-	assertProviderCircuitRefusal(t, "fast fail", response, body, "60")
-	if authorizes, refunds, _ := plane.counts(); authorizes != 3 || refunds != 3 {
-		t.Fatalf("fast fail reached the control plane: authorizes=%d refunds=%d, want 3/3", authorizes, refunds)
-	}
-	if got := upstream.total(); got != 9 {
-		t.Fatalf("fast fail called the provider: upstream calls=%d, want 9", got)
+	// The hammering tenant is refused before authorize: no hold, no refund,
+	// no upstream call, and told when to come back.
+	response, body := serveProviderCircuitRequest(t, plane, upstream, hammer, "/v1/chat/completions", chatBodyForCircuit(model, false))
+	assertProviderCircuitRefusal(t, "hammer fast fail", response, body, "60")
+	if authorizes, refunds, _ := plane.counts(); authorizes != 3 || refunds != 3 || upstream.total() != 9 {
+		t.Fatalf("hammer fast fail reached billing or the provider: authorizes=%d refunds=%d upstream=%d", authorizes, refunds, upstream.total())
 	}
 
-	// The 30 s route memory has expired 45 s later, so this request is
-	// authorized; its only candidate is still open, so it is refused without a
-	// provider call and refunded. Retry-After counts down with the window.
+	// Another tenant is not refused: its request reaches the provider.
+	response, body = serveProviderCircuitRequest(t, plane, upstream, "circuit-solo-other", "/v1/chat/completions", chatBodyForCircuit(model, false))
+	assertNotProviderCircuitRefusal(t, "other tenant", response, body)
+	if upstream.total() != 12 {
+		t.Fatalf("one tenant's failures refused another tenant: upstream calls=%d, want 12", upstream.total())
+	}
+
+	// After the hammer's 30 s route memory expires (still inside its window)
+	// it is authorized, not sent upstream, refunded, and told the time left.
 	clock.Advance(45 * time.Second)
-	response, body = serveProviderCircuitRequest(t, plane, upstream, bearer, "/v1/chat/completions", chatBodyForCircuit(model, false))
+	authorizesBefore, refundsBefore, _ := plane.counts()
+	response, body = serveProviderCircuitRequest(t, plane, upstream, hammer, "/v1/chat/completions", chatBodyForCircuit(model, false))
 	assertProviderCircuitRefusal(t, "after route memory expiry", response, body, "15")
-	if authorizes, refunds, _ := plane.counts(); authorizes != 4 || refunds != 4 {
-		t.Fatalf("after route memory expiry: authorizes=%d refunds=%d, want 4/4", authorizes, refunds)
+	if authorizes, refunds, _ := plane.counts(); authorizes != authorizesBefore+1 || refunds != refundsBefore+1 || upstream.total() != 12 {
+		t.Fatalf("after route memory expiry: authorizes=%d refunds=%d upstream=%d", authorizes, refunds, upstream.total())
 	}
-	if got := upstream.total(); got != 9 {
-		t.Fatalf("open circuit was called: upstream calls=%d, want 9", got)
-	}
-	// That authorize refreshed the memory, so the next one fails fast again.
-	response, body = serveProviderCircuitRequest(t, plane, upstream, bearer, "/v1/chat/completions", chatBodyForCircuit(model, false))
+	response, body = serveProviderCircuitRequest(t, plane, upstream, hammer, "/v1/chat/completions", chatBodyForCircuit(model, false))
 	assertProviderCircuitRefusal(t, "refreshed fast fail", response, body, "15")
-	if authorizes, _, _ := plane.counts(); authorizes != 4 {
-		t.Fatalf("refreshed fast fail authorized: authorizes=%d, want 4", authorizes)
+	if authorizes, _, _ := plane.counts(); authorizes != authorizesBefore+1 {
+		t.Fatalf("refreshed fast fail authorized: authorizes=%d", authorizes)
 	}
 
-	// After the open window one probe goes through, succeeds and closes it.
+	// After the window one probe goes through, succeeds and closes it.
 	clock.Advance(16 * time.Second)
 	upstream.setFailure(provider, nil)
-	response, body = serveProviderCircuitRequest(t, plane, upstream, bearer, "/v1/chat/completions", chatBodyForCircuit(model, false))
-	if response.StatusCode != http.StatusOK {
-		t.Fatalf("probe: status=%d body=%s, want 200", response.StatusCode, body)
+	for i := 0; i < 2; i++ {
+		response, body = serveProviderCircuitRequest(t, plane, upstream, hammer, "/v1/chat/completions", chatBodyForCircuit(model, false))
+		if response.StatusCode != http.StatusOK {
+			t.Fatalf("after window %d: status=%d body=%s, want 200", i, response.StatusCode, body)
+		}
 	}
-	if got := upstream.total(); got != 10 {
-		t.Fatalf("probe upstream calls=%d, want 10", got)
-	}
-	response, body = serveProviderCircuitRequest(t, plane, upstream, bearer, "/v1/chat/completions", chatBodyForCircuit(model, false))
-	if response.StatusCode != http.StatusOK {
-		t.Fatalf("after close: status=%d body=%s, want 200", response.StatusCode, body)
-	}
-	if authorizes, refunds, settles := plane.counts(); authorizes != 6 || refunds != 4 || settles != 2 {
-		t.Fatalf("after close: authorizes=%d refunds=%d settles=%d, want 6/4/2", authorizes, refunds, settles)
+	if upstream.total() != 14 {
+		t.Fatalf("after close: upstream calls=%d, want 14", upstream.total())
 	}
 }
 
-func TestProviderCircuitNewCredentialIsRefusedWithoutProviderCall(t *testing.T) {
+func TestProviderCircuitThreeTenantsOpenTheSharedCircuit(t *testing.T) {
 	enableProviderCircuitsForTest(t)
 	const model = "circuit-fresh/glm-5.3-flash"
 	const provider = "circuit-fresh"
 	plane := newProviderCircuitControlPlane(t, model, providerCircuitTestCandidate{provider, "circuit-fresh/glm-5.3-flash@circuit-fresh/prepaid"})
 	upstream := &providerCircuitTestUpstream{}
 	upstream.setFailure(provider, providerCircuitUpstreamStatus(503))
-	for i := 0; i < 3; i++ {
-		serveProviderCircuitRequest(t, plane, upstream, "circuit-fresh-first-key", "/v1/chat/completions", chatBodyForCircuit(model, true))
-	}
+	openSharedCircuit(t, plane, upstream, model, "circuit-fresh")
 	before := upstream.total()
 
-	// A credential with no remembered route is authorized (the gateway cannot
-	// know its candidates yet), but the open circuit is not called and the
+	// A new tenant with no remembered route is authorized (its candidates
+	// are not known yet), but the open circuit is not called and the
 	// streaming client still gets the 503 with Retry-After before any head.
-	response, body := serveProviderCircuitRequest(t, plane, upstream, "circuit-fresh-second-key", "/v1/chat/completions", chatBodyForCircuit(model, true))
-	assertProviderCircuitRefusal(t, "new credential", response, body, "60")
-	if authorizes, refunds, _ := plane.counts(); authorizes != 4 || refunds != 4 {
-		t.Fatalf("new credential: authorizes=%d refunds=%d, want 4/4", authorizes, refunds)
-	}
-	if got := upstream.total(); got != before {
-		t.Fatalf("new credential called the open circuit: upstream calls=%d, want %d", got, before)
+	response, body := serveProviderCircuitRequest(t, plane, upstream, "circuit-fresh-new", "/v1/chat/completions", chatBodyForCircuit(model, true))
+	assertProviderCircuitRefusal(t, "new tenant", response, body, "60")
+	if authorizes, refunds, _ := plane.counts(); authorizes != 4 || refunds != 4 || upstream.total() != before {
+		t.Fatalf("new tenant: authorizes=%d refunds=%d upstream=%d->%d", authorizes, refunds, before, upstream.total())
 	}
 	// Its next request is refused before authorize.
-	response, body = serveProviderCircuitRequest(t, plane, upstream, "circuit-fresh-second-key", "/v1/chat/completions", chatBodyForCircuit(model, true))
-	assertProviderCircuitRefusal(t, "new credential repeat", response, body, "60")
+	response, body = serveProviderCircuitRequest(t, plane, upstream, "circuit-fresh-new", "/v1/chat/completions", chatBodyForCircuit(model, true))
+	assertProviderCircuitRefusal(t, "new tenant repeat", response, body, "60")
 	if authorizes, refunds, _ := plane.counts(); authorizes != 4 || refunds != 4 {
-		t.Fatalf("new credential repeat: authorizes=%d refunds=%d, want 4/4", authorizes, refunds)
+		t.Fatalf("new tenant repeat: authorizes=%d refunds=%d, want 4/4", authorizes, refunds)
 	}
 }
 
@@ -368,6 +401,87 @@ func TestProviderCircuitFailedProbeReopensAfterOneCall(t *testing.T) {
 	assertProviderCircuitRefusal(t, "reopened", response, body, "60")
 	if authorizes, refunds, _ := plane.counts(); authorizes != 4 || refunds != 4 {
 		t.Fatalf("reopened: authorizes=%d refunds=%d, want 4/4", authorizes, refunds)
+	}
+}
+
+func TestProviderCircuitHalfOpenAdmitsOneProbeAtATime(t *testing.T) {
+	clock := enableProviderCircuitsForTest(t)
+	const model = "circuit-gate/glm-5.3-flash"
+	const provider = "circuit-gate"
+	plane := newProviderCircuitControlPlane(t, model, providerCircuitTestCandidate{provider, "circuit-gate/glm-5.3-flash@circuit-gate/prepaid"})
+	upstream := &providerCircuitTestUpstream{}
+	upstream.setFailure(provider, providerCircuitUpstreamStatus(503))
+	openSharedCircuit(t, plane, upstream, model, "circuit-gate")
+	clock.Advance(61 * time.Second)
+	upstream.setFailure(provider, nil)
+
+	entered, release := upstream.holdNextCall(false)
+	defer release()
+	probeDone := make(chan *http.Response, 1)
+	go func() {
+		raw := fmt.Sprintf("POST /v1/chat/completions HTTP/1.1\r\nAuthorization: Bearer circuit-gate-probe\r\nContent-Type: application/json\r\nContent-Length: %d\r\nConnection: close\r\n\r\n%s", len(chatBodyForCircuit(model, false)), chatBodyForCircuit(model, false))
+		conn := newScriptedConn(raw, nil)
+		serveOne(context.Background(), conn, auth.New(nil), upstream, nil, nil, plane.gateway, nil)
+		response, _ := http.ReadResponse(bufioReader(conn.writes.Bytes()), nil)
+		probeDone <- response
+	}()
+	<-entered
+	before := upstream.total()
+
+	// While the probe is in flight every other attempt is refused.
+	response, body := serveProviderCircuitRequest(t, plane, upstream, "circuit-gate-waiter", "/v1/chat/completions", chatBodyForCircuit(model, false))
+	assertProviderCircuitRefusal(t, "during probe", response, body, "1")
+	if upstream.total() != before {
+		t.Fatalf("a second attempt reached the provider during the probe: calls %d->%d", before, upstream.total())
+	}
+
+	release()
+	if probe := <-probeDone; probe == nil || probe.StatusCode != http.StatusOK {
+		t.Fatalf("probe response = %v, want 200", probe)
+	}
+	response, body = serveProviderCircuitRequest(t, plane, upstream, "circuit-gate-waiter", "/v1/chat/completions", chatBodyForCircuit(model, false))
+	if response.StatusCode != http.StatusOK {
+		t.Fatalf("after a successful probe: status=%d body=%s, want 200", response.StatusCode, body)
+	}
+}
+
+func TestProviderCircuitStreamStartedBeforeTheOutageDoesNotCloseIt(t *testing.T) {
+	clock := enableProviderCircuitsForTest(t)
+	const model = "circuit-stale/glm-5.3-flash"
+	const provider = "circuit-stale"
+	plane := newProviderCircuitControlPlane(t, model, providerCircuitTestCandidate{provider, "circuit-stale/glm-5.3-flash@circuit-stale/prepaid"})
+	upstream := &providerCircuitTestUpstream{}
+
+	// A request whose response is already flowing when the outage starts.
+	entered, release := upstream.holdNextCall(true)
+	defer release()
+	longDone := make(chan int, 1)
+	go func() {
+		raw := fmt.Sprintf("POST /v1/chat/completions HTTP/1.1\r\nAuthorization: Bearer circuit-stale-long\r\nContent-Type: application/json\r\nContent-Length: %d\r\nConnection: close\r\n\r\n%s", len(chatBodyForCircuit(model, false)), chatBodyForCircuit(model, false))
+		conn := newScriptedConn(raw, nil)
+		serveOne(context.Background(), conn, auth.New(nil), upstream, nil, nil, plane.gateway, nil)
+		response, err := http.ReadResponse(bufioReader(conn.writes.Bytes()), nil)
+		if err != nil {
+			longDone <- 0
+			return
+		}
+		longDone <- response.StatusCode
+	}()
+	<-entered
+	clock.Advance(time.Second)
+	upstream.setFailure(provider, providerCircuitUpstreamStatus(502))
+	openSharedCircuit(t, plane, upstream, model, "circuit-stale")
+
+	// It completes during the outage: that must not close the circuit.
+	release()
+	if status := <-longDone; status != http.StatusOK {
+		t.Fatalf("long request status=%d, want 200", status)
+	}
+	before := upstream.total()
+	response, body := serveProviderCircuitRequest(t, plane, upstream, "circuit-stale-next", "/v1/chat/completions", chatBodyForCircuit(model, false))
+	assertProviderCircuitRefusal(t, "after the old stream", response, body, "60")
+	if upstream.total() != before {
+		t.Fatal("an old stream's success closed the circuit")
 	}
 }
 
@@ -405,7 +519,7 @@ func TestProviderCircuitFailoverSkipsOpenCandidatesAndFailsFastWhenAllOpen(t *te
 	upstream.setFailure("circuit-alpha", providerCircuitUpstreamStatus(503))
 	const bearer = "circuit-pair-key"
 
-	// Alpha fails and beta serves; three failures open alpha.
+	// Alpha fails and beta serves; three failures open alpha for this tenant.
 	for i := 1; i <= 3; i++ {
 		response, body := serveProviderCircuitRequest(t, plane, upstream, bearer, "/v1/chat/completions", chatBodyForCircuit(model, false))
 		if response.StatusCode != http.StatusOK {
@@ -416,14 +530,21 @@ func TestProviderCircuitFailoverSkipsOpenCandidatesAndFailsFastWhenAllOpen(t *te
 		t.Fatalf("calls alpha=%d beta=%d, want 3/3", alpha, beta)
 	}
 
-	// Open alpha is skipped without a call; beta still serves, so nothing
-	// fails fast.
+	// Open alpha is skipped without a call, and the skip reaches settlement
+	// analytics; beta still serves, so nothing fails fast.
 	response, body := serveProviderCircuitRequest(t, plane, upstream, bearer, "/v1/chat/completions", chatBodyForCircuit(model, false))
 	if response.StatusCode != http.StatusOK {
 		t.Fatalf("skip: status=%d body=%s, want 200", response.StatusCode, body)
 	}
 	if alpha, beta := upstream.callsTo("circuit-alpha"), upstream.callsTo("circuit-beta"); alpha != 3 || beta != 4 {
 		t.Fatalf("skip: calls alpha=%d beta=%d, want 3/4", alpha, beta)
+	}
+	plane.mu.Lock()
+	lastSettle := plane.settled[len(plane.settled)-1]
+	plane.mu.Unlock()
+	failures, _ := lastSettle["route_failures"].([]any)
+	if lastSettle["route_fallbacks"] != float64(1) || len(failures) != 1 || !strings.Contains(fmt.Sprint(failures[0]), "circuit-alpha|circuit-pair/glm-5.3-flash@circuit-alpha/prepaid|provider_circuit_open") {
+		t.Fatalf("settlement route_failures = %v, want the skipped candidate", lastSettle["route_failures"])
 	}
 
 	// Beta goes down too. With alpha open, beta is the last candidate and is
@@ -477,4 +598,163 @@ func TestProviderCircuitFailsFastOnMessages(t *testing.T) {
 	if authorizes, refunds, _ := plane.counts(); authorizes != 3 || refunds != 3 {
 		t.Fatalf("messages fast fail reached the control plane: authorizes=%d refunds=%d, want 3/3", authorizes, refunds)
 	}
+}
+
+// Authorize fits endpoints on ONE number, input + (max_tokens or 0)
+// (quill-router candidates_fitting_context). The remembered set covers any
+// request whose number is at least the remembered one, whatever the split, and
+// never a request that needs less room.
+func TestProviderCircuitDemandUsesTheControlPlaneContextFit(t *testing.T) {
+	enableProviderCircuitsForTest(t)
+	const model = "circuit-demand/glm-5.3-flash"
+	const provider = "circuit-demand"
+	plane := newProviderCircuitControlPlane(t, model, providerCircuitTestCandidate{provider, "circuit-demand/glm-5.3-flash@circuit-demand/prepaid"})
+	upstream := &providerCircuitTestUpstream{}
+	upstream.setFailure(provider, providerCircuitUpstreamStatus(502))
+	body := func(maxTokens int, content string) string {
+		return fmt.Sprintf(`{"model":%q,"max_tokens":%d,"messages":[{"role":"user","content":%q}]}`, model, maxTokens, content)
+	}
+	// Remembered: a short prompt with room for 1000 output tokens.
+	for i := 0; i < 3; i++ {
+		serveProviderCircuitRequest(t, plane, upstream, "circuit-demand-key", "/v1/chat/completions", body(1000, "hello"))
+	}
+	authorizesBefore, _, _ := plane.counts()
+	// A long prompt with a small max_tokens needs MORE room in total: every
+	// endpoint that fits it also fit the remembered request, so it is refused.
+	response, responseBody := serveProviderCircuitRequest(t, plane, upstream, "circuit-demand-key", "/v1/chat/completions", body(100, strings.Repeat("long prompt ", 400)))
+	assertProviderCircuitRefusal(t, "larger total demand", response, responseBody, "60")
+	if authorizes, _, _ := plane.counts(); authorizes != authorizesBefore {
+		t.Fatalf("larger total demand reached authorize: %d -> %d", authorizesBefore, authorizes)
+	}
+	// A request needing less room may fit an endpoint the remembered one was
+	// filtered from, so it must reach authorize.
+	serveProviderCircuitRequest(t, plane, upstream, "circuit-demand-key", "/v1/chat/completions", body(100, "hello"))
+	if authorizes, _, _ := plane.counts(); authorizes != authorizesBefore+1 {
+		t.Fatalf("a request needing less room was refused before authorize: %d -> %d", authorizesBefore, authorizes)
+	}
+}
+
+// One model's outage must not refuse its siblings on the same provider, and a
+// tenant's own BYOK account failing must not refuse anyone else's route.
+func TestProviderCircuitKeepsSiblingModelsAndBYOKIsolated(t *testing.T) {
+	enableProviderCircuitsForTest(t)
+	down := providerCircuitUpstreamStatus(503)
+	run := func(workspace string, options ...llm.InvokeOptions) (attempts int, err error) {
+		calls := 0
+		provider := streamingProviderFunc(func(_ context.Context, w io.Writer, option llm.InvokeOptions) error {
+			calls++
+			if strings.HasSuffix(option.EndpointID, "/down") {
+				return down
+			}
+			_, writeErr := io.WriteString(w, providerStreamTestResponse)
+			return writeErr
+		})
+		pr, pw := io.Pipe()
+		done := make(chan struct{})
+		go func() {
+			defer close(done)
+			invokeProviderStream(context.Background(), provider, &types.OpenAIChatRequest{Model: options[0].Model},
+				&types.AnthropicMessagesRequest{}, pw, options, true, &trustedrouter.Authorization{WorkspaceID: workspace},
+				newSelectedRouteTracker(), "isolation-test", false, false)
+		}()
+		_, err = io.ReadAll(pr)
+		<-done
+		return calls, err
+	}
+	failing := llm.InvokeOptions{Provider: "circuit-sibling", Model: "circuit-sibling/glm-5.3-flash", EndpointID: "glm-5.3-flash/down", UsageType: "Credits"}
+	sibling := llm.InvokeOptions{Provider: "circuit-sibling", Model: "circuit-sibling/glm-5.2", EndpointID: "glm-5.2/up", UsageType: "Credits"}
+	for _, workspace := range []string{"ws-a", "ws-b", "ws-c"} {
+		run(workspace, failing)
+	}
+	if calls, err := run("ws-d", failing); calls != 0 || err == nil {
+		t.Fatalf("the failing model's shared circuit should be open: calls=%d err=%v", calls, err)
+	}
+	if calls, err := run("ws-d", sibling); calls != 1 || err != nil {
+		t.Fatalf("a sibling model was refused: calls=%d err=%v", calls, err)
+	}
+
+	byok := llm.InvokeOptions{Provider: "circuit-byok", Model: "circuit-byok/model", EndpointID: "byok/down", UsageType: "BYOK"}
+	platform := llm.InvokeOptions{Provider: "circuit-byok", Model: "circuit-byok/model", EndpointID: "prepaid/up", UsageType: "Credits"}
+	for i := 0; i < 3; i++ {
+		run("ws-byok-a", byok)
+	}
+	if calls, _ := run("ws-byok-a", byok); calls != 0 {
+		t.Fatalf("a tenant's own failing BYOK route should be refused for that tenant: calls=%d", calls)
+	}
+	if calls, err := run("ws-byok-b", platform); calls != 1 || err != nil {
+		t.Fatalf("one tenant's BYOK failures refused another tenant's platform route: calls=%d err=%v", calls, err)
+	}
+	if calls, err := run("ws-byok-a", platform); calls != 1 || err != nil {
+		t.Fatalf("a tenant's BYOK failures refused its own platform route: calls=%d err=%v", calls, err)
+	}
+}
+
+func TestProviderCircuitImagesRefusalCarriesRetryAfter(t *testing.T) {
+	enableProviderCircuitsForTest(t)
+	const model, provider = "google/gemini-3.1-flash-image", "google-ai-studio"
+	var authorizes, refunds atomic.Int32
+	gateway := trustedrouter.New("http://127.0.0.1:18080", "test", &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
+		var body map[string]any
+		_ = json.NewDecoder(r.Body).Decode(&body)
+		credential, _ := body["api_key_lookup_hash"].(string)
+		response := `{"data":{"refunded":true}}`
+		switch r.URL.Path {
+		case "/internal/gateway/authorize":
+			authorizes.Add(1)
+			encoded, _ := json.Marshal(map[string]any{"data": &trustedrouter.Authorization{
+				AuthorizationID: "images-circuit", WorkspaceID: "ws_" + credential[:12], Model: model, Provider: provider,
+				EndpointID: "served", UsageType: "Credits",
+			}})
+			response = string(encoded)
+		case "/internal/gateway/refund":
+			refunds.Add(1)
+		}
+		return &http.Response{StatusCode: 200, Header: make(http.Header), Body: io.NopCloser(strings.NewReader(response)), Request: r}, nil
+	})})
+	upstream := &providerCircuitTestUpstream{}
+	upstream.setFailure(provider, providerCircuitUpstreamStatus(503))
+	body := fmt.Sprintf(`{"model":%q,"prompt":"cat"}`, model)
+	for _, bearer := range []string{"images-a", "images-b", "images-c"} {
+		var out bytes.Buffer
+		serveImages(context.Background(), &out, upstream, []byte(body), gateway, bearer, nil, "", requestAttributionHeaders{}, "images-circuit")
+	}
+	before := upstream.total()
+	var out bytes.Buffer
+	serveImages(context.Background(), &out, upstream, []byte(body), gateway, "images-d", nil, "", requestAttributionHeaders{}, "images-circuit")
+	response, responseBody := readRawHTTPResponse(t, out.Bytes())
+	assertProviderCircuitRefusal(t, "images", response, responseBody, "60")
+	if upstream.total() != before || authorizes.Load() != 4 || refunds.Load() != 4 {
+		t.Fatalf("images refusal: upstream %d->%d authorizes=%d refunds=%d", before, upstream.total(), authorizes.Load(), refunds.Load())
+	}
+}
+
+func TestProviderCircuitDecideRefusalCarriesRetryAfterWithoutASecondAttempt(t *testing.T) {
+	enableProviderCircuitsForTest(t)
+	down := fmt.Errorf("llm/upstream: http 503: unavailable")
+	backend := &scriptedLLM{replies: make([]string, 8), errors: []error{down, down, down, down, down, down, down, down}}
+	log := &controlPlaneLog{}
+	controlPlane := fakeDecideControlPlane(t, log, "cerebras")
+	gateway := trustedrouter.New(controlPlane.URL, "internal-token", controlPlane.Client())
+	request := func() string {
+		body := fmt.Sprintf(`{"model":%q,"state":%q,"questions":{"refund":{"type":"boolean","instructions":"Is a refund requested?"}}}`, decide.TrevModelID, privateState)
+		var out bytes.Buffer
+		serveDecide(context.Background(), &out, backend, []byte(body), gateway, true, "sk-tr-test-bearer", nil, "", requestAttributionHeaders{}, "log-circuit")
+		return out.String()
+	}
+	request() // two refunded attempts
+	request() // the third failure opens the tenant circuit; the next attempt is refused
+	calls, authorizes, refunds := len(backend.requests), len(log.authorize), log.refund
+	raw := request()
+	response, body := readRawHTTPResponse(t, []byte(raw))
+	assertProviderCircuitRefusal(t, "decide", response, body, "60")
+	if len(backend.requests) != calls || len(log.authorize) != authorizes+1 || log.refund != refunds+1 {
+		t.Fatalf("decide refusal: calls %d->%d authorizes %d->%d refunds %d->%d", calls, len(backend.requests), authorizes, len(log.authorize), refunds, log.refund)
+	}
+}
+
+func TestProviderCircuitFusionRefusalCarriesRetryAfter(t *testing.T) {
+	var out bytes.Buffer
+	writeFusionError(context.Background(), &out, nil, fmt.Errorf("fusion panel: %w", &providerCircuitOpenError{retryAfter: 20 * time.Second}))
+	response, body := readRawHTTPResponse(t, out.Bytes())
+	assertProviderCircuitRefusal(t, "fusion", response, body, "20")
 }
