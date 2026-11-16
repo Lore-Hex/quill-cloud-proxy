@@ -1,4 +1,4 @@
-# AWS attested bootstrap: Phase 0
+# AWS attested bootstrap infrastructure
 
 This directory is the first stage of
 [`aws-attested-secret-release.md`](../../docs/design/aws-attested-secret-release.md).
@@ -71,3 +71,30 @@ is not rollback and is blocked by `prevent_destroy`.
    legacy reads. Soak before deletion; coordinate every exposed-key rotation.
 
 Do not claim AWS secret confidentiality or retire the V1 secrets at Phase 0.
+
+## Phase 1: approved artifact storage
+
+`provision_eif_storage=true` adds private, versioned artifact buckets in
+eu-west-1 and eu-west-3, plus the immutable-tagged `quill-enclave-eif-builder`
+ECR repository in eu-west-1. Review the saved plan with both opt-ins enabled
+after Phase 0; do not disable an already-created stage. Keep the same Terraform
+state and the AWS rollout fence. This stage must not alter a legacy resource.
+
+Artifacts use `releases/<source_commit>/<eif_sha256>/`. Each object is uploaded
+with a single PUT and `If-None-Match: *`; multipart upload, replacement and
+deletion of release objects are denied. All public access is blocked, transport
+must use TLS, and S3 encrypts objects at rest. Do not add lifecycle expiration:
+accepted older releases must stay available for rollback and scale-out.
+
+The parent gets a separate GetObject-only policy for those release prefixes.
+The existing main-only CI publisher gets a separate policy to read the builder
+and publish/read release objects. It cannot write the builder, delete artifacts
+or access secrets through this policy. No existing secret access is changed.
+The operator publishes the builder once and records its registry digest in the
+release workflow. A moving tag is never an allowed builder input.
+
+The trust-mirror bucket is deliberately not used: its publication script runs
+`s3 sync --delete`. A successful trust-page publish must never erase an EIF.
+The manifest verifier authenticates the dedicated `publish-aws-eif.yml` main
+workflow identity and then validates the EIF's size and SHA-256 digest. It does
+not itself admit a measurement, change KMS policy, or roll the fleet.
