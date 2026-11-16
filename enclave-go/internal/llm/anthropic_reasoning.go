@@ -153,11 +153,14 @@ type claudeReasoningAsk struct {
 	budget bool
 }
 
-// claudeReasoningAskOf reads the request. Off is any of: reasoning.enabled
-// false, a bare reasoning false, reasoning.type disabled, and an effort of
-// none, off, disable or disabled, top-level or in the reasoning object. The
-// contract layer has already refused a switch beside one of those words, so
-// On beside an Off word arrives here only from the reasoning object.
+// claudeReasoningAskOf reads the request. Off has two kinds of spelling. The
+// switch forms always govern: reasoning.enabled false, a bare reasoning
+// false, and reasoning.type disabled. The word forms are efforts: none, off,
+// disable and disabled. A word is Off only when it is the request's effort,
+// and with two efforts in a request that is the top-level one. So an Off word
+// in the reasoning object beside a top-level effort is not Off. The contract
+// layer has already refused a switch beside an Off word, so On beside one
+// arrives here only from the reasoning object.
 func claudeReasoningAskOf(req *qtypes.OpenAIChatRequest) claudeReasoningAsk {
 	ask := claudeReasoningAsk{effort: chatReasoningEffort(req), budget: adapter.ExplicitThinkingBudget(req.Reasoning) > 0}
 	ask.off = adapter.ReasoningEffortOff(ask.effort)
@@ -167,9 +170,8 @@ func claudeReasoningAskOf(req *qtypes.OpenAIChatRequest) claudeReasoningAsk {
 	case map[string]any:
 		mode, _ := reasoning["type"].(string)
 		enabled, switched := reasoning["enabled"].(bool)
-		inner, _ := reasoning["effort"].(string)
 		ask.on = (switched && enabled) || strings.EqualFold(mode, "enabled") || strings.EqualFold(mode, "adaptive")
-		ask.off = ask.off || (switched && !enabled) || strings.EqualFold(mode, "disabled") || adapter.ReasoningEffortOff(inner)
+		ask.off = ask.off || (switched && !enabled) || strings.EqualFold(mode, "disabled")
 	}
 	return ask
 }

@@ -445,8 +445,20 @@ func TestClaudeEffortLadderWireTable(t *testing.T) {
 		{"On object beside effort off", user, `"reasoning":{"enabled":true},"reasoning_effort":"off"`, map[string]string{
 			budget: `{"max_tokens":4096}`, opus45: disabled, v46: disabled, full: disabled,
 		}},
+		// An Off word is an effort, so with two efforts the top-level one
+		// decides: Off in the object beside a top-level effort is that effort,
+		// and Off at the top level is Off whatever the object says.
 		{"an Off word in the object beside a top-level effort", user, `"reasoning":{"effort":"none"},"reasoning_effort":"high"`, map[string]string{
-			budget: `{"max_tokens":4096}`, opus45: disabled, v46: disabled, full: disabled,
+			budget: `{"max_tokens":12288,` + think("8192") + `}`, opus45: `{"max_tokens":12288,"output_config":{"effort":"high"},` + think("8192") + `}`,
+			v46: adaptive("high"), full: adaptive("high"), haiku55: adaptive("high"), sonnet55: adaptive("high"), future: adaptive("high"),
+		}},
+		{"a top-level Off word beside an effort in the object", user, `"reasoning":{"effort":"high"},"reasoning_effort":"none"`, map[string]string{
+			budget: `{"max_tokens":4096}`, opus45: disabled, v46: disabled, full: disabled, haiku55: disabled, future: disabled,
+			sonnet55: `{"max_tokens":4096,"thinking":{"type":"between_tools"}}`,
+		}},
+		{"two efforts, the top-level one wins", user, `"reasoning":{"effort":"high"},"reasoning_effort":"low"`, map[string]string{
+			budget: `{"max_tokens":4096,` + think("1024") + `}`, opus45: `{"max_tokens":4096,"output_config":{"effort":"low"},` + think("1024") + `}`,
+			v46: adaptive("low"), full: adaptive("low"),
 		}},
 		// On beside an effort is that effort, wherever the effort is written.
 		{"On object beside low", user, `"reasoning":{"enabled":true},"reasoning_effort":"low"`, map[string]string{
@@ -641,11 +653,16 @@ func TestClaudeOffSpellingsThatReachDispatch(t *testing.T) {
 			`"reasoning":true,"reasoning_effort":"` + word + `"`,
 			`"reasoning_effort":"` + word + `"`,
 			`"reasoning":{"effort":"` + word + `"}`,
-			`"reasoning":{"effort":"` + word + `"},"reasoning_effort":"high"`,
+			`"reasoning":{"effort":"high"},"reasoning_effort":"` + word + `"`,
 		} {
 			if got := reasoningWire(t, route, fields); got != `{}` {
 				t.Errorf("%s: got %s, want it to reach the model with no thinking", fields, got)
 			}
+		}
+		// An Off word in the object beside a top-level effort reaches the
+		// model too, and there the top-level effort wins.
+		if got := reasoningWire(t, route, `"reasoning":{"effort":"`+word+`"},"reasoning_effort":"high"`); got != `{"thinking":{"budget_tokens":8192,"type":"enabled"}}` {
+			t.Errorf("object effort %s beside top-level high: got %s, want what high sends", word, got)
 		}
 	}
 	for _, fields := range []string{`"reasoning":false`, `"reasoning":false,"reasoning_effort":"high"`, `"reasoning":{"type":"disabled"}`, `"reasoning":{"type":"disabled"},"reasoning_effort":"high"`, `"reasoning":{"enabled":false,"max_tokens":2048}`} {

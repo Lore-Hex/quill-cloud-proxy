@@ -294,12 +294,78 @@ var claudeOffSpellings = []string{
 	`"reasoning":{"enabled":true,"effort":"disabled"}`,
 	`"reasoning":true,"reasoning_effort":"off"`,
 	`"reasoning":{"type":"enabled"},"reasoning_effort":"none"`,
-	// An Off word in either place governs over an effort in the other.
-	`"reasoning":{"effort":"none"},"reasoning_effort":"high"`,
+	// A top-level Off word is the request's effort, whatever the object says.
 	`"reasoning":{"effort":"high"},"reasoning_effort":"none"`,
+	`"reasoning":{"effort":"max"},"reasoning_effort":"off"`,
+	`"reasoning":{"enabled":true,"effort":"high"},"reasoning_effort":"disabled"`,
 	// An Off word beside a named budget.
 	`"reasoning":{"max_tokens":8192},"reasoning_effort":"off"`,
 	`"reasoning":{"max_tokens":8192,"effort":"none"}`,
+}
+
+// When a request carries two efforts the top-level one wins, on every class.
+// An Off word is an effort, so the same rule decides it: in the reasoning
+// object beside a top-level effort it is not Off, and at the top level it is
+// Off whatever the object says. The switch forms of Off are not efforts and
+// always govern, which TestClaudeOffGovernsOnEveryClass covers.
+func TestClaudeTwoEffortsTheTopLevelOneWins(t *testing.T) {
+	offWords := []string{"none", "off", "disable", "disabled"}
+	for class, ids := range map[claudeReasoningClass][]string{
+		claudeBudget: claudeBudgetIDs, claudeOpus45: claudeOpus45IDs, claudeV46: claudeV46IDs, claudeFull: claudeFullIDs,
+	} {
+		for _, id := range ids {
+			off := `{"max_tokens":4096,"thinking":{"type":"disabled"}}`
+			switch {
+			case class == claudeBudget:
+				off = `{"max_tokens":4096}`
+			case claudeSonnet55.MatchString(claudeModelKey(id)):
+				off = `{"max_tokens":4096,"thinking":{"type":"between_tools"}}`
+			}
+			high := claudeWire(t, id, `"reasoning_effort":"high"`)
+			low := claudeWire(t, id, `"reasoning_effort":"low"`)
+			if high == off || low == off || high == low {
+				t.Fatalf("%s: high sends %s, low %s, Off %s: the rows below would prove nothing", id, high, low, off)
+			}
+			for _, word := range offWords {
+				// An Off word in the object loses to the top-level effort.
+				for _, fields := range []string{
+					`"reasoning":{"effort":"` + word + `"},"reasoning_effort":"high"`,
+					`"reasoning":{"effort":"` + strings.ToUpper(word) + `"},"reasoning_effort":"high"`,
+				} {
+					if got := claudeWire(t, id, fields); got != high {
+						t.Errorf("%s %s:\n got %s\nwant what high alone sends, %s", id, fields, got, high)
+					}
+				}
+				// A top-level Off word wins over the effort in the object.
+				for _, fields := range []string{
+					`"reasoning":{"effort":"high"},"reasoning_effort":"` + word + `"`,
+					`"reasoning":{"effort":"max"},"reasoning_effort":"` + word + `"`,
+					`"reasoning":{"enabled":true,"effort":"high"},"reasoning_effort":"` + word + `"`,
+				} {
+					if got := claudeWire(t, id, fields); got != off {
+						t.Errorf("%s %s:\n got %s\nwant Off, %s", id, fields, got, off)
+					}
+				}
+				// With no top-level effort the object's word is the effort.
+				if got := claudeWire(t, id, `"reasoning":{"effort":"`+word+`"}`); got != off {
+					t.Errorf("%s effort %s in the object alone:\n got %s\nwant Off, %s", id, word, got, off)
+				}
+			}
+			// Two real efforts: the top-level one wins in both orders.
+			if got := claudeWire(t, id, `"reasoning":{"effort":"high"},"reasoning_effort":"low"`); got != low {
+				t.Errorf("%s object high beside top-level low:\n got %s\nwant %s", id, got, low)
+			}
+			if got := claudeWire(t, id, `"reasoning":{"effort":"low"},"reasoning_effort":"high"`); got != high {
+				t.Errorf("%s object low beside top-level high:\n got %s\nwant %s", id, got, high)
+			}
+			// A switch form of Off still governs over a top-level effort.
+			for _, fields := range []string{`"reasoning":{"enabled":false,"effort":"none"},"reasoning_effort":"high"`, `"reasoning":{"type":"disabled","effort":"low"},"reasoning_effort":"high"`, `"reasoning":false,"reasoning_effort":"high"`} {
+				if got := claudeWire(t, id, fields); got != off {
+					t.Errorf("%s %s:\n got %s\nwant Off, %s", id, fields, got, off)
+				}
+			}
+		}
+	}
 }
 
 // Decision 1: Off governs on every class, even beside an effort or a budget,

@@ -130,16 +130,21 @@ no thinking, because the smallest budget Anthropic takes is 1,024 tokens.
 When a request carries two efforts, a top-level `reasoning_effort` and a
 `reasoning.effort` inside the object, the top-level one wins. That holds on
 every Claude class, and it is the rule on the other providers that are sent
-one effort. The one exception is Off: an effort that means Off governs from
-either place.
+one effort. An effort that means Off (`none`, `off`, `disable`, `disabled`)
+is an effort like any other, so the same rule decides it:
+`reasoning: {"effort": "none"}` beside `reasoning_effort: "high"` is `high`,
+and `reasoning_effort: "none"` beside `reasoning: {"effort": "high"}` is
+Off.
 
 The switch and the effort work together:
 
-* Off governs on every class. Off is any of these: `reasoning: {"enabled":
-  false}`; a bare `reasoning: false`; `reasoning: {"type": "disabled"}`; any
-  switch spelling of Off; and an effort of `none`, `off`, `disable` or
-  `disabled`, top-level or in the `reasoning` object. Off sends no thinking,
-  even beside an On, an effort or a token budget. The Budget class is sent no
+* Off governs on every class. Off has switch forms, which always govern:
+  `reasoning: {"enabled": false}`; a bare `reasoning: false`;
+  `reasoning: {"type": "disabled"}`; and any switch spelling of Off. It also
+  has a word form: the request's effort is `none`, `off`, `disable` or
+  `disabled`, where the request's effort is the top-level `reasoning_effort`
+  or, when there is none, `reasoning.effort`. Off sends no thinking, even
+  beside an On, an effort or a token budget. The Budget class is sent no
   `thinking` field. Opus 4.5 and the adaptive classes are sent
   `thinking: {"type": "disabled"}`. Sonnet 5.5 is sent
   `thinking: {"type": "between_tools"}`, the Off that Anthropic names for
@@ -194,9 +199,14 @@ carries a thinking budget keeps the limit that budget sets.
 
 Limits that remain:
 
-* Opus 5.5 and Fable 5.x cannot be turned off. Off sends them
-  `thinking: {"type": "disabled"}`, and Anthropic refuses that for those
-  models. Whether Mythos 5.x accepts `disabled` has not been observed.
+* On Opus 5.5 and Fable 5.x Off cannot be honoured. Those models cannot be
+  turned off: Off sends them `thinking: {"type": "disabled"}`, and Anthropic
+  refuses that for them, so the request fails in every spelling of Off.
+  Before this change two of the switch spellings, a bare `reasoning: false`
+  and `reasoning: {"type": "disabled"}`, were ignored on those models and
+  the request was served with reasoning on. Now they are refused like
+  `reasoning: {"enabled": false}`. Mythos 5.x is sent `disabled` the same
+  way. What it answers has not been observed.
 * A token budget the caller names is sent to the Full class too, and the
   Full class refuses a thinking budget, so that request fails there. Use an
   effort, or On alone, on those models.
