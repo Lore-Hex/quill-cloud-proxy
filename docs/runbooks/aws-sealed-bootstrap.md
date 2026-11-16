@@ -43,6 +43,16 @@ the named `jperla` seal operator, not a host or CI session. Run separately for
 eu-west-3 with its own input region and CMK. Replication is rejected: the other
 region must have an independently encrypted bundle.
 
+Alternatively, replace `--bootstrap-file` with `--values "$PRIVATE_VALUES"`
+and `--service-account-file "$PRIVATE_ACME_KEY"`. The values file contains
+logical secret names and strings from the operator's local source, not AWS
+wrapped ciphertext or unrelated control-plane credentials. The builder uses
+the parent catalog and refuses missing values unless each inactive name is
+explicitly listed with `--omit`. It never reads a cloud or logs values, and it
+keeps the assembled plaintext in memory. The internal gateway credential and
+the unwrapped ACME key are mandatory. Inspect missing names before approving
+omissions; missing from a local file does not prove unused in production.
+
 The tool creates `AWSPENDING`, reads the ciphertext back, then moves
 `AWSCURRENT` from the observed predecessor. It verifies the resulting stage.
 Output contains only region, version, ciphertext size and hash. The plaintext

@@ -25,20 +25,21 @@ from typing import Any
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
+from tools import aws_bootstrap_payload
 from tools import aws_sealed_bundle as sealing
 
 SECRET_ID = "quill/attested-bootstrap-v2"
 OPERATOR = "arn:aws:iam::330422590279:user/jperla"
 
 
-def read_private(path: Path) -> bytes:
+def read_private(path: Path, maximum: int = sealing.MAX_PLAINTEXT) -> bytes:
     descriptor = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
     with os.fdopen(descriptor, "rb") as stream:
         info = os.fstat(stream.fileno())
         if not stat.S_ISREG(info.st_mode) or info.st_uid != os.getuid() or info.st_mode & 0o077:
             raise ValueError("bootstrap input must be an owner-only regular file")
-        data = stream.read(sealing.MAX_PLAINTEXT + 1)
-    if not 0 < len(data) <= sealing.MAX_PLAINTEXT:
+        data = stream.read(maximum + 1)
+    if not 0 < len(data) <= maximum:
         raise ValueError("bootstrap input exceeds bundle limit")
     return data
 
@@ -130,7 +131,11 @@ def publish(
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--bootstrap-file", type=Path, required=True)
+    source = parser.add_mutually_exclusive_group(required=True)
+    source.add_argument("--bootstrap-file", type=Path)
+    source.add_argument("--values", type=Path, help="complete local logical-secret values; no cloud reads")
+    parser.add_argument("--service-account-file", type=Path, help="unwrapped local ACME key; required with --values")
+    parser.add_argument("--omit", action="append", default=[], help="explicitly reviewed inactive logical secret")
     parser.add_argument("--region", choices=sorted(sealing.REGIONS), required=True)
     parser.add_argument("--version", type=int, required=True)
     parser.add_argument("--key-arn", required=True)
@@ -140,7 +145,22 @@ def main() -> int:
     args = parser.parse_args()
     if os.environ.get("AWS_REPLICA_REGIONS"):
         raise ValueError("set AWS_REPLICA_REGIONS to the empty string for sealed bundles")
-    data = read_private(args.bootstrap_file)
+    if args.values:
+        if args.service_account_file is None:
+            raise ValueError("--values requires --service-account-file")
+        values = json.loads(read_private(args.values, 256 << 10), object_pairs_hook=sealing.unique_object,
+                            parse_constant=sealing.reject_constant)
+        payload = aws_bootstrap_payload.build(
+            values, region=args.region, service_account=read_private(args.service_account_file).decode(),
+            omitted=args.omit,
+        )
+        data = sealing.canonical(payload)
+    else:
+        if args.omit or args.service_account_file:
+            raise ValueError("source-builder options require --values")
+        data = read_private(args.bootstrap_file)
+    if len(data) > sealing.MAX_PLAINTEXT:
+        raise ValueError("complete bootstrap exceeds bundle limit")
     validate_payload(data, args.region)
     with args.signer_public_key.open("rb") as stream:
         public = stream.read(257)

@@ -166,6 +166,35 @@ class PublicationTests(unittest.TestCase):
         self.assertEqual(self.secrets.describe_secret.return_value["VersionIdsToStages"], {"old": ["AWSCURRENT"]})
         self.assertEqual(self.secrets.put_secret_value.call_args.kwargs["VersionStages"], ["AWSPENDING"])
 
+    def test_cli_builds_local_values_without_any_aws_calls(self):
+        from tools.test_aws_bootstrap_payload import PayloadTests
+
+        fixture = PayloadTests()
+        fixture.setUp()
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            values, service_account = root / "values.json", root / "sa.json"
+            values.write_text(json.dumps(fixture.values))
+            service_account.write_text(fixture.sa)
+            values.chmod(0o600)
+            service_account.chmod(0o600)
+            public = root / "public.der"
+            key = publish.sealing.ec.generate_private_key(publish.sealing.ec.SECP384R1())
+            public.write_bytes(key.public_key().public_bytes(
+                publish.sealing.serialization.Encoding.DER,
+                publish.sealing.serialization.PublicFormat.SubjectPublicKeyInfo,
+            ))
+            argv = ["seal", "--values", str(values), "--service-account-file", str(service_account),
+                    "--region", "eu-west-1", "--version", "7", "--key-arn", KEY,
+                    "--signer-arn", KEY, "--signer-public-key", str(public)]
+            with patch.object(publish.sys, "argv", argv), \
+                 patch.dict(os.environ, {"AWS_REPLICA_REGIONS": ""}), \
+                 patch.object(publish, "publish") as cloud, \
+                 patch.object(publish.subprocess, "run") as fence:
+                self.assertEqual(publish.main(), 0)
+            cloud.assert_not_called()
+            fence.assert_not_called()
+
 
 if __name__ == "__main__":
     unittest.main()
