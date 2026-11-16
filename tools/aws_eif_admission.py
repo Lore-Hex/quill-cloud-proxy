@@ -20,7 +20,7 @@ from tools import aws_eif_manifest as manifests
 
 ROOT = Path(__file__).resolve().parents[1]
 TRUST = ROOT / "trust-page" / "trust"
-PUBLIC_RECORD = "https://trustedrouter.com/trust/aws-release.json"
+PUBLIC_RECORD = "https://trust.trustedrouter.com/trust/aws-release.json"
 PUBLIC_IDENTITY = "https://github.com/Lore-Hex/quill-cloud-proxy/.github/workflows/publish-trust-aws.yml@refs/heads/main"
 
 
