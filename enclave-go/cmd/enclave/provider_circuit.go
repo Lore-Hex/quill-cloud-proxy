@@ -443,11 +443,14 @@ func (r *providerCircuitRegistry) Tripped(ticket *providerCircuitTicket) bool {
 	if r == nil || ticket == nil {
 		return false
 	}
+	// ticket.probes is written under r.mu by ReleaseProbe, which a provider
+	// client that ignores cancellation could reach from a straggler goroutine,
+	// so it is read under the same lock.
+	r.mu.Lock()
+	defer r.mu.Unlock()
 	if len(ticket.probes) > 0 {
 		return true
 	}
-	r.mu.Lock()
-	defer r.mu.Unlock()
 	for _, key := range ticket.route.keys() {
 		if state, ok := r.states[key]; ok && !state.openedAt.IsZero() {
 			return true
