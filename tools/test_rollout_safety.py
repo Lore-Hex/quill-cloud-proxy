@@ -226,6 +226,33 @@ class RolloutSafetyTests(unittest.TestCase):
         self.assertEqual(mutation["group"], "deploy-enclave-gcp")
         self.assertEqual(mutation["queue"], "max")
 
+    def test_dns_schedule_runs_as_the_reconciler_and_never_as_the_deploy_identity(self) -> None:
+        # The workload identity provider puts this workflow in its own tier
+        # (quill-router infra/gcp_wif.tf), the only tier the reconciler's
+        # account accepts. The deploy identity, which can replace the fleet,
+        # still accepts every admitted workflow of this repository until its
+        # repository-wide binding is removed (phase 5 of quill-router
+        # docs/runbooks/ci-identities.md). Until then this test, not the
+        # provider, is what keeps the five-minute schedule from asking for
+        # it; afterwards the provider refuses it as well.
+        import yaml
+
+        path = ROOT / ".github/workflows/reconcile-enclave-dns.yml"
+        workflow = yaml.safe_load(path.read_text())
+        accounts = [
+            step["with"]["service_account"]
+            for job in workflow["jobs"].values()
+            for step in job["steps"]
+            if "/gcp-auth@" in step.get("uses", "")
+        ]
+        self.assertEqual(
+            accounts, ["enclave-dns-reconciler@quill-cloud-proxy.iam.gserviceaccount.com"]
+        )
+        self.assertNotIn("tr-deploy@", path.read_text())
+        # The same account the reconciler's Cloud Run job runs as.
+        deploy = (ROOT / ".github/workflows/deploy-enclave-dns-reconciler.yml").read_text()
+        self.assertIn(f"RECONCILER_SERVICE_ACCOUNT: {accounts[0]}", deploy)
+
     def test_canary_keys_are_fresh_per_invocation_and_stable_within_retries(self) -> None:
         source = (ROOT / "tools/verify-region-before-dns.sh").read_text()
         namespace = next(
