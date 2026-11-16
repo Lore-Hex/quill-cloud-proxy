@@ -140,8 +140,11 @@ is an effort like any other, so the same rule decides it:
 `reasoning: {"effort": "none"}` beside `reasoning_effort: "high"` is `high`,
 and `reasoning_effort: "none"` beside `reasoning: {"effort": "high"}` is
 Off. A bare string in the `reasoning` field, `reasoning: "high"`, is an
-effort too. It is read exactly like `reasoning.effort`: it is the request's
-effort when there is no top-level `reasoning_effort`.
+effort too when it is a word the gateway knows: one of the six efforts in
+the table above, or a word that means Off. Then it is read exactly like
+`reasoning.effort`: it is the request's effort when there is no top-level
+`reasoning_effort`. Any other string is not read as an effort, and the
+request is sent as if it had asked nothing.
 
 The switch and the effort work together:
 

@@ -324,20 +324,52 @@ var claudeOffSpellings = []string{
 	`"reasoning":{"max_tokens":8192,"effort":"none"}`,
 }
 
-// A bare string in the reasoning field, reasoning "high", is an effort. It
-// is read like reasoning.effort: with no top-level effort it is the request's
+// A bare string in the reasoning field, reasoning "high", is an effort when
+// it is a word the gateway knows: a ladder word or an Off word. Then it is
+// read like reasoning.effort: with no top-level effort it is the request's
 // effort, with the same ladder and the same Off words, and a top-level effort
-// beside it wins. The contract layer lets a bare string through unchecked,
-// alone or beside reasoning_effort, and refuses it beside a switch.
+// beside it wins. Any other string is not an effort. The contract layer lets
+// a bare string through unchecked, alone or beside reasoning_effort, and
+// refuses it beside a switch.
 func TestClaudeBareStringReasoningIsAnEffort(t *testing.T) {
-	for _, ids := range [][]string{claudeFullIDs, claudeV46IDs, claudeOpus45IDs, claudeBudgetIDs} {
+	// What a request that asks nothing is sent. For a string the gateway does
+	// not know this is the wire before the effort ladder existed, on every
+	// model whose class is the one it had then.
+	nothingAsked := map[claudeReasoningClass]string{
+		claudeBudget: `{"max_tokens":4096}`, claudeOpus45: `{"max_tokens":4096}`, claudeV46: `{"max_tokens":32000}`, claudeFull: `{"max_tokens":32000}`,
+	}
+	for class, ids := range map[claudeReasoningClass][]string{claudeFull: claudeFullIDs, claudeV46: claudeV46IDs, claudeOpus45: claudeOpus45IDs, claudeBudget: claudeBudgetIDs} {
 		for _, id := range ids {
-			for _, word := range []string{"minimal", "low", "medium", "high", "xhigh", "max", "ultra", "none", "off", "disable", "disabled"} {
+			for _, word := range []string{"minimal", "low", "medium", "high", "xhigh", "max", "none", "off", "disable", "disabled"} {
 				want := claudeWire(t, id, `"reasoning_effort":"`+word+`"`)
 				for _, fields := range []string{`"reasoning":"` + word + `"`, `"reasoning":" ` + strings.ToUpper(word) + ` "`, `"reasoning":"` + word + `","reasoning_effort":""`} {
 					if got := claudeWire(t, id, fields); got != want {
 						t.Errorf("%s %s:\n got %s\nwant what reasoning_effort %s sends, %s", id, fields, got, word, want)
 					}
+				}
+			}
+			// A string that is not a known word asks nothing. It is never sent
+			// as an effort, which the models with an effort field would refuse.
+			for _, word := range []string{"ultra", "anything", "true", "enabled", "auto", "highest", ""} {
+				if got := claudeWire(t, id, `"reasoning":"`+word+`"`); got != nothingAsked[class] || got != claudeWire(t, id, ``) {
+					t.Errorf("%s string %q:\n got %s\nwant what nothing asked sends, %s", id, word, got, nothingAsked[class])
+				}
+				for _, extra := range []string{`,"max_tokens":512`, `,"temperature":0.2,"top_k":40,"top_p":0.5`, `,"tool_choice":"required",` + claudeTestTools} {
+					want := claudeWire(t, id, strings.TrimPrefix(extra, ","), "temperature", "top_p", "top_k", "tool_choice")
+					if got := claudeWire(t, id, `"reasoning":"`+word+`"`+extra, "temperature", "top_p", "top_k", "tool_choice"); got != want {
+						t.Errorf("%s string %q%s:\n got %s\nwant %s", id, word, extra, got, want)
+					}
+				}
+				// A top-level effort beside it is still the request's effort.
+				if got, want := claudeWire(t, id, `"reasoning":"`+word+`","reasoning_effort":"high"`), claudeWire(t, id, `"reasoning_effort":"high"`); got != want {
+					t.Errorf("%s string %q beside top-level high:\n got %s\nwant %s", id, word, got, want)
+				}
+			}
+			// The unknown word written as an effort is still sent as written
+			// where there is an effort field: only the bare string is not read.
+			if class != claudeBudget {
+				if got := claudeWire(t, id, `"reasoning_effort":"ultra"`); !strings.Contains(got, `"output_config":{"effort":"ultra"}`) {
+					t.Errorf("%s reasoning_effort ultra: got %s, want the word as written", id, got)
 				}
 			}
 			high, low, off := claudeWire(t, id, `"reasoning_effort":"high"`), claudeWire(t, id, `"reasoning_effort":"low"`), claudeWire(t, id, `"reasoning_effort":"none"`)

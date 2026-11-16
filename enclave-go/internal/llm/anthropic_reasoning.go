@@ -134,6 +134,13 @@ func (class claudeReasoningClass) step(effort string) (claudeEffortStep, bool) {
 	return claudeEffortStep{effort: effort}, false
 }
 
+// claudeKnownEffortWord reports a word the gateway knows as an effort: a step
+// every ladder lists, or a word that means Off.
+func claudeKnownEffortWord(word string) bool {
+	_, step := claudeEffortLadders[claudeFull][word]
+	return step || adapter.ReasoningEffortOff(word)
+}
+
 const (
 	// claudeMinimumBudget is the smallest thinking budget Anthropic takes.
 	claudeMinimumBudget = 1024
@@ -166,12 +173,16 @@ type claudeReasoningAsk struct {
 // arrives here only from the reasoning object.
 //
 // A bare string, reasoning "high", is an effort written in the reasoning
-// field. It is read like reasoning.effort: it is the request's effort when
-// there is no top-level one.
+// field, when it is a word the gateway knows. Then it is read like
+// reasoning.effort: it is the request's effort when there is no top-level
+// one. Any other string is not an effort and asks nothing, as it always has:
+// reading it as one would send an unknown word to models that refuse it.
 func claudeReasoningAskOf(req *qtypes.OpenAIChatRequest) claudeReasoningAsk {
 	ask := claudeReasoningAsk{effort: chatReasoningEffort(req), budget: adapter.ExplicitThinkingBudget(req.Reasoning) > 0}
-	if word, bare := req.Reasoning.(string); bare && ask.effort == "" {
-		ask.effort = strings.ToLower(strings.TrimSpace(word))
+	if bare, isString := req.Reasoning.(string); isString && ask.effort == "" {
+		if word := strings.ToLower(strings.TrimSpace(bare)); claudeKnownEffortWord(word) {
+			ask.effort = word
+		}
 	}
 	ask.off = adapter.ReasoningEffortOff(ask.effort)
 	switch reasoning := req.Reasoning.(type) {

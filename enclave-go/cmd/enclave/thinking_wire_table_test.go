@@ -493,6 +493,12 @@ func TestClaudeEffortLadderWireTable(t *testing.T) {
 			budget: `{"max_tokens":4096}`, opus45: disabled, v46: adaptiveOff, full: adaptiveOff,
 			sonnet55: `{"max_tokens":32000,"thinking":{"type":"between_tools"}}`,
 		}},
+		// A string that is not a word the gateway knows is not an effort: the
+		// request asks nothing, as it did before the ladder.
+		{"string that is not a known word", user, `"reasoning":"ultra"`, map[string]string{
+			budget: `{"max_tokens":4096}`, opus45: `{"max_tokens":4096}`, v46: `{"max_tokens":32000}`, full: `{"max_tokens":32000}`,
+			haiku55: `{"max_tokens":32000}`, sonnet55: `{"max_tokens":32000}`,
+		}},
 		{"string effort beside a top-level effort", user, `"reasoning":"high","reasoning_effort":"low"`, map[string]string{
 			budget: `{"max_tokens":4096,` + think("1024") + `}`, opus45: `{"max_tokens":4096,"output_config":{"effort":"low"},` + think("1024") + `}`,
 			v46: adaptive("low"), full: adaptive("low"),
