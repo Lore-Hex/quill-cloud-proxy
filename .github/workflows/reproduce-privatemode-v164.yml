@@ -95,6 +95,19 @@ jobs:
         if: matrix.kind == 'images'
         with:
           source-tag: v3.23.3
+      - name: Parse the pinned deployment image references
+        if: matrix.kind == 'images'
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/pm-tools"
+          curl --location --fail --silent --show-error --max-time 120 \
+            https://github.com/mikefarah/yq/releases/download/v4.53.6/yq_linux_amd64 \
+            -o "$RUNNER_TEMP/pm-tools/yq"
+          printf '%s  %s\n' c5f056448f973ae7d39b5401949648a78f2dc1947d6a8eb65be60d5c504b9385 \
+            "$RUNNER_TEMP/pm-tools/yq" | sha256sum -c -
+          chmod 0755 "$RUNNER_TEMP/pm-tools/yq"
+          "$RUNNER_TEMP/pm-tools/yq" eval-all -o=json '[.]' \
+            "$RUNNER_TEMP/pm-source/deployment.yaml" > "$RUNNER_TEMP/pm-evidence/deployment.json"
       - name: Rebuild all five security-component images without vendor caches
         if: matrix.kind == 'images'
         run: |
@@ -131,6 +144,20 @@ jobs:
               'secret-service': '3fba87f35ee11fa08acccdae93347943ef17a364246e64165f4ab6e9caba0dc5',
           }
           root = Path(os.environ['RUNNER_TEMP'])
+          def images(value):
+              if isinstance(value, dict):
+                  for key, child in value.items():
+                      if key == 'image' and isinstance(child, str):
+                          yield child
+                      yield from images(child)
+              elif isinstance(value, list):
+                  for child in value:
+                      yield from images(child)
+          references = set(images(json.loads((root / 'pm-evidence/deployment.json').read_text())))
+          for name, digest in expected.items():
+              prefix = 'ghcr.io/edgelesssys/privatemode/' + name + ':'
+              selected = {image for image in references if image.startswith(prefix)}
+              assert selected == {prefix + 'v1.64.0@sha256:' + digest}, (name, selected)
           found = {}
           for index in (root / 'pm-images').glob('*/index.json'):
               name = index.parent.name

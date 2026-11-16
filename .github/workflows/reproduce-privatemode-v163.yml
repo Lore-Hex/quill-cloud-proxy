@@ -5,7 +5,6 @@ on:
     paths:
       - '.github/workflows/reproduce-privatemode-v163.yml'
       - 'docs/evidence/privatemode-v163-manifest.json'
-      - 'enclave-go/third_party/privatemode/**'
   workflow_dispatch:
 
 # Public-source evidence only. This workflow cannot publish pins or deploy.

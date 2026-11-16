@@ -23,7 +23,7 @@ must not silently switch to another model.
 - Public source: `3c98e0abf3219a6ebcc29112867a5f004605041b` (v1.64.0).
 - Source archive SHA256: `d7712bfbea9d61cc36372ab30f3d8b989e4f34d89ab70abcefe1852060d044ff`.
 - Candidate manifest SHA256: `d63eb5cf91cb3079fe25a848573a4d0e9d869f462dab4f71fd02bdb372f8e833`.
-- Approved manifest remains `5fa927e3b864738da35d427c10ba8e49ebeeb1531e49618899cf95f654d240c1`.
+- Previous production manifest: `5fa927e3b864738da35d427c10ba8e49ebeeb1531e49618899cf95f654d240c1`.
 - Contrast: v1.26.2; Linux CLI SHA256 `0524c388d60425e7771083d667bc384c1df31ee397e6f2bdcd76157677f6a1d6`.
 
 All eight policies change. SNP measurement and TDX RTMR2 change; SNP minimum
@@ -36,7 +36,10 @@ Recovery-owner public-key SHA256 changes from
 `178755e374568f2508b7b89c614dfec96054bad3734f28314dab345fe1672fc9` to
 `e734bea0d88af2fae66bbab9466552f98eff746d3ae2080094f8629cc654f53f`.
 This identity cannot be reproduced from source and needs explicit approval.
-The candidate evidence file is deliberately outside the embedded runtime path.
+The evidence file is separate from the embedded runtime path. After independent
+reproduction and conditional identity approval, the candidate branch updates
+the runtime pin too. Merging it is a production release action and remains
+blocked on all remaining qualification and release gates.
 
 Joseph approved this exact recovery key and manifest on November 15, conditional
 on independent reproduction, security review and encrypted qualification. That
@@ -44,8 +47,14 @@ approval does not mark any pending gate passed or authorize runtime refresh.
 
 The upstream client diff retains static-manifest verification. Manifest logging
 changes affect dynamic mode; do not enable that mode as a recovery shortcut.
-The serving release also changes vLLM, GPU-copy and transfer-related patches;
-review and reproduction remain incomplete, not implicitly approved here.
+The serving release also changes vLLM, GPU-copy and transfer-related patches.
+Reviewed changes disable GPU UVA, stage encrypted GPU transfers on separate
+streams, and reject late KV reads after lease expiry. Existing network
+restriction hashes, privilege dropping, logging flags and native guest-memory
+offload selection are unchanged. The anonymization patch is rebased for vLLM
+0.32. NIXL telemetry capture was already enabled upstream; this review is not
+proof that every vendor metric is content-free. Not every serving component is
+independently rebuilt; retain the same scope limitations as the v1.63 review.
 
 ## Recovery and prevention gates
 
@@ -104,8 +113,40 @@ review and reproduction remain incomplete, not implicitly approved here.
 - Historical v163 reproduction now reads its own unchanged evidence manifest,
   not the mutable current runtime pin. Its expected hash and comparisons are
   unchanged, avoiding a false failure on legitimate newer pin releases.
+- The actual scratch-image positive/negative qualification also passed with its
+  packaged client and launcher: altered manifest HTTP 401; encrypted PONG with
+  GPT OSS 120B (76/33 tokens), GLM 5.3 (21/4), GLM 5.3 Flash (21/10), plus all
+  privilege-isolation assertions. This preceded the merge of main's separate
+  provider-egress hardening; repeat relevant qualification on the merged head.
+- Read-only Claude Opus review identified stale candidate-vs-production wording
+  and a missing automatic image-to-deployment linkage assertion. Wording is
+  corrected and the workflow now parses pinned deployment YAML and checks each
+  expected security-image reference. Retained evidence avoids artifact expiry.
+  Client CLI flags are unchanged upstream; runtime-refresh is still disabled.
+  The injected-rejection live test remains explicitly scoped as such, not a
+  production authorization test or a real first-provider outage.
 
 No serving production pins, transport origins or fallback eligibility changed
 in this review. No user-session mutation was performed. Isolated fallback
 sidecars were stopped. Redundant local policy generation was stopped after the
 independent CI result; it is not counted as completed reproduction.
+
+## Combined-head qualification
+
+After merging main's provider-egress hardening, the rebuilt actual scratch image
+passed all three encrypted model checks again: GPT OSS 120B (76/21 tokens),
+GLM 5.3 (21/4), GLM 5.3 Flash (21/11). Altered-manifest rejection returned
+HTTP 401, and the privilege-isolation assertions passed.
+
+The real-rejection fallback test also passed, buffered and streaming. An isolated
+test binary embedded the previously approved v1.63 manifest through a Go overlay;
+the real packaged v1.64 proxy rejected it before emitting content. The gateway
+then used real Tinfoil attestation, proof cross-check and pinned TLS to return
+PONG (75/43 and 75/45 tokens), with exactly one rejection and one fallback each.
+Neither provider response was mocked in this mode. Production pins and services
+were not modified. This proves the isolated gateway retry path, not production
+control-plane authorization, customer request attribution, or a forced fleet outage.
+
+The combined scratch runtime manifest was
+`0a3d6ec2f6445ad8c26ff1d49fd7d917e5cdfe70868d6817e220db78ed2c8483`.
+This is qualification evidence, not a production release provenance claim.
