@@ -331,7 +331,11 @@ func TestDeidentifyRejectsHostedSearchBeforeAnyInvocation(t *testing.T) {
 					raw, _ := json.Marshal(body)
 					provider := &privacyEchoProvider{}
 					status, response := privacyRoundTrip(t, "/v1/"+route, string(raw), provider)
-					if status != 400 || !strings.Contains(response, "deidentify_unsupported") ||
+					wantStatus, wantCode := 400, "deidentify_unsupported"
+					if engine == "context" {
+						wantStatus, wantCode = 501, "not_supported_in_alpha"
+					}
+					if status != wantStatus || !strings.Contains(response, wantCode) ||
 						provider.calls != 0 || runner.calls != 0 || len(exa.queries) != 0 || len(contextSearch.queries) != 0 {
 						t.Fatalf("hosted search escaped privacy rejection: status=%d provider=%d scanner=%d exa=%d context=%d response=%s",
 							status, provider.calls, runner.calls, len(exa.queries), len(contextSearch.queries), response)

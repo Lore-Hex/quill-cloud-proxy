@@ -833,6 +833,7 @@ systemctl enable --now nitro-enclaves-allocator.service
 # rather than a cryptic timeout.
 cat > /etc/nitro_enclaves/vsock-proxy.yaml <<'YAML'
 allowlist:
+  - {address: api.context.dev,               port: 443}
   # LLM provider direct-API endpoints (port assignments match
   # http_client_aws.go::awsProviderTunnels)
   - {address: api.anthropic.com,             port: 443}
@@ -1033,6 +1034,7 @@ systemctl daemon-reload
 # Pairs MUST match http_client_aws.go::awsProviderTunnels exactly.
 # Adding a provider = 1 line here + 1 line in awsProviderTunnels.
 write_vsock_unit 8003 api.anthropic.com
+write_vsock_unit 8138 api.context.dev
 write_vsock_unit 8004 api.openai.com
 write_vsock_unit 8005 api.cerebras.ai
 write_vsock_unit 8006 api.deepseek.com

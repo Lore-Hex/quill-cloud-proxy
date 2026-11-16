@@ -47,7 +47,7 @@ func selectedWebSearchClient(config *types.ResponseWebSearchConfig) websearch.Cl
 	if config == nil || config.Engine == "" || config.Engine == "exa" {
 		return enclaveWebSearchClient
 	}
-	if config.Engine == "context" {
+	if config.Engine == "context.dev" {
 		return enclaveContextSearchClient
 	}
 	return nil
@@ -356,7 +356,7 @@ func webSearchReservationMicrodollars(config *types.ResponseWebSearchConfig) int
 		results = 5
 	}
 	perCall := base + max(0, results-10)*1_000
-	if config.Engine == "context" {
+	if config.Engine == "context.dev" {
 		perCall = websearch.ContextMaxCredits(results) * websearch.ContextCreditMicrodollars
 	}
 	calls := max(1, config.MaxCalls)

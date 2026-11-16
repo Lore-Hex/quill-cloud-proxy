@@ -1,7 +1,11 @@
 # AWS V1.1: attested secret release on Nitro
 
-Status: plan, not started. AWS changes in this plan need Joseph's approval
-before each IAM, KMS or Secrets Manager write.
+Status: migration in progress. The approved Phase 0/1 infrastructure and
+Phase 3 transitional image are deployed; the serving fleet still uses legacy
+bootstrap and retains legacy secret access. See the evidence in
+[the runbook](../runbooks/aws-sealed-bootstrap.md). IAM, KMS and Secrets Manager
+writes must stay within Joseph's explicit phase approvals. This status is not
+a claim that the confidentiality or integrity cutover is complete.
 
 ## Problem
 
