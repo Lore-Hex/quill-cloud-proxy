@@ -4,8 +4,7 @@ on:
   pull_request:
     paths:
       - '.github/workflows/reproduce-privatemode-v163.yml'
-      - 'enclave-go/internal/privatemode/manifest.json'
-      - 'enclave-go/third_party/privatemode/**'
+      - 'docs/evidence/privatemode-v163-manifest.json'
   workflow_dispatch:
 
 # Public-source evidence only. This workflow cannot publish pins or deploy.
@@ -40,9 +39,9 @@ jobs:
             "https://codeload.github.com/edgelesssys/privatemode-public/tar.gz/$SOURCE_COMMIT" \
             -o "$RUNNER_TEMP/pm-source.tar.gz"
           printf '%s  %s\n' "$SOURCE_SHA256" "$RUNNER_TEMP/pm-source.tar.gz" | sha256sum -c -
-          printf '%s  %s\n' "$MANIFEST_SHA256" enclave-go/internal/privatemode/manifest.json | sha256sum -c -
+          printf '%s  %s\n' "$MANIFEST_SHA256" docs/evidence/privatemode-v163-manifest.json | sha256sum -c -
           tar -xzf "$RUNNER_TEMP/pm-source.tar.gz" --strip-components=1 -C "$RUNNER_TEMP/pm-source"
-          cp enclave-go/internal/privatemode/manifest.json "$RUNNER_TEMP/pm-evidence/expected-manifest.json"
+          cp docs/evidence/privatemode-v163-manifest.json "$RUNNER_TEMP/pm-evidence/expected-manifest.json"
           printf '%s\n' "$SOURCE_COMMIT" > "$RUNNER_TEMP/pm-evidence/source-commit.txt"
       - name: Reproduce policies and hardware references
         if: matrix.kind == 'policies'

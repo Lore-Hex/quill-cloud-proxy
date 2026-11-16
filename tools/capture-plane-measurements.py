@@ -7,11 +7,11 @@ to S3, and nothing anywhere wrote it. It carried the same value from the initial
 commit onward, matching no running enclave, and no procedure existed to change
 that — the AWS runbook does not mention the trust page at all.
 
-PCR0 cannot be known before an instance boots (release-aws-enclave.sh says so in
-its own output), so the only source for it is a live attestation. Same for
-Azure's hostdata. That makes capture-then-publish the honest shape: measure what
-is actually running, write it down, and let CI refuse to publish if the two ever
-disagree.
+AWS now builds its EIF in CI and admits that signed measurement before boot;
+see aws_eif_admission.py and the AWS release runbook. This capture tool checks
+what is actually serving and narrows the record after a verified full rollout.
+It must not be used to admit an unexpected candidate measurement. Azure's
+per-region measured policy remains handled by its separate release flow.
 
     # inspect what is running without touching the repo
     python3 tools/capture-plane-measurements.py
