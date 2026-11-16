@@ -13,9 +13,11 @@ import (
 	tdxpb "github.com/google/go-tdx-guest/proto/tdx"
 )
 
-// Public history captured with fresh nonces on November 12, 2026 (dstack
-// 0.5.12 guest). These tests exercise policy binding; cryptographic validation
-// is covered by TestLiveNearAIEvidence, not by the quote/GPU doubles used here.
+// Public evidence captured with fresh nonces (dstack 0.5.12 guest). gpu03 has
+// not rebooted since November 12, so its event log is that day's capture; its
+// deployment history was re-captured on November 16. These tests exercise
+// policy binding; cryptographic validation is covered by TestLiveNearAIEvidence,
+// not by the quote/GPU doubles used here.
 const (
 	nearAIGPU03Compose = "c900dc7304663b73b623cd5d941fbdab6f02858017b371ae28de445a16d2e2d0"
 	// Retired: gpu03 before its November 12 base-manifest change, and gpu04,
@@ -59,8 +61,8 @@ func reviewedNearAIPoolCase(t *testing.T, compose string) *nearAITestCase {
 	c.report.Info.AppName = policy.AppName
 	c.report.Info.OSImageHash = policy.OSImageHash
 	c.report.Info.ComposeHash = compose
-	const fixtureDate = "near-ai-2026-11-12"
-	eventBytes, err := os.ReadFile(filepath.Join("testdata", fixtureDate, compose[:8]+"-events.json"))
+	const bootFixtureDate, historyFixtureDate = "near-ai-2026-11-12", "near-ai-2026-11-16"
+	eventBytes, err := os.ReadFile(filepath.Join("testdata", bootFixtureDate, compose[:8]+"-events.json"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -79,7 +81,7 @@ func reviewedNearAIPoolCase(t *testing.T, compose string) *nearAITestCase {
 		body.Rtmrs[2], _ = hex.DecodeString(policy.BootMeasurements.RTMR2)
 		body.Rtmrs[3] = append([]byte{}, rtmr3...)
 	}
-	actions, err := os.ReadFile(filepath.Join("testdata", fixtureDate, compose[:8]+"-actions.json"))
+	actions, err := os.ReadFile(filepath.Join("testdata", historyFixtureDate, compose[:8]+"-actions.json"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -123,6 +125,8 @@ func TestNearAIReviewedPoolHistories(t *testing.T) {
 	}
 
 	for name, fixture := range map[string]string{
+		// The 271-entry history reviewed on November 12 for this instance.
+		"november-12": filepath.Join("near-ai-2026-11-12", "c900dc73-actions.json"),
 		// The 226-entry history reviewed on November 6 for this instance.
 		"superseded": filepath.Join("near-ai-2026-11-06", "a0e3c6f4-actions.json"),
 		// The retired gpu04 history must never satisfy the gpu03 pin.
@@ -149,7 +153,7 @@ func TestNearAIReviewedPoolHistories(t *testing.T) {
 	}
 	// Even a correctly re-quoted telemetry-only update requires review.
 	actions = append(actions, map[string]any{
-		"action": "compose_up", "timestamp": "2026-11-12T12:00:00Z",
+		"action": "compose_up", "timestamp": "2026-11-16T12:00:00Z",
 		"file": c.policy.DeploymentFile, "commit": c.policy.DeploymentCommit,
 		"file_sha256": c.policy.DeploymentSHA256, "services": []string{"otelcol-contrib"},
 	})
