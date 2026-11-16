@@ -48,7 +48,34 @@ func applyChatReasoningEffort(provider string, req *qtypes.OpenAIChatRequest, bo
 		// silently used upstream defaults (including when effort was "none").
 		wire.ReasoningEffort = effort
 		wire.Reasoning = nil
+	case "privatemode":
+		// preparePrivatemodeWire owns these fields, and PrepareChatRequest
+		// replaces whatever is set here with its result.
+	default:
+		// Every other OpenAI-compatible host. A live probe of six of them
+		// (docs/reasoning-output.md) found all six read a top-level
+		// reasoning_effort, some ignore an effort that is only inside the
+		// reasoning object, and all accept both together. So an effort written
+		// only inside the object also goes top-level, and the object stays as
+		// the request holds it. Off governs: beside reasoning.enabled=false
+		// nothing is added. A native Messages request is passed through: its
+		// thinking object is forwarded as written and nothing is derived from it.
+		native := body != nil && body.NativeContent
+		if !native && strings.TrimSpace(req.ReasoningEffort) == "" && !chatReasoningExplicitlyOff(req) {
+			wire.ReasoningEffort = effort
+		}
 	}
+}
+
+// chatReasoningExplicitlyOff reports a reasoning object that says
+// enabled=false. A missing or non-boolean enabled is not Off.
+func chatReasoningExplicitlyOff(req *qtypes.OpenAIChatRequest) bool {
+	if req == nil {
+		return false
+	}
+	values, _ := req.Reasoning.(map[string]any)
+	enabled, explicit := values["enabled"].(bool)
+	return explicit && !enabled
 }
 
 // The shared Anthropic projection synthesizes a budget for old Claude models.

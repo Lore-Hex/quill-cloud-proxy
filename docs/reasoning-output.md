@@ -140,18 +140,68 @@ provider authorized for the model, which is sent the `reasoning` object
 unchanged. If there is none, the caller gets the error and the hold is
 refunded.
 
-### Hosts outside the effort list: known limit
+### Hosts outside the effort list
 
 Some chat endpoints are known to read a top-level `reasoning_effort`, and are
 always sent the effort there: Meta, OpenAI, Google AI Studio, DeepSeek, Z.ai,
 Kimi, Mistral, Alibaba, Tencent, Tinfoil, Grok, Baseten, Crusoe, Cerebras,
-Fireworks and Privatemode. Every other OpenAI-compatible host is sent the
-reasoning fields as the request holds them. For those hosts the effort of a
-switch plus effort request goes inside the `reasoning` object,
-`"reasoning": {"effort": "high", "enabled": true}`, while an effort sent alone
-goes as top-level `"reasoning_effort": "high"`. So adding a switch to a
-working `reasoning_effort` request changes where such a host finds the
-effort. Which of the two each of those hosts reads has not been observed.
+Fireworks and Privatemode. Nothing in this section changes what they are
+sent.
+
+Every other OpenAI-compatible host is sent the `reasoning` object exactly as
+the request holds it. When the request names an effort and does not turn
+reasoning off, such a host is also sent the effort as top-level
+`reasoning_effort`, wherever the request wrote it:
+
+* `reasoning_effort: "high"` alone is sent as written. This is unchanged.
+* `reasoning: {"effort": "high"}`, with or without `"enabled": true`, is sent
+  as that object and `"reasoning_effort": "high"`. Before, such a host was
+  sent the object alone.
+* A switch beside an effort, for example `thinking: {"type": "enabled"}` with
+  `reasoning_effort: "high"`, is sent as
+  `"reasoning": {"effort": "high", "enabled": true}` and
+  `"reasoning_effort": "high"`.
+* Off governs. With `reasoning: {"enabled": false}` nothing is added, even
+  beside an effort: the request is sent as it holds its fields. This is
+  unchanged.
+* A request that names no effort is unchanged.
+
+The same rule covers the other spellings that put an effort inside the
+object: `output_config.effort` on chat completions, and `reasoning.effort` on
+the Responses API. The top-level copy is the effort in lower case without
+surrounding spaces. An effort of `none` inside the object is an effort and is
+copied like any other. Only `enabled: false` counts as Off here. A native
+`POST /v1/messages` request is passed through as before: its `thinking`
+object is forwarded as written and no `reasoning_effort` is derived from it.
+
+So adding a switch to a working `reasoning_effort` request no longer changes
+where such a host finds the effort.
+
+The evidence is a live probe through the production gateway on 2026-11-16,
+with the model `openai/gpt-oss-120b`, the same puzzle each time, and one
+request per cell. The numbers are completion tokens, which for this model are
+almost all reasoning:
+
+| host | top-level low | top-level high | object low | object high | both low | both high |
+|---|---|---|---|---|---|---|
+| deepinfra | 474 | 1029 | 436 | 1008 | 516 | 1431 |
+| novita | 624 | 729 | 384 | 619 | 525 | 958 |
+| parasail | 346 | 908 | 459 | 582 | 312 | 729 |
+| together | 309 | 826 | 713 | 663 | 371 | 1057 |
+| nebius | 394 | 828 | 526 | 580 | 385 | 922 |
+| io-net | 350 | 719 | 374 | 842 | 372 | 820 |
+
+"Object" is `"reasoning": {"effort": E, "enabled": true}` with no top-level
+field. "Both" is the top-level field and the object together. All six honor
+a top-level `reasoning_effort`. Together and Nebius, and probably Parasail,
+ignore an effort that is only inside the object. All six accept both fields
+together and honor the effort.
+
+The remaining limit: only six of these hosts were probed, on one model, with
+one request per cell. A host that reads neither field, or that rejects the
+top-level field for a model without reasoning, has not been observed. A host
+that rejects the request is a provider error like any other: the request
+goes to the next provider authorized for the model.
 
 ### Open decisions
 
@@ -174,9 +224,6 @@ These are not decided by this release:
   can stop their reasoning or take a token budget, so a refusal is the honest
   answer. The cost is that requests another host serves today, without the
   option honored, would start to fail.
-* (d) Where the effort of a switch plus effort request should go on hosts
-  outside the effort list: inside the `reasoning` object as today, top-level
-  as an effort alone goes, or both. It needs a live probe of those hosts.
 
 ## Reasoning visibility
 
