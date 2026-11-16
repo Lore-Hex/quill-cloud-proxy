@@ -1451,9 +1451,9 @@ phase_cross_cloud_key() {
   # on the GCP SA for cleanup via a separate rotation policy.
   #
   # Phase "all" provisions; it does not rotate. With a wrapped key already
-  # stored it stops after the IAM bindings: every mint adds a key to the GCP
-  # account that nothing here removes, and a full re-run is not a decision
-  # to rotate.
+  # stored and an enabled key on the GCP account it stops after the IAM
+  # bindings: every mint adds a key to the GCP account that nothing here
+  # removes, and a full re-run is not a decision to rotate.
 
   local gcp_project="${GCP_PROJECT:-quill-cloud-proxy}"
   local sa_email="tr-aws-cross-cloud@${gcp_project}.iam.gserviceaccount.com"
@@ -1551,11 +1551,33 @@ phase_cross_cloud_key() {
     log "    [dry-run] would grant cloudkms.cryptoKeyDecrypter on ${kms_keyring_loc}/${kms_keyring_name}/${kms_key_name}"
   fi
 
-  if [ "$PHASE" = "all" ] && aws secretsmanager describe-secret \
-       --secret-id "$aws_secret_name" --region "$AWS_REGION" >/dev/null 2>&1; then
-    log "  $aws_secret_name already holds a wrapped key; not minting another"
-    log "  (rotate with --phase cross-cloud-key)"
-    return
+  if [ "$PHASE" = "all" ]; then
+    # Only a secret that Secrets Manager says is absent lets a full run mint.
+    # An auth error or a throttle is not evidence of absence, and a key minted
+    # on one is never stored: the AWS calls after the mint fail the same way.
+    local described enabled_keys
+    if described=$(aws secretsmanager describe-secret \
+        --secret-id "$aws_secret_name" --region "$AWS_REGION" 2>&1); then
+      # The secret exists. Its key is certainly dead if the GCP account has no
+      # enabled user-managed key left, and a full run should then repair it.
+      if ! enabled_keys=$(gcloud iam service-accounts keys list \
+          --iam-account="$sa_email" --project="$gcp_project" \
+          --managed-by=user --filter='disabled!=true' --format='value(name)' 2>&1); then
+        log "FATAL: could not list the keys of $sa_email; not minting a key on an unknown state."
+        log "  gcloud: $enabled_keys"
+        return 1
+      fi
+      if [ -n "$enabled_keys" ]; then
+        log "  $aws_secret_name exists and $sa_email has an enabled key; not minting another"
+        log "  (this does not prove the stored key is that one; rotate with --phase cross-cloud-key)"
+        return
+      fi
+      log "  $aws_secret_name exists but $sa_email has no enabled key: the stored key is dead, minting a new one"
+    elif [[ "$described" != *ResourceNotFoundException* ]]; then
+      log "FATAL: Secrets Manager DescribeSecret failed in $AWS_REGION; this is an API error, not evidence that $aws_secret_name is absent. Not minting a key."
+      log "  aws CLI: $described"
+      return 1
+    fi
   fi
 
   # 3. Mint a JSON key and 4-5. wrap+store. We do this in a temp dir that

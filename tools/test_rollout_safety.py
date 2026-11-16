@@ -30,22 +30,80 @@ class RolloutSafetyTests(unittest.TestCase):
         self.assertIn("roles/spanner.databaseUser", roles)
         self.assertIn("roles/secretmanager.secretAccessor", roles)
 
-    def test_a_full_provision_does_not_mint_a_second_cross_cloud_key(self) -> None:
-        # Phase "all" provisions and never rotates: with a wrapped key already
-        # in AWS Secrets Manager it returns before the mint. Only the phase
-        # run by name mints, so a full re-run adds no key to the GCP account.
+    def _run_cross_cloud_key_phase(self, phase: str, describe: str, enabled_keys: str) -> tuple[int, str]:
+        """Run phase_cross_cloud_key with stubbed aws and gcloud; return (exit code, calls and log)."""
         script = (ROOT / "tools/deploy-aws-nitro.sh").read_text()
-        phase = script.split("phase_cross_cloud_key() {", 1)[1].split("\n}", 1)[0]
-        guard = phase.index('if [ "$PHASE" = "all" ] && aws secretsmanager describe-secret')
-        mint = phase.index("gcloud iam service-accounts keys create")
-        self.assertLess(guard, mint)
-        self.assertEqual(phase.count("gcloud iam service-accounts keys create"), 1)
-        guarded = phase[guard:mint]
-        self.assertIn('--secret-id "$aws_secret_name"', guarded)
-        self.assertRegex(guarded, r"not minting another\"\n.*\n\s+return\n\s+fi\n")
-        # The guard reads only: it comes before the dry-run branch, so a dry
-        # run of "all" reports the skip instead of a mint it would not do.
-        self.assertLess(guard, phase.index('would mint a new JSON key'))
+        body = script.split("phase_cross_cloud_key() {", 1)[1].split("\n}\n", 1)[0]
+        program = "\n".join([
+            "set -euo pipefail",
+            'log() { echo "LOG $*"; }',
+            "aws() {",
+            '  echo "CALL aws $1 $2" >> "$CALLS_FILE"',
+            '  if [ "$1 $2" = "secretsmanager describe-secret" ]; then',
+            '    case "$FAKE_DESCRIBE" in',
+            "      exists) return 0 ;;",
+            '      absent) echo "An error occurred (ResourceNotFoundException)" >&2; return 254 ;;',
+            '      *) echo "An error occurred (ThrottlingException)" >&2; return 254 ;;',
+            "    esac",
+            "  fi",
+            '  if [ "$1 $2" = "kms encrypt" ]; then echo Y2lwaGVy; fi',
+            "}",
+            "gcloud() {",
+            '  if [ "$1 $2 $3 $4" = "iam service-accounts keys list" ]; then',
+            '    echo "CALL gcloud keys list" >> "$CALLS_FILE"; printf "%s" "$FAKE_ENABLED_KEYS"; return 0',
+            "  fi",
+            '  if [ "$1 $2 $3 $4" = "iam service-accounts keys create" ]; then',
+            '    echo "CALL gcloud keys create" >> "$CALLS_FILE"; echo "{}" > "$5"; return 0',
+            "  fi",
+            "}",
+            "PHASE=" + phase, "DRY_RUN=0", "AWS_REGION=eu-west-3", "PROJECT_TAG=quill-enclave",
+            "phase_cross_cloud_key() {" + body + "\n}",
+            "phase_cross_cloud_key",
+        ])
+        # The script sends most command output to /dev/null and captures some
+        # of it, so the stubs record their calls in a file instead.
+        with tempfile.TemporaryDirectory() as tmp:
+            calls = Path(tmp) / "calls"
+            calls.touch()
+            env = {**os.environ, "FAKE_DESCRIBE": describe, "FAKE_ENABLED_KEYS": enabled_keys,
+                   "CALLS_FILE": str(calls)}
+            done = subprocess.run(["bash", "-c", program], capture_output=True, text=True, env=env)
+            return done.returncode, calls.read_text() + done.stdout + done.stderr
+
+    def test_a_full_provision_does_not_mint_a_second_cross_cloud_key(self) -> None:
+        # Phase "all" provisions and never rotates: with a wrapped key stored
+        # and an enabled key on the GCP account it returns before the mint,
+        # so a full re-run adds no key. Only the phase run by name rotates.
+        code, out = self._run_cross_cloud_key_phase("all", "exists", "projects/p/serviceAccounts/s/keys/1\n")
+        self.assertEqual(code, 0, out)
+        self.assertNotIn("CALL gcloud keys create", out)
+        self.assertIn("not minting another", out)
+
+        code, out = self._run_cross_cloud_key_phase("cross-cloud-key", "exists", "projects/p/serviceAccounts/s/keys/1\n")
+        self.assertEqual(code, 0, out)
+        self.assertIn("CALL gcloud keys create", out)
+        self.assertIn("CALL aws secretsmanager put-secret-value", out)
+
+    def test_a_full_provision_mints_only_when_the_key_is_absent_or_dead(self) -> None:
+        # Absent from Secrets Manager: a first provision mints and stores.
+        code, out = self._run_cross_cloud_key_phase("all", "absent", "")
+        self.assertEqual(code, 0, out)
+        self.assertIn("CALL gcloud keys create", out)
+        self.assertIn("CALL aws secretsmanager create-secret", out)
+
+        # Stored, but the GCP account has no enabled key left: the stored key
+        # cannot work, and minting adds no second key.
+        code, out = self._run_cross_cloud_key_phase("all", "exists", "")
+        self.assertEqual(code, 0, out)
+        self.assertIn("the stored key is dead", out)
+        self.assertIn("CALL gcloud keys create", out)
+
+        # An API error is not evidence of absence. Minting on one would leave
+        # a key on the GCP account that the failing AWS calls never store.
+        code, out = self._run_cross_cloud_key_phase("all", "throttled", "")
+        self.assertNotEqual(code, 0, out)
+        self.assertNotIn("CALL gcloud keys create", out)
+        self.assertIn("not evidence that", out)
 
     def test_async_settlement_rollout_pins_and_keyring_allowlist(self) -> None:
         # Step 8 enables negotiation only for the four GCP pilot-serving regions,
