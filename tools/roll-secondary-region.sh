@@ -233,14 +233,6 @@ update_drain() {
   ) 9>"${lock}"
 }
 
-trigger_synthetic_workers() {
-  # Trigger both active monitors so the gate does not wait for a stale peer row.
-  gcloud scheduler jobs run trusted-router-synthetic-us-central1-every-three-minutes \
-    --location=us-central1 --project=quill-cloud-proxy || true
-  gcloud scheduler jobs run trusted-router-synthetic-europe-west4-every-three-minutes \
-    --location=europe-west4 --project=quill-cloud-proxy || true
-}
-
 wait_region_stable_with_dns_refresh() {
   local target_mig="$1"
   local target_region="$2"
@@ -335,10 +327,15 @@ if [ -z "${previous_template}" ]; then presence_mode=once; fi
 presence="$(gate_status_presence "${region}" "${presence_mode}")"
 check_not_aborted
 if [ "${presence}" = present ]; then
+  # Run both monitors (tools/gate-hold-lib.sh) so the PONG gate does not wait
+  # for a stale peer row: once, before the gate.
   trigger_synthetic_workers
   WAIT_UP_SLEEP=10 WAIT_UP_ROUNDS=72 TR_CP_HOLD_ATTEMPT_SECONDS=1500 \
     rollout_step gate_hold pong "${region}" bash tools/wait-region-synthetic-up.sh "${region}" "${region}"
-  if ! TR_CP_HOLD_ATTEMPT_SECONDS=600 gate_hold canary "${region}" python3 tools/watchdog.py \
+  # The canary runs them again at the start of every attempt, so the fresh
+  # rows it may need from every monitor usually land inside the first one.
+  if ! TR_CP_HOLD_ATTEMPT_SECONDS=600 GATE_HOLD_BEFORE_ATTEMPT=trigger_synthetic_workers \
+      gate_hold canary "${region}" python3 tools/watchdog.py \
       --regions "${region}" \
       --duration-min 3 \
       --rollback-after 3 \
