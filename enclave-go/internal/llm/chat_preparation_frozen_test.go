@@ -166,6 +166,14 @@ func frozenPrepareChatRequest(provider, upstreamID string, req *qtypes.OpenAICha
 		if req != nil {
 			reqBody.Reasoning = req.Reasoning
 		}
+		// Not in 4a4f0695: Responses has no thinking field, so the budget the
+		// shared Claude projection synthesizes for a reasoning switch is not
+		// sent. The switch itself is honored by the Responses wire builder.
+		if body != nil && !body.NativeContent {
+			if thinking, ok := reqBody.Thinking.(map[string]any); ok && thinking["budget_tokens"] != nil {
+				reqBody.Thinking = nil
+			}
+		}
 		payload, err = buildOpenAIResponsesRequest(reqBody)
 		if err != nil {
 			return PreparedChatRequest{}, err

@@ -14,3 +14,12 @@ use is permitted under the license; production use requires a commercial
 license from Lore Hex Corp (licensing@trustedrouter.com). Each version
 converts to the Apache License 2.0 four years after publication. Code
 published before July 3, 2026 remains Apache-2.0.
+
+The optional de-identification worker includes Rampart by National Design
+Studio (https://github.com/nationaldesignstudio/rampart and
+https://huggingface.co/nationaldesignstudio/rampart), under CC BY 4.0.
+Those components retain their own license, not this repository's BSL.
+TrustedRouter adds enclave execution, request validation, request-local
+randomized placeholders, repeat-value masking, and response restoration.
+See docs/deidentification.md and /licenses/rampart-CC-BY-4.0.txt in the
+runtime image. No endorsement by National Design Studio is implied.

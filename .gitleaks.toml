@@ -69,3 +69,13 @@ condition = "AND"
 paths = ['''^\.github/workflows/reproduce-privatemode-v163\.yml$''']
 regexTarget = "secret"
 regexes = ['''^[0-9a-f]{64}$''']
+
+[[allowlists]]
+description = """Pinned Rampart artifact checksums verified by model.mjs. \
+Tokenizer file names trigger the generic key rule; allow only SHA-256 hex \
+values in this exact manifest, not credentials or other files."""
+targetRules = ["generic-api-key"]
+condition = "AND"
+paths = ['''^enclave-go/rampart/model-sha256\.json$''']
+regexTarget = "secret"
+regexes = ['''^[0-9a-f]{64}$''']

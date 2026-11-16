@@ -84,8 +84,16 @@ RUN cd sidecar && go mod download \
 
 RUN mkdir -p /out/rootfs/tmp && chmod 1777 /out/rootfs/tmp
 
-# ─── Scratch runtime, both binaries ─────────────────────────────────────────
+# Local privacy worker, included in the measured scratch runtime.
+FROM node:24-bookworm-slim@sha256:dc26ae92c9fb15cf6b1d63e20f0944b2efe0f115b20e00be48fb23fceb061c54 AS rampart
+WORKDIR /rampart
+COPY rampart/package.json rampart/package-lock.json ./
+RUN npm ci --ignore-scripts
+COPY rampart/ ./
+RUN node model.mjs && npm test && sh rootfs.sh
+
 FROM scratch
+COPY --from=rampart /rootfs/ /
 COPY --from=maple /out/maple-transport /maple-transport
 COPY --from=maple /src/MAPLE-LICENSE /licenses/maple-MIT.txt
 COPY --from=privatemode /out/privatemode-proxy /privatemode-proxy

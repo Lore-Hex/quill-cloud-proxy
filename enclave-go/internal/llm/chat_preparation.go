@@ -98,6 +98,9 @@ func PrepareChatRequest(provider, upstreamModel string, req *qtypes.OpenAIChatRe
 		if req != nil {
 			reqBody.Reasoning = req.Reasoning
 		}
+		// Responses has no thinking field. The reasoning object above carries
+		// the switch; a native thinking configuration still fails closed.
+		dropSynthesizedThinkingBudget(body, &reqBody)
 		payload, err = buildOpenAIResponsesRequest(reqBody)
 		if err != nil {
 			return PreparedChatRequest{}, err
