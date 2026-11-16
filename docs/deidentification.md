@@ -16,7 +16,10 @@ response = client.chat.completions.create(
 The gateway runs National Design Studio's Rampart inside the measured enclave.
 The provider receives typed placeholders for detected identifiers, not the
 placeholder-to-value table. The caller receives restored text and function
-arguments in both JSON and SSE. Resubmitted conversation history is scanned
+arguments in both JSON and SSE, with JSON-output escaping preserved. Reasoning
+and opaque/signed provider artifacts are passed through without restoration:
+editing their text could invalidate provider signatures. They may contain
+placeholders. Resubmitted conversation history is scanned
 again. Mapping is request-scoped; no conversation state or prompt is written to
 disk. Unknown placeholders remain literal. Restoration happens before the
 normal response adapters and receipt hashing; provider usage and prices remain

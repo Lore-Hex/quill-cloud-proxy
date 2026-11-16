@@ -95,8 +95,8 @@ func TestToolNumbersRemainExact(t *testing.T) {
 func TestStreamingEveryByteSplitAndJSONEscaping(t *testing.T) {
 	secret := "Alice \"A\"\nSmith"
 	s := &Session{replacements: map[string]string{testToken: secret}}
-	for _, field := range []string{"text", "partial_json", "thinking"} {
-		kind := map[string]string{"text": "text_delta", "partial_json": "input_json_delta", "thinking": "thinking_delta"}[field]
+	for _, field := range []string{"text", "partial_json"} {
+		kind := map[string]string{"text": "text_delta", "partial_json": "input_json_delta"}[field]
 		for split := 0; split <= len(testToken); split++ {
 			var out bytes.Buffer
 			w := s.Writer(&out)
@@ -228,5 +228,69 @@ func TestStreamPreservesExactToolNumbers(t *testing.T) {
 		if _, err := io.WriteString(w, `data: {"type":"content_block_stop","index":`+index+"}\n\n"); err == nil {
 			t.Fatal("accepted invalid index", index)
 		}
+	}
+}
+
+func TestStructuredTextRestorationEscapesJSONValues(t *testing.T) {
+	for _, raw := range []string{
+		`{"deidentify":true,"messages":[],"response_format":{"type":"json_object"}}`,
+		`{"deidentify":true,"input":"hi","text":{"format":{"type":"json_schema","name":"reply","schema":{"type":"object"}}}}`,
+	} {
+		_, session, err := Prepare(context.Background(), []byte(raw), "chat.completions", &fakeRunner{})
+		if err != nil || !session.jsonText {
+			t.Fatalf("structured format not recognized: %s %v", raw, err)
+		}
+		secret := "Alice \"A\"\nSmith"
+		session.replacements[testToken] = secret
+		var out bytes.Buffer
+		w := session.Writer(&out)
+		for _, text := range []string{`{"person":"` + testToken[:12], testToken[12:] + `"}`} {
+			data, _ := json.Marshal(map[string]any{"type": "content_block_delta", "index": 0, "delta": map[string]any{"type": "text_delta", "text": text}})
+			if _, err := io.WriteString(w, "data: "+string(data)+"\n\n"); err != nil {
+				t.Fatal(err)
+			}
+		}
+		if _, err := io.WriteString(w, "data: {\"type\":\"content_block_stop\",\"index\":0}\n\n"); err != nil {
+			t.Fatal(err)
+		}
+		if err := w.Close(); err != nil {
+			t.Fatal(err)
+		}
+		var text strings.Builder
+		for _, line := range strings.Split(out.String(), "\n") {
+			if !strings.HasPrefix(line, "data: ") {
+				continue
+			}
+			var event map[string]any
+			if err := json.Unmarshal([]byte(strings.TrimPrefix(line, "data: ")), &event); err != nil {
+				t.Fatal(err)
+			}
+			if delta, ok := event["delta"].(map[string]any); ok {
+				text.WriteString(delta["text"].(string))
+			}
+		}
+		var result map[string]string
+		if json.Unmarshal([]byte(text.String()), &result) != nil || result["person"] != secret {
+			t.Fatalf("restored JSON invalid: %s", text.String())
+		}
+	}
+}
+
+func TestSignedReasoningRemainsUnmodified(t *testing.T) {
+	s := &Session{replacements: map[string]string{testToken: "Alice"}}
+	var out bytes.Buffer
+	w := s.Writer(&out)
+	for _, data := range []string{
+		`{"type":"content_block_start","index":0,"content_block":{"type":"thinking","thinking":"` + testToken + `","signature":"signed-prefix"}}`,
+		`{"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":"` + testToken + `"}}`,
+		`{"type":"content_block_delta","index":0,"delta":{"type":"signature_delta","signature":"signed-suffix"}}`,
+		`{"type":"content_block_stop","index":0}`,
+	} {
+		if _, err := io.WriteString(w, "data: "+data+"\n\n"); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := w.Close(); err != nil || strings.Contains(out.String(), "Alice") || strings.Count(out.String(), testToken) != 2 || !strings.Contains(out.String(), "signed-prefix") || !strings.Contains(out.String(), "signed-suffix") {
+		t.Fatalf("signed content was changed: %s %v", out.String(), err)
 	}
 }

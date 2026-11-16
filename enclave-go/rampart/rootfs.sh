@@ -5,6 +5,10 @@ cp /usr/local/bin/node /rootfs/rampart/node
 cp -R node_modules model worker.mjs package.json /rootfs/rampart/
 cp model/LICENSE /rootfs/licenses/rampart-CC-BY-4.0.txt
 cp node_modules/@nationaldesignstudio/rampart/LICENSE /rootfs/licenses/rampart-runtime-CC-BY-4.0.txt
+cp /usr/local/LICENSE /rootfs/licenses/node-LICENSE
+# Preserve the base distribution's notices for the copied native libraries.
+mkdir -p /rootfs/usr/share
+cp -RL /usr/share/doc /usr/share/common-licenses /rootfs/usr/share/
 # Copy only the dynamic runtime closure into the existing scratch image.
 # ONNX Runtime loads its shared library at inference time, not at node startup.
 { ldd /usr/local/bin/node; find node_modules -type f \( -name '*.so*' -o -name '*.node' \) -exec ldd '{}' \; 2>/dev/null; } |

@@ -56,7 +56,17 @@ func Prepare(ctx context.Context, raw []byte, route string, runner Runner) ([]by
 	if err != nil {
 		return nil, nil, ErrUnsupported
 	}
-	return safe, &Session{replacements: result.Replacements}, nil
+	return safe, &Session{replacements: result.Replacements, jsonText: structuredText(root)}, nil
+}
+
+func structuredText(root map[string]any) bool {
+	format, _ := root["response_format"].(map[string]any)
+	if text, ok := root["text"].(map[string]any); ok {
+		if value, ok := text["format"].(map[string]any); ok {
+			format = value
+		}
+	}
+	return oneOf(format["type"], "json_object", "json_schema")
 }
 
 func (p *projection) text(v any, set func(string), fixed bool) error {

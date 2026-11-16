@@ -13,7 +13,10 @@ var tokenPattern = regexp.MustCompile(`\[TR[A-Z]{16}_[A-Z_]+_[0-9]+\]`)
 func validToken(s string) bool { return len(s) <= 128 && tokenPattern.FindString(s) == s }
 
 // Session is private to one request and never serialized or cached.
-type Session struct{ replacements map[string]string }
+type Session struct {
+	replacements map[string]string
+	jsonText     bool
+}
 
 func (s *Session) reveal(text string, escaped bool) string {
 	return tokenPattern.ReplaceAllStringFunc(text, func(token string) string {
@@ -166,11 +169,13 @@ func (w *StreamWriter) frame(frame []byte) error {
 		if !w.session.withinBudget(block, &budget) {
 			return ErrUnavailable
 		}
-		for _, field := range []string{"text", "thinking", "input"} {
+		// Reasoning can be signed by the provider. Keep it and its signature
+		// together unchanged; only restore answer text and function arguments.
+		for _, field := range []string{"text", "input"} {
 			if v, ok := block[field]; ok {
 				if text, ok := v.(string); ok && field != "input" {
 					head, tail := splitTokenTail(text)
-					block[field] = w.session.reveal(head, false)
+					block[field] = w.session.reveal(head, field == "text" && w.session.jsonText)
 					if tail != "" {
 						deltaEvent := map[string]any{"type": "content_block_delta", "index": index, "delta": map[string]any{"type": field + "_delta", field: ""}}
 						w.pending[index] = &pendingDelta{tail: tail, field: field, event: deltaEvent}
@@ -186,8 +191,6 @@ func (w *StreamWriter) frame(frame []byte) error {
 		switch delta["type"] {
 		case "text_delta":
 			field = "text"
-		case "thinking_delta":
-			field = "thinking"
 		case "input_json_delta":
 			field = "partial_json"
 		}
@@ -208,7 +211,7 @@ func (w *StreamWriter) frame(frame []byte) error {
 			if !w.session.withinBudget(head, &budget) {
 				return ErrUnavailable
 			}
-			delta[field] = w.session.reveal(head, field == "partial_json")
+			delta[field] = w.session.reveal(head, field == "partial_json" || (field == "text" && w.session.jsonText))
 			w.pending[index] = &pendingDelta{tail: tail, field: field, event: event}
 		}
 	case "content_block_stop":
