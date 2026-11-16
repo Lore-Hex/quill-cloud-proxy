@@ -1,6 +1,6 @@
 # PrivateMode v1.64 recovery review
 
-Status: unapproved candidate, not a production trust pin. Reproduction and
+Status: conditionally approved identity, not a production trust pin. Reproduction and
 encrypted positive/negative qualification are required before promotion.
 
 ## Cause and recurrence
@@ -38,6 +38,10 @@ Recovery-owner public-key SHA256 changes from
 This identity cannot be reproduced from source and needs explicit approval.
 The candidate evidence file is deliberately outside the embedded runtime path.
 
+Joseph approved this exact recovery key and manifest on November 15, conditional
+on independent reproduction, security review and encrypted qualification. That
+approval does not mark any pending gate passed or authorize runtime refresh.
+
 The upstream client diff retains static-manifest verification. Manifest logging
 changes affect dynamic mode; do not enable that mode as a recovery shortcut.
 The serving release also changes vLLM, GPU-copy and transfer-related patches;
@@ -57,5 +61,30 @@ review and reproduction remain incomplete, not implicitly approved here.
    Until available, keep independent confidential alternatives and separately
    monitor provider readiness: HTTP 200/top-level health is insufficient.
 
+## Qualification completed so far
+
+- Hardened client built with the current pinned Go 1.27.4 image and existing
+  response-limit/deadline patch. HTTP limits, secret-manager limits, client,
+  encrypted server/body and OCSP-header suites passed. Linux amd64 client SHA256:
+  `d32ccaf8662203490ce84d64650deeac1bb00382f228d092f4aa2a5c63860e51`.
+- Contrast v1.26.2 source diff disables `systemd-gpt-auto-generator` via
+  `systemd.gpt_auto=0`: the host-controlled backing partition table must not
+  cause unmeasured partitions to be mounted or activated. This explains the
+  guest-reference change; it does not substitute for reproduction.
+- An opt-in local gateway test injected only the PrivateMode 401 rejection and
+  used the unmodified real Tinfoil adapter and full-verification sidecar for the
+  alternative. Buffered and streaming cases returned PONG, each with 75 input
+  and 24 output tokens; both selected Tinfoil with exactly one fallback.
+  Full proof cross-check and TLS public-key pin enforcement succeeded.
+  This is live alternative-provider inference, not an end-to-end production
+  control-plane authorization or forced production outage test.
+- Initial harness attempts exposed startup-readiness and bootstrap-key-field
+  mistakes (no inference on those failures). Subsequent successful provider
+  calls exposed a harness assertion that did not join split SSE text chunks.
+  The structured SSE parser and its split-chunk regression test now pass.
+  Failed harness attempts are not counted as passing qualification.
+- Reproduction workflow: `43789562675`, PR #786. Both jobs remained queued
+  without assigned runners at the latest check. No success is claimed.
+
 No production pins, transport origins or fallback eligibility changed in this
-review. No live paid inference or user-session mutation was performed.
+review. No user-session mutation was performed. Isolated sidecars were stopped.
