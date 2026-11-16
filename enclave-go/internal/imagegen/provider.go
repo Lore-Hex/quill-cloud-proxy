@@ -541,7 +541,14 @@ func (r *Registry) downloadBFLResult(ctx context.Context, rawURL string, resolve
 	if err != nil {
 		return nil, fmt.Errorf("create BFL result request: %w", err)
 	}
-	body, status, err := r.doLimited(req, maxGeneratedImageBytes)
+	client, err := llm.ProviderArtifactHTTPClient(r.http, parsed.String())
+	if err != nil {
+		return nil, err
+	}
+	defer client.CloseIdleConnections()
+	downloadRegistry := *r
+	downloadRegistry.http = client
+	body, status, err := downloadRegistry.doLimited(req, maxGeneratedImageBytes)
 	if err != nil {
 		return nil, err
 	}

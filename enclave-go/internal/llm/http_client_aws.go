@@ -170,7 +170,7 @@ var awsProviderTunnels = []vsockhttp.Tunnel{
 // the trust story (the enclave can only reach hosts the parent's
 // yaml has authorized).
 func defaultHTTPClient() *http.Client {
-	return vsockhttp.NewClient(awsProviderTunnels)
+	return lockProviderHTTPClient(vsockhttp.NewClient(awsProviderTunnels))
 }
 
 // AWSProviderTunnels exposes the tunnel list so deploy tooling can
