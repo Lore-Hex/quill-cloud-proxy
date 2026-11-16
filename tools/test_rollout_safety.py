@@ -1674,7 +1674,10 @@ else:
 
     def test_aws_default_sync_excludes_retired_issuer(self) -> None:
         source = (ROOT / "tools/sync-secrets-to-aws.sh").read_text()
-        defaults = source[:source.index("DRY_RUN=1")]
+        # Inspect only the literal inventory. The complete script now runs a
+        # file-relative legacy-retirement guard, covered by its own harness.
+        start = source.index("SECRETS=(\n")
+        defaults = source[start:source.index("\n)", start) + 2]
         completed = subprocess.run(
             ["bash", "-euo", "pipefail", "-c", defaults + '\nprintf "%s\\n" "${SECRETS[@]}"'],
             env={"PATH": "/usr/bin:/bin"},
