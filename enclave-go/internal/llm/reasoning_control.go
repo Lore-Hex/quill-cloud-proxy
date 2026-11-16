@@ -107,16 +107,6 @@ func dropSynthesizedThinkingBudget(body *qtypes.AnthropicMessagesRequest, wire *
 	}
 }
 
-// The shared Anthropic projection synthesizes a budget for old Claude models.
-// It is not a native thinking configuration for other providers.
-func dropSynthesizedThinkingBudget(body *qtypes.AnthropicMessagesRequest, wire *openAICompatibleRequest) {
-	if body != nil && !body.NativeContent {
-		if thinking, ok := wire.Thinking.(map[string]any); ok && thinking["budget_tokens"] != nil {
-			wire.Thinking = nil
-		}
-	}
-}
-
 // Native hybrid-model switches are not OpenAI reasoning objects or Anthropic
 // token budgets. In particular, forwarding enabled:false unchanged can be
 // silently ignored by a direct provider and leave thinking on.
