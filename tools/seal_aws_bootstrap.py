@@ -89,6 +89,8 @@ def publish(
     current = [vid for vid, stages in versions.items() if "AWSCURRENT" in stages]
     if len(current) > 1:
         raise ValueError("ambiguous current bundle version")
+    if versions and not current:
+        raise ValueError("existing versions without a current bundle require explicit recovery")
     if any("AWSPENDING" in stages and vid not in current for vid, stages in versions.items()):
         raise ValueError("unfinished pending publication requires explicit recovery")
     if current:
@@ -116,14 +118,18 @@ def publish(
     stored = secrets.get_secret_value(SecretId=SECRET_ID, VersionId=token)
     if stored.get("SecretString") != encrypted.decode():
         raise ValueError("published bundle readback mismatch")
-    promote = {"SecretId": SECRET_ID, "VersionStage": "AWSCURRENT", "MoveToVersionId": token}
     if current:
-        promote["RemoveFromVersionId"] = current[0]
-    # Secrets Manager rejects the move if AWSCURRENT is no longer attached to
-    # the observed predecessor (or if a first publisher raced the empty case).
-    secrets.update_secret_version_stage(**promote)
+        # Compare-and-swap the observed predecessor; never replace an
+        # intervening publisher's current version.
+        secrets.update_secret_version_stage(
+            SecretId=SECRET_ID, VersionStage="AWSCURRENT", MoveToVersionId=token,
+            RemoveFromVersionId=current[0],
+        )
+    # AWS automatically marks the first version AWSCURRENT even when the PUT
+    # requests AWSPENDING. Do not try to move an already-attached label, or
+    # overwrite a competing first publisher. Verify the exact result instead.
     final = secrets.describe_secret(SecretId=SECRET_ID).get("VersionIdsToStages", {})
-    if "AWSCURRENT" not in final.get(token, []):
+    if [vid for vid, stages in final.items() if "AWSCURRENT" in stages] != [token]:
         raise ValueError("bundle promotion could not be confirmed")
     return {"region": region, "bundle_version": version, "secret_version_id": token,
             "ciphertext_bytes": len(encrypted), "bundle_sha256": hashlib.sha256(encrypted).hexdigest()}
