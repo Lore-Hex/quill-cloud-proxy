@@ -167,6 +167,7 @@ BINDINGS: tuple[Binding, ...] = (
     Binding(("QUILL_DATABRICKS_SECRET",), "databricks token", True),
     Binding(("QUILL_DATABRICKS_HOST_SECRET",), "databricks host", False),
     Binding(("QUILL_EXA_SECRET",), "exa key", True),
+    Binding(("QUILL_CONTEXT_DEV_SECRET",), "context.dev key", True),
     Binding(("QUILL_INCEPTRON_SECRET",), "inceptron key", True),
     Binding(("QUILL_KLING_SECRET",), "kling key", True),
     Binding(("QUILL_LTX_SECRET",), "ltx key", True),

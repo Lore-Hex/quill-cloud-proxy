@@ -152,6 +152,7 @@ SECRETS=(
   trustedrouter-digitalocean-api-key
   trustedrouter-engy-api-key
   trustedrouter-exa-api-key
+  trustedrouter-context-dev-api-key
   trustedrouter-inceptron-api-key
   trustedrouter-morph-api-key
   trustedrouter-neurometric-api-key

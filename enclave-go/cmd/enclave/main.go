@@ -254,6 +254,7 @@ func main() {
 	configureFusionPrompts(boot)
 	configureAdvisorPrompts(boot)
 	configureResponsesWebSearch(boot.ExaAPIKey)
+	configureContextSearch(boot.ContextDevAPIKey)
 	configureModelSelector(boot.ProviderAPIKeys["telluvian"])
 
 	// 2. Build registries. Capture a canonical hash of the device list
