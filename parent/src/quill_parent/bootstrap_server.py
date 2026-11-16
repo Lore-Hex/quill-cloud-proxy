@@ -467,9 +467,12 @@ async def serve_forever(
     from quill_parent import sealed_bootstrap
 
     mode = os.environ.get("QUILL_BOOTSTRAP_MODE", "legacy")
+
     async def legacy() -> None:
         await _serve_legacy_forever(
-            region=region, secret_prefix=secret_prefix, gcp_sa_kms_alias=gcp_sa_kms_alias,
+            region=region,
+            secret_prefix=secret_prefix,
+            gcp_sa_kms_alias=gcp_sa_kms_alias,
             tr_control_plane_base_url=tr_control_plane_base_url,
         )
 
@@ -479,7 +482,8 @@ async def serve_forever(
     if mode not in {"dual", "v2-only"}:
         raise ValueError("invalid bootstrap mode")
     relay = sealed_bootstrap.production_relay(
-        region, os.environ.get("QUILL_BOOTSTRAP_V2_CMK_ARN", ""),
+        region,
+        os.environ.get("QUILL_BOOTSTRAP_V2_CMK_ARN", ""),
     )
     # Binding is synchronous and completes before a V1 task can be scheduled.
     listener = sealed_bootstrap.bind_listener()

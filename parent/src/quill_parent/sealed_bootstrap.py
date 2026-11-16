@@ -33,8 +33,13 @@ class SecretsAPI(Protocol):
 
 class KMSAPI(Protocol):
     def decrypt(
-        self, *, KeyId: str, CiphertextBlob: bytes, EncryptionContext: dict[str, str],
-        Recipient: dict[str, object], EncryptionAlgorithm: str,
+        self,
+        *,
+        KeyId: str,
+        CiphertextBlob: bytes,
+        EncryptionContext: dict[str, str],
+        Recipient: dict[str, object],
+        EncryptionAlgorithm: str,
     ) -> dict[str, Any]: ...
 
 
@@ -65,8 +70,13 @@ def decode_base64(value: object, maximum: int) -> bytes:
 
 class SealedRelay:
     def __init__(
-        self, *, region: str, key_arn: str, secret_id: str,
-        secrets: SecretsAPI, kms: KMSAPI,
+        self,
+        *,
+        region: str,
+        key_arn: str,
+        secret_id: str,
+        secrets: SecretsAPI,
+        kms: KMSAPI,
     ) -> None:
         if region not in {"eu-west-1", "eu-west-3"}:
             raise ValueError("invalid_region")
@@ -95,20 +105,29 @@ class SealedRelay:
             raise ValueError("bundle_fields")
         manifest = bundle["manifest"]
         if not isinstance(manifest, dict) or set(manifest) != {
-            "region", "version", "ciphertext_sha384", "encrypted_data_key_sha384",
+            "region",
+            "version",
+            "ciphertext_sha384",
+            "encrypted_data_key_sha384",
         }:
             raise ValueError("manifest_fields")
         version = manifest["version"]
-        if (manifest["region"] != self.region or type(version) is not int
-                or not 1 <= version <= (1 << 53) - 1):
+        if (
+            manifest["region"] != self.region
+            or type(version) is not int
+            or not 1 <= version <= (1 << 53) - 1
+        ):
             raise ValueError("bundle_metadata")
         encrypted_key = decode_base64(bundle["encrypted_data_key"], 6144)
         # Authenticity is checked INSIDE the enclave against its measured signer.
         # KMS independently validates the Nitro evidence and recipient policy.
         decrypted = self.kms.decrypt(
-            KeyId=self.key_arn, CiphertextBlob=encrypted_key,
+            KeyId=self.key_arn,
+            CiphertextBlob=encrypted_key,
             EncryptionContext={
-                "purpose": PROTOCOL, "region": self.region, "version": str(version),
+                "purpose": PROTOCOL,
+                "region": self.region,
+                "version": str(version),
             },
             Recipient={
                 "AttestationDocument": document,
@@ -123,9 +142,12 @@ class SealedRelay:
         cms = decrypted.get("CiphertextForRecipient")
         if not isinstance(cms, bytes) or not 0 < len(cms) <= MAX_CMS:
             raise ValueError("recipient_ciphertext")
-        response = canonical({
-            "bundle": bundle, "ciphertext_for_recipient": base64.b64encode(cms).decode(),
-        })
+        response = canonical(
+            {
+                "bundle": bundle,
+                "ciphertext_for_recipient": base64.b64encode(cms).decode(),
+            }
+        )
         if len(response) > MAX_RESPONSE:
             raise ValueError("response_size")
         return response
@@ -137,7 +159,9 @@ def production_relay(region: str, key_arn: str) -> SealedRelay:
 
     config = Config(connect_timeout=1, read_timeout=2, retries={"total_max_attempts": 1})
     return SealedRelay(
-        region=region, key_arn=key_arn, secret_id="quill/attested-bootstrap-v2",
+        region=region,
+        key_arn=key_arn,
+        secret_id="quill/attested-bootstrap-v2",
         secrets=cast(SecretsAPI, boto3.client("secretsmanager", region_name=region, config=config)),
         kms=cast(KMSAPI, boto3.client("kms", region_name=region, config=config)),
     )
@@ -167,7 +191,9 @@ async def receive_exact(client: socket.socket, size: int) -> bytes:
 
 
 async def serve_one(
-    client: socket.socket, relay: SealedRelay, executor: ThreadPoolExecutor,
+    client: socket.socket,
+    relay: SealedRelay,
+    executor: ThreadPoolExecutor,
     slots: threading.BoundedSemaphore,
 ) -> None:
     try:
@@ -188,7 +214,8 @@ async def serve_one(
             future.add_done_callback(lambda _: slots.release())
             response = await asyncio.wrap_future(future)
             await asyncio.get_running_loop().sock_sendall(
-                client, struct.pack(">I", len(response)) + response,
+                client,
+                struct.pack(">I", len(response)) + response,
             )
     except Exception as exc:
         # Do not log exception text, request bodies, evidence or SDK responses.
