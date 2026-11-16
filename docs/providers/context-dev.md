@@ -58,9 +58,10 @@ provisioned as `trustedrouter-context-dev-api-key` using the normal secret
 tools. Do not print values or put them in workflow inputs. Bootstrap carries
 `context_dev_api_key` only into the enclave. GCP/Azure select that secret with
 `QUILL_CONTEXT_DEV_SECRET`. GCP defaults to the logical secret name; setting it
-explicitly empty disables it. Azure remains disabled by default until a fresh
-complete sealed bundle is provisioned and pinned before rendering the measured
-deployment. GCP's bootstrap IAM provisioning accepts
+explicitly empty disables it. Azure now defaults to the same logical name and
+also permits an explicitly empty value. Its freshly provisioned complete bundle
+must be pinned before rendering the measured deployment; this configuration
+change is not proof that serving gateways have been updated. GCP's bootstrap IAM provisioning accepts
 `CONTEXT_DEV_SECRET`. AWS uses its existing optional
 bootstrap field; Azure includes the key in its sealed bundle. Never put this
 credential in a control-plane request body or forward it on HTTP redirects.
@@ -76,14 +77,18 @@ the current AWS secret-release policy, not a legacy plaintext fallback.
 GCP provisioning on 2026-11-16 UTC created only version 1 of this new secret,
 verified an exact in-memory readback, and confirmed the sole resource-level
 accessor is the existing `quill-workload` service account, matching Exa.
-No serving workload was changed by provisioning; AWS/Azure copies are pending.
+No serving workload was changed by provisioning. AWS native provisioning and
+gateway acceptance follow the existing attested-bootstrap release.
 
 Azure preflight on 2026-11-16 found that bundle version
 `8df3ba4381d74315b2d1c696e63e839d` was created on 2026-10-29, before Context's
 name was added to the checked-in manifest on 2026-11-15. That name alone is not
-evidence that the immutable bundle contains the credential. Generate and verify
-a complete replacement bundle, preserve every existing provider binding, and
-commit its generated manifest and immutable version before enabling Context.
+evidence that the immutable bundle contains the credential. On November 16,
+the normal sealer resolved all 85 local entries, including Context.dev,
+created immutable version `8d45fbfbca0f456fb125360b5ce0d820`, and verified its
+exact uploaded ciphertext by read-back. The generated manifest preserves the
+complete prior logical-name set. Pin this version for activation and complete
+the measured rollout and regional checks before claiming Azure availability.
 Do not hand-edit a manifest to assert the contents of an old bundle.
 
 The public documentation section is
