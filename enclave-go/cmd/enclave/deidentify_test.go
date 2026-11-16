@@ -241,6 +241,48 @@ func TestDeidentifyRejectsOrchestrationInEveryRoutingPosition(t *testing.T) {
 	}
 }
 
+func TestDeidentifyRejectsHostedSearchBeforeAnyInvocation(t *testing.T) {
+	previousRunner, previousExa, previousContext := rampartRunner, enclaveWebSearchClient, enclaveContextSearchClient
+	t.Cleanup(func() {
+		rampartRunner, enclaveWebSearchClient, enclaveContextSearchClient = previousRunner, previousExa, previousContext
+	})
+	for _, engine := range []string{"exa", "context", "context.dev"} {
+		for _, shape := range []string{"chat_tool", "chat_openrouter_tool", "chat_plugin", "responses_tool"} {
+			for _, stream := range []bool{false, true} {
+				t.Run(fmt.Sprintf("%s/%s/stream=%t", engine, shape, stream), func(t *testing.T) {
+					runner := &privacyTestRunner{}
+					exa, contextSearch := &fakeResponsesWebSearcher{}, &fakeResponsesWebSearcher{}
+					rampartRunner, enclaveWebSearchClient, enclaveContextSearchClient = runner, exa, contextSearch
+					body := map[string]any{"model": "anthropic/claude-opus-5.5", "deidentify": true, "stream": stream}
+					route := "chat/completions"
+					body["messages"] = []any{map[string]any{"role": "user", "content": "Find alice@example.com"}}
+					switch shape {
+					case "chat_plugin":
+						body["plugins"] = []any{map[string]any{"id": "web", "engine": engine}}
+					case "chat_openrouter_tool":
+						body["tools"] = []any{map[string]any{"type": "openrouter:web_search", "parameters": map[string]any{"engine": engine}}}
+					default:
+						body["tools"] = []any{map[string]any{"type": "web_search", "engine": engine}}
+						if shape == "responses_tool" {
+							route = "responses"
+							delete(body, "messages")
+							body["input"] = "Find alice@example.com"
+						}
+					}
+					raw, _ := json.Marshal(body)
+					provider := &privacyEchoProvider{}
+					status, response := privacyRoundTrip(t, "/v1/"+route, string(raw), provider)
+					if status != 400 || !strings.Contains(response, "deidentify_unsupported") ||
+						provider.calls != 0 || runner.calls != 0 || len(exa.queries) != 0 || len(contextSearch.queries) != 0 {
+						t.Fatalf("hosted search escaped privacy rejection: status=%d provider=%d scanner=%d exa=%d context=%d response=%s",
+							status, provider.calls, runner.calls, len(exa.queries), len(contextSearch.queries), response)
+					}
+				})
+			}
+		}
+	}
+}
+
 func TestDeidentifyFlagStrictAndDisabledNoAllocation(t *testing.T) {
 	for _, value := range []string{`null`, `1`, `"true"`, `{}`, `[]`} {
 		if _, err := parseChatRequest([]byte(`{"model":"test","messages":[],"deidentify":` + value + `}`)); err == nil {
