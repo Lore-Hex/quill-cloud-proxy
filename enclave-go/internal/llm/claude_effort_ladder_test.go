@@ -124,7 +124,7 @@ func TestUnlistedClaudeModelIsInTheFullClass(t *testing.T) {
 		"anthropic/claude-opus-6.1", "us.anthropic.claude-haiku-6", "claude-opus-7@20280101", "claude-sonnet-6-5-20270101", "claude-atlas-1",
 		// A longer version number is a different model from the one it starts with.
 		"claude-opus-4-10", "claude-opus-4-50", "claude-sonnet-4-50", "claude-sonnet-4-60", "claude-haiku-4-50",
-		"claude-4-10-opus", "claude-4-50-sonnet", "claude-sonnet-30", "claude-opus-30-1",
+		"claude-4-10-opus", "claude-4-50-sonnet", "claude-4-60-sonnet", "claude-sonnet-30", "claude-opus-30-1",
 		// Version first, a 4.x that no row names is a newer model too.
 		"claude-4-7-opus", "claude-4-8-sonnet", "claude-4-7-sonnet-20270101", "claude-5-sonnet", "claude-5-5-opus",
 		// A 4.0 model is matched by a date, an "@", a ":" or "-0" after the 4,

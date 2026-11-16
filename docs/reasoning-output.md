@@ -405,7 +405,7 @@ has the model, a host's refusal of the added field would reach the caller.
 
 These are not decided by this release:
 
-* (c) Whether to refuse, with a 400 before billing authorization, an Off and
+* Whether to refuse, with a 400 before billing authorization, an Off and
   a token budget that the OpenAI Responses tool route cannot honor. No host of these models
   can stop their reasoning or take a token budget, so a refusal is the honest
   answer. The cost is that requests another host serves today, without the
