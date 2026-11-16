@@ -140,18 +140,24 @@ RESOURCE_GROUP=TR-TEE-DUBAI ./tools/azure-sync-secrets.sh --apply
 It prints the new version. **Pin it** — the version is part of the container's
 env and therefore part of the measurement. Shred the values file afterwards.
 
-The NextBit EU rollout bundle is `71b52c822f1e417cb032e6513a1902a4`, sealed on
-October 14, 2026. It preserves all 75 prior logical entries from
-`dc8d8615cf8642c7a8cbf86b80c22006` and adds the separate NextBit EU key.
-Pin `QUILL_AZURE_BUNDLE_VERSION=71b52c822f1e417cb032e6513a1902a4` for this
-rollout; uploading a bundle alone does not change any serving container.
+The Context.dev activation bundle is `8d45fbfbca0f456fb125360b5ce0d820`, sealed
+on November 16, 2026. Its exact ciphertext was read back from that immutable
+Key Vault version. The complete 85-entry local source set includes Context.dev
+and preserves every logical name in the previous manifest. The prior serving
+bundle `8df3ba4381d74315b2d1c696e63e839d` predates Context.dev; its later-edited
+manifest was not evidence that it contained that credential.
+Pin `QUILL_AZURE_BUNDLE_VERSION=8d45fbfbca0f456fb125360b5ce0d820` for this
+rollout. Provisioning is complete, but measured deployment, signed publication
+and regional production acceptance remain separate gates. Uploading a bundle
+alone does not change any serving container.
 Every provider key sealed in the bundle is named by a `deploy-azure-aci.sh`
 default (Privatemode, Maple, Hixtube, Telluvian and both System1Models
 included), so a plain deploy preserves the existing optional providers.
 `azure-seal-bundle.py --check-deploy-manifest` fails CI if a sealed name is
-left unnamed, except names listed with a reason in `SEALED_BUT_DARK_ON_AZURE`
-(Context.dev, pending its Azure activation). To take a sealed provider dark on
-Azure, change its default in the deploy script and add it to that list.
+left unnamed, except names listed with a reason in `SEALED_BUT_DARK_ON_AZURE`.
+Context.dev is now named by default; an explicitly empty
+`QUILL_CONTEXT_DEV_SECRET` still disables it. To take a sealed provider dark on
+Azure permanently, change its default in the deploy script and add it to that list.
 The generated
 `tools/azure-bundle.manifest` records the exact names and immutable version.
 
