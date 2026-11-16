@@ -957,11 +957,9 @@ jobs:
           TR_CP_HOLD_STATE_DIR: ${{ runner.temp }}/tr-cp-hold
           TR_CP_HOLD_ATTEMPT_SECONDS: "720"
         run: |
-          gcloud scheduler jobs run trusted-router-synthetic-us-central1-every-three-minutes \
-            --location=us-central1 --project=quill-cloud-proxy || true
-          gcloud scheduler jobs run trusted-router-synthetic-europe-west4-every-three-minutes \
-            --location=europe-west4 --project=quill-cloud-proxy || true
           source tools/gate-hold-lib.sh
+          # Both monitors, once, so the gate does not wait for a stale peer row.
+          trigger_synthetic_workers
           gate_hold pong us-central1 bash tools/wait-region-synthetic-up.sh us-central1 us-central1
 
       - name: Canary gate — watch us-central1 only (post-stable)
@@ -970,6 +968,11 @@ jobs:
         # A canary that passed while the control plane moved must also have
         # seen fresh enclave-only rows from every monitor; otherwise it re-runs
         # within the hold bound and then fails closed (tools/gate_hold.py).
+        # Fresh means since the previous attempt began. Every attempt first
+        # runs both monitors (never fatal, and about 50 seconds of the attempt
+        # at most: tools/gate-hold-lib.sh), so that their rows usually land
+        # inside the first attempt. A re-run costs about five minutes of the
+        # job's hold budget, which every region shares.
         # A 10-minute attempt, the 20-minute hold, bounded reads.
         timeout-minutes: 38
         env:
@@ -977,7 +980,8 @@ jobs:
           TR_CP_HOLD_ATTEMPT_SECONDS: "600"
         run: |
           source tools/gate-hold-lib.sh
-          gate_hold canary us-central1 python3 tools/watchdog.py --regions us-central1 --duration-min 3 --rollback-after 3 --skip-baseline --initial-grace-sec 60
+          GATE_HOLD_BEFORE_ATTEMPT=trigger_synthetic_workers \
+            gate_hold canary us-central1 python3 tools/watchdog.py --regions us-central1 --duration-min 3 --rollback-after 3 --skip-baseline --initial-grace-sec 60
 
       # The session from the start of this job is an hour old at most. With the
       # stable wait now allowed two readiness holds, the primary phase can come
