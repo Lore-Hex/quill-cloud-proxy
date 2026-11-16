@@ -15,6 +15,11 @@
 useDefault = true
 
 [[allowlists]]
+description = "Already-public EdgeBit Nitro SDK test private key, pinned upstream source and notices beside the fixture. Never used by a workload."
+targetRules = ["private-key"]
+paths = ['''^enclave-go/internal/bootstrap/awssealed/testdata/upstream-kms\.json$''']
+
+[[allowlists]]
 description = """Generated, deterministic test vectors. JWS/JWT strings are \
 signed with keys whose seeds are committed beside them (shared with \
 quill-router's tests/fixtures); the generic-api-key hits are sha256 digests \
