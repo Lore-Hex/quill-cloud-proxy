@@ -1230,6 +1230,43 @@ func serveOneRequest(
 		return
 	}
 	req.NormalizeRouterModelAliases()
+	if req.Deidentify {
+		if isOrchestrationModel(req.Model) || isGenericAdvisorPrimitive(req.Model) || req.Model == polyphemusModel {
+			writeOpenAIError(conn, 400, "deidentify requires a direct model and local function tools", "invalid_request_error", "deidentify_unsupported", "deidentify")
+			return
+		}
+		var privacyErr error
+		body, br, privacyErr = prepareDeidentified(ctx, true, body, routeType, br)
+		if privacyErr != nil {
+			writeDeidentifyError(conn, routeType, privacyErr)
+			return
+		}
+		if routeType == "responses" {
+			clean, parseErr := parseResponsesRequest(body)
+			if parseErr != nil {
+				writeDeidentifyError(conn, routeType, parseErr)
+				return
+			}
+			chat, parseErr := adapter.ResponsesToChat(clean)
+			if parseErr != nil {
+				writeDeidentifyError(conn, routeType, parseErr)
+				return
+			}
+			req = *chat
+			originalInput = clean.Input
+		} else {
+			clean, parseErr := parseChatRequest(body)
+			if parseErr != nil {
+				writeDeidentifyError(conn, routeType, parseErr)
+				return
+			}
+			req = *clean
+			originalInput = req.Messages
+		}
+		req.InferenceReceipt = receiptRequest
+		req.NormalizeMaxTokens()
+		req.NormalizeRouterModelAliases()
+	}
 	requestedModel := req.Model
 	if err := req.NormalizeFallbackRouting(); err != nil {
 		writeOpenAIError(conn, 400, err.Error(), "invalid_request_error", "bad_request", "allow_fallbacks")
@@ -2451,6 +2488,19 @@ func serveMessages(
 		}
 		writeAnthropicError(conn, 400, "invalid JSON")
 		return
+	}
+	if native.Deidentify {
+		var privacyErr error
+		body, br, privacyErr = prepareDeidentified(ctx, true, body, "messages", br)
+		if privacyErr != nil {
+			writeDeidentifyError(conn, "messages", privacyErr)
+			return
+		}
+		native = adapter.AnthropicNativeRequest{}
+		if json.Unmarshal(body, &native) != nil {
+			writeDeidentifyError(conn, "messages", nil)
+			return
+		}
 	}
 	native.Model = types.CanonicalRouterModelID(native.Model)
 	req := adapter.MessagesToChatShim(&native)

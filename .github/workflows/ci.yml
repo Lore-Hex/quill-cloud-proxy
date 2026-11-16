@@ -7,6 +7,23 @@ on:
     branches: [main]
 
 jobs:
+  rampart:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Build pinned model and test real local de-identification
+        working-directory: enclave-go
+        run: docker build --platform linux/amd64 -f rampart/Dockerfile.test -t tr-rampart-test .
+      - name: Verify scratch runtime without network access
+        run: |
+          printf '%s' '{"texts":["My name is Alice Smith. Email alice@example.com."]}' | docker run --rm --network none -i tr-rampart-test | jq -e '.texts[0] | contains("alice@example.com") | not'
+      - name: Audit locked runtime dependencies
+        working-directory: enclave-go/rampart
+        run: npm audit --omit=dev --audit-level=high
+
   maple-pilot:
     runs-on: ubuntu-latest
     timeout-minutes: 15
