@@ -20,6 +20,7 @@ var contractValueOptions = strings.Fields(`
 	provider.allow_fallbacks provider.require_parameters provider.zdr
 	provider.max_price.prompt provider.max_price.completion provider.max_price.image
 	provider.max_price.audio provider.max_price.request
+	thinking.budget_tokens enable_thinking chat_template_kwargs.enable_thinking
 `)
 
 var contractValueEnums = map[string]string{
@@ -28,6 +29,7 @@ var contractValueEnums = map[string]string{
 	"reasoning_effort":         "none minimal low medium high xhigh max auto",
 	"reasoning.effort":         "none minimal low medium high xhigh max auto",
 	"output_config.effort":     "low medium high xhigh max",
+	"thinking.type":            "enabled disabled adaptive",
 	"service_tier":             "auto default flex priority scale",
 	"truncation":               "auto disabled",
 	"provider.data_collection": "allow deny",
