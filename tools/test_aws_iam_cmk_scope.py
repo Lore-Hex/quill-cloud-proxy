@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+import shutil
 import subprocess
 import tempfile
 import unittest
@@ -63,6 +64,13 @@ elif args[:2] not in [
     sys.exit('unexpected AWS command: ' + repr(args))
 """)
             fake.chmod(0o700)
+            scripts = directory / "tools"
+            config = scripts / "aws-secrets"
+            config.mkdir(parents=True)
+            shutil.copyfile(ROOT / "tools/aws_kms_admission.py", scripts / "aws_kms_admission.py")
+            (config / "attested-release.json").write_text(json.dumps({
+                "schema_version": 1, "required": False, "key_arns": {},
+            }))
             source = (ROOT / "tools/deploy-aws-nitro.sh").read_text()
             phase = "phase_iam() {" + source.split("phase_iam() {", 1)[1].split("phase_oidc() {", 1)[0]
             script = "set -euo pipefail\nlog() { printf '%s\\n' \"$*\" >&2; }\n" + phase + "phase_iam\n"
@@ -74,7 +82,7 @@ elif args[:2] not in [
                 "AWS_EC2_METADATA_DISABLED": "true",
                 "PROJECT_TAG": "quill-enclave", "AWS_ACCOUNT": "330422590279",
                 "AWS_REGION": "eu-west-3", "DRY_RUN": "0",
-                "SCRIPT_DIR": str(ROOT / "tools"),
+                "SCRIPT_DIR": str(scripts),
                 "ENCLAVE_REGIONS": regions, "FAILURE": failure,
                 "KEYS": json.dumps(KEYS), "CALLS": str(calls),
             }
