@@ -2505,7 +2505,7 @@ func containsWebSearchTool(tools []any) bool {
 func parseResponsesWebSearchTool(tool map[string]any) (*types.ResponseWebSearchConfig, error) {
 	toolType := stringValue(tool["type"])
 	allowed := map[string]struct{}{
-		"type": {}, "search_context_size": {}, "filters": {}, "user_location": {},
+		"type": {}, "engine": {}, "search_context_size": {}, "filters": {}, "user_location": {},
 		"external_web_access": {}, "return_token_budget": {}, "search_content_types": {}, "image_settings": {},
 	}
 	for key, value := range tool {
@@ -2516,6 +2516,13 @@ func parseResponsesWebSearchTool(tool map[string]any) (*types.ResponseWebSearchC
 	config := &types.ResponseWebSearchConfig{
 		ToolType: toolType, RouteType: "responses.web_search", Engine: "exa",
 		Mode: "auto", SearchContextSize: "medium", MaxResults: 5,
+	}
+	if engine, present := tool["engine"]; present && engine != nil {
+		parsed, err := parseExaWebSearchParameters(map[string]any{"engine": engine}, "tools")
+		if err != nil {
+			return nil, err
+		}
+		config.Engine = parsed.Engine
 	}
 	if size := strings.TrimSpace(stringValue(tool["search_context_size"])); size != "" {
 		switch size {
