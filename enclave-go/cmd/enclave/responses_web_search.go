@@ -32,7 +32,9 @@ const maxWebSearchCostPerCallMicrodollars = 100_000
 var enclaveWebSearchClient websearch.Client
 
 func configureResponsesWebSearch(apiKey string) {
-	client, err := websearch.NewExaClient(websearch.ExaOptions{APIKey: apiKey})
+	httpc := llm.NewProviderHTTPClient()
+	httpc.Timeout = 15 * time.Second
+	client, err := websearch.NewExaClient(websearch.ExaOptions{APIKey: apiKey, HTTPClient: httpc})
 	if err != nil {
 		enclaveWebSearchClient = nil
 		return
