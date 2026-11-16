@@ -110,6 +110,11 @@ Set AWS_REGION explicitly. Compare the template with the recorded live version:
 preserve networking, approved parent/pump images, IAM, capacity, secret paths
 and health settings. Reject unrelated drift. The host AMI and nitro-cli package
 are pinned; user data downloads the EIF and checks its size and SHA256.
+Set AWS_PARENT_IMAGE_DIGEST and AWS_PARENT_PUMP_IMAGE_DIGEST to the approved
+existing `sha256:...` values when preserving those images. The generator checks
+that each digest exists in the exact regional repository and emits immutable
+references. Without explicit values it resolves release tags once at template
+creation, never at host boot; a different parent still requires review.
 
 Launch one standalone candidate outside the ASG and every serving target group.
 Give it distinct non-production Project and Name tags so discovery cannot add
