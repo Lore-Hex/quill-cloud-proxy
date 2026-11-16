@@ -188,13 +188,25 @@ through the chat path, which shapes three Responses features:
   `namespace__name`. If that name is taken too, or is not a valid function
   name (`[A-Za-z0-9_-]`, at most 64 characters), the request returns `400`. A call to a namespaced function comes back
   as a `function_call` with the declared `name` and its `namespace`, and a
-  replayed call or a `tool_choice` naming one by `namespace` reaches it (a
-  `namespace` the request does not declare is a `400`).
+  replayed call or a `tool_choice` naming one by `namespace` reaches it. A
+  `tool_choice` naming a namespaced function the request does not declare is
+  a `400`. A replayed `function_call` naming one is accepted as history: the
+  tool list changed between turns, or the call was made through another
+  backend. It is sent to the model as `namespace__name` and never under a
+  name the request already uses. If that name is taken, or is not a valid
+  function name, it is sent as its first 55 characters and an 8-digit digest
+  of the namespace and name. A call the model makes to it comes back with
+  the replayed `name` and `namespace`.
 - Every function is sent up front, deferred or not, so a hosted
   `tool_search` tool has nothing to load and never emits `tool_search_call`;
   replayed hosted `tool_search_call` and `tool_search_output` items are dropped.
   Client-executed tool search (`"execution": "client"`) returns
   `501 not_supported_in_alpha`.
+
+`client_metadata`, which Codex sends with identifiers for its vendor's own
+backend, is accepted on `POST /v1/responses` as an object or `null` and has no
+effect. It is not sent to a provider and not recorded. Any other value is a
+`400`.
 
 ## Web search and citations
 

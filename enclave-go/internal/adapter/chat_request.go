@@ -31,7 +31,7 @@ var chatRequestFields = map[string]struct{}{
 	"temperature": {}, "tool_choice": {}, "tools": {}, "top_a": {}, "top_k": {},
 	"top_logprobs": {}, "top_p": {}, "trace": {}, "user": {}, "web_search_options": {},
 	// TrustedRouter compatibility/extensions already supported by the gateway.
-	"allow_fallbacks": {}, "depth": {}, "enable_thinking": {}, "include_reasoning": {}, "max_output_tokens": {}, "n": {}, "output_config": {}, "repeat_penalty": {}, "store": {}, "tags": {}, "thinking": {}, "usage": {},
+	"allow_fallbacks": {}, "chat_template_kwargs": {}, "depth": {}, "enable_thinking": {}, "include_reasoning": {}, "max_output_tokens": {}, "n": {}, "output_config": {}, "repeat_penalty": {}, "store": {}, "tags": {}, "thinking": {}, "usage": {},
 }
 
 var unsupportedChatFields = map[string]struct{}{
@@ -82,6 +82,7 @@ var endpointCapabilityFields = map[string]string{
 	"output_config":         "reasoning",
 	"thinking":              "reasoning",
 	"enable_thinking":       "reasoning",
+	"chat_template_kwargs":  "reasoning",
 	"repetition_penalty":    "repetition_penalty",
 	"repeat_penalty":        "repetition_penalty",
 	"response_format":       "response_format",
@@ -134,6 +135,12 @@ func ValidateChatRequestFields(raw map[string]json.RawMessage) (ChatRequestValid
 		if capability, ok := endpointCapabilityFields[key]; ok {
 			if key == "reasoning" && reasoningVisibilityOnly(value) {
 				continue
+			}
+			// An object with no switch asks nothing of the endpoint.
+			if key == "chat_template_kwargs" {
+				if enabled, _ := chatTemplateThinkingSwitch(value); enabled == nil {
+					continue
+				}
 			}
 			requested[capability] = struct{}{}
 		}

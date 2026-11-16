@@ -655,7 +655,8 @@ type ResponseRequestMeta struct {
 	WebSearchCalls       []ResponseWebSearchCall
 	OutputAnnotations    []map[string]any
 	// FunctionNamespaces maps the name a namespaced function is sent to the
-	// provider under to the namespace and name the caller declared it with.
+	// provider under to the namespace and name the caller declared it with,
+	// or replayed a call to it with when the tools no longer declare it.
 	FunctionNamespaces map[string]ResponseNamespacedFunction
 }
 
