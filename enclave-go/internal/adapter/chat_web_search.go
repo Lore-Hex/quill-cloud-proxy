@@ -303,8 +303,8 @@ func parseExaWebSearchParameters(parameters map[string]any, context string) (*ty
 	if config.Engine == "context" && config.Mode != "auto" {
 		return nil, &AdapterError{Status: 400, Message: "context.dev supports mode auto only", Context: context + ".mode"}
 	}
-	if config.Engine == "context" && config.MaxCharacters > 20_000 {
-		return nil, &AdapterError{Status: 400, Message: "context.dev max_characters cannot exceed 20000", Context: context + ".max_characters"}
+	if config.Engine == "context" && config.MaxCharacters != 0 && (config.MaxCharacters < 100 || config.MaxCharacters > 20_000) {
+		return nil, &AdapterError{Status: 400, Message: "context.dev max_characters must be between 100 and 20000", Context: context + ".max_characters"}
 	}
 	return config, nil
 }
