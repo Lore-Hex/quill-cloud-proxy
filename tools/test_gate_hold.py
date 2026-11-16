@@ -311,7 +311,43 @@ echo "curl $*" >> "${CURL_LOG}"
 cat "${STATUS_FILE}"
 '''
 
+# A canary that publishes what the monitors reported while it watched. Each
+# element of the JSON list in WATCH_PLAN is one attempt (the last repeats):
+# {"rows": [[monitor, status, offset], ...], "exit": N}. An attempt adds one
+# tls_health and one attestation_nonce row for us-central1 per entry, created
+# `offset` seconds from the attempt's own start, and then exits.
+WATCH_STUB = r'''#!/usr/bin/env python3
+import datetime, json, os, sys
+plan_file, status_file = os.environ["WATCH_PLAN"], os.environ["STATUS_FILE"]
+plan = json.load(open(plan_file))
+if len(plan) > 1:
+    json.dump(plan[1:], open(plan_file, "w"))
+started = int(os.environ["WAIT_UP_STARTED_AT"])
+with open(os.environ["GATE_LOG"], "a") as log:
+    log.write("watch started_at=%d\n" % started)
+page = json.load(open(status_file))
+for monitor, status, offset in plan[0].get("rows", []):
+    created = datetime.datetime.fromtimestamp(started + offset, datetime.timezone.utc).isoformat()
+    for probe in ("tls_health", "attestation_nonce"):
+        page["data"]["current"]["checks"].append(
+            {"probe_type": probe, "monitor_region": monitor, "status": status,
+             "target_region": "us-central1", "created_at": created})
+json.dump(page, open(status_file, "w"))
+sys.exit(plan[0].get("exit", 0))
+'''
+
+# Stands in for tools/gate_hold.py: records what the loop asked, then decides
+# for real.
+DECIDE_SHIM = r'''import os, runpy, sys
+with open(os.environ["DECIDE_LOG"], "a") as log:
+    log.write(" ".join(sys.argv[1:]) + "\n")
+runpy.run_path(os.path.join(os.path.dirname(os.path.abspath(__file__)), "gate_hold_real.py"),
+               run_name="__main__")
+'''
+
 MOVING = lanes(held="control-plane")
+US_UP, EU_UP = ("us-central1", "up", 0), ("europe-west4", "up", 0)
+NO_EU = "no fresh attestation_nonce from europe-west4, tls_health from europe-west4;"
 
 
 class Library(unittest.TestCase):
@@ -324,7 +360,7 @@ class Library(unittest.TestCase):
         (self.tools / "cloud-rollout.py").write_text(LANES_STUB)
         self.bin = self.temp / "bin"
         self.bin.mkdir()
-        for name, body in (("gate", GATE_STUB), ("curl", CURL_STUB)):
+        for name, body in (("gate", GATE_STUB), ("curl", CURL_STUB), ("watch", WATCH_STUB)):
             (self.bin / name).write_text(body)
             (self.bin / name).chmod(0o755)
         jq = shutil.which("jq")
@@ -359,6 +395,25 @@ class Library(unittest.TestCase):
     @staticmethod
     def fresh_page(**kw: object) -> dict[str, object]:
         return healthy_page(at=time.time() + 3600, **kw)  # created after any window start
+
+    def run_canary(self, plan: list[dict[str, object]], *, before: list[dict[str, object]] | None = None,
+                   lane_lines: list[object] | None = None, hold_max: int = 30,
+                   env: dict[str, str] | None = None) -> tuple[subprocess.CompletedProcess[str], list[str]]:
+        """`gate_hold canary us-central1` for real. Each attempt publishes its
+        rows of `plan` on the status page, which starts with the rows `before`."""
+        (self.temp / "plan.json").write_text(json.dumps(plan))
+        return self.run_lib('gate_hold canary us-central1 watch; echo "rc=$?"',
+                            lane_lines=lane_lines or [MOVING], status=page(*(before or [])),
+                            hold_max=hold_max, env={"WATCH_PLAN": str(self.temp / "plan.json"), **(env or {})})
+
+    @staticmethod
+    def starts(log: list[str]) -> list[int]:
+        """The WAIT_UP_STARTED_AT each attempt was given, in order."""
+        return [int(re.search(r"started_at=(\d+)", line).group(1)) for line in log]
+
+    @staticmethod
+    def inconclusive(stderr: str) -> list[str]:
+        return [line for line in stderr.splitlines() if "canary gate inconclusive:" in line]
 
     def test_a_passing_gate_runs_once_with_its_arguments_unchanged(self) -> None:
         done, log = self.run_lib('gate_hold pong us-central1 gate "a b" c; echo "rc=$?"')
@@ -435,6 +490,118 @@ class Library(unittest.TestCase):
         self.assertIn("rc=1", done.stdout)
         self.assertIn("job's (10s", done.stderr)
         self.assertEqual(len(log), 1)
+
+    def test_canary_evidence_accumulates_across_the_attempts_of_one_hold(self) -> None:
+        """Production, 2026-11-16: the lease was held throughout, every attempt
+        passed and every monitor reported the region up, but never both
+        monitors inside one attempt's window. The gate held to its deadline."""
+        old = healthy_page(at=time.time() - 3600)["data"]["current"]["checks"]
+        # The monitors take turns, as they did: one reports per attempt.
+        done, log = self.run_canary([{"rows": [US_UP]}, {"rows": [EU_UP]}] * 10, before=old)
+        self.assertIn("rc=0", done.stdout, done.stderr)
+        self.assertEqual(len(log), 2, done.stderr)  # passed on the second attempt
+        first, second = self.starts(log)
+        # us-central1's rows are older than the second attempt and newer than the first.
+        self.assertLess(first, second)
+        held = self.inconclusive(done.stderr)
+        self.assertEqual(len(held), 1, done.stderr)
+        self.assertIn(NO_EU, held[0])
+        self.assertNotIn("failing closed", done.stderr)
+
+    def test_the_latest_row_decides_across_canary_attempts(self) -> None:
+        # us-central1 read up during the first attempt and down during the second.
+        done, log = self.run_canary([{"rows": [US_UP]},
+                                     {"rows": [("us-central1", "down", 0), EU_UP]}])
+        self.assertIn("rc=1", done.stdout, done.stderr)
+        self.assertEqual(len(log), 2, done.stderr)
+        self.assertIn("attributed to the gateway", done.stderr)
+        self.assertIn("from us-central1 read down", done.stderr)
+
+    def test_a_failing_row_published_between_canary_attempts_is_the_gateways(self) -> None:
+        # us-central1 read down during the pause, one second before the second
+        # attempt began, and published nothing newer. The pause is two seconds,
+        # so that row is strictly newer than the first attempt's.
+        done, log = self.run_canary([{"rows": [US_UP]},
+                                     {"rows": [("us-central1", "down", -1), EU_UP]}],
+                                    env={"TR_CP_HOLD_SLEEP_SECONDS": "2"})
+        self.assertIn("rc=1", done.stdout, done.stderr)
+        self.assertEqual(len(log), 2, done.stderr)
+        self.assertIn("attributed to the gateway", done.stderr)
+        self.assertIn("from us-central1 read down", done.stderr)
+
+    def test_rows_from_before_the_first_canary_attempt_never_count(self) -> None:
+        old = healthy_page(at=time.time() - 3600)["data"]["current"]["checks"]
+        # europe-west4 last reported one second before the first attempt began.
+        done, log = self.run_canary([{"rows": [US_UP, ("europe-west4", "up", -1)]}, {"rows": [US_UP]}],
+                                    before=old, hold_max=10)
+        self.assertRegex(done.stdout, r"rc=(1|124)\b")
+        self.assertIn("failing closed", done.stderr)
+        self.assertGreaterEqual(len(log), 2)
+        held = self.inconclusive(done.stderr)
+        self.assertGreaterEqual(len(held), 2, done.stderr)
+        for line in held:  # on every attempt, not only the first
+            self.assertIn(NO_EU, line)
+
+    def test_a_monitor_that_never_reports_still_fails_the_canary_closed(self) -> None:
+        """Accumulated rows from one monitor never stand in for the other's."""
+        started = time.monotonic()
+        done, log = self.run_canary([{"rows": [US_UP]}], hold_max=6)
+        self.assertRegex(done.stdout, r"rc=(1|124)\b")
+        self.assertIn("failing closed", done.stderr)
+        self.assertGreaterEqual(len(log), 2)
+        for line in self.inconclusive(done.stderr):
+            self.assertIn(NO_EU, line)
+        self.assertLess(time.monotonic() - started, 30)
+        # The job budget ends it as well, long before the gate's own bound.
+        started = time.monotonic()
+        done, log = self.run_canary([{"rows": [US_UP]}], hold_max=600,
+                                    env={"TR_CP_HOLD_BUDGET_SECONDS": "4"})
+        self.assertRegex(done.stdout, r"rc=(1|124)\b")
+        self.assertIn("failing closed", done.stderr)
+        self.assertLess(time.monotonic() - started, 30)
+
+    def test_a_later_canary_attempt_with_a_still_control_plane_passes_without_evidence(self) -> None:
+        # No monitor ever reports. The lease is gone by the second attempt.
+        done, log = self.run_canary([{"rows": []}], lane_lines=[MOVING, MOVING, STILL])
+        self.assertIn("rc=0", done.stdout, done.stderr)
+        self.assertEqual(len(log), 2, done.stderr)
+        self.assertEqual(len(self.inconclusive(done.stderr)), 1, done.stderr)
+
+    def test_only_a_canary_pass_is_judged_on_the_first_attempts_window(self) -> None:
+        """Every other verdict, and every attempt's WAIT_UP_STARTED_AT, is the attempt's own."""
+        (self.tools / "gate_hold.py").rename(self.tools / "gate_hold_real.py")
+        (self.tools / "gate_hold.py").write_text(DECIDE_SHIM)
+        asked = self.temp / "decide.log"
+
+        def judged() -> list[int]:
+            """The --since of each verdict the loop asked for, in order."""
+            lines = asked.read_text().splitlines()
+            asked.unlink()
+            return [int(re.search(r"--since (\d+)", line).group(1)) for line in lines]
+
+        env = {"DECIDE_LOG": str(asked)}
+        for kind, codes in (("pong", "1 1 0"), ("pre-dns", "65 65 0"), ("discovery", "1 1 0")):
+            done, log = self.run_lib(f'gate_hold {kind} us-central1 gate; echo "rc=$?"', codes=codes,
+                                     lane_lines=[MOVING], status=self.fresh_page(), hold_max=30, env=env)
+            self.assertIn("rc=0", done.stdout, (kind, done.stderr))
+            starts = self.starts(log)
+            self.assertEqual(len(starts), 3, kind)
+            self.assertEqual(starts, sorted(set(starts)), kind)  # a new window for every attempt
+            self.assertEqual(judged(), starts[:2], kind)  # the pass itself is not judged
+        # A canary: three passes, the last with the control plane still.
+        done, log = self.run_canary([{"rows": []}], lane_lines=[MOVING] * 4 + [STILL], env=env)
+        self.assertIn("rc=0", done.stdout, done.stderr)
+        starts = self.starts(log)
+        self.assertEqual(len(starts), 3)
+        self.assertEqual(starts, sorted(set(starts)))  # each watch is still given its own start
+        self.assertEqual(judged(), [starts[0]] * 3)
+        # A canary that fails on a re-run is judged at once, on its own window.
+        done, log = self.run_canary([{"rows": []}, {"rows": [], "exit": 7}], env=env)
+        self.assertIn("rc=7", done.stdout, done.stderr)
+        self.assertIn("attributed to the gateway", done.stderr)
+        starts = self.starts(log)
+        self.assertEqual(len(starts), 2)
+        self.assertEqual(judged(), starts)
 
     def test_overlapping_holds_share_the_budget_as_they_spend_it(self) -> None:
         """Review of #772: a wave's two holds must not each spend the budget."""

@@ -10,6 +10,19 @@
 # The gate command runs exactly as it would without this library, in its own
 # process group so that a deadline or a stop can end it with its children.
 #
+# Every attempt is judged on its own window, which starts when the attempt
+# does, with one exception: the canary's evidence. A canary that passed while
+# the control plane moved also needs fresh enclave-only rows from every
+# monitor (tools/gate_hold.py), and for those rows the window starts when the
+# FIRST attempt of this gate_hold call began. A canary attempt is about four
+# minutes. Each monitor publishes a given probe for a region only every three
+# to six minutes, and the monitors are not in step, so one attempt's window
+# usually holds one monitor's rows and not the other's. A window that started
+# again with every re-run threw the earlier rows away, and the gate stayed
+# inconclusive until its deadline while every monitor reported the region up.
+# Each re-run is still a whole new canary, the lane snapshots are still per
+# attempt, and no other gate kind is given anything but its attempt's window.
+#
 # Time limits, all hard (an attempt in flight is killed at them):
 #   TR_CP_HOLD_ATTEMPT_SECONDS  cap on any one attempt (0: none; default 0)
 #   TR_CP_HOLD_MAX_SECONDS      per gate: how long one gate may hold, from its
@@ -193,8 +206,8 @@ gate_hold_write() {
 
 gate_hold() {
   local kind="$1" region="$2" max pause cap budget monitors state own_state=0 work
-  local since attempt_deadline cut_deadline hold_deadline="" status=1 decision remaining
-  local status_after_pause _gh_budget_state="" _gh_budget
+  local since first_since="" judged_since attempt_deadline cut_deadline hold_deadline=""
+  local status=1 decision remaining status_after_pause _gh_budget_state="" _gh_budget
   shift 2
   max="$(gate_hold_number TR_CP_HOLD_MAX_SECONDS 1200)" || return 2
   pause="$(gate_hold_number TR_CP_HOLD_SLEEP_SECONDS 60)" || return 2
@@ -210,6 +223,8 @@ gate_hold() {
   _gh_budget="${budget}"
   while true; do
     since="$(date +%s)"
+    # The canary's evidence window opens once, with the first attempt.
+    first_since="${first_since:-${since}}"
     attempt_deadline=""
     if [ "${cap}" -gt 0 ]; then attempt_deadline=$((since + cap)); fi
     # While holding, the gate's own deadline and the job budget cut the attempt.
@@ -265,8 +280,12 @@ gate_hold() {
     fi
     gate_hold_lanes "${work}/after.json" "${cut_deadline}"
     gate_hold_curl_status > "${work}/status.json" || true
+    # A canary pass is confirmed by the rows since the first attempt began (see
+    # the header); every other verdict reads this attempt's own window.
+    judged_since="${since}"
+    if [ "${kind}" = canary ] && [ "${status}" -eq 0 ]; then judged_since="${first_since}"; fi
     decision="$(WAIT_UP_MONITOR_REGIONS="${monitors}" python3 "${GATE_HOLD_TOOLS}/gate_hold.py" decide \
-      --kind "${kind}" --region "${region}" --status "${status}" --since "${since}" \
+      --kind "${kind}" --region "${region}" --status "${status}" --since "${judged_since}" \
       --before "${work}/before.json" --after "${work}/after.json" \
       --status-json "${work}/status.json")" || decision=""
     case "${decision}" in
