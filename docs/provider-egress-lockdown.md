@@ -60,3 +60,49 @@ existing AWS vsock map parity checks. Preserve normal CI, measured builds,
 attestation publication, regional canary/health checks and rollback retention.
 Do not widen the policy automatically after a failed provider probe. Investigate
 and review a necessary hostname change as another measured release.
+
+## Redirect compatibility audit (2026-11-16 UTC)
+
+The first live smoke covered only five unauthenticated metadata endpoints. That
+was reachability evidence, not a complete redirect compatibility test. The
+optional `TestProviderRedirectAuditLive` now derives ordinary API endpoints from
+the provider registry and legacy URL switch, plus explicit native API paths.
+It sends empty JSON POSTs through the production guarded client, with redirects
+disabled and four concurrent requests. It sends no prompts or model selection.
+Only status, sanitized redirect location and transport errors are recorded;
+response bodies are discarded. Provider availability is not a normal CI gate.
+
+After explicit operator approval, the authenticated audit used 104 existing
+provider credentials, each only on its corresponding endpoint. Credentials
+were passed to the compiled test over stdin, not persisted in logs, command
+arguments or the repository. All 119 probes had an available credential; a
+transport failure does not establish that the credential reached the server.
+
+| Result | Endpoints |
+| --- | ---: |
+| Redirect (HTTP 3xx) | 0 |
+| HTTP 400 / 422, consistent with an empty request | 100 |
+| HTTP 200 (body not interpreted) | 2 |
+| HTTP 401 / 403 | 2 |
+| HTTP 404 / 410 | 13 |
+| HTTP 502 | 1 |
+| Connection failure | 1 |
+
+Findings requiring separate availability or valid-request checks:
+
+- Hixtube could not connect. A standard HTTPS curl probe without the guarded
+  transport also failed to connect, so this was not isolated to the new guard.
+- 0G returned HTTP 502 after authentication was attached; the request reached
+  an upstream HTTP server, rather than being rejected by the destination guard.
+- Riverflow returned 401 and ScaleDown returned 403. Those responses do not
+  prove authentication succeeded. The 404/410 responses also do not establish
+  that a real model request works; an empty request has no model to route.
+
+No observed redirect requires a compatibility exception. This snapshot does
+**not** prove that every model, region, valid inference request or asynchronous
+poll/download path is redirect-free. Dedicated encrypted/attested helper paths
+(Privatemode, Maple and NEAR), account-dynamic Cloudflare URLs, cloud-native
+IAM/SigV4 paths and all regional variants are not covered by this ordinary-HTTP
+sweep. Keep their existing tests and cloud rollout canaries. Never broaden the
+allowlist or follow a credential-bearing redirect to compensate for a provider
+outage or an inconclusive empty-request probe.

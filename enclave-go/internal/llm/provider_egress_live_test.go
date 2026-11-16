@@ -36,7 +36,7 @@ func TestProviderEgressLiveReachability(t *testing.T) {
 			}
 			defer resp.Body.Close()
 			_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, 4096))
-			if resp.StatusCode >= 500 {
+			if (resp.StatusCode >= 300 && resp.StatusCode < 400) || resp.StatusCode >= 500 {
 				t.Fatalf("provider HTTP %d", resp.StatusCode)
 			}
 			t.Logf("approved TLS endpoint reached: HTTP %d", resp.StatusCode)

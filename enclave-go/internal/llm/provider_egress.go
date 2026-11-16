@@ -40,7 +40,7 @@ var providerEgressHosts = func() map[string]struct{} {
 		"inference.do-ai.run", "api.inceptron.io", "api.morphllm.com", "api.atlascloud.ai",
 		"vanchin.streamlake.ai", "wharf.neurometric.ai", "inference.pearlresearch.ai",
 		"api.engy.ai", "api.stepfun.ai", "models.relace.ai", "router-api.0g.ai",
-		"ws-el6e4bpnggpx7g88.eu-central-1.maas.aliyuncs.com",
+		"ws-el6e4bpnggpx7g88.eu-central-1.maas.aliyuncs.com", // gitleaks:allow public Alibaba workspace hostname
 		"trustedrouter-foundry-eastus2.openai.azure.com",
 		"trustedrouter-foundry-eastus2.services.ai.azure.com",
 		"dbc-7ccfd8c0-c0da.cloud.databricks.com",
@@ -55,7 +55,7 @@ var providerEgressHosts = func() map[string]struct{} {
 		"api.us1.bfl.ai", "api.eu1.bfl.ai", "api.eu2.bfl.ai",
 		"api.decart.ai", "api.ltx.io", "api.dev.runwayml.com", "api-singapore.klingai.com",
 		"queue.fal.run", "eastus2.tts.speech.microsoft.com", "api.exa.ai",
-		"ark-acg-ap-southeast-1.tos-ap-southeast-1.volces.com",
+		"ark-acg-ap-southeast-1.tos-ap-southeast-1.volces.com", // gitleaks:allow public BytePlus object-storage hostname
 	} {
 		hosts[host] = struct{}{}
 	}
