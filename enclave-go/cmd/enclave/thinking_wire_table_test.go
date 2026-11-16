@@ -3,6 +3,7 @@ package main
 import (
 	"encoding/json"
 	"errors"
+	"strings"
 	"testing"
 
 	"github.com/Lore-Hex/quill-cloud-proxy/enclave-go/internal/adapter"
@@ -200,19 +201,36 @@ func TestChatThinkingSwitchWireTable(t *testing.T) {
 			onWithEffort: effortObject, offEffort: reasoningOff,
 		},
 		"claude budget-only": {
-			routes: claude("claude-haiku-4-5", "claude-sonnet-4-5"),
+			routes: claude("claude-haiku-4-5", "claude-sonnet-4-5", "us.anthropic.claude-haiku-4-5-20251001-v1:0", "claude-sonnet-4-5@20250929"),
 			effort: `{"thinking":{"budget_tokens":8192,"type":"enabled"}}`, on: `{` + budget + `}`, off: `{}`,
 			onWithEffort: `{"thinking":{"budget_tokens":8192,"type":"enabled"}}`, offEffort: `{}`,
 		},
 		"claude opus 4.5": {
-			routes: claude("claude-opus-4-5"),
+			routes: claude("claude-opus-4-5", "claude-opus-4-5-20251101", "claude-opus-4-5@20251101"),
 			effort: `{"output_config":{"effort":"high"},"thinking":{"budget_tokens":8192,"type":"enabled"}}`, on: `{` + budget + `}`, off: `{"thinking":{"type":"disabled"}}`,
 			onWithEffort: `{"output_config":{"effort":"high"},"thinking":{"budget_tokens":8192,"type":"enabled"}}`, offEffort: `{"thinking":{"type":"disabled"}}`,
 		},
-		"claude adaptive": {
-			routes: claude("claude-sonnet-4-6", "claude-opus-4-8", "claude-opus-5-5", "claude-sonnet-5"),
+		// Opus 4.6 and Sonnet 4.6 think adaptively with an effort and still
+		// take a thinking budget, so On alone is the 4,096 token budget.
+		"claude 4.6": {
+			routes: claude("claude-sonnet-4-6", "claude-opus-4-6", "us.anthropic.claude-sonnet-4-6", "claude-opus-4-6@20260205"),
 			effort: `{"output_config":{"effort":"high"},"thinking":{"type":"adaptive"}}`, on: `{` + budget + `}`, off: `{"thinking":{"type":"disabled"}}`,
 			onWithEffort: `{"output_config":{"effort":"high"},"thinking":{"type":"adaptive"}}`, offEffort: `{"thinking":{"type":"disabled"}}`,
+		},
+		// The full class refuses a thinking budget, so On alone is adaptive
+		// thinking with no effort named. Haiku 5.5 and Mythos 5 are in this
+		// class: Haiku 5.5 used to be sent a budget for every effort.
+		"claude adaptive": {
+			routes: claude("claude-opus-4-7", "claude-opus-4-8", "claude-opus-5-5", "claude-sonnet-5", "claude-haiku-5-5", "claude-mythos-5", "claude-fable-5-1",
+				"us.anthropic.claude-haiku-5-5", "claude-haiku-5-5@20261001"),
+			effort: `{"output_config":{"effort":"high"},"thinking":{"type":"adaptive"}}`, on: `{"thinking":{"type":"adaptive"}}`, off: `{"thinking":{"type":"disabled"}}`,
+			onWithEffort: `{"output_config":{"effort":"high"},"thinking":{"type":"adaptive"}}`, offEffort: `{"thinking":{"type":"disabled"}}`,
+		},
+		// Sonnet 5.5 refuses disabled and names between_tools as its Off.
+		"claude sonnet 5.5": {
+			routes: claude("claude-sonnet-5-5", "us.anthropic.claude-sonnet-5-5", "claude-sonnet-5-5@20261001"),
+			effort: `{"output_config":{"effort":"high"},"thinking":{"type":"adaptive"}}`, on: `{"thinking":{"type":"adaptive"}}`, off: `{"thinking":{"type":"between_tools"}}`,
+			onWithEffort: `{"output_config":{"effort":"high"},"thinking":{"type":"adaptive"}}`, offEffort: `{"thinking":{"type":"between_tools"}}`,
 		},
 	} {
 		for _, route := range tc.routes {
@@ -331,10 +349,10 @@ func TestResponsesEffortOnProviderWires(t *testing.T) {
 
 // TestClaudeThinkingSwitchWithEffortIsTheReasoningObject records that on a
 // Claude model a switch beside an effort is the reasoning object holding
-// both, and what that object sends today. It records current behavior, not a
-// rule: the second half is the known limits docs/reasoning-output.md states.
+// both, and what that object sends: the effort ladder of the model's class,
+// as docs/reasoning-output.md states it under "Claude models".
 func TestClaudeThinkingSwitchWithEffortIsTheReasoningObject(t *testing.T) {
-	for _, upstream := range []string{"claude-haiku-4-5", "claude-sonnet-4-5", "claude-opus-4-5", "claude-sonnet-4-6", "claude-opus-4-8", "claude-opus-5-5"} {
+	for _, upstream := range []string{"claude-haiku-4-5", "claude-sonnet-4-5", "claude-opus-4-5", "claude-sonnet-4-6", "claude-opus-4-8", "claude-opus-5-5", "claude-haiku-5-5", "claude-sonnet-5-5"} {
 		route := wireRoute{kind: "claude", provider: "anthropic", model: "anthropic/" + upstream, upstream: upstream}
 		for _, effort := range []string{"minimal", "low", "medium", "high", "xhigh", "max", "ultra"} {
 			object := reasoningWire(t, route, `"reasoning":{"enabled":true,"effort":"`+effort+`"}`)
@@ -345,21 +363,475 @@ func TestClaudeThinkingSwitchWithEffortIsTheReasoningObject(t *testing.T) {
 			}
 		}
 	}
-	// On the budget path max, minimal and an unknown effort set no thinking
-	// even beside On, and Opus 4.5 is sent the effort as written.
+	// An effort the model does not have is the nearest one it has. On a
+	// budget-only model max is the 8,192 budget. Opus 4.5 is sent an effort
+	// it accepts: max and xhigh are high, minimal is low. An unknown effort
+	// is still sent as written. These requests all carry On, and On always
+	// turns thinking on: beside minimal it is the smallest budget, 1,024
+	// tokens, and beside an unknown effort it is the 4,096 of On alone.
 	for _, tc := range []struct{ upstream, effort, want string }{
-		{"claude-sonnet-4-5", "max", `{}`},
-		{"claude-sonnet-4-5", "minimal", `{}`},
-		{"claude-haiku-4-5", "ultra", `{}`},
+		{"claude-sonnet-4-5", "max", `{"thinking":{"budget_tokens":8192,"type":"enabled"}}`},
+		{"claude-sonnet-4-5", "minimal", `{"thinking":{"budget_tokens":1024,"type":"enabled"}}`},
+		{"claude-haiku-4-5", "ultra", `{"thinking":{"budget_tokens":4096,"type":"enabled"}}`},
 		{"claude-haiku-4-5", "high", `{"thinking":{"budget_tokens":8192,"type":"enabled"}}`},
-		{"claude-opus-4-5", "max", `{"output_config":{"effort":"max"}}`},
-		{"claude-opus-4-5", "minimal", `{"output_config":{"effort":"minimal"}}`},
-		{"claude-opus-4-5", "ultra", `{"output_config":{"effort":"ultra"}}`},
-		{"claude-opus-4-5", "xhigh", `{"output_config":{"effort":"xhigh"},"thinking":{"budget_tokens":8192,"type":"enabled"}}`},
+		{"claude-opus-4-5", "max", `{"output_config":{"effort":"high"},"thinking":{"budget_tokens":8192,"type":"enabled"}}`},
+		{"claude-opus-4-5", "minimal", `{"output_config":{"effort":"low"},"thinking":{"budget_tokens":1024,"type":"enabled"}}`},
+		{"claude-opus-4-5", "ultra", `{"output_config":{"effort":"ultra"},"thinking":{"budget_tokens":4096,"type":"enabled"}}`},
+		{"claude-opus-4-5", "xhigh", `{"output_config":{"effort":"high"},"thinking":{"budget_tokens":8192,"type":"enabled"}}`},
+		{"claude-sonnet-4-6", "xhigh", `{"output_config":{"effort":"high"},"thinking":{"type":"adaptive"}}`},
+		{"claude-sonnet-4-6", "minimal", `{"output_config":{"effort":"low"},"thinking":{"type":"adaptive"}}`},
+		{"claude-sonnet-4-6", "max", `{"output_config":{"effort":"max"},"thinking":{"type":"adaptive"}}`},
+		{"claude-opus-4-8", "xhigh", `{"output_config":{"effort":"xhigh"},"thinking":{"type":"adaptive"}}`},
+		{"claude-opus-4-8", "minimal", `{"output_config":{"effort":"low"},"thinking":{"type":"adaptive"}}`},
+		{"claude-haiku-5-5", "high", `{"output_config":{"effort":"high"},"thinking":{"type":"adaptive"}}`},
+		{"claude-haiku-5-5", "minimal", `{"output_config":{"effort":"low"},"thinking":{"type":"adaptive"}}`},
+		{"claude-haiku-5-5", "ultra", `{"output_config":{"effort":"ultra"},"thinking":{"type":"adaptive"}}`},
 	} {
 		route := wireRoute{kind: "claude", provider: "anthropic", model: "anthropic/" + tc.upstream, upstream: tc.upstream}
 		if got := reasoningWire(t, route, `"thinking":{"type":"enabled"},"reasoning_effort":"`+tc.effort+`"`); got != tc.want {
 			t.Errorf("%s On + %s: got %s, want %s", tc.upstream, tc.effort, got, tc.want)
+		}
+	}
+}
+
+// claudeRequestWire parses a whole chat request as the gateway does and
+// returns what it sends a Claude model: the reasoning controls, max_tokens,
+// the sampling fields and the tool choice, as compact JSON with sorted keys.
+func claudeRequestWire(t *testing.T, upstream, messages, fields string) string {
+	t.Helper()
+	req, err := parseChatRequest([]byte(`{"model":"anthropic/` + upstream + `","messages":` + messages + `,` + fields + `}`))
+	if err != nil {
+		t.Fatalf("%s: %v", fields, err)
+	}
+	body, err := adapter.ToAnthropic(req, req.Model)
+	if err != nil {
+		t.Fatal(err)
+	}
+	encoded, err := json.Marshal(llm.BuildAnthropicRequestShape(upstream, req, body))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var wire map[string]any
+	if err := json.Unmarshal(encoded, &wire); err != nil {
+		t.Fatal(err)
+	}
+	controls := map[string]any{}
+	for _, key := range []string{"thinking", "output_config", "max_tokens", "temperature", "top_p", "top_k", "tool_choice"} {
+		if wire[key] != nil {
+			controls[key] = wire[key]
+		}
+	}
+	out, err := json.Marshal(controls)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return string(out)
+}
+
+// TestClaudeEffortLadderWireTable pins what a reasoning request sends each
+// class of Claude model. Unlike the tables above it states a rule: an effort
+// is a request for depth, so it never fails a Claude request and is never
+// ignored. See "Claude models" in docs/reasoning-output.md.
+func TestClaudeEffortLadderWireTable(t *testing.T) {
+	const (
+		user     = `[{"role":"user","content":"test"}]`
+		prefill  = `[{"role":"user","content":"test"},{"role":"assistant","content":"{"}]`
+		tools    = `"tools":[{"type":"function","function":{"name":"lookup","parameters":{"type":"object","properties":{}}}}]`
+		required = `"tool_choice":"required",` + tools
+		named    = `"tool_choice":{"type":"function","function":{"name":"lookup"}},` + tools
+		budget   = "claude-haiku-4-5"
+		opus45   = "claude-opus-4-5"
+		v46      = "claude-sonnet-4-6"
+		full     = "claude-opus-5"
+		sonnet55 = "claude-sonnet-5-5"
+		haiku55  = "claude-haiku-5-5"
+		// A Claude ID no table names is in the full class. Sonnet 4 is one of
+		// the 4.0 models, matched by what follows the 4.
+		future  = "claude-opus-6"
+		sonnet4 = "claude-sonnet-4"
+	)
+	think := func(tokens string) string { return `"thinking":{"budget_tokens":` + tokens + `,"type":"enabled"}` }
+	adaptive := func(effort string) string {
+		return `{"max_tokens":32000,"output_config":{"effort":"` + effort + `"},"thinking":{"type":"adaptive"}}`
+	}
+	// Off on Opus 4.5 keeps the 4,096 wire default. Off on an adaptive class
+	// keeps the 32,000 default of the class when the caller set no limit.
+	const disabled = `{"max_tokens":4096,"thinking":{"type":"disabled"}}`
+	const adaptiveOff = `{"max_tokens":32000,"thinking":{"type":"disabled"}}`
+	for _, tc := range []struct {
+		name, messages, fields string
+		want                   map[string]string
+	}{
+		// The ladder: each effort is the nearest one the model has.
+		{"minimal", user, `"reasoning_effort":"minimal"`, map[string]string{
+			budget: `{"max_tokens":4096}`, opus45: `{"max_tokens":4096,"output_config":{"effort":"low"}}`,
+			v46: adaptive("low"), full: adaptive("low"), haiku55: adaptive("low"), sonnet55: adaptive("low"),
+		}},
+		{"low", user, `"reasoning_effort":"low"`, map[string]string{
+			budget: `{"max_tokens":4096,` + think("1024") + `}`, opus45: `{"max_tokens":4096,"output_config":{"effort":"low"},` + think("1024") + `}`,
+			v46: adaptive("low"), full: adaptive("low"), haiku55: adaptive("low"),
+		}},
+		{"medium", user, `"reasoning_effort":"medium"`, map[string]string{
+			budget: `{"max_tokens":8192,` + think("4096") + `}`, opus45: `{"max_tokens":8192,"output_config":{"effort":"medium"},` + think("4096") + `}`,
+			v46: adaptive("medium"), full: adaptive("medium"), haiku55: adaptive("medium"),
+		}},
+		{"high", user, `"reasoning_effort":"high"`, map[string]string{
+			budget: `{"max_tokens":12288,` + think("8192") + `}`, opus45: `{"max_tokens":12288,"output_config":{"effort":"high"},` + think("8192") + `}`,
+			v46: adaptive("high"), full: adaptive("high"), haiku55: adaptive("high"),
+			future: adaptive("high"), sonnet4: `{"max_tokens":12288,` + think("8192") + `}`,
+		}},
+		{"xhigh", user, `"reasoning_effort":"xhigh"`, map[string]string{
+			budget: `{"max_tokens":12288,` + think("8192") + `}`, opus45: `{"max_tokens":12288,"output_config":{"effort":"high"},` + think("8192") + `}`,
+			v46: adaptive("high"), full: adaptive("xhigh"), haiku55: adaptive("xhigh"),
+		}},
+		{"max", user, `"reasoning_effort":"max"`, map[string]string{
+			budget: `{"max_tokens":12288,` + think("8192") + `}`, opus45: `{"max_tokens":12288,"output_config":{"effort":"high"},` + think("8192") + `}`,
+			v46: adaptive("max"), full: adaptive("max"), haiku55: adaptive("max"),
+		}},
+		{"an effort the gateway does not know", user, `"reasoning_effort":"ultra"`, map[string]string{
+			budget: `{"max_tokens":4096}`, opus45: `{"max_tokens":4096,"output_config":{"effort":"ultra"}}`,
+			v46: adaptive("ultra"), full: adaptive("ultra"),
+		}},
+		// Off governs, and max_tokens keeps no room for the discarded budget.
+		{"Off object beside an effort", user, `"reasoning":{"enabled":false},"reasoning_effort":"high"`, map[string]string{
+			budget: `{"max_tokens":4096}`, opus45: disabled, v46: adaptiveOff, full: adaptiveOff, haiku55: adaptiveOff,
+			sonnet55: `{"max_tokens":32000,"thinking":{"type":"between_tools"}}`,
+		}},
+		{"Off object holding an effort", user, `"reasoning":{"enabled":false,"effort":"high"}`, map[string]string{
+			budget: `{"max_tokens":4096}`, opus45: disabled, v46: adaptiveOff,
+			sonnet55: `{"max_tokens":32000,"thinking":{"type":"between_tools"}}`,
+		}},
+		{"Off object beside an effort, with a cap", user, `"reasoning":{"enabled":false},"reasoning_effort":"high","max_tokens":512`, map[string]string{
+			budget: `{"max_tokens":512}`, opus45: `{"max_tokens":512,"thinking":{"type":"disabled"}}`,
+			v46: `{"max_tokens":512,"thinking":{"type":"disabled"}}`, full: `{"max_tokens":512,"thinking":{"type":"disabled"}}`,
+			sonnet55: `{"max_tokens":512,"thinking":{"type":"between_tools"}}`,
+		}},
+		{"Off object with the caller asking for exactly 4096", user, `"reasoning":{"enabled":false},"max_tokens":4096`, map[string]string{
+			budget: `{"max_tokens":4096}`, opus45: disabled, v46: disabled, full: disabled,
+			sonnet55: `{"max_tokens":4096,"thinking":{"type":"between_tools"}}`,
+		}},
+		{"nothing asked, for comparison with Off", user, `"stream":false`, map[string]string{
+			budget: `{"max_tokens":4096}`, opus45: `{"max_tokens":4096}`, v46: `{"max_tokens":32000}`, full: `{"max_tokens":32000}`, sonnet55: `{"max_tokens":32000}`,
+		}},
+		{"Off switch alone", user, `"thinking":{"type":"disabled"}`, map[string]string{
+			budget: `{"max_tokens":4096}`, opus45: disabled, full: adaptiveOff, sonnet55: `{"max_tokens":32000,"thinking":{"type":"between_tools"}}`,
+		}},
+		// Every other spelling of Off that reaches a Claude model governs too.
+		{"bare reasoning false", user, `"reasoning":false`, map[string]string{
+			budget: `{"max_tokens":4096}`, opus45: disabled, v46: adaptiveOff, full: adaptiveOff, haiku55: adaptiveOff, future: adaptiveOff,
+			sonnet55: `{"max_tokens":32000,"thinking":{"type":"between_tools"}}`,
+		}},
+		{"bare reasoning false beside an effort", user, `"reasoning":false,"reasoning_effort":"high"`, map[string]string{
+			budget: `{"max_tokens":4096}`, opus45: disabled, v46: adaptiveOff, full: adaptiveOff,
+			sonnet55: `{"max_tokens":32000,"thinking":{"type":"between_tools"}}`,
+		}},
+		{"reasoning.type disabled beside an effort", user, `"reasoning":{"type":"disabled"},"reasoning_effort":"high"`, map[string]string{
+			budget: `{"max_tokens":4096}`, opus45: disabled, v46: adaptiveOff, full: adaptiveOff,
+			sonnet55: `{"max_tokens":32000,"thinking":{"type":"between_tools"}}`,
+		}},
+		{"effort off", user, `"reasoning_effort":"off"`, map[string]string{
+			budget: `{"max_tokens":4096}`, opus45: disabled, v46: adaptiveOff, full: adaptiveOff, haiku55: adaptiveOff,
+			sonnet55: `{"max_tokens":32000,"thinking":{"type":"between_tools"}}`,
+		}},
+		{"effort disabled in the object", user, `"reasoning":{"effort":"disabled"}`, map[string]string{
+			budget: `{"max_tokens":4096}`, opus45: disabled, v46: adaptiveOff, full: adaptiveOff,
+		}},
+		{"effort none", user, `"reasoning_effort":"none"`, map[string]string{
+			budget: `{"max_tokens":4096}`, opus45: disabled, v46: adaptiveOff, full: adaptiveOff,
+			sonnet55: `{"max_tokens":32000,"thinking":{"type":"between_tools"}}`,
+		}},
+		{"On object beside effort off", user, `"reasoning":{"enabled":true},"reasoning_effort":"off"`, map[string]string{
+			budget: `{"max_tokens":4096}`, opus45: disabled, v46: adaptiveOff, full: adaptiveOff,
+		}},
+		// An Off word is an effort, so with two efforts the top-level one
+		// decides: Off in the object beside a top-level effort is that effort,
+		// and Off at the top level is Off whatever the object says.
+		{"an Off word in the object beside a top-level effort", user, `"reasoning":{"effort":"none"},"reasoning_effort":"high"`, map[string]string{
+			budget: `{"max_tokens":12288,` + think("8192") + `}`, opus45: `{"max_tokens":12288,"output_config":{"effort":"high"},` + think("8192") + `}`,
+			v46: adaptive("high"), full: adaptive("high"), haiku55: adaptive("high"), sonnet55: adaptive("high"), future: adaptive("high"),
+		}},
+		{"a top-level Off word beside an effort in the object", user, `"reasoning":{"effort":"high"},"reasoning_effort":"none"`, map[string]string{
+			budget: `{"max_tokens":4096}`, opus45: disabled, v46: adaptiveOff, full: adaptiveOff, haiku55: adaptiveOff, future: adaptiveOff,
+			sonnet55: `{"max_tokens":32000,"thinking":{"type":"between_tools"}}`,
+		}},
+		{"two efforts, the top-level one wins", user, `"reasoning":{"effort":"high"},"reasoning_effort":"low"`, map[string]string{
+			budget: `{"max_tokens":4096,` + think("1024") + `}`, opus45: `{"max_tokens":4096,"output_config":{"effort":"low"},` + think("1024") + `}`,
+			v46: adaptive("low"), full: adaptive("low"),
+		}},
+		// A bare string in the reasoning field is an effort, read like
+		// reasoning.effort: the same ladder, and a top-level effort wins.
+		{"string effort high", user, `"reasoning":"high"`, map[string]string{
+			budget: `{"max_tokens":12288,` + think("8192") + `}`, opus45: `{"max_tokens":12288,"output_config":{"effort":"high"},` + think("8192") + `}`,
+			v46: adaptive("high"), full: adaptive("high"), haiku55: adaptive("high"), sonnet55: adaptive("high"), future: adaptive("high"),
+		}},
+		{"string effort max", user, `"reasoning":"max"`, map[string]string{
+			budget: `{"max_tokens":12288,` + think("8192") + `}`, opus45: `{"max_tokens":12288,"output_config":{"effort":"high"},` + think("8192") + `}`,
+			v46: adaptive("max"), full: adaptive("max"),
+		}},
+		{"string effort xhigh", user, `"reasoning":"xhigh"`, map[string]string{
+			budget: `{"max_tokens":12288,` + think("8192") + `}`, opus45: `{"max_tokens":12288,"output_config":{"effort":"high"},` + think("8192") + `}`,
+			v46: adaptive("high"), full: adaptive("xhigh"),
+		}},
+		{"string effort minimal", user, `"reasoning":"minimal"`, map[string]string{
+			budget: `{"max_tokens":4096}`, opus45: `{"max_tokens":4096,"output_config":{"effort":"low"}}`, v46: adaptive("low"), full: adaptive("low"),
+		}},
+		{"string effort none", user, `"reasoning":"none"`, map[string]string{
+			budget: `{"max_tokens":4096}`, opus45: disabled, v46: adaptiveOff, full: adaptiveOff,
+			sonnet55: `{"max_tokens":32000,"thinking":{"type":"between_tools"}}`,
+		}},
+		// A string that is not a word the gateway knows is not an effort: the
+		// request asks nothing, as it did before the ladder.
+		{"string that is not a known word", user, `"reasoning":"ultra"`, map[string]string{
+			budget: `{"max_tokens":4096}`, opus45: `{"max_tokens":4096}`, v46: `{"max_tokens":32000}`, full: `{"max_tokens":32000}`,
+			haiku55: `{"max_tokens":32000}`, sonnet55: `{"max_tokens":32000}`,
+		}},
+		{"string effort beside a top-level effort", user, `"reasoning":"high","reasoning_effort":"low"`, map[string]string{
+			budget: `{"max_tokens":4096,` + think("1024") + `}`, opus45: `{"max_tokens":4096,"output_config":{"effort":"low"},` + think("1024") + `}`,
+			v46: adaptive("low"), full: adaptive("low"),
+		}},
+		{"string Off word beside a top-level effort", user, `"reasoning":"none","reasoning_effort":"high"`, map[string]string{
+			budget: `{"max_tokens":12288,` + think("8192") + `}`, v46: adaptive("high"), full: adaptive("high"),
+		}},
+		{"string effort beside a top-level Off word", user, `"reasoning":"high","reasoning_effort":"none"`, map[string]string{
+			budget: `{"max_tokens":4096}`, opus45: disabled, v46: adaptiveOff, full: adaptiveOff,
+		}},
+		{"string effort + required tool", user, `"reasoning":"high",` + required, map[string]string{
+			budget: `{"max_tokens":4096,"tool_choice":{"type":"any"}}`, opus45: `{"max_tokens":4096,"output_config":{"effort":"high"},"tool_choice":{"type":"any"}}`,
+			full: `{"max_tokens":32000,"output_config":{"effort":"high"},"thinking":{"type":"adaptive"},"tool_choice":{"type":"any"}}`,
+		}},
+		// On beside an effort is that effort, wherever the effort is written.
+		{"On object beside low", user, `"reasoning":{"enabled":true},"reasoning_effort":"low"`, map[string]string{
+			budget: `{"max_tokens":4096,` + think("1024") + `}`, opus45: `{"max_tokens":4096,"output_config":{"effort":"low"},` + think("1024") + `}`,
+			v46: adaptive("low"), full: adaptive("low"),
+		}},
+		{"On object beside high", user, `"reasoning":{"enabled":true},"reasoning_effort":"high"`, map[string]string{
+			budget: `{"max_tokens":12288,` + think("8192") + `}`, opus45: `{"max_tokens":12288,"output_config":{"effort":"high"},` + think("8192") + `}`,
+		}},
+		{"On object beside max", user, `"reasoning":{"enabled":true},"reasoning_effort":"max"`, map[string]string{
+			budget: `{"max_tokens":12288,` + think("8192") + `}`, opus45: `{"max_tokens":12288,"output_config":{"effort":"high"},` + think("8192") + `}`,
+		}},
+		// On always turns thinking on. Beside minimal, which alone sets no
+		// budget, it is the smallest budget. Beside an effort the gateway does
+		// not know it is the 4,096 tokens of On alone.
+		{"On object beside minimal", user, `"reasoning":{"enabled":true},"reasoning_effort":"minimal"`, map[string]string{
+			budget: `{"max_tokens":4096,` + think("1024") + `}`, opus45: `{"max_tokens":4096,"output_config":{"effort":"low"},` + think("1024") + `}`,
+			v46: adaptive("low"), full: adaptive("low"), haiku55: adaptive("low"),
+		}},
+		{"On object holding minimal", user, `"reasoning":{"enabled":true,"effort":"minimal"}`, map[string]string{
+			budget: `{"max_tokens":4096,` + think("1024") + `}`, opus45: `{"max_tokens":4096,"output_config":{"effort":"low"},` + think("1024") + `}`,
+		}},
+		{"On switch beside minimal", user, `"thinking":{"type":"enabled"},"reasoning_effort":"minimal"`, map[string]string{
+			budget: `{"max_tokens":4096,` + think("1024") + `}`, opus45: `{"max_tokens":4096,"output_config":{"effort":"low"},` + think("1024") + `}`,
+		}},
+		{"On object beside an unknown effort", user, `"reasoning":{"enabled":true},"reasoning_effort":"ultra"`, map[string]string{
+			budget: `{"max_tokens":8192,` + think("4096") + `}`, opus45: `{"max_tokens":8192,"output_config":{"effort":"ultra"},` + think("4096") + `}`,
+			v46: adaptive("ultra"), full: adaptive("ultra"),
+		}},
+		{"On switch beside an unknown effort", user, `"enable_thinking":true,"reasoning_effort":"ultra"`, map[string]string{
+			budget: `{"max_tokens":8192,` + think("4096") + `}`, opus45: `{"max_tokens":8192,"output_config":{"effort":"ultra"},` + think("4096") + `}`,
+		}},
+		{"On + minimal + required tool", user, `"thinking":{"type":"enabled"},"reasoning_effort":"minimal",` + required, map[string]string{
+			budget: `{"max_tokens":4096,"tool_choice":{"type":"any"}}`, opus45: `{"max_tokens":4096,"output_config":{"effort":"low"},"tool_choice":{"type":"any"}}`,
+		}},
+		{"On + minimal + sampling", user, `"reasoning":{"enabled":true,"effort":"minimal"},"temperature":0.2,"top_k":40,"top_p":0.5`, map[string]string{
+			budget: `{"max_tokens":4096,` + think("1024") + `}`, opus45: `{"max_tokens":4096,"output_config":{"effort":"low"},` + think("1024") + `}`,
+		}},
+		{"On beside none is Off", user, `"reasoning":{"enabled":true},"reasoning_effort":"none"`, map[string]string{
+			budget: `{"max_tokens":4096}`, opus45: disabled,
+		}},
+		// On alone is adaptive thinking with no effort on the full class, which
+		// refuses a thinking budget, and the 4,096 token budget elsewhere.
+		{"On alone", user, `"reasoning":{"enabled":true}`, map[string]string{
+			budget: `{"max_tokens":8192,` + think("4096") + `}`, opus45: `{"max_tokens":8192,` + think("4096") + `}`, v46: `{"max_tokens":8192,` + think("4096") + `}`,
+			full: `{"max_tokens":32000,"thinking":{"type":"adaptive"}}`, haiku55: `{"max_tokens":32000,"thinking":{"type":"adaptive"}}`, sonnet55: `{"max_tokens":32000,"thinking":{"type":"adaptive"}}`,
+		}},
+		{"On alone, bare true", user, `"reasoning":true`, map[string]string{
+			budget: `{"max_tokens":8192,` + think("4096") + `}`, v46: `{"max_tokens":8192,` + think("4096") + `}`,
+			full: `{"max_tokens":32000,"thinking":{"type":"adaptive"}}`, haiku55: `{"max_tokens":32000,"thinking":{"type":"adaptive"}}`,
+			future: `{"max_tokens":32000,"thinking":{"type":"adaptive"}}`, sonnet4: `{"max_tokens":8192,` + think("4096") + `}`,
+		}},
+		{"On alone, reasoning.type", user, `"reasoning":{"type":"enabled"}`, map[string]string{
+			opus45: `{"max_tokens":8192,` + think("4096") + `}`, v46: `{"max_tokens":8192,` + think("4096") + `}`,
+			full: `{"max_tokens":32000,"thinking":{"type":"adaptive"}}`, haiku55: `{"max_tokens":32000,"thinking":{"type":"adaptive"}}`,
+		}},
+		{"On switch alone", user, `"thinking":{"type":"enabled"}`, map[string]string{
+			budget: `{"max_tokens":8192,` + think("4096") + `}`, v46: `{"max_tokens":8192,` + think("4096") + `}`,
+			full: `{"max_tokens":32000,"thinking":{"type":"adaptive"}}`, haiku55: `{"max_tokens":32000,"thinking":{"type":"adaptive"}}`, sonnet55: `{"max_tokens":32000,"thinking":{"type":"adaptive"}}`,
+		}},
+		{"On alone with a cap", user, `"reasoning":{"enabled":true},"max_tokens":512`, map[string]string{
+			v46: `{"max_tokens":4608,` + think("4096") + `}`, full: `{"max_tokens":512,"thinking":{"type":"adaptive"}}`, haiku55: `{"max_tokens":512,"thinking":{"type":"adaptive"}}`,
+		}},
+		{"On alone with sampling", user, `"reasoning":{"enabled":true},"temperature":0.2,"top_k":40,"top_p":0.5`, map[string]string{
+			full: `{"max_tokens":32000,"thinking":{"type":"adaptive"},"top_k":40}`, haiku55: `{"max_tokens":32000,"thinking":{"type":"adaptive"},"top_k":40}`,
+		}},
+		// A token budget the caller names is still sent to the full class as
+		// written. Those models refuse it: the provider judges.
+		{"explicit budget on an adaptive model", user, `"thinking":{"type":"enabled","budget_tokens":2048}`, map[string]string{
+			full: `{"max_tokens":4096,` + think("2048") + `}`, haiku55: `{"max_tokens":4096,` + think("2048") + `}`, v46: `{"max_tokens":4096,` + think("2048") + `}`,
+		}},
+		{"reasoning.max_tokens on an adaptive model", user, `"reasoning":{"max_tokens":2048}`, map[string]string{
+			full: `{"max_tokens":4096,` + think("2048") + `}`, haiku55: `{"max_tokens":4096,` + think("2048") + `}`,
+		}},
+		// Budget thinking is sent without the sampling Anthropic refuses beside it.
+		{"effort + temperature 0.2", user, `"reasoning_effort":"high","temperature":0.2`, map[string]string{
+			budget: `{"max_tokens":12288,` + think("8192") + `}`, opus45: `{"max_tokens":12288,"output_config":{"effort":"high"},` + think("8192") + `}`,
+		}},
+		{"effort + temperature 1", user, `"reasoning_effort":"high","temperature":1`, map[string]string{
+			budget: `{"max_tokens":12288,"temperature":1,` + think("8192") + `}`,
+		}},
+		{"effort + top_k", user, `"reasoning_effort":"high","top_k":40`, map[string]string{
+			budget: `{"max_tokens":12288,` + think("8192") + `}`, opus45: `{"max_tokens":12288,"output_config":{"effort":"high"},` + think("8192") + `}`,
+		}},
+		{"effort + top_p 0.5", user, `"reasoning_effort":"high","top_p":0.5`, map[string]string{
+			budget: `{"max_tokens":12288,` + think("8192") + `}`, opus45: `{"max_tokens":12288,"output_config":{"effort":"high"},` + think("8192") + `}`,
+		}},
+		{"effort + top_p 0.97", user, `"reasoning_effort":"high","top_p":0.97`, map[string]string{
+			budget: `{"max_tokens":12288,` + think("8192") + `,"top_p":0.97}`, opus45: `{"max_tokens":12288,"output_config":{"effort":"high"},` + think("8192") + `,"top_p":0.97}`,
+		}},
+		{"On + temperature", user, `"thinking":{"type":"enabled"},"temperature":0.2,"top_k":40,"top_p":0.5`, map[string]string{
+			budget: `{"max_tokens":8192,` + think("4096") + `}`, opus45: `{"max_tokens":8192,` + think("4096") + `}`,
+		}},
+		{"explicit budget + temperature", user, `"thinking":{"type":"enabled","budget_tokens":2048},"temperature":0.2`, map[string]string{
+			budget: `{"max_tokens":4096,` + think("2048") + `}`, opus45: `{"max_tokens":4096,` + think("2048") + `}`,
+		}},
+		{"no thinking keeps its sampling", user, `"temperature":0.2,"top_k":40,"top_p":0.5`, map[string]string{
+			budget: `{"max_tokens":4096,"temperature":0.2,"top_k":40,"top_p":0.5}`, opus45: `{"max_tokens":4096,"temperature":0.2,"top_k":40,"top_p":0.5}`,
+		}},
+		{"minimal keeps its sampling", user, `"reasoning_effort":"minimal","temperature":0.2,"top_k":40`, map[string]string{
+			budget: `{"max_tokens":4096,"temperature":0.2,"top_k":40}`, opus45: `{"max_tokens":4096,"output_config":{"effort":"low"},"temperature":0.2,"top_k":40}`,
+		}},
+		// A forced tool choice or a prefill beats an effort.
+		{"effort + required tool", user, `"reasoning_effort":"high",` + required, map[string]string{
+			budget: `{"max_tokens":4096,"tool_choice":{"type":"any"}}`, opus45: `{"max_tokens":4096,"output_config":{"effort":"high"},"tool_choice":{"type":"any"}}`,
+		}},
+		{"effort + named tool", user, `"reasoning_effort":"max",` + named, map[string]string{
+			budget: `{"max_tokens":4096,"tool_choice":{"name":"lookup","type":"tool"}}`, opus45: `{"max_tokens":4096,"output_config":{"effort":"high"},"tool_choice":{"name":"lookup","type":"tool"}}`,
+		}},
+		{"effort + required tool keeps its sampling", user, `"reasoning_effort":"high","temperature":0.2,` + required, map[string]string{
+			budget: `{"max_tokens":4096,"temperature":0.2,"tool_choice":{"type":"any"}}`,
+		}},
+		{"effort + auto tool choice still thinks", user, `"reasoning_effort":"high","tool_choice":"auto",` + tools, map[string]string{
+			budget: `{"max_tokens":12288,` + think("8192") + `,"tool_choice":{"type":"auto"}}`,
+		}},
+		{"effort + prefill", prefill, `"reasoning_effort":"high"`, map[string]string{
+			budget: `{"max_tokens":4096}`, opus45: `{"max_tokens":4096,"output_config":{"effort":"high"}}`,
+		}},
+		{"effort + cap + prefill", prefill, `"reasoning_effort":"high","max_tokens":512`, map[string]string{
+			budget: `{"max_tokens":512}`, opus45: `{"max_tokens":512,"output_config":{"effort":"high"}}`,
+		}},
+		// Only a budget the caller named in tokens is left for the provider.
+		{"explicit budget + required tool", user, `"thinking":{"type":"enabled","budget_tokens":2048},` + required, map[string]string{
+			budget: `{"max_tokens":4096,` + think("2048") + `,"tool_choice":{"type":"any"}}`, opus45: `{"max_tokens":4096,` + think("2048") + `,"tool_choice":{"type":"any"}}`,
+		}},
+		{"explicit budget + prefill", prefill, `"reasoning":{"max_tokens":2048}`, map[string]string{
+			budget: `{"max_tokens":4096,` + think("2048") + `}`, opus45: `{"max_tokens":4096,` + think("2048") + `}`,
+		}},
+		// A forced tool choice or a prefill beats every budget the gateway
+		// chose, the ones that come from On included.
+		{"On switch + required tool", user, `"thinking":{"type":"enabled"},` + required, map[string]string{
+			budget: `{"max_tokens":4096,"tool_choice":{"type":"any"}}`, opus45: `{"max_tokens":4096,"tool_choice":{"type":"any"}}`,
+			sonnet4: `{"max_tokens":4096,"tool_choice":{"type":"any"}}`,
+		}},
+		{"On switch + prefill", prefill, `"thinking":{"type":"enabled"}`, map[string]string{
+			budget: `{"max_tokens":4096}`, opus45: `{"max_tokens":4096}`,
+		}},
+		{"On switch + effort + required tool", user, `"thinking":{"type":"enabled"},"reasoning_effort":"high",` + required, map[string]string{
+			budget: `{"max_tokens":4096,"tool_choice":{"type":"any"}}`, opus45: `{"max_tokens":4096,"output_config":{"effort":"high"},"tool_choice":{"type":"any"}}`,
+		}},
+		{"On switch + max + required tool", user, `"thinking":{"type":"enabled"},"reasoning_effort":"max",` + required, map[string]string{
+			budget: `{"max_tokens":4096,"tool_choice":{"type":"any"}}`, opus45: `{"max_tokens":4096,"output_config":{"effort":"high"},"tool_choice":{"type":"any"}}`,
+		}},
+		{"On switch + unknown effort + named tool", user, `"enable_thinking":true,"reasoning_effort":"ultra",` + named, map[string]string{
+			budget: `{"max_tokens":4096,"tool_choice":{"name":"lookup","type":"tool"}}`, opus45: `{"max_tokens":4096,"output_config":{"effort":"ultra"},"tool_choice":{"name":"lookup","type":"tool"}}`,
+		}},
+		{"On switch + effort + prefill", prefill, `"thinking":{"type":"enabled"},"reasoning_effort":"high"`, map[string]string{
+			budget: `{"max_tokens":4096}`, opus45: `{"max_tokens":4096,"output_config":{"effort":"high"}}`,
+		}},
+		// The adaptive classes are not changed: adaptive thinking is sent
+		// beside a forced tool choice, which Haiku 5.5 was seen to accept.
+		{"adaptive effort + required tool", user, `"reasoning_effort":"high",` + required, map[string]string{
+			full:    `{"max_tokens":32000,"output_config":{"effort":"high"},"thinking":{"type":"adaptive"},"tool_choice":{"type":"any"}}`,
+			haiku55: `{"max_tokens":32000,"output_config":{"effort":"high"},"thinking":{"type":"adaptive"},"tool_choice":{"type":"any"}}`,
+			future:  `{"max_tokens":32000,"output_config":{"effort":"high"},"thinking":{"type":"adaptive"},"tool_choice":{"type":"any"}}`,
+		}},
+	} {
+		for upstream, want := range tc.want {
+			// The class is read from the ID, so the Bedrock and Vertex
+			// spellings of a model are sent what its Anthropic ID is sent.
+			spellings := []string{upstream, "us.anthropic." + upstream, upstream + "@20261001"}
+			for _, spelling := range spellings {
+				if got := claudeRequestWire(t, spelling, tc.messages, tc.fields); got != want {
+					t.Errorf("%s (%s):\n got %s\nwant %s", tc.name, spelling, got, want)
+				}
+			}
+		}
+	}
+}
+
+// TestClaudeOffSpellingsThatReachDispatch records which contradictions the
+// contract layer stops and which reach a Claude model, where Off governs. A
+// switch turned on beside an effort that means Off is refused before billing
+// authorization, and so is any switch beside the reasoning object. The same
+// contradiction written with the reasoning object is not validated, so it
+// reaches the dispatch.
+func TestClaudeOffSpellingsThatReachDispatch(t *testing.T) {
+	route := wireRoute{kind: "claude", provider: "anthropic", model: "anthropic/claude-haiku-4-5", upstream: "claude-haiku-4-5"}
+	for _, word := range []string{"none", "off", "disable", "disabled"} {
+		for field, on := range map[string]string{
+			"thinking":             `"thinking":{"type":"enabled"}`,
+			"enable_thinking":      `"enable_thinking":true`,
+			"chat_template_kwargs": `"chat_template_kwargs":{"enable_thinking":true}`,
+		} {
+			if got := reasoningWire(t, route, on+`,"reasoning_effort":"`+word+`"`); got != "refused at "+field {
+				t.Errorf("%s beside %s: got %s, want a refusal", on, word, got)
+			}
+		}
+		for _, fields := range []string{
+			`"reasoning":{"enabled":true},"reasoning_effort":"` + word + `"`,
+			`"reasoning":{"enabled":true,"effort":"` + word + `"}`,
+			`"reasoning":true,"reasoning_effort":"` + word + `"`,
+			`"reasoning_effort":"` + word + `"`,
+			`"reasoning":{"effort":"` + word + `"}`,
+			`"reasoning":{"effort":"high"},"reasoning_effort":"` + word + `"`,
+		} {
+			if got := reasoningWire(t, route, fields); got != `{}` {
+				t.Errorf("%s: got %s, want it to reach the model with no thinking", fields, got)
+			}
+		}
+		// An Off word in the object beside a top-level effort reaches the
+		// model too, and there the top-level effort wins.
+		if got := reasoningWire(t, route, `"reasoning":{"effort":"`+word+`"},"reasoning_effort":"high"`); got != `{"thinking":{"budget_tokens":8192,"type":"enabled"}}` {
+			t.Errorf("object effort %s beside top-level high: got %s, want what high sends", word, got)
+		}
+	}
+	for _, fields := range []string{`"reasoning":false`, `"reasoning":false,"reasoning_effort":"high"`, `"reasoning":{"type":"disabled"}`, `"reasoning":{"type":"disabled"},"reasoning_effort":"high"`, `"reasoning":{"enabled":false,"max_tokens":2048}`} {
+		if got := reasoningWire(t, route, fields); got != `{}` {
+			t.Errorf("%s: got %s, want it to reach the model with no thinking", fields, got)
+		}
+	}
+	// A bare string in the reasoning field is not checked by the contract
+	// layer: it reaches the model alone and beside reasoning_effort, and it
+	// is refused beside a switch like any other reasoning value.
+	for fields, want := range map[string]string{
+		`"reasoning":"high"`:                          `{"thinking":{"budget_tokens":8192,"type":"enabled"}}`,
+		`"reasoning":"max"`:                           `{"thinking":{"budget_tokens":8192,"type":"enabled"}}`,
+		`"reasoning":"none"`:                          `{}`,
+		`"reasoning":"anything"`:                      `{}`,
+		`"reasoning":"high","reasoning_effort":"low"`: `{"thinking":{"budget_tokens":1024,"type":"enabled"}}`,
+	} {
+		if got := reasoningWire(t, route, fields); got != want {
+			t.Errorf("%s: got %s, want %s", fields, got, want)
+		}
+	}
+	for _, fields := range []string{`"thinking":{"type":"enabled"},"reasoning":"high"`, `"enable_thinking":true,"reasoning":"low"`, `"output_config":{"effort":"high"},"reasoning":"low"`} {
+		if got := reasoningWire(t, route, fields); !strings.HasPrefix(got, "refused at ") {
+			t.Errorf("%s: got %s, want a refusal", fields, got)
+		}
+	}
+	// A switch beside the reasoning object never reaches a model.
+	for _, fields := range []string{`"thinking":{"type":"enabled"},"reasoning":{"effort":"none"}`, `"enable_thinking":false,"reasoning":{"enabled":true}`, `"thinking":{"type":"disabled"},"reasoning":false`} {
+		if got := reasoningWire(t, route, fields); !strings.HasPrefix(got, "refused at ") {
+			t.Errorf("%s: got %s, want a refusal", fields, got)
 		}
 	}
 }
