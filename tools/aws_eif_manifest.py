@@ -94,8 +94,12 @@ def create(eif: Path, measurements: Path, source: str, builder: str,
     measured = _read_json(measurements)
     if not isinstance(measured, dict) or not isinstance(measured.get("Measurements"), dict):
         raise ValueError("expected Nitro CLI Measurements object")
+    if measured.get("EifVersion") != 4 or measured.get("CheckCRC") is not True:
+        raise ValueError("expected a CRC-verified v4 EIF from describe-eif")
     values = measured["Measurements"]
-    if values.get("HashAlgorithm") != "Sha384":
+    # CLI 1.5.3 uses sha2 0.11's Debug label for the same Sha384::new()
+    # algorithm. This spelling is verified against build-enclave/describe-eif.
+    if values.get("HashAlgorithm") not in {"Sha384", "Sha512_48 { .. }"}:
         raise ValueError("expected Nitro SHA-384 measurements")
     digest, size = hash_eif(eif)
     return validate({

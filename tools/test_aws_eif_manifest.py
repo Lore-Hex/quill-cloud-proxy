@@ -19,7 +19,7 @@ class EIFManifestTests(unittest.TestCase):
         self.eif = self.root / "enclave.eif"
         self.eif.write_bytes(b"test-only fake EIF bytes")
         self.measurements = self.root / "measurements.json"
-        self.measurements.write_text(json.dumps({"Measurements": {
+        self.measurements.write_text(json.dumps({"EifVersion": 4, "CheckCRC": True, "Measurements": {
             "HashAlgorithm": "Sha384", "PCR0": "1" * 96,
             "PCR1": "2" * 96, "PCR2": "3" * 96,
         }}))
@@ -32,6 +32,23 @@ class EIFManifestTests(unittest.TestCase):
         self.path.write_text(json.dumps(self.record))
         self.signature = self.root / "manifest.json.bundle"
         self.signature.write_text("{}")
+
+    def test_current_cli_hash_label_and_crc_are_validated(self):
+        measured = json.loads(self.measurements.read_text())
+        measured["Measurements"]["HashAlgorithm"] = "Sha512_48 { .. }"
+        self.measurements.write_text(json.dumps(measured))
+        args = (self.eif, self.measurements, self.record["source_commit"],
+                self.record["builder_image"], self.record["enclave_image_id"], "1.5.3")
+        self.assertEqual(manifest.create(*args), self.record)
+        measured["CheckCRC"] = False
+        self.measurements.write_text(json.dumps(measured))
+        with self.assertRaisesRegex(ValueError, "CRC-verified"):
+            manifest.create(*args)
+        measured["CheckCRC"] = True
+        measured["Measurements"]["HashAlgorithm"] = "Sha512"
+        self.measurements.write_text(json.dumps(measured))
+        with self.assertRaisesRegex(ValueError, "SHA-384"):
+            manifest.create(*args)
 
     def test_signed_roundtrip_checks_exact_workflow_identity(self):
         def verify_snapshot(args, **kwargs):
