@@ -1,9 +1,11 @@
 # AWS sealed bootstrap publication
 
-This is a staged migration, not a declaration that V1 has been retired.
-Follow the phase order in [the design](../design/aws-attested-secret-release.md).
-Neither merging this tool nor publishing a bundle changes the serving parent
-or enclave mode. IAM, KMS and Secrets Manager writes require Joseph's approval.
+Use this runbook to publish signed, region-specific encrypted bootstrap bundles.
+The provisioning history below records the migration stages, not instructions
+to re-enable legacy access. Production must retain strict images, strict-only
+admission and v2-only parents. Neither merging a tool nor publishing a bundle
+proves those runtime properties; verify each serving instance and its access
+policy. IAM, KMS and Secrets Manager writes require Joseph's approval.
 
 ## Provisioning record: 2026-11-16
 
@@ -59,6 +61,25 @@ zero `bundle_version` in legacy health. PR #818 permits that omission only for
 the explicit transitional/legacy/version-zero expectation. Strict and attested
 boot still require an explicit positive version. The repair's full CI passed
 before the first fleet rollout; no failed proof was promoted.
+
+### Encrypted-bootstrap fleet verification
+
+Phase 5 completed on 2026-11-16 with the same transitional EIF and the parent
+pinned to `sha256:4e9fa3b1d5458f1e54eb233164f0ac45b0169afd515a863521b3e702a3a6d80c`.
+Each region received its own signed version 1 bundle. Paris completed at
+`20:03:11Z` on template 53 and Dublin at `20:41:27Z` on template 59.
+All four serving replacements passed individual CI-measurement, Nitro-chain,
+nonce, instance, TLS-binding and same-connection health verification, reporting
+`policy=transition`, `mode=attested`, `bundle_version=1`. Both regions ended
+with exactly two healthy serving targets. The isolated migration candidates
+were then terminated. The rollout retained its full warmup, checkpoint,
+drain and final observation periods.
+
+This checkpoint proved encrypted secret delivery throughout the fleet, not
+strict enforcement: the transitional image still allowed plaintext fallback,
+parents were in dual mode, and the gateway role still had legacy access.
+Those are separate cutover gates and must not be inferred from an attested
+version 1 boot alone.
 
 ### Signing-key monitoring
 
@@ -222,7 +243,8 @@ recipient denial, ReEncrypt denial, and denied host signing/key mutation before
 relying on v2. The captured public CMS fixture and unit tests are not a
 substitute for those live controls.
 
-Set `AWS_BOOTSTRAP_MODE=dual` for the candidate template only after publishing
+During the original Phase 5 migration, `AWS_BOOTSTRAP_MODE=dual` was used
+for the candidate template only after publishing
 the new parent image. The deployment tool passes `QUILL_BOOTSTRAP_MODE=dual`
 and the pinned regional CMK to that parent, which binds 9101 before 9100.
 For this parent-only roll, keep the same CI-authenticated EIF. The pre-boot
@@ -230,7 +252,8 @@ gate accepts a completed release only when its exact source and measurement
 match the signed CI artifact and its public accepted set contains only that
 measurement. Public signature, rollout fence, regional key and runtime-pin
 checks still apply. Do not invent another candidate admission for the same EIF.
-It refuses dual/v2-only mode before the regional key configuration is enabled.
+After retirement, the deployment tool refuses legacy and dual modes and defaults
+to v2-only. Do not disable the regional key configuration to bypass that guard.
 Require every enclave to report attested bootstrap. A transitional image
 reports `aws_bootstrap` on its enclave HTTPS `/health` response with the
 measured `policy`, actual successful `mode`, and signed `bundle_version`.
@@ -255,11 +278,10 @@ instance, fresh nonce, TLS certificate and exporter before reading health on
 the same connection. It sends no API key or inference request. Use
 `--policy strict` after cutover and require the exact approved bundle version.
 
-A transitional image
-can still fall back on any v2 failure, so it provides no host-resistant
-configuration guarantee. Next release the measured strict image, remove every
-fallback-capable image from both admission sets, then switch the parent to
-`v2-only` and separately revoke V1 access. Keep strict rollback targets.
+A transitional image can still fall back on any v2 failure, so it provides no
+host-resistant configuration guarantee. The cutover order is strict image,
+strict-only admission, v2-only parent, then legacy access revocation. After
+cutover, keep strict rollback targets and never re-admit the transitional image.
 The legacy IAM provisioner refuses to run after attested-key activation, so a
 later `--phase iam` cannot accidentally regrant the old broad permissions.
 

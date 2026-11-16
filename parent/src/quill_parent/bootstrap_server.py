@@ -1,44 +1,22 @@
-"""Bootstrap RPC: parent → enclave handshake (AWS multi-provider variant).
+"""AWS bootstrap transport with explicit migration modes.
 
-The Go enclave dials vsock://(host_cid):9100 at startup and reads one
-JSON-encoded BootstrapData blob (matches `enclave-go/internal/types/types.go::BootstrapData`).
+In v2-only mode, the parent serves the signed encrypted bundle on vsock
+9101 and relays a KMS Recipient request containing the enclave's attestation.
+KMS returns the data key encrypted to the enclave's ephemeral public key;
+the parent never receives that data key or the decrypted bundle. The enclave
+checks the measured signer and minimum version before accepting credentials.
+The gateway IAM policy must independently deny legacy secret and key access.
 
-We pre-load the data at parent startup:
+The legacy implementation below is retained for migration tests. It fetches
+provider keys and the internal gateway token from Secrets Manager, decrypts
+the cross-cloud GCP service-account key, and caches plaintext BootstrapData
+for the 9100 listener. Dual mode starts both listeners. Neither mode provides
+credential confidentiality from the parent; only v2-only avoids these reads.
 
-  1. Pull every provider API key from AWS Secrets Manager. Keys live at
-     `quill/trustedrouter-{anthropic,openai,gemini,...}-api-key`,
-     mirrored from GCP Secret Manager by `tools/sync-secrets-to-aws.sh`.
-     `secretsmanager.GetSecretValue` returns the raw key string — no
-     extra wrapping, AWS Secrets Manager handles its own at-rest
-     encryption.
-
-  2. Pull the cross-cloud GCP service-account key from
-     `quill/trustedrouter-aws-cross-cloud-sa-key`. This one IS
-     KMS-wrapped on top of Secrets Manager because the trust posture
-     calls for the CMK's key policy to gate decrypt on the enclave's
-     attestation document (V1.1 work — V1 simplifies to parent-side
-     decrypt). The stored secret value is base64(KMS_ciphertext);
-     we GetSecretValue → base64-decode → kms.Decrypt → raw JSON.
-
-  3. Pull the TrustedRouter internal token (used by the enclave for
-     control-plane callbacks like /v1/internal/keys/lookup) from
-     `quill/trustedrouter-tr-api-key-for-self-heal`.
-
-  4. Compose BootstrapData JSON, cache it, serve on vsock 9100. Refresh
-     every 30 min so a key rotation in AWS Secrets Manager flows to
-     the enclave on its next bootstrap (the enclave fetches once per
-     boot; rotation requires a rolling restart of enclave instances).
-
-V1 trust caveat (also called out on the trust page): the parent
-therefore *sees* every provider API key + the GCP SA key in plaintext
-for ~ms at boot. The trust property is preserved at the prompt-content
-level (parent never sees prompts), but credential-plane separation of
-duties lands in V1.1 via attestation-gated KMS Decrypt.
-
-Why not run this directly from the enclave (skipping the parent):
-The Nitro enclave has no network interface — no IMDS, no
-`secretsmanager.amazonaws.com` egress. Every byte in or out goes via
-vsock to the parent. So the parent has to do the AWS API calls.
+The strict enclave has no plaintext fallback. Disabling a listener is not a
+substitute for revoking IAM access, and revoking access does not erase copies
+of credentials that a legacy host could previously read. Their rotation is
+a separate operation.
 """
 
 from __future__ import annotations
