@@ -1560,9 +1560,13 @@ phase_cross_cloud_key() {
         --secret-id "$aws_secret_name" --region "$AWS_REGION" 2>&1); then
       # The secret exists. Its key is certainly dead if the GCP account has no
       # enabled user-managed key left, and a full run should then repair it.
+      # --verbosity=error: with no key carrying a `disabled` field, gcloud
+      # warns on stderr that the filter key is absent, and that warning,
+      # captured here, would read as a key.
       if ! enabled_keys=$(gcloud iam service-accounts keys list \
           --iam-account="$sa_email" --project="$gcp_project" \
-          --managed-by=user --filter='disabled!=true' --format='value(name)' 2>&1); then
+          --managed-by=user --filter='disabled!=true' --format='value(name)' \
+          --verbosity=error 2>&1); then
         log "FATAL: could not list the keys of $sa_email; not minting a key on an unknown state."
         log "  gcloud: $enabled_keys"
         return 1

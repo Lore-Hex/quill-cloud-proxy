@@ -50,7 +50,14 @@ class RolloutSafetyTests(unittest.TestCase):
             "}",
             "gcloud() {",
             '  if [ "$1 $2 $3 $4" = "iam service-accounts keys list" ]; then',
-            '    echo "CALL gcloud keys list" >> "$CALLS_FILE"; printf "%s" "$FAKE_ENABLED_KEYS"; return 0',
+            '    echo "CALL gcloud keys list" >> "$CALLS_FILE"',
+            '    if [ "$FAKE_ENABLED_KEYS" = FAIL ]; then echo "ERROR: PERMISSION_DENIED" >&2; return 1; fi',
+            # As real gcloud: when no listed key has a `disabled` field it
+            # warns on stderr, unless told to report errors only.
+            '    case " $* " in *" --verbosity=error "*) ;; *)',
+            '      echo "WARNING: The following filter keys were not present in any resource : disabled" >&2 ;;',
+            "    esac",
+            '    printf "%s" "$FAKE_ENABLED_KEYS"; return 0',
             "  fi",
             '  if [ "$1 $2 $3 $4" = "iam service-accounts keys create" ]; then',
             '    echo "CALL gcloud keys create" >> "$CALLS_FILE"; echo "{}" > "$5"; return 0',
@@ -97,6 +104,12 @@ class RolloutSafetyTests(unittest.TestCase):
         self.assertEqual(code, 0, out)
         self.assertIn("the stored key is dead", out)
         self.assertIn("CALL gcloud keys create", out)
+
+        # The key list failing is an unknown state, not "no keys".
+        code, out = self._run_cross_cloud_key_phase("all", "exists", "FAIL")
+        self.assertNotEqual(code, 0, out)
+        self.assertNotIn("CALL gcloud keys create", out)
+        self.assertIn("could not list the keys", out)
 
         # An API error is not evidence of absence. Minting on one would leave
         # a key on the GCP account that the failing AWS calls never store.
