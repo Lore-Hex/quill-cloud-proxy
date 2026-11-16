@@ -57,8 +57,11 @@ peer_abort_status=75
 deadline_status=76
 # Forward-only deadline (epoch seconds) for the rollout itself, set by the
 # wave. It stops rollout steps; it never bounds the recovery that follows.
-deadline="${TR_SECONDARY_DEADLINE:-}"
-if [ -n "${deadline}" ] && ! [[ "${deadline}" =~ ^[0-9]+$ ]]; then
+# Not named "deadline": gate-hold-lib.sh's functions declare locals of that
+# name, and bash locals are visible to the stop hook they call, which would
+# then read the gate attempt's deadline instead of this one.
+forward_deadline="${TR_SECONDARY_DEADLINE:-}"
+if [ -n "${forward_deadline}" ] && ! [[ "${forward_deadline}" =~ ^[0-9]+$ ]]; then
   echo "${region}: TR_SECONDARY_DEADLINE must be epoch seconds" >&2
   exit 2
 fi
@@ -66,7 +69,7 @@ fi
 # against the deadline: the job's hold budget bounds it separately
 # (tools/gate-hold-lib.sh), so every other step keeps the time it always had.
 forward_deadline_passed() {
-  [ -n "${deadline}" ] || return 1
+  [ -n "${forward_deadline}" ] || return 1
   local held=0 budget="${TR_CP_HOLD_BUDGET_SECONDS:-1200}"
   if [ -n "${TR_CP_HOLD_STATE_DIR:-}" ]; then
     held="$(gate_hold_region_spent "${TR_CP_HOLD_STATE_DIR}" "${region}")"
@@ -75,7 +78,7 @@ forward_deadline_passed() {
   # closed (a failed write) must not extend the deadline forever.
   [[ "${budget}" =~ ^[0-9]+$ ]] || budget=1200
   if [ "${held}" -gt "${budget}" ]; then held="${budget}"; fi
-  [ "$(date +%s)" -ge "$((deadline + held))" ]
+  [ "$(date +%s)" -ge "$((forward_deadline + held))" ]
 }
 # Where the rollout job's drain finalizer learns how this region ended:
 # started -> promoted | recovered | recovery-failed. A region left at
