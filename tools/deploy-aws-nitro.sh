@@ -1527,13 +1527,14 @@ phase_quotas() {
 # ─── Phase: cross-cloud-key (GCP SA → AWS KMS-wrapped → Secrets Manager) ─
 phase_cross_cloud_key() {
   log "=== phase: cross-cloud-key ==="
+  python3 "$SCRIPT_DIR/aws_kms_admission.py" require-legacy-provisioning
   # The AWS-side enclave needs to talk to GCP Spanner + Bigtable + KMS +
   # Secret Manager (cross-cloud). It does that with a GCP service-account
   # JSON key, wrapped at rest by an AWS KMS CMK and stored in AWS Secrets
-  # Manager. The Nitro enclave bootstrap unwraps the key inside the
-  # measured enclave (KMS policy gates the decrypt on the enclave's
-  # attestation document; setup of that policy happens on the enclave
-  # side, not here).
+  # Manager. This legacy path was decrypted by the parent, not gated by
+  # recipient attestation. After activation, rotate through complete off-host
+  # sealed bundles instead; the guard above refuses to mint a key that the
+  # serving sealed bootstrap would never receive.
   #
   # This phase is responsible for:
   #   1. GCP service account: tr-aws-cross-cloud@quill-cloud-proxy.iam.gserviceaccount.com

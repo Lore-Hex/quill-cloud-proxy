@@ -172,3 +172,8 @@ policy test is not live KMS evidence. Later releases must widen this variable
 and the signed/runtime admission sets before boot, and narrow both only after
 verifying the surviving fleet. Removing the opt-in is not rollback and is
 blocked by `prevent_destroy`.
+
+After activation, `deploy-aws-nitro.sh --phase cross-cloud-key` also refuses
+before any GCP key mint or legacy secret write. That command cannot rotate a
+credential used inside the sealed bundle. Use the complete off-host publication
+procedure and coordinate credential revocation separately.
