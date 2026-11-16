@@ -161,13 +161,70 @@ class AdmissionTests(unittest.TestCase):
         self.assertIn("assert", run.call_args.args[0])
 
     def test_ready_gate_requires_exact_staged_artifact_before_public_or_runtime_reads(self):
-        with patch.object(admission, "verified_snapshot", return_value=(self.record, b"", b"")), \
+        with patch.object(admission, "TRUST", self.trust), \
+             patch.object(admission, "verified_snapshot", return_value=(self.record, b"", b"")), \
              patch.object(admission, "verify_record", return_value=None), \
              patch.object(admission, "require_published") as public, \
              patch.object(admission.subprocess, "run") as run, \
+             self.assertRaisesRegex(ValueError, "not the exact current"):
+            admission.check_ready(self.path, self.signature, "a" * 40)
+        public.assert_not_called()
+        run.assert_not_called()
+
+    def test_parent_only_roll_requires_exact_completed_ci_release(self):
+        current = {**self.current, "pcr0": "1" * 96, "accepted_pcr0s": ["1" * 96],
+                   "source_commit": "a" * 40, "release_state": "current"}
+        (self.trust / "aws-release.json").write_text(json.dumps(current))
+        with patch.object(admission, "TRUST", self.trust), \
+             patch.object(admission, "verified_snapshot", return_value=(self.record, b"", b"")), \
+             patch.object(admission, "require_published", return_value=current) as public, \
+             patch.object(admission.aws_kms_admission, "check_keys") as kms, \
+             patch.object(admission.subprocess, "run") as run:
+            admission.check_ready(self.path, self.signature, "a" * 40)
+        public.assert_called_once_with(self.trust / "aws-release.json")
+        kms.assert_called_once_with(["1" * 96])
+        calls = [call.args[0] for call in run.call_args_list]
+        self.assertIn("assert", calls[0])
+        self.assertEqual(calls[1][-3:], ["--plane", "aws", "--check-published"])
+        self.assertEqual(len(calls), 2)
+
+    def test_parent_only_roll_rejects_changed_source_measurement_and_transition(self):
+        current = {**self.current, "pcr0": "1" * 96, "accepted_pcr0s": ["1" * 96],
+                   "source_commit": "a" * 40, "release_state": "current"}
+        for change in ({"source_commit": "d" * 40}, {"release_state": "rolling"},
+                       {"accepted_pcr0s": ["1" * 96, "4" * 96]},
+                       {"pcr0": "4" * 96, "accepted_pcr0s": ["4" * 96]}):
+            with self.subTest(change=change):
+                (self.trust / "aws-release.json").write_text(json.dumps({**current, **change}))
+                with patch.object(admission, "TRUST", self.trust), \
+                     patch.object(admission, "verified_snapshot", return_value=(self.record, b"", b"")), \
+                     patch.object(admission, "require_published") as public, \
+                     patch.object(admission.subprocess, "run") as run, \
+                     self.assertRaisesRegex(ValueError, "not the exact current"):
+                    admission.check_ready(self.path, self.signature, "a" * 40)
+                public.assert_not_called()
+                run.assert_not_called()
+
+    def test_active_candidate_cannot_be_bypassed_by_current_eif(self):
+        wrong = copy.deepcopy(self.record)
+        wrong["source_commit"] = "e" * 40
+        with patch.object(admission, "verified_snapshot", return_value=(self.record, b"", b"")), \
+             patch.object(admission, "verify_record", return_value=wrong), \
+             patch.object(admission, "require_published") as public, \
              self.assertRaisesRegex(ValueError, "not the staged"):
             admission.check_ready(self.path, self.signature, "a" * 40)
         public.assert_not_called()
+
+    def test_current_release_change_during_public_check_blocks_readiness(self):
+        current = {**self.current, "pcr0": "1" * 96, "accepted_pcr0s": ["1" * 96],
+                   "source_commit": "a" * 40, "release_state": "current"}
+        (self.trust / "aws-release.json").write_text(json.dumps(current))
+        with patch.object(admission, "TRUST", self.trust), \
+             patch.object(admission, "verified_snapshot", return_value=(self.record, b"", b"")), \
+             patch.object(admission, "require_published", return_value=self.current), \
+             patch.object(admission.subprocess, "run") as run, \
+             self.assertRaisesRegex(ValueError, "changed during verification"):
+            admission.check_ready(self.path, self.signature, "a" * 40)
         run.assert_not_called()
 
     def test_ready_gate_checks_public_fence_and_runtime_without_mutation(self):

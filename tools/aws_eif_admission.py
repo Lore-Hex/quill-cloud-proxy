@@ -178,9 +178,24 @@ def widen_runtime() -> None:
 def check_ready(manifest: Path, signature: Path, source: str) -> None:
     artifact, _, _ = verified_snapshot(manifest, signature, source)
     record = TRUST / "aws-release.json"
-    if verify_record(record) != artifact:
-        raise ValueError("requested EIF is not the staged CI-authenticated candidate")
+    candidate = verify_record(record)
+    checked_current = None
+    if candidate is not None:
+        if candidate != artifact:
+            raise ValueError("requested EIF is not the staged CI-authenticated candidate")
+    else:
+        # A parent-only roll reuses the completed release, not a new candidate.
+        # Require its exact CI identity and a fully narrowed current record.
+        current = validate_current(json.loads(manifests._read_bytes(record, 128 << 10)))
+        pcr0 = artifact["measurements"]["PCR0"]
+        if (current.get("release_state") != "current" or current["pcr0"] != pcr0
+                or current["accepted_pcr0s"] != [pcr0]
+                or current["source_commit"] != artifact["source_commit"]):
+            raise ValueError("requested EIF is not the exact current CI-authenticated release")
+        checked_current = current
     current = require_published(record)
+    if checked_current is not None and current != checked_current:
+        raise ValueError("current release changed during verification")
     subprocess.run(["python3", str(ROOT / "tools" / "cloud-rollout.py"),
                     "assert", "--cloud", "aws"], check=True, timeout=90)
     aws_kms_admission.check_keys(current["accepted_pcr0s"])
