@@ -1,0 +1,5 @@
+# Public Alibaba workspace and BytePlus object-storage hostnames in the first
+# egress policy commit. These are DNS coordinates, not credential values.
+# Exact historical fingerprints only; no rule, file or path is exempted.
+6863e3849895c59f60e4677870f2fa422dff486e:enclave-go/internal/llm/provider_egress.go:generic-api-key:42
+6863e3849895c59f60e4677870f2fa422dff486e:enclave-go/internal/llm/provider_egress.go:generic-api-key:56
