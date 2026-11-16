@@ -733,12 +733,15 @@ class Library(unittest.TestCase):
     def test_a_hanging_trigger_is_cut_off_and_the_canary_still_runs(self) -> None:
         started = time.monotonic()
         done, log = self.run_canary([{"rows": [US_UP, EU_UP]}], monitors=True,
-                                    env={"TRIGGER_SLEEP": "10", "GATE_HOLD_TRIGGER_SECONDS": "1"})
+                                    env={"TRIGGER_SLEEP": "10", "GATE_HOLD_TRIGGER_SECONDS": "2"})
         elapsed = time.monotonic() - started
         self.assertIn("rc=0", done.stdout, done.stderr)
         self.assertEqual(shape(log), ["us", "eu", "watch"])
         self.assertEqual(done.stderr.count("the trigger was cut off"), 2, done.stderr)
-        self.assertLess(elapsed, 15)  # about a second each, never the 2 x 10 s they would hang
+        # Two seconds, not one: the bound is a whole-second deadline, and with
+        # one a second boundary can pass before the stub has started, so the
+        # call is cut before it logs (seen under load).
+        self.assertLess(elapsed, 15)  # about two seconds each, never the 2 x 10 s they would hang
 
     def test_a_hanging_trigger_never_outlasts_its_attempt(self) -> None:
         """The attempt's deadline still ends the attempt on time; nothing moves it."""
@@ -761,13 +764,13 @@ class Library(unittest.TestCase):
         started = time.monotonic()
         done, log = self.run_canary([{"rows": [US_UP, EU_UP]}], monitors=True, timeout=150,
                                     env={"TRIGGER_SLEEP": "100", "TRIGGER_DEAF": "1",
-                                         "GATE_HOLD_TRIGGER_SECONDS": "1"})
+                                         "GATE_HOLD_TRIGGER_SECONDS": "2"})
         elapsed = time.monotonic() - started
         self.assertIn("rc=0", done.stdout, done.stderr)
         self.assertEqual(shape(log), ["us", "eu", "watch"])
         self.assertEqual(done.stderr.count("the trigger was cut off"), 2, done.stderr)
         self.assertGreater(elapsed, 8)  # each call did get its 5 s after TERM
-        self.assertLess(elapsed, 30)  # 2 x (1 s + 5 s), never 2 x (1 s + 30 s)
+        self.assertLess(elapsed, 30)  # 2 x (2 s + 5 s), never 2 x (2 s + 30 s)
 
     def test_a_stop_during_the_trigger_takes_effect_as_the_gate_command_starts(self) -> None:
         stop = self.temp / "stop"
