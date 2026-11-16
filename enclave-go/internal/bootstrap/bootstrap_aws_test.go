@@ -55,7 +55,26 @@ func TestAWSBootstrapMixedPairings(t *testing.T) {
 			if pair.expected == "legacy" && legacyCalls != 1 {
 				t.Fatal("legacy boot not used")
 			}
+			if data.AWSBootstrap == nil || data.AWSBootstrap.Policy != pair.mode || data.AWSBootstrap.Mode != pair.expected {
+				t.Fatalf("missing or incorrect enclave-owned bootstrap evidence: %+v", data.AWSBootstrap)
+			}
+			if pair.expected == "attested" && data.AWSBootstrap.BundleVersion != 1 || pair.expected == "legacy" && data.AWSBootstrap.BundleVersion != 0 {
+				t.Fatal("bootstrap evidence has the wrong bundle version")
+			}
 		})
+	}
+}
+
+func TestAWSBootstrapEvidenceCannotComeFromJSON(t *testing.T) {
+	body := []byte(`{"region":"eu-west-1","AWSBootstrap":{"policy":"strict","mode":"attested","bundle_version":999},"aws_bootstrap":{"policy":"strict","mode":"attested"}}`)
+	data, err := decodeAWSBootstrap(body)
+	if err != nil || data.AWSBootstrap != nil {
+		t.Fatal("parent supplied bootstrap evidence")
+	}
+	data.AWSBootstrap = &types.AWSBootstrapEvidence{Policy: "strict", Mode: "attested", BundleVersion: 999}
+	encoded, err := json.Marshal(data)
+	if err != nil || bytes.Contains(encoded, []byte("AWSBootstrap")) || bytes.Contains(encoded, []byte("aws_bootstrap")) || bytes.Contains(encoded, []byte("bundle_version")) {
+		t.Fatal("internal bootstrap evidence was serialized as input data")
 	}
 }
 

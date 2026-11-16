@@ -26,6 +26,7 @@ import (
 	"github.com/Lore-Hex/quill-cloud-proxy/enclave-go/internal/requesttiming"
 	"github.com/Lore-Hex/quill-cloud-proxy/enclave-go/internal/shadowobserve"
 	"github.com/Lore-Hex/quill-cloud-proxy/enclave-go/internal/trustedrouter"
+	"github.com/Lore-Hex/quill-cloud-proxy/enclave-go/internal/types"
 	"github.com/Lore-Hex/quill-cloud-proxy/enclave-go/internal/upstreamerror"
 )
 
@@ -754,11 +755,17 @@ func serveAttestationContext(ctx context.Context, conn io.Writer, leafDER, devic
 
 func writeHealthResponse(w io.Writer, keepAlive bool, processingStartedAt time.Time) {
 	body := []byte(`{"status":"ok"}`)
-	if results := privatemodeProbeResults.Load(); results != nil {
+	results, bootstrapEvidence := privatemodeProbeResults.Load(), awsBootstrapEvidence.Load()
+	if results != nil || bootstrapEvidence != nil {
+		var probes any
+		if results != nil {
+			probes = *results
+		}
 		if encoded, err := json.Marshal(struct {
-			Status string `json:"status"`
-			Probes any    `json:"privatemode_probes"`
-		}{Status: "ok", Probes: *results}); err == nil {
+			Status    string                      `json:"status"`
+			Probes    any                         `json:"privatemode_probes,omitempty"`
+			Bootstrap *types.AWSBootstrapEvidence `json:"aws_bootstrap,omitempty"`
+		}{Status: "ok", Probes: probes, Bootstrap: bootstrapEvidence}); err == nil {
 			body = encoded
 		}
 	}

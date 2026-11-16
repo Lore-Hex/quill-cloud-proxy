@@ -21,18 +21,27 @@ type DeviceConfig struct {
 	DeviceID string `json:"device_id"` // opaque ID, used for usage counters
 }
 
+// AWSBootstrapEvidence is produced by the enclave after bootstrap succeeds.
+// It contains no credentials and is never accepted from bootstrap JSON.
+type AWSBootstrapEvidence struct {
+	Policy        string `json:"policy"`
+	Mode          string `json:"mode"`
+	BundleVersion uint64 `json:"bundle_version,omitempty"`
+}
+
 // BootstrapData is what the parent hands to the enclave at startup over vsock.
 //
 // V1 trust caveat: the parent fetches this from S3 + KMS-decrypts on behalf of
 // the enclave, then sends plaintext over vsock. V1.1 will switch to KMS-attested
 // release so the parent never sees the plaintext bedrock_credentials.
 type BootstrapData struct {
-	Devices           []DeviceConfig `json:"devices"`
-	BedrockAccessKey  string         `json:"bedrock_access_key"`
-	BedrockSecretKey  string         `json:"bedrock_secret_key"`
-	BedrockSessionTok string         `json:"bedrock_session_token,omitempty"` // present if creds are short-lived
-	Region            string         `json:"region"`
-	BedrockVsockProxy string         `json:"bedrock_vsock_proxy"` // e.g. "3:8003"
+	AWSBootstrap      *AWSBootstrapEvidence `json:"-"`
+	Devices           []DeviceConfig        `json:"devices"`
+	BedrockAccessKey  string                `json:"bedrock_access_key"`
+	BedrockSecretKey  string                `json:"bedrock_secret_key"`
+	BedrockSessionTok string                `json:"bedrock_session_token,omitempty"` // present if creds are short-lived
+	Region            string                `json:"region"`
+	BedrockVsockProxy string                `json:"bedrock_vsock_proxy"` // e.g. "3:8003"
 
 	// OpenRouter (populated for the openrouter target and Meta Muse in multi). The
 	// API key is pulled from KMS-sealed config alongside the device-key

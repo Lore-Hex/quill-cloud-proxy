@@ -107,6 +107,15 @@ the new parent image. The deployment tool passes `QUILL_BOOTSTRAP_MODE=dual`
 and the pinned regional CMK to that parent, which binds 9101 before 9100.
 It refuses dual/v2-only mode before the regional key configuration is enabled.
 Require every enclave to report attested bootstrap. A transitional image
+reports `aws_bootstrap` on its enclave HTTPS `/health` response with the
+measured `policy`, actual successful `mode`, and signed `bundle_version`.
+Read this from each instance over a verified, attested TLS connection, not
+the parent's plaintext health port. The metadata is set inside the enclave
+after bootstrap and cannot be supplied in bootstrap JSON. Normal Nitro
+console logs are unavailable without debug mode; never enable debug mode to
+obtain this evidence. Keep the distinction between actual mode and policy:
+an `attested` result under `transition` still permits a later fallback boot.
+A transitional image
 can still fall back on any v2 failure, so it provides no host-resistant
 configuration guarantee. Next release the measured strict image, remove every
 fallback-capable image from both admission sets, then switch the parent to

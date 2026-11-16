@@ -132,6 +132,7 @@ func fetchAWS(ctx context.Context, mode string, sealed sealedFetch, legacy legac
 			if err == nil {
 				data, decodeErr := decodeAWSBootstrap(body)
 				if decodeErr == nil && data.Region == manifest.Region && ctx.Err() == nil {
+					data.AWSBootstrap = &types.AWSBootstrapEvidence{Policy: mode, Mode: "attested", BundleVersion: manifest.Version}
 					clear(body)
 					log.Printf("bootstrap.aws mode=attested region=%s version=%d", manifest.Region, manifest.Version)
 					return data, nil
@@ -150,6 +151,7 @@ func fetchAWS(ctx context.Context, mode string, sealed sealedFetch, legacy legac
 			data, err := legacy(attempt)
 			stop()
 			if err == nil && data != nil && ctx.Err() == nil {
+				data.AWSBootstrap = &types.AWSBootstrapEvidence{Policy: mode, Mode: "legacy"}
 				log.Printf("bootstrap.aws mode=legacy")
 				return data, nil
 			}
