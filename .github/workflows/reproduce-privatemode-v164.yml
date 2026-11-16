@@ -1,0 +1,155 @@
+name: Reproduce Privatemode v1.64 for review
+
+on:
+  pull_request:
+    paths:
+      - '.github/workflows/reproduce-privatemode-v164.yml'
+      - 'docs/evidence/privatemode-v164-candidate-manifest.json'
+      - 'enclave-go/third_party/privatemode/**'
+  workflow_dispatch:
+
+# Public-source evidence only. This workflow cannot publish pins or deploy.
+permissions:
+  contents: read
+
+concurrency:
+  group: privatemode-v164-review-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  reproduce:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        kind: [policies, images]
+    env:
+      SOURCE_COMMIT: 3c98e0abf3219a6ebcc29112867a5f004605041b
+      SOURCE_SHA256: d7712bfbea9d61cc36372ab30f3d8b989e4f34d89ab70abcefe1852060d044ff
+      MANIFEST_SHA256: d63eb5cf91cb3079fe25a848573a4d0e9d869f462dab4f71fd02bdb372f8e833
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Acquire immutable public source
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/pm-source" "$RUNNER_TEMP/pm-evidence"
+          curl --location --fail --silent --show-error --max-time 300 \
+            "https://codeload.github.com/edgelesssys/privatemode-public/tar.gz/$SOURCE_COMMIT" \
+            -o "$RUNNER_TEMP/pm-source.tar.gz"
+          printf '%s  %s\n' "$SOURCE_SHA256" "$RUNNER_TEMP/pm-source.tar.gz" | sha256sum -c -
+          printf '%s  %s\n' "$MANIFEST_SHA256" docs/evidence/privatemode-v164-candidate-manifest.json | sha256sum -c -
+          tar -xzf "$RUNNER_TEMP/pm-source.tar.gz" --strip-components=1 -C "$RUNNER_TEMP/pm-source"
+          cp docs/evidence/privatemode-v164-candidate-manifest.json "$RUNNER_TEMP/pm-evidence/expected-manifest.json"
+          printf '%s\n' "$SOURCE_COMMIT" > "$RUNNER_TEMP/pm-evidence/source-commit.txt"
+      - name: Reproduce policies and hardware references
+        if: matrix.kind == 'policies'
+        run: |
+          set -euo pipefail
+          mkdir "$RUNNER_TEMP/pm-tools"
+          curl --location --fail --silent --show-error --max-time 300 \
+            https://github.com/edgelesssys/contrast/releases/download/v1.26.2/contrast-x86_64-linux \
+            -o "$RUNNER_TEMP/pm-tools/contrast"
+          printf '%s  %s\n' 0524c388d60425e7771083d667bc384c1df31ee397e6f2bdcd76157677f6a1d6 \
+            "$RUNNER_TEMP/pm-tools/contrast" | sha256sum -c -
+          curl --location --fail --silent --show-error --max-time 120 \
+            https://github.com/mikefarah/yq/releases/download/v4.53.6/yq_linux_amd64 \
+            -o "$RUNNER_TEMP/pm-tools/yq"
+          printf '%s  %s\n' c5f056448f973ae7d39b5401949648a78f2dc1947d6a8eb65be60d5c504b9385 \
+            "$RUNNER_TEMP/pm-tools/yq" | sha256sum -c -
+          chmod 0755 "$RUNNER_TEMP/pm-tools/contrast" "$RUNNER_TEMP/pm-tools/yq"
+          export PATH="$RUNNER_TEMP/pm-tools:$PATH"
+          cd "$RUNNER_TEMP/pm-source"
+          contrast generate --disable-updates --reference-values=metal-qemu-snp-gpu \
+            --reference-value-patches=scripts/snp-guestpolicy-patch.json \
+            --collateral-proxy=http://collateral-proxy.continuum-infra.svc deployment.yaml
+          cp manifest.json "$RUNNER_TEMP/pm-evidence/raw-manifest.json"
+          export SECRET_SERVICE_K8S_INTERNAL_DOMAIN=secret-service-internal.continuum-13d78c.svc.cluster.local
+          export SECRET_SERVICE_K8S_HEADLESS_DOMAIN='*.secret-service-headless.continuum-13d78c.svc.cluster.local'
+          bash scripts/adjust-manifest.sh manifest.json
+          yq -i 'del(.ReferenceValues.snp[] | select(.ProductName == "Milan"))' manifest.json
+          cp manifest.json "$RUNNER_TEMP/pm-evidence/reproduced-manifest.json"
+          python3 - <<'PY'
+          import hashlib, json, os
+          from pathlib import Path
+          root = Path(os.environ['RUNNER_TEMP']) / 'pm-evidence'
+          actual = json.loads((root / 'reproduced-manifest.json').read_text())
+          expected = json.loads((root / 'expected-manifest.json').read_text())
+          assert len(actual['Policies']) == len(expected['Policies']) == 8
+          recovery = expected['SeedshareOwnerPubKeys']
+          assert len(recovery) == 1
+          fingerprint = hashlib.sha256(recovery[0].encode()).hexdigest()
+          assert fingerprint == 'e734bea0d88af2fae66bbab9466552f98eff746d3ae2080094f8629cc654f53f'
+          # Recovery ownership is explicitly operator-approved, never source-reproduced.
+          actual.pop('SeedshareOwnerPubKeys', None)
+          expected.pop('SeedshareOwnerPubKeys', None)
+          assert actual == expected, 'Independent policy or hardware-reference mismatch'
+          evidence = {'matched_except_recovery_identity': True, 'policies': 8,
+                      'recovery_key_sha256': fingerprint, 'recovery_owner_approved': False}
+          (root / 'policy-comparison.json').write_text(json.dumps(evidence, indent=2) + '\n')
+          print(json.dumps(evidence))
+          PY
+      - uses: Lore-Hex/quill-cloud-proxy/.github/actions/nix-installer@582cbdee7b7023cfeb915b62a7f635aa1e4662b1 # main 2026-11-13
+        if: matrix.kind == 'images'
+        with:
+          source-tag: v3.23.3
+      - name: Rebuild all five security-component images without vendor caches
+        if: matrix.kind == 'images'
+        run: |
+          set -euo pipefail
+          export NIX_CONFIG=$'experimental-features = nix-command flakes\nsandbox = true\nsandbox-fallback = false\naccept-flake-config = false\nsubstituters = https://cache.nixos.org\nextra-substituters =\nhttp2 = false'
+          test "$(nix config show sandbox)" = true
+          test "$(nix config show sandbox-fallback)" = false
+          # Inspect the effective list; extra-substituters is an input modifier.
+          test "$(nix config show substituters)" = https://cache.nixos.org
+          nix --version | tee "$RUNNER_TEMP/pm-evidence/nix-version.txt"
+          test "$(nix --version)" = 'nix (Determinate Nix 3.23.3) 2.35.3'
+          probe=$(env -i HOME="$HOME" PATH="$PATH" NIX_CONFIG="$NIX_CONFIG" \
+            nix build --impure --no-link --print-out-paths --expr "
+              let p = (builtins.getFlake \"path:$RUNNER_TEMP/pm-source\").legacyPackages.x86_64-linux;
+              in p.runCommand \"tr-privatemode-sandbox-check\" {} \"pwd > \$out\"")
+          test "$(cat "$probe")" = /build
+          env -i HOME="$HOME" PATH="$PATH" NIX_CONFIG="$NIX_CONFIG" \
+            nix build --option builders '' \
+            --option connect-timeout 15 --option stalled-download-timeout 60 \
+            --option download-attempts 2 --max-jobs 2 --cores 2 \
+            --out-link "$RUNNER_TEMP/pm-images" --impure --expr "
+              let p = (builtins.getFlake \"path:$RUNNER_TEMP/pm-source\").legacyPackages.x86_64-linux;
+              in p.linkFarmFromDrvs \"privatemode-security-images\"
+                (map p.toOciImage [p.attestation-agent.image p.disk-mounter.image
+                  p.inference-proxy.image p.kernel-log.image p.secret-service.image])"
+          python3 - <<'PY'
+          import hashlib, json, os
+          from pathlib import Path
+          expected = {
+              'attestation-agent': '7a9bdea69f2311f859bc659dea1b2ce0b2b369723c585416ba5685ade6b0b882',
+              'disk-mounter': 'f66f2ea5feb4a39ec4f8ec1e464e7d911ee2f67ef468603cb80fbcbf341ec931',
+              'inference-proxy': 'c806a33f7d340ffa9db53ba73ecca40c1d582b0d7e14474631903b1d83fdd07d',
+              'kernel-log': 'a4faea1a5098f04aca84b969396dbecbb133c1ff171ab7d144e787a809b3d634',
+              'secret-service': '3fba87f35ee11fa08acccdae93347943ef17a364246e64165f4ab6e9caba0dc5',
+          }
+          root = Path(os.environ['RUNNER_TEMP'])
+          found = {}
+          for index in (root / 'pm-images').glob('*/index.json'):
+              name = index.parent.name
+              assert name in expected and name not in found, name
+              descriptors = json.loads(index.read_text())['manifests']
+              assert len(descriptors) == 1
+              digest = descriptors[0]['digest']
+              assert digest == 'sha256:' + expected[name], (name, digest)
+              blob = index.parent / 'blobs/sha256' / expected[name]
+              assert hashlib.sha256(blob.read_bytes()).hexdigest() == expected[name]
+              found[name] = digest
+          assert set(found) == set(expected), found
+          (root / 'pm-evidence/image-comparison.json').write_text(json.dumps(found, indent=2) + '\n')
+          print(json.dumps(found, indent=2))
+          PY
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        if: always()
+        with:
+          name: privatemode-v164-${{ matrix.kind }}-${{ github.run_id }}
+          path: ${{ runner.temp }}/pm-evidence/
+          if-no-files-found: error
+          retention-days: 1
