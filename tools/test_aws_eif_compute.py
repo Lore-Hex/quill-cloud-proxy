@@ -18,7 +18,8 @@ ROOT = Path(__file__).resolve().parents[1]
 
 class ComputeTests(unittest.TestCase):
     def run_candidate(self, *, bad_signature=False, missing=False, follows_latest=False, wrong_checksum=False,
-                      unadmitted=False, parent_digest="", pump_digest="", wrong_parent=False, parent_error=False):
+                      unadmitted=False, bootstrap_mode="legacy", parent_digest="", pump_digest="",
+                      wrong_parent=False, parent_error=False, registry_digest=None, configured_key=False):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             calls = root / "calls.jsonl"
@@ -40,7 +41,9 @@ elif command == ['autoscaling','describe-auto-scaling-groups']:
     print(json.dumps({'AutoScalingGroups':[{'LaunchTemplate':{'LaunchTemplateId':'lt-test','Version':'$Latest' if os.environ['LATEST']=='1' else '55'}}]}))
 elif command == ['ec2','create-launch-template-version']: print('56')
 elif command == ['ecr','describe-images']:
-    print('bad-digest' if os.environ['BAD_PARENT']=='1' else 'sha256:'+('7' if a[a.index('--repository-name')+1]=='quill-parent' else '8')*64)
+    parent=a[a.index('--repository-name')+1]=='quill-parent'
+    digest=(os.environ['REGISTRY_DIGEST'] or 'sha256:'+'7'*64) if parent else 'sha256:'+'8'*64
+    print('bad-digest' if os.environ['BAD_PARENT']=='1' else digest)
     sys.exit(int(os.environ['PARENT_ERROR']))
 else: sys.exit('Unexpected AWS operation: '+repr(a))
 """)
@@ -52,6 +55,9 @@ else: sys.exit('Unexpected AWS operation: '+repr(a))
                 "#!" + sys.executable + "\nimport os,sys\n"
                 "if sys.argv[1:3] == ['-m','tools.aws_eif_admission']:\n"
                 "    sys.exit(int(os.environ['UNADMITTED']))\n"
+                "if sys.argv[1].endswith('/aws_kms_admission.py') and os.environ['CONFIGURED_KEY'] == '1':\n"
+                "    print('arn:aws:kms:eu-west-1:330422590279:key/11111111-2222-3333-4444-555555555555')\n"
+                "    sys.exit(0)\n"
                 "os.execv(" + repr(sys.executable) + ", ["
                 + repr(sys.executable) + "] + sys.argv[1:])\n"
             )
@@ -80,6 +86,9 @@ else: sys.exit('Unexpected AWS operation: '+repr(a))
                    "SCRIPT_DIR": str(ROOT / "tools"), "AWS_EIF_MANIFEST": "" if missing else str(root / "manifest.json"),
                    "AWS_EIF_SIGNATURE": str(root / "signature.json"), "AWS_EIF_SOURCE_COMMIT": "a" * 40,
                    "CANDIDATE_TEMPLATE_ONLY": "1", "DRY_RUN": "0", "INSTANCE_TYPE": "m5.xlarge",
+                   "AWS_BOOTSTRAP_MODE": bootstrap_mode,
+                   "CONFIGURED_KEY": str(int(configured_key)),
+                   "REGISTRY_DIGEST": registry_digest if registry_digest is not None else "",
                    "TR_CONTROL_PLANE_BASE_URL": "https://trustedrouter.com", "CALLS": str(calls), "DIGEST": digest,
                    "LATEST": str(int(follows_latest)), "BAD_CHECKSUM": str(int(wrong_checksum)),
                    "UNADMITTED": str(int(unadmitted)), "AWS_PARENT_IMAGE_DIGEST": parent_digest,
@@ -98,6 +107,7 @@ else: sys.exit('Unexpected AWS operation: '+repr(a))
         raw = base64.b64decode(data["UserData"])
         user_data = (gzip.decompress(raw) if raw[:2] == b"\x1f\x8b" else raw).decode()
         self.assertIn("aws-nitro-enclaves-cli-1.5.0-0.amzn2023", user_data)
+        self.assertIn("QUILL_BOOTSTRAP_MODE=legacy", user_data)
         self.assertIn("sha256sum --check --strict", user_data)
         self.assertIn("stat -c %s /opt/quill/enclave.eif.tmp", user_data)
         self.assertIn("quill-enclave-eif-eu-west-1-330422590279", user_data)
@@ -145,6 +155,58 @@ else: sys.exit('Unexpected AWS operation: '+repr(a))
         self.assertNotEqual(result.returncode, 0)
         self.assertIn("candidate isolation refused", result.stderr)
         self.assertFalse(any(call[1].startswith(("create-", "modify-", "update-")) for call in calls))
+
+    def test_attested_parent_requires_configured_keys_before_cloud(self):
+        for mode in ("dual", "v2-only", "invalid"):
+            result, calls = self.run_candidate(bootstrap_mode=mode)
+            self.assertNotEqual(result.returncode, 0)
+            self.assertEqual(calls, [])
+
+    def test_attested_parent_requires_explicit_pin_even_with_configured_key(self):
+        for mode in ("dual", "v2-only"):
+            with self.subTest(mode=mode):
+                result, calls = self.run_candidate(bootstrap_mode=mode, configured_key=True)
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn("explicitly reviewed AWS_PARENT_IMAGE_DIGEST", result.stderr)
+                self.assertEqual(calls, [])
+
+    def test_attested_template_keeps_mode_key_and_immutable_parent(self):
+        for mode in ("dual", "v2-only"):
+            with self.subTest(mode=mode):
+                result, calls = self.run_candidate(
+                    bootstrap_mode=mode, configured_key=True, parent_digest="sha256:" + "7" * 64,
+                )
+                self.assertEqual(result.returncode, 0, result.stderr)
+                write = next(call for call in calls if call[:2] == ["ec2", "create-launch-template-version"])
+                data = json.loads(write[write.index("--launch-template-data") + 1])
+                raw = base64.b64decode(data["UserData"])
+                user_data = (gzip.decompress(raw) if raw[:2] == b"\x1f\x8b" else raw).decode()
+                self.assertIn("QUILL_BOOTSTRAP_MODE=" + mode, user_data)
+                self.assertIn(
+                    "QUILL_BOOTSTRAP_V2_CMK_ARN=arn:aws:kms:eu-west-1:330422590279:key/11111111-2222-3333-4444-555555555555",
+                    user_data,
+                )
+                self.assertIn("quill-parent@sha256:" + "7" * 64, user_data)
+                self.assertNotIn("quill-parent:test", user_data)
+
+    def test_explicit_parent_digest_is_verified_in_registry(self):
+        digest = "sha256:" + "7" * 64
+        result, calls = self.run_candidate(parent_digest=digest)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        lookup = next(call for call in calls if call[:2] == ["ecr", "describe-images"])
+        self.assertIn("imageDigest=" + digest, lookup)
+
+    def test_invalid_parent_pin_fails_before_cloud(self):
+        for value in ("latest", "sha256:" + "d" * 63, "sha256:" + "D" * 64, "tag;echo unsafe"):
+            result, calls = self.run_candidate(parent_digest=value)
+            self.assertNotEqual(result.returncode, 0)
+            self.assertEqual(calls, [])
+
+    def test_absent_or_mismatched_parent_blocks_template_write(self):
+        for pinned, returned in (("", "None"), ("sha256:" + "d" * 64, "sha256:" + "e" * 64)):
+            result, calls = self.run_candidate(parent_digest=pinned, registry_digest=returned)
+            self.assertNotEqual(result.returncode, 0)
+            self.assertFalse(any(call[1].startswith(("create-", "modify-", "update-")) for call in calls))
 
 
 if __name__ == "__main__":

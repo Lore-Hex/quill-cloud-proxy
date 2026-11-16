@@ -124,6 +124,19 @@ jobs:
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
           go-version: "1.26.11"
+      - uses: Lore-Hex/quill-cloud-proxy/.github/actions/setup-uv@582cbdee7b7023cfeb915b62a7f635aa1e4662b1 # main 2026-11-13
+        with:
+          version: "0.13.4"
+      - name: Install locked sealing contract dependencies
+        working-directory: .
+        run: |
+          uv venv "$RUNNER_TEMP/sealing-contract"
+          uv export --locked --script tools/aws_sealed_bundle.py \
+            --output-file "$RUNNER_TEMP/sealing-requirements.txt" >/dev/null
+          uv pip install --python "$RUNNER_TEMP/sealing-contract/bin/python" \
+            --require-hashes -r "$RUNNER_TEMP/sealing-requirements.txt"
+          echo "QUILL_AWS_SEALER_PYTHON=$RUNNER_TEMP/sealing-contract/bin/python" >> "$GITHUB_ENV"
+          echo "QUILL_AZURE_SEALER_PYTHON=$RUNNER_TEMP/sealing-contract/bin/python" >> "$GITHUB_ENV"
       - name: Build (${{ matrix.tags }})
         run: go build -tags '${{ matrix.tags }}' ./...
       - name: Vet (${{ matrix.tags }})
@@ -135,6 +148,14 @@ jobs:
         # matrix slot exercises just the code its tag combination
         # actually compiles in.
         run: go test -race -tags '${{ matrix.tags }}' ./...
+
+      - name: Fuzz AWS sealed-bootstrap parsers
+        if: matrix.tags == 'cloud_aws,llm_multi'
+        env:
+          GOMAXPROCS: '2'
+        run: |
+          go test ./internal/bootstrap/awssealed -fuzz=FuzzBundleParser -fuzztime=10s -parallel=2
+          go test ./internal/bootstrap/awssealed -fuzz=FuzzCMSParser -fuzztime=10s -parallel=2
 
       - name: Check reachable Go vulnerabilities (${{ matrix.tags }})
         run: go run golang.org/x/vuln/cmd/govulncheck@v1.9.0 -tags '${{ matrix.tags }}' ./...
@@ -248,7 +269,12 @@ jobs:
           python3 -m unittest tools.test_aws_eif_manifest
           python3 -m unittest tools.test_publish_aws_eif
           python3 -m unittest tools.test_aws_eif_compute
+          python3 -m unittest tools.test_aws_sealed_bundle tools.test_seal_aws_bootstrap
+          python3 -m unittest tools.test_aws_bootstrap_payload
+          python3 -m unittest tools.test_aws_bundle_replication
           python3 -m unittest tools.test_aws_eif_admission
+          python3 -m unittest tools.test_aws_bootstrap_probe
+          python3 -m unittest tools.test_aws_kms_admission
           python3 tools/test_go_toolchain_pins.py
           python3 tools/test_secret_scan_workflow.py
           python3 tools/test_nitro_root_pin.py

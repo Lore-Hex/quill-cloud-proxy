@@ -115,6 +115,8 @@ existing `sha256:...` values when preserving those images. The generator checks
 that each digest exists in the exact regional repository and emits immutable
 references. Without explicit values it resolves release tags once at template
 creation, never at host boot; a different parent still requires review.
+An explicit AWS_PARENT_IMAGE_DIGEST is mandatory for dual or v2-only bootstrap;
+only the legacy bootstrap stage permits resolving the parent release tag.
 
 Launch one standalone candidate outside the ASG and every serving target group.
 Give it distinct non-production Project and Name tags so discovery cannot add

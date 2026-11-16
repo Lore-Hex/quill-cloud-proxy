@@ -15,6 +15,19 @@
 useDefault = true
 
 [[allowlists]]
+description = "Already-public EdgeBit Nitro SDK test private key, pinned upstream source and notices beside the fixture. Never used by a workload."
+targetRules = ["private-key"]
+paths = ['''^enclave-go/internal/bootstrap/awssealed/testdata/upstream-kms\.json$''']
+
+[[allowlists]]
+description = "Exact public expected AES key from the same pinned EdgeBit KMS interoperability fixture. Never used by a workload."
+targetRules = ["generic-api-key"]
+condition = "AND"
+paths = ['''^enclave-go/internal/bootstrap/awssealed/testdata/upstream-kms\.json$''']
+regexTarget = "secret"
+regexes = ['''^3be82c440f06cb4d44c4c2ec3bf30d472407d3a9125aa4c1842b98f6bdd26e41$''']
+
+[[allowlists]]
 description = """Generated, deterministic test vectors. JWS/JWT strings are \
 signed with keys whose seeds are committed beside them (shared with \
 quill-router's tests/fixtures); the generic-api-key hits are sha256 digests \
