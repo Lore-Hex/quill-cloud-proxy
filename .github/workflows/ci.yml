@@ -166,12 +166,20 @@ jobs:
         run: uv run pytest -v
 
   trust-page-validation:
+    # This is a required branch-protection check; policy regressions must block it.
+    needs: aws-secret-policy
+    if: ${{ always() }}
     # Catches accidental script tags / external font fetches / etc. on
     # the static trust page before publish.
     runs-on: ubuntu-latest
     env:
       TR_REQUIRE_CRYPTO: "1"
     steps:
+      - name: Require AWS policy checks to pass
+        if: ${{ needs.aws-secret-policy.result != 'success' }}
+        run: |
+          echo "AWS policy checks did not pass; refusing trust validation." >&2
+          exit 1
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           # Provenance validation resolves the exact commit that built each

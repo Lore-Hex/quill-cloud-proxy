@@ -9,6 +9,8 @@ import tempfile
 import unittest
 from pathlib import Path
 
+import yaml
+
 ROOT = Path(__file__).resolve().parents[1]
 KEYS = {
     "eu-west-1": "d2535b04-c182-4262-adaa-c9489ce0d196",
@@ -17,6 +19,23 @@ KEYS = {
 
 
 class IAMScopeTests(unittest.TestCase):
+    def test_mock_policy_checks_are_enforced_by_required_ci(self):
+        jobs = yaml.safe_load((ROOT / ".github/workflows/ci.yml").read_text())["jobs"]
+        policy = jobs["aws-secret-policy"]
+        self.assertEqual(policy["permissions"], {"contents": "read"})
+        self.assertEqual(policy["env"]["AWS_CONFIG_FILE"], "/dev/null")
+        self.assertEqual(policy["env"]["AWS_SHARED_CREDENTIALS_FILE"], "/dev/null")
+        commands = "\n".join(step.get("run", "") for step in policy["steps"])
+        self.assertIn("terraform init -backend=false -input=false -lockfile=readonly", commands)
+        self.assertIn("terraform test -no-color", commands)
+        self.assertNotIn("terraform apply", commands)
+        required = jobs["trust-page-validation"]
+        self.assertEqual(required["needs"], "aws-secret-policy")
+        self.assertEqual(required["if"], "${{ always() }}")
+        gate = required["steps"][0]
+        self.assertEqual(gate["if"], "${{ needs.aws-secret-policy.result != 'success' }}")
+        self.assertIn("exit 1", gate["run"])
+
     def run_phase(self, failure: str = "success", regions: str = "eu-west-1 eu-west-3"):
         with tempfile.TemporaryDirectory() as tmp:
             directory = Path(tmp)
