@@ -184,8 +184,13 @@ keeps the assembled plaintext in memory. The internal gateway credential and
 the unwrapped ACME key are mandatory. Inspect missing names before approving
 omissions; missing from a local file does not prove unused in production.
 
-The tool creates `AWSPENDING`, reads the ciphertext back, then moves
-`AWSCURRENT` from the observed predecessor. It verifies the resulting stage.
+For rotation, the tool creates `AWSPENDING`, reads the ciphertext back, then
+moves `AWSCURRENT` from the observed predecessor. For an empty new secret,
+AWS automatically assigns `AWSCURRENT` to the first version even when the PUT
+specifies `AWSPENDING`. The publisher verifies that exact version after
+readback rather than attempting a redundant label move. If another version
+became current, it fails without overwriting it. See
+[AWS PutSecretValue](https://docs.aws.amazon.com/secretsmanager/latest/apireference/API_PutSecretValue.html).
 Output contains only region, version, ciphertext size and hash. The plaintext
 and data key never go to a gateway. Python's memory clearing is best effort,
 not a guarantee; use a trusted operator machine with restricted storage.

@@ -28,7 +28,13 @@ class PublicationTests(unittest.TestCase):
             "Account": "330422590279", "Arn": publish.OPERATOR,
         }
         self.secrets.describe_secret.return_value = {"ARN": SECRET}
-        self.secrets.put_secret_value.side_effect = lambda **kw: {"VersionId": kw["ClientRequestToken"]}
+        def put(**kwargs):
+            if not self.secrets.describe_secret.return_value.get("VersionIdsToStages"):
+                self.secrets.describe_secret.return_value["VersionIdsToStages"] = {
+                    kwargs["ClientRequestToken"]: ["AWSCURRENT", "AWSPENDING"],
+                }
+            return {"VersionId": kwargs["ClientRequestToken"]}
+        self.secrets.put_secret_value.side_effect = put
         self.secrets.get_secret_value.return_value = {"SecretString": "{}"}
         def promote(**kwargs):
             self.secrets.describe_secret.return_value["VersionIdsToStages"] = {
@@ -55,10 +61,26 @@ class PublicationTests(unittest.TestCase):
         self.secrets.get_secret_value.assert_called_once_with(
             SecretId=publish.SECRET_ID, VersionId=call["ClientRequestToken"],
         )
-        self.secrets.update_secret_version_stage.assert_called_once_with(
-            SecretId=publish.SECRET_ID, VersionStage="AWSCURRENT",
-            MoveToVersionId=call["ClientRequestToken"],
-        )
+        self.secrets.update_secret_version_stage.assert_not_called()
+
+    def test_first_publication_does_not_claim_or_overwrite_another_current(self):
+        for stages in ({}, {"other": ["AWSCURRENT"]}, {"old": ["AWSPREVIOUS"]}):
+            self.setUp()
+            def put(**kwargs):
+                self.secrets.describe_secret.return_value["VersionIdsToStages"] = stages
+                return {"VersionId": kwargs["ClientRequestToken"]}
+            self.secrets.put_secret_value.side_effect = put
+            with patch.object(publish.sealing, "seal", return_value=b"{}"), \
+                 self.assertRaisesRegex(ValueError, "could not be confirmed"):
+                self.run_publish()
+            self.secrets.update_secret_version_stage.assert_not_called()
+
+    def test_existing_versions_without_current_require_recovery(self):
+        self.secrets.describe_secret.return_value["VersionIdsToStages"] = {"old": ["AWSPREVIOUS"]}
+        with patch.object(publish.sealing, "seal") as seal, self.assertRaisesRegex(ValueError, "recovery"):
+            self.run_publish()
+        seal.assert_not_called()
+        self.secrets.put_secret_value.assert_not_called()
 
     def test_wrong_identity_replica_and_downgrade_prevent_sealing(self):
         for fault in ("identity", "replica", "wrong region", "downgrade"):
