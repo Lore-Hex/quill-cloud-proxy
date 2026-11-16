@@ -10,7 +10,10 @@ import (
 	"crypto/rand"
 	"crypto/x509"
 	"encoding/base64"
+	"encoding/json"
 	"errors"
+	"os"
+	"slices"
 	"testing"
 	"time"
 
@@ -149,6 +152,54 @@ func TestAWSMeasuredTrustConfig(t *testing.T) {
 		if _, _, err := measuredAWSConfig(test.mode, test.key, test.minimum); err == nil {
 			t.Fatalf("accepted invalid measured configuration: %s/%s", test.mode, test.minimum)
 		}
+	}
+}
+
+func TestAWSCompiledBootstrapPolicy(t *testing.T) {
+	if _, _, err := measuredAWSConfig(AWSBootstrapMode, AWSBundleSignerDER, AWSMinimumBundleVersion); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// Release CI obtains only the public half of the approved KMS signer. The
+// measured image's source pin must match it; no runtime environment overrides
+// the enclave's trust root. Legacy builds deliberately do not use a signer.
+func TestAWSCompiledSignerMatchesKMS(t *testing.T) {
+	if AWSBootstrapMode == "legacy" {
+		t.Skip("legacy bootstrap has no attested secret-release claim")
+	}
+	path := os.Getenv("QUILL_AWS_KMS_PUBLIC_KEY_FILE")
+	if path == "" {
+		if os.Getenv("QUILL_REQUIRE_AWS_SIGNER_CHECK") == "1" {
+			t.Fatal("release requires the KMS public-key response")
+		}
+		t.Skip("live public-key comparison runs in release CI")
+	}
+	data, err := os.ReadFile(path)
+	if err != nil || len(data) > 16384 {
+		t.Fatal("cannot read bounded public-key response")
+	}
+	var response struct {
+		KeyID             string   `json:"KeyId"`
+		KeySpec           string   `json:"KeySpec"`
+		KeyUsage          string   `json:"KeyUsage"`
+		SigningAlgorithms []string `json:"SigningAlgorithms"`
+		PublicKey         string   `json:"PublicKey"`
+	}
+	if err := json.Unmarshal(data, &response); err != nil {
+		t.Fatal("invalid KMS public-key response")
+	}
+	if response.KeySpec != "ECC_NIST_P384" || response.KeyUsage != "SIGN_VERIFY" ||
+		!slices.Contains(response.SigningAlgorithms, "ECDSA_SHA_384") {
+		t.Fatal("KMS signer does not match the release algorithm")
+	}
+	pinned, err := base64.StdEncoding.Strict().DecodeString(AWSBundleSignerDER)
+	if err != nil {
+		t.Fatal("invalid compiled signer")
+	}
+	actual, err := base64.StdEncoding.Strict().DecodeString(response.PublicKey)
+	if err != nil || !bytes.Equal(actual, pinned) {
+		t.Fatal("KMS public key differs from the compiled signer")
 	}
 }
 
