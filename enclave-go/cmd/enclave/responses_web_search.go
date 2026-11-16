@@ -52,7 +52,9 @@ func selectedWebSearchClient(config *types.ResponseWebSearchConfig) websearch.Cl
 }
 
 func configureResponsesWebSearch(apiKey string) {
-	client, err := websearch.NewExaClient(websearch.ExaOptions{APIKey: apiKey})
+	httpc := llm.NewProviderHTTPClient()
+	httpc.Timeout = 15 * time.Second
+	client, err := websearch.NewExaClient(websearch.ExaOptions{APIKey: apiKey, HTTPClient: httpc})
 	if err != nil {
 		enclaveWebSearchClient = nil
 		return
