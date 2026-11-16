@@ -29,10 +29,12 @@ import (
 type privacyTestRunner struct {
 	calls int
 	fail  bool
+	seen  []string
 }
 
 func (r *privacyTestRunner) Protect(_ context.Context, texts []string) (deidentify.Result, error) {
 	r.calls++
+	r.seen = append(r.seen, texts...)
 	if r.fail {
 		return deidentify.Result{}, deidentify.ErrUnavailable
 	}
@@ -209,6 +211,63 @@ func TestDeidentifyRealModelEndToEnd(t *testing.T) {
 	defer func() { rampartRunner = previous }()
 	rampartRunner = deidentify.NewWorker(node, script)
 	testPrivacySurfaces(t, true)
+}
+
+func TestDeidentifyClientCompatibility(t *testing.T) {
+	previous := rampartRunner
+	defer func() { rampartRunner = previous }()
+	for _, tc := range []struct {
+		name, route string
+		extra       map[string]any
+	}{
+		{"client_metadata_object", "responses", map[string]any{"client_metadata": map[string]any{"session": "metadata-only@example.com", "nested": map[string]any{"name": "Never forward"}}}},
+		{"client_metadata_null", "responses", map[string]any{"client_metadata": nil}},
+		{"replayed_namespace", "responses", map[string]any{"input": []any{
+			map[string]any{"type": "function_call", "namespace": "functions", "name": "send", "call_id": "call_1", "arguments": `{"email":"alice@example.com"}`},
+			map[string]any{"type": "function_call_output", "call_id": "call_1", "output": "alice@example.com"},
+			map[string]any{"role": "user", "content": "alice@example.com"},
+		}}},
+		{"template_on", "chat/completions", map[string]any{"chat_template_kwargs": map[string]any{"enable_thinking": true}, "reasoning_effort": "high"}},
+		{"template_off", "chat/completions", map[string]any{"chat_template_kwargs": map[string]any{"thinking": false}, "reasoning_effort": "high"}},
+		{"thinking_with_effort", "chat/completions", map[string]any{"thinking": map[string]any{"type": "enabled"}, "reasoning_effort": "high"}},
+	} {
+		for _, enabled := range []bool{false, true} {
+			for _, stream := range []bool{false, true} {
+				t.Run(fmt.Sprintf("%s/on=%v/stream=%v", tc.name, enabled, stream), func(t *testing.T) {
+					runner := &privacyTestRunner{fail: !enabled}
+					rampartRunner = runner
+					body := map[string]any{"model": "anthropic/claude-opus-5.5", "stream": stream, "max_tokens": 256, "deidentify": enabled}
+					if tc.route == "responses" {
+						body["input"] = "alice@example.com"
+					} else {
+						body["messages"] = []any{map[string]any{"role": "user", "content": "alice@example.com"}}
+					}
+					for key, value := range tc.extra {
+						body[key] = value
+					}
+					raw, _ := json.Marshal(body)
+					provider := &privacyEchoProvider{}
+					status, response := privacyRoundTrip(t, "/v1/"+tc.route, string(raw), provider)
+					wantCalls := 0
+					if enabled {
+						wantCalls = 1
+					}
+					if status != 200 || provider.calls != 1 || runner.calls != wantCalls {
+						t.Fatalf("status=%d provider=%d scanner=%d response=%s", status, provider.calls, runner.calls, response)
+					}
+					if strings.Contains(provider.seen, "alice@example.com") == enabled || strings.Contains(provider.seen, "client_metadata") || strings.Contains(provider.seen, "metadata-only") {
+						t.Fatalf("provider input escaped privacy contract: %s", provider.seen)
+					}
+					if strings.Contains(strings.Join(runner.seen, " "), "metadata-only") || strings.Contains(response, "TRABCDEFGHIJKLMNOP") {
+						t.Fatal("client metadata reached scanner or placeholder reached caller")
+					}
+					if !stream && !strings.Contains(response, "alice@example.com") {
+						t.Fatal("answer not restored")
+					}
+				})
+			}
+		}
+	}
 }
 
 func TestDeidentifyRejectsOrchestrationInEveryRoutingPosition(t *testing.T) {

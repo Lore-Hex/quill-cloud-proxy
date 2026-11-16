@@ -239,7 +239,7 @@ func (p *projection) messages(v any) error {
 				if err := p.jsonString(m, key); err != nil {
 					return err
 				}
-			case "name", "tool_call_id", "call_id", "id":
+			case "name", "namespace", "tool_call_id", "call_id", "id":
 				if err := p.field(m, key, true); err != nil {
 					return err
 				}
@@ -355,6 +355,30 @@ func (p *projection) request(m map[string]any, route string) error {
 		case "deidentify":
 			if value != true {
 				return ErrUnsupported
+			}
+		case "client_metadata":
+			_, object := value.(map[string]any)
+			if route != "responses" || (value != nil && !object) {
+				return ErrUnsupported
+			}
+			// Client-only identifiers are discarded, not sent to the scanner or provider.
+			delete(m, key)
+		case "chat_template_kwargs":
+			if route != "chat.completions" {
+				return ErrUnsupported
+			}
+			if value == nil {
+				continue
+			}
+			flags, ok := value.(map[string]any)
+			if !ok {
+				return ErrUnsupported
+			}
+			for key, flag := range flags {
+				_, boolean := flag.(bool)
+				if !oneOf(key, "enable_thinking", "thinking") || (flag != nil && !boolean) {
+					return ErrUnsupported
+				}
 			}
 		case "messages":
 			if err := p.messages(value); err != nil {

@@ -15,10 +15,12 @@ const testToken = "[TRABCDEFGHIJKLMNOP_EMAIL_1]"
 type fakeRunner struct {
 	fail  bool
 	calls int
+	seen  []string
 }
 
 func (r *fakeRunner) Protect(_ context.Context, texts []string) (Result, error) {
 	r.calls++
+	r.seen = append(r.seen, texts...)
 	if r.fail {
 		return Result{}, ErrUnavailable
 	}
@@ -64,6 +66,57 @@ func TestUnsupportedNeverCallsWorker(t *testing.T) {
 		_, _, err := Prepare(context.Background(), []byte(`{"deidentify":true,"model":"test",`+extra+`}`), "chat.completions", r)
 		if !errors.Is(err, ErrUnsupported) || r.calls != 0 {
 			t.Fatalf("unsupported: %s %v %d", extra, err, r.calls)
+		}
+	}
+}
+
+func TestClientCompatibilityPrivacyProjection(t *testing.T) {
+	for _, metadata := range []string{`null`, `{"session":"metadata-only@example.com","nested":{"name":"Never forward"}}`} {
+		r := &fakeRunner{}
+		raw := []byte(`{"deidentify":true,"input":"alice@example.com","client_metadata":` + metadata + `}`)
+		safe, _, err := Prepare(context.Background(), raw, "responses", r)
+		if err != nil || strings.Contains(string(safe), "client_metadata") || strings.Contains(string(safe), "metadata-only") || strings.Contains(strings.Join(r.seen, " "), "metadata-only") {
+			t.Fatalf("client-only metadata escaped discard: %s %v", safe, err)
+		}
+		if !strings.Contains(string(safe), testToken) {
+			t.Fatal("input not masked")
+		}
+	}
+	for _, flags := range []string{`null`, `{}`, `{"enable_thinking":true}`, `{"thinking":false}`, `{"thinking":null}`} {
+		raw := []byte(`{"deidentify":true,"messages":[{"role":"user","content":"alice@example.com"}],"chat_template_kwargs":` + flags + `}`)
+		safe, _, err := Prepare(context.Background(), raw, "chat.completions", &fakeRunner{})
+		if err != nil || strings.Contains(string(safe), "alice@example.com") {
+			t.Fatalf("switch projection: %s %v", safe, err)
+		}
+	}
+	for _, namespace := range []string{"functions", "alice@example.com"} {
+		raw := []byte(`{"deidentify":true,"input":[{"type":"function_call","namespace":"` + namespace + `","name":"send","call_id":"a","arguments":"{\"email\":\"alice@example.com\"}"}]}`)
+		safe, _, err := Prepare(context.Background(), raw, "responses", &fakeRunner{})
+		if namespace == "alice@example.com" {
+			if !errors.Is(err, ErrUnsupported) {
+				t.Fatal("sensitive namespace accepted")
+			}
+		} else if err != nil || strings.Contains(string(safe), "alice@example.com") {
+			t.Fatalf("history projection: %s %v", safe, err)
+		}
+	}
+}
+
+func TestInvalidClientCompatibilityShapesFailClosed(t *testing.T) {
+	for _, tc := range []struct{ route, extra string }{
+		{"responses", `"client_metadata":"private"`},
+		{"responses", `"client_metadata":[]`},
+		{"chat.completions", `"client_metadata":{}`},
+		{"messages", `"chat_template_kwargs":{}`},
+		{"chat.completions", `"chat_template_kwargs":"private"`},
+		{"chat.completions", `"chat_template_kwargs":{"thinking":"alice@example.com"}`},
+		{"chat.completions", `"chat_template_kwargs":{"thinking":1}`},
+		{"chat.completions", `"chat_template_kwargs":{"unknown":true}`},
+	} {
+		r := &fakeRunner{}
+		_, _, err := Prepare(context.Background(), []byte(`{"deidentify":true,`+tc.extra+`}`), tc.route, r)
+		if !errors.Is(err, ErrUnsupported) || r.calls != 0 {
+			t.Fatalf("invalid shape reached worker: %s %v %d", tc.extra, err, r.calls)
 		}
 	}
 }
