@@ -262,6 +262,7 @@ func Fetch(ctx context.Context) (*types.BootstrapData, error) {
 		recraftSecret,
 		bflSecret,
 		databricksSecret,
+		databricksUnitySecret,
 		zeroGSecret,
 		alibabaSecret,
 		azureSecret,
