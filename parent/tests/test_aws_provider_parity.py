@@ -90,9 +90,13 @@ def _routable_provider_json_fields() -> set[str]:
 
 
 def _aws_fetched_fields() -> set[str]:
-    return {field for field, _suffix in (
-        *bootstrap_server._PROVIDER_KEYS, *bootstrap_server._SEALED_ONLY_PROVIDER_KEYS
-    )}
+    return {
+        field
+        for field, _suffix in (
+            *bootstrap_server._PROVIDER_KEYS,
+            *bootstrap_server._SEALED_ONLY_PROVIDER_KEYS,
+        )
+    }
 
 
 def test_every_routable_provider_is_reachable_on_aws_or_exempt() -> None:
