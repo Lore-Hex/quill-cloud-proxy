@@ -63,6 +63,9 @@ func TestResponsesInputItemsTokenEndpoint(t *testing.T) {
 		{"reference", `[{"type":"item_reference","id":"msg_123"}]`, `"param":"input[0].item_reference"`, 501},
 		{"custom missing id", `[{"type":"custom_tool_call","name":"apply_patch"}]`, `"param":"input[0].call_id"`, 400},
 		{"reasoning only", `[{"type":"reasoning","summary":[]}]`, `"message":"input must contain text"`, 400},
+		{"empty developer and user messages", `[{"role":"developer","content":""},{"role":"user","content":[{"type":"input_text","text":""}]},{"role":"user","content":"Hi."}]`, `"object":"response.input_tokens"`, 200},
+		{"empty user message only", `[{"role":"user","content":" "}]`, `"message":"input must contain text"`, 400},
+		{"user part not an object", `[{"role":"user","content":[""]}]`, `"param":"input[0].content"`, 400},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			status, body := serve(tc.input)

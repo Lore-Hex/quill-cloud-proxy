@@ -653,7 +653,14 @@ func responseInputMessage(item any, index int, names *responseFunctionNames) (me
 		return types.OpenAIChatMessage{}, false, err
 	}
 	if types.ContentEmpty(content) {
-		if role == "assistant" && responseEmptyTextParts(m["content"]) {
+		// A well-formed message with no text and no image carries nothing to
+		// send, whatever its role: a replayed empty assistant turn, a blank
+		// system or developer prompt, a user turn submitted empty. Chat
+		// completions skips such messages and blank instructions are skipped
+		// above, so drop the item here too. Refusing it failed every later
+		// turn of a conversation that had one in its history. A request left
+		// with nothing to send is still a 400.
+		if responseEmptyTextParts(m["content"]) {
 			return types.OpenAIChatMessage{}, true, nil
 		}
 		return types.OpenAIChatMessage{}, false, &AdapterError{Status: 400, Message: "input item must contain text or image", Context: fmt.Sprintf("input[%d].content", index)}
@@ -661,14 +668,15 @@ func responseInputMessage(item any, index int, names *responseFunctionNames) (me
 	return types.OpenAIChatMessage{Role: role, Content: content}, false, nil
 }
 
-// responseEmptyTextParts recognizes empty assistant replay items, whether a
-// client preserves the output-text parts or flattens them to a string.
+// responseEmptyTextParts recognizes a message whose content is empty: a blank
+// string, no parts, or only text parts that are blank. A part that is not a
+// text object, or a text part without a text string, is malformed, not empty.
 func responseEmptyTextParts(content any) bool {
 	if text, ok := content.(string); ok {
 		return strings.TrimSpace(text) == ""
 	}
 	parts, ok := content.([]any)
-	if !ok || len(parts) == 0 {
+	if !ok {
 		return false
 	}
 	for _, item := range parts {
@@ -678,7 +686,7 @@ func responseEmptyTextParts(content any) bool {
 		}
 		switch stringValue(part["type"]) {
 		case "", "text", "input_text", "output_text":
-			if text, ok := part["text"].(string); !ok || text != "" {
+			if text, ok := part["text"].(string); !ok || strings.TrimSpace(text) != "" {
 				return false
 			}
 		default:
