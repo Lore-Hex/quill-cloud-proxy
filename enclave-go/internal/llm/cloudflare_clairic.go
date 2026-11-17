@@ -13,6 +13,7 @@ import (
 
 	"github.com/Lore-Hex/quill-cloud-proxy/enclave-go/internal/decide"
 	qtypes "github.com/Lore-Hex/quill-cloud-proxy/enclave-go/internal/types"
+	"github.com/Lore-Hex/quill-cloud-proxy/enclave-go/internal/upstreamerror"
 )
 
 const clairicModel = "cloudflare/clairic"
@@ -156,6 +157,9 @@ func (c *openAICompatibleClient) invokeClairic(ctx context.Context, req *qtypes.
 	if response.StatusCode != http.StatusOK {
 		return &upstreamHTTPError{status: response.StatusCode, body: "Clairic task failed"}
 	}
+	// The provider answered. The body is buffered and validated below; a bad
+	// body is not the provider being down.
+	upstreamerror.Answered(out)
 	const maxResponse = 8 << 20
 	raw, err = io.ReadAll(io.LimitReader(response.Body, maxResponse+1))
 	if err != nil || len(raw) > maxResponse || decide.CheckNoDuplicateKeys(raw) != nil {

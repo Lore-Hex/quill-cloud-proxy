@@ -1828,6 +1828,13 @@ func EstimateInputTokens(req *qtypes.OpenAIChatRequest) int {
 	return total
 }
 
+// RequestLookupHash is the credential identifier authorize sends for this
+// request: the batch owner's lookup hash when the context carries one,
+// otherwise the one-way hash of the bearer.
+func RequestLookupHash(ctx context.Context, bearer string) string {
+	return requestLookupHash(ctx, bearer)
+}
+
 func outputTokenEstimate(req *qtypes.OpenAIChatRequest) int {
 	if req.MaxTokens != nil && *req.MaxTokens > 0 {
 		return *req.MaxTokens
