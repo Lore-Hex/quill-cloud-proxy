@@ -131,6 +131,9 @@ func invokeProviderStream(
 	var winningProvider, winningModel, winningEndpoint string
 	var winningBytes int
 	var winningTTFBms, winningTotalMs int64
+	attempted := 0
+	circuitWait := time.Duration(-1)
+	tenant := providerCircuitTenant(authorization)
 	for i, option := range options {
 		if err := ctx.Err(); err != nil {
 			finishFailure(err)
@@ -139,9 +142,26 @@ func invokeProviderStream(
 		if option.Model == "" {
 			option.Model = req.Model
 		}
+		// A candidate whose circuit refuses is skipped without calling the
+		// provider; the next candidate takes over as if this one failed fast.
+		circuitTicket, wait, admitted := providerCircuits.Admit(option, tenant)
+		if !admitted {
+			providerCircuits.skips.Add(1)
+			if circuitWait < 0 || wait < circuitWait {
+				circuitWait = wait
+			}
+			selectedRoute.RecordCircuitSkip(option, &providerCircuitOpenError{retryAfter: wait})
+			fmt.Fprintf(os.Stderr,
+				"enclave.provider_circuit_skip request_log_id=%q request_id=%q attempt=%d/%d model=%q provider=%q endpoint=%q\n",
+				requestLogID, requestID, i+1, len(options), option.Model, option.Provider, option.EndpointID,
+			)
+			continue
+		}
+		attempted++
 		selectedRoute.RecordCandidateAttempt(option)
 		req.Model = option.Model
 		if err := adapter.RejectUnsupportedN(req); err != nil {
+			providerCircuits.Release(circuitTicket)
 			lastErr = withInvokeAttemptError(err, option)
 			fmt.Fprintf(os.Stderr,
 				"enclave.invoke_complete request_log_id=%q request_id=%q outcome=fail attempts=%d fallbacks=%d total_ms=%d last_err=%q\n",
@@ -152,8 +172,8 @@ func invokeProviderStream(
 		}
 		// The TTFB budget exists to fall over to the next candidate fast; the LAST
 		// candidate has nothing to fall over to, so give it a longer budget for slow
-		// reasoning first bytes.
-		isLast := i == len(options)-1
+		// reasoning first bytes. Candidates behind open circuits are not "next".
+		isLast := !laterCandidateAllowed(options[i+1:], req.Model, tenant)
 		budget := firstByteBudget
 		if isLast && useLongLastCandidateBudget {
 			budget = finalCandidateFirstByteBudget
@@ -163,6 +183,7 @@ func invokeProviderStream(
 		var candidateWriter *routeSelectingWriter
 		var attemptDuration time.Duration
 		var ttfbMs int64
+		var ttfbExpired bool
 		candidateDeadline := time.Now().Add(budget)
 		for tryN := 0; ; tryN++ {
 			attemptBudget := budget
@@ -197,6 +218,13 @@ func invokeProviderStream(
 					ttfbCaptured = true
 					ttfbTimer.Stop()
 				},
+				// The provider's 2xx head frees a half-open probe slot at
+				// once, so a probe never holds its circuit for a whole
+				// generation; only content (or completion) counts as the
+				// success that closes the circuit. An accepted attempt that
+				// errors before content is neither success nor failure.
+				onHead:    func() { providerCircuits.ReleaseProbe(circuitTicket) },
+				onContent: func() { providerCircuits.Succeed(circuitTicket) },
 			}
 			if x := shadowobserve.FromContext(ctx); x != nil {
 				model := option.UpstreamModel
@@ -225,7 +253,8 @@ func invokeProviderStream(
 			attemptDuration = time.Since(attemptStart)
 			ttfbTimer.Stop()
 			cancelAttempt()
-			if ttfbFired.Load() && err != nil {
+			ttfbExpired = ttfbFired.Load() && err != nil
+			if ttfbExpired {
 				err = fmt.Errorf("llm/upstream: time-to-first-byte exceeded %s: %w", budget, err)
 			}
 
@@ -259,6 +288,12 @@ func invokeProviderStream(
 				tryN >= maxTransientUpstreamRetries || !isTransientUpstreamError(err) {
 				break
 			}
+			// A tripped circuit (open, or half-open and probing) gets one try:
+			// a failed probe must reopen it after one round trip, not after
+			// the same-provider backoff schedule.
+			if providerCircuits.Tripped(circuitTicket) && providerDownFailure(err, false) {
+				break
+			}
 			backoff := transientUpstreamBackoff(tryN)
 			if time.Until(candidateDeadline) <= backoff {
 				break
@@ -273,6 +308,8 @@ func invokeProviderStream(
 				break
 			}
 		}
+		recordProviderCircuitOutcome(ctx, circuitTicket, option, err, candidateWriter,
+			ttfbExpired && isLast && useLongLastCandidateBudget, requestLogID)
 
 		if err == nil {
 			if candidateWriter.BytesWritten() == 0 {
@@ -298,7 +335,7 @@ func invokeProviderStream(
 		}
 		attemptErr := withInvokeAttemptError(err, option)
 		lastErr = preferredProviderError(lastErr, attemptErr)
-		if !trEnabled || candidateWriter.ResponseCommitted() || i == len(options)-1 || !retryableInvokeError(err) {
+		if !trEnabled || candidateWriter.ResponseCommitted() || !laterCandidateAllowed(options[i+1:], req.Model, tenant) || !retryableInvokeError(err) {
 			fmt.Fprintf(os.Stderr,
 				"enclave.invoke_complete request_log_id=%q request_id=%q outcome=fail attempts=%d fallbacks=%d total_ms=%d last_err=%q\n",
 				requestLogID, requestID, i+1, i, time.Since(overallStart).Milliseconds(), errorClass(err),
@@ -318,6 +355,16 @@ func invokeProviderStream(
 			requestLogID, requestID, len(options), len(options)-1, time.Since(overallStart).Milliseconds(), errorClass(lastErr),
 		)
 		finishFailure(lastErr)
+		return
+	}
+	if attempted == 0 {
+		// Every candidate was behind an open circuit: no provider was called.
+		circuitErr := &providerCircuitOpenError{retryAfter: max(circuitWait, 0), spent: polyphemusSelectionCharged(ctx)}
+		fmt.Fprintf(os.Stderr,
+			"enclave.invoke_complete request_log_id=%q request_id=%q outcome=fail attempts=0 fallbacks=0 total_ms=%d last_err=%q\n",
+			requestLogID, requestID, time.Since(overallStart).Milliseconds(), errorClass(circuitErr),
+		)
+		finishFailure(circuitErr)
 		return
 	}
 	selectedRoute.SignalReadyWithoutSelection()
@@ -439,6 +486,7 @@ func errorClass(err error) string {
 // alerts and a test match on them.
 var transportErrorClasses = []struct{ marker, class string }{
 	{"empty upstream response", "empty upstream response"},
+	{"provider circuit open", "provider_circuit_open"},
 	{"first-byte budget exceeded", "user_model_first_byte_timeout"},
 	{"thinking budget exceeded", "thinking_budget_exceeded"},
 	{"attestation verification required", "attestation_required"},
@@ -488,6 +536,9 @@ type selectedRouteTracker struct {
 	selected bool
 	routes   []routeAttempt
 	failures []string
+	// skipped counts candidates routed around because their provider
+	// circuit refused, without an attempt.
+	skipped int
 }
 
 type routeAttempt struct {
@@ -600,6 +651,32 @@ func (t *selectedRouteTracker) RecordFallbackFailure(option llm.InvokeOptions, e
 		}
 		t.failures = append(t.failures, option.Provider+"|"+option.EndpointID+"|"+class)
 	}
+}
+
+// RecordCircuitSkip records a candidate skipped because its provider circuit
+// refused. It is listed with the fallback failures, so settlement analytics
+// see what was routed around.
+func (t *selectedRouteTracker) RecordCircuitSkip(option llm.InvokeOptions, err error) {
+	if t == nil {
+		return
+	}
+	t.RecordFallbackFailure(option, err)
+	t.mu.Lock()
+	t.skipped++
+	t.mu.Unlock()
+}
+
+// RoutedAround is what settlement reports as route_fallbacks: the candidates
+// routed around before the one that served, attempted (FallbackCount) or
+// skipped by an open circuit. FallbackCount stays attempts only.
+func (t *selectedRouteTracker) RoutedAround() int {
+	if t == nil {
+		return 0
+	}
+	t.mu.Lock()
+	skipped := t.skipped
+	t.mu.Unlock()
+	return t.FallbackCount() + skipped
 }
 
 func (t *selectedRouteTracker) Failures() []string {
@@ -782,10 +859,30 @@ type routeSelectingWriter struct {
 	option      llm.InvokeOptions
 	bytes       int
 	committed   bool
+	opened      bool
 	onFirstByte func()
+	onHead      func()
+	onContent   func()
+	headOnce    sync.Once
+	contentOnce sync.Once
 	phases      *requesttiming.Timer
 	invocation  *requesttiming.Invocation
 	firstByte   sync.Once
+}
+
+// head runs onHead once, when the provider answers with a 2xx head.
+func (w *routeSelectingWriter) head() {
+	if w.onHead != nil {
+		w.headOnce.Do(w.onHead)
+	}
+}
+
+// produced runs onContent once, at the first output byte.
+func (w *routeSelectingWriter) produced() {
+	w.head()
+	if w.onContent != nil {
+		w.contentOnce.Do(w.onContent)
+	}
 }
 
 func (w *routeSelectingWriter) selectRoute() {
@@ -800,10 +897,25 @@ func (w *routeSelectingWriter) selectRoute() {
 }
 
 func (w *routeSelectingWriter) UpstreamOpened() bool {
+	w.opened = true
+	w.head()
 	if w.streaming {
 		w.selectRoute()
 	}
 	return w.streaming
+}
+
+// UpstreamAnswered records a 2xx head from a client that buffers the whole
+// body (upstreamerror.Answered). It never commits the response.
+func (w *routeSelectingWriter) UpstreamAnswered() {
+	w.opened = true
+	w.head()
+}
+
+// Accepted reports whether the provider answered this attempt: a 2xx head
+// (providers signal it through upstreamerror.Open) or any output.
+func (w *routeSelectingWriter) Accepted() bool {
+	return w != nil && (w.opened || w.committed || w.bytes > 0)
 }
 
 func (w *routeSelectingWriter) Write(p []byte) (int, error) {
@@ -812,6 +924,7 @@ func (w *routeSelectingWriter) Write(p []byte) (int, error) {
 	}
 	if len(p) > 0 {
 		w.selectRoute()
+		w.produced()
 	}
 	n, err := w.w.Write(p)
 	w.bytes += n

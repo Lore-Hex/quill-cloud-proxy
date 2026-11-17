@@ -11,6 +11,7 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/Lore-Hex/quill-cloud-proxy/enclave-go/internal/auth"
 	"github.com/Lore-Hex/quill-cloud-proxy/enclave-go/internal/trustedrouter"
@@ -114,6 +115,9 @@ func TestLiberty41CallsEveryMemberOnItsUSRouteThroughLocalGateway(t *testing.T) 
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			// Each scenario is its own outage; failed members open their tenant
+			// circuits within it.
+			resetProviderCircuitsForTest(t, time.Now)
 			trGateway, recorder, closeGateway := newFusionGatewayRecorder(t)
 			defer closeGateway()
 			streamer := &fusionEchoLLM{failModels: tt.failModels}

@@ -17,6 +17,7 @@ import (
 	"github.com/Lore-Hex/quill-cloud-proxy/enclave-go/internal/llm"
 	"github.com/Lore-Hex/quill-cloud-proxy/enclave-go/internal/trustedrouter"
 	"github.com/Lore-Hex/quill-cloud-proxy/enclave-go/internal/types"
+	"github.com/Lore-Hex/quill-cloud-proxy/enclave-go/internal/upstreamerror"
 )
 
 const decideRouteType = "decide"
@@ -171,6 +172,10 @@ func (w recordedWriter) Write(p []byte) (int, error) {
 	w.recorder.Write(p)
 	return w.out.Write(p)
 }
+
+// UpstreamAnswered forwards the provider's acceptance to the provider circuit
+// breaker without committing the response the way UpstreamOpened would.
+func (w recordedWriter) UpstreamAnswered() { upstreamerror.Answered(w.out) }
 
 // nativeFailureStatus maps a failed native attempt to the caller's status. Only
 // the CONTROL PLANE may speak to the caller in 4xx: its 401/402/429 are about
@@ -646,11 +651,20 @@ func serveNativeDecide(
 			// WAS finished and paid for, so if this request ends in failure the
 			// client is told not to regenerate it.
 			spent = spent || recorder.finishedGeneration()
-			if !atSettlement && !errors.As(err, &verdict) && attempt < nativeDecisionAttempts {
+			// Every candidate refused by a provider circuit: another attempt
+			// would only authorize and refund again.
+			circuitErr, circuitOpen := providerCircuitOpenFrom(err)
+			if !atSettlement && !errors.As(err, &verdict) && !circuitOpen && attempt < nativeDecisionAttempts {
 				fmt.Fprintf(os.Stderr, "enclave.decide_no_generation model=%q attempt=%d error_class=%q\n", req.Model, attempt, errorClass(err))
 				continue
 			}
 			spent = spent || atSettlement
+			if circuitOpen {
+				refusal := *circuitErr
+				refusal.spent = refusal.spent || spent
+				writeProviderCircuitOpen(conn, decideRouteType, &refusal)
+				return
+			}
 			writeDecideFailure(conn, nativeFailureStatus(err), messageFromControlPlaneError(err, "provider error"), err, spent)
 			return
 		}
