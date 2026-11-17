@@ -11,7 +11,7 @@ import (
 func validateDatabricksBootstrap(data *types.BootstrapData) error {
 	host := strings.TrimSpace(data.DatabricksHost)
 	token := strings.TrimSpace(data.DatabricksToken)
-	if host == "" && token == "" {
+	if host == "" && token == "" && strings.TrimSpace(data.DatabricksUnityToken) == "" {
 		return nil
 	}
 	if host == "" || token == "" {

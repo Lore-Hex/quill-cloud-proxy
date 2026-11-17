@@ -14,7 +14,8 @@ one. This is the AWS analog of enclave-go's provider_parity_test.go, which pins
 GCP and Azure together but says nothing about AWS.
 
 The rule: every provider=true binding in secrets.go must be either fetched by
-the AWS parent (_PROVIDER_KEYS) or named in AWS_EXEMPT with a reason. A new
+the AWS parent (_PROVIDER_KEYS), provisioned by sealed bootstrap
+(_SEALED_ONLY_PROVIDER_KEYS), or named in AWS_EXEMPT with a reason. A new
 provider added to secrets.go and forgotten on AWS fails this test at merge.
 
 If this fails with a provider in "unreachable on AWS": wire it into
@@ -89,7 +90,13 @@ def _routable_provider_json_fields() -> set[str]:
 
 
 def _aws_fetched_fields() -> set[str]:
-    return {field for field, _suffix in bootstrap_server._PROVIDER_KEYS}
+    return {
+        field
+        for field, _suffix in (
+            *bootstrap_server._PROVIDER_KEYS,
+            *bootstrap_server._SEALED_ONLY_PROVIDER_KEYS,
+        )
+    }
 
 
 def test_every_routable_provider_is_reachable_on_aws_or_exempt() -> None:

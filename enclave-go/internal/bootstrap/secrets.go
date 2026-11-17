@@ -130,6 +130,7 @@ var secretBindings = func() []secretBinding {
 		{[]string{"QUILL_RECRAFT_SECRET"}, "recraft key", true, func(b *types.BootstrapData, v string) { b.RecraftAPIKey = v }},
 		{[]string{"QUILL_BFL_SECRET"}, "bfl key", true, func(b *types.BootstrapData, v string) { b.BFLAPIKey = v }},
 		{[]string{"QUILL_DATABRICKS_SECRET"}, "databricks token", true, func(b *types.BootstrapData, v string) { b.DatabricksToken = v }},
+		{[]string{"QUILL_DATABRICKS_UNITY_SECRET"}, "databricks unity token", true, func(b *types.BootstrapData, v string) { b.DatabricksUnityToken = v }},
 		{[]string{"QUILL_DATABRICKS_HOST_SECRET"}, "databricks host", false, func(b *types.BootstrapData, v string) { b.DatabricksHost = v }},
 		{[]string{"QUILL_EXA_SECRET"}, "exa key", true, func(b *types.BootstrapData, v string) { b.ExaAPIKey = v }},
 		{[]string{"QUILL_CONTEXT_DEV_SECRET"}, "context.dev key", true, func(b *types.BootstrapData, v string) { b.ContextDevAPIKey = v }},

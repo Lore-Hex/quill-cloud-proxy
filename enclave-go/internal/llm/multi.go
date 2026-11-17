@@ -93,9 +93,10 @@ func New(boot *qtypes.BootstrapData) Client {
 			boot.DatabricksHost,
 			boot.DatabricksToken,
 		),
-		zeroG:   newZeroG(boot.ZeroGAPIKey),
-		alibaba: newOpenAICompatible("alibaba", boot.AlibabaAPIKey),
-		azure:   newAzure(boot.AzureAPIKey),
+		databricksUnity: newDatabricksUnity(boot.DatabricksHost, boot.DatabricksUnityToken),
+		zeroG:           newZeroG(boot.ZeroGAPIKey),
+		alibaba:         newOpenAICompatible("alibaba", boot.AlibabaAPIKey),
+		azure:           newAzure(boot.AzureAPIKey),
 		// Xiaomi MiMo — OpenAI-compatible chat completions at api.xiaomimimo.com/v1.
 		xiaomi: newOpenAICompatible("xiaomi", boot.XiaomiAPIKey),
 		// Cohere — embeddings only (native /v2/embed). Its InvokeStreaming
@@ -156,6 +157,7 @@ type multiClient struct {
 	stepfun             *openAICompatibleClient
 	relace              *openAICompatibleClient
 	databricks          *openAICompatibleClient
+	databricksUnity     *openAICompatibleClient
 	zeroG               *zeroGClient
 	alibaba             *openAICompatibleClient
 	azure               *azureClient
@@ -320,6 +322,10 @@ func (m *multiClient) InvokeStreaming(
 	case "relace":
 		return m.relace.InvokeStreaming(ctx, req, body, out, options...)
 	case "databricks":
+		if service, ok := databricksUnityModel(option.UpstreamModel); ok && m.databricksUnity != nil {
+			option.UpstreamModel = service
+			return m.databricksUnity.InvokeStreaming(ctx, req, body, out, option)
+		}
 		return m.databricks.InvokeStreaming(ctx, req, body, out, options...)
 	case "zero-g":
 		return m.zeroG.InvokeStreaming(ctx, req, body, out, options...)
