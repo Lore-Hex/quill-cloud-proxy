@@ -187,12 +187,18 @@ variable "alert_notification_channels" {
 resource "google_logging_metric" "settle_outbox_attention" {
   name        = "settle_outbox_attention"
   description = "Settle outbox sweeps that filed an object under dead/ or quarantine/, or were refused by the router."
-  filter      = <<-EOT
+  # The launcher exports the workload's stdout and stderr as
+  # jsonPayload.message (lower case); MESSAGE carries only the launcher's own
+  # lines. Field names are case-sensitive, so a filter on MESSAGE alone
+  # matches no sweep line and this alert could never fire.
+  filter = <<-EOT
     logName="projects/${var.project_id}/logs/confidential-space-launcher"
     AND (
       textPayload=~"settle_outbox\.sweep .*(dead|quarantined)=[1-9]"
+      OR jsonPayload.message=~"settle_outbox\.sweep .*(dead|quarantined)=[1-9]"
       OR jsonPayload.MESSAGE=~"settle_outbox\.sweep .*(dead|quarantined)=[1-9]"
       OR textPayload:"settle_outbox.sweep_sender_refused"
+      OR jsonPayload.message:"settle_outbox.sweep_sender_refused"
       OR jsonPayload.MESSAGE:"settle_outbox.sweep_sender_refused"
     )
   EOT
