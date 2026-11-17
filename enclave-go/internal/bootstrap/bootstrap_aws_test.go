@@ -175,8 +175,37 @@ func TestAWSMeasuredTrustConfig(t *testing.T) {
 }
 
 func TestAWSCompiledBootstrapPolicy(t *testing.T) {
+	if AWSBootstrapMode != "strict" {
+		t.Fatal("production AWS bootstrap must fail closed without a plaintext fallback")
+	}
 	if _, _, err := measuredAWSConfig(AWSBootstrapMode, AWSBundleSignerDER, AWSMinimumBundleVersion); err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestAWSCompiledPolicyRejectsLegacyForEveryV2Failure(t *testing.T) {
+	t.Setenv("AWS_BOOTSTRAP_MODE", "legacy")
+	t.Setenv("QUILL_BOOTSTRAP_MODE", "legacy")
+	for _, reason := range []string{
+		"connection refused", "KMS AccessDenied", "bundle absent",
+		"aws sealed bootstrap: signature rejected", "aws sealed bootstrap: bundle version",
+		"aws sealed bootstrap: ciphertext rejected", "invalid CMS", "NSM unavailable",
+	} {
+		t.Run(reason, func(t *testing.T) {
+			calls := 0
+			data, err := fetchAWS(t.Context(), AWSBootstrapMode,
+				func(context.Context) ([]byte, awssealed.Manifest, error) {
+					calls++
+					return nil, awssealed.Manifest{}, errors.New(reason)
+				},
+				func(context.Context) (*types.BootstrapData, error) {
+					t.Fatal("compiled production policy attempted the legacy plaintext path")
+					return nil, nil
+				}, 30*time.Millisecond, time.Millisecond)
+			if err == nil || data != nil || calls < 2 {
+				t.Fatal("compiled production policy did not retry then fail closed")
+			}
+		})
 	}
 }
 
