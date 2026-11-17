@@ -29,11 +29,11 @@ type AWSBootstrapEvidence struct {
 	BundleVersion uint64 `json:"bundle_version,omitempty"`
 }
 
-// BootstrapData is what the parent hands to the enclave at startup over vsock.
-//
-// V1 trust caveat: the parent fetches this from S3 + KMS-decrypts on behalf of
-// the enclave, then sends plaintext over vsock. V1.1 will switch to KMS-attested
-// release so the parent never sees the plaintext bedrock_credentials.
+// BootstrapData contains credentials and configuration loaded inside the enclave.
+// On the strict AWS path, the parent transports a signed encrypted bundle;
+// KMS releases its data key only to an accepted attested enclave. The legacy
+// migration path instead exposes plaintext to the parent and is not a fallback
+// permitted by the strict measured binary.
 type BootstrapData struct {
 	AWSBootstrap      *AWSBootstrapEvidence `json:"-"`
 	Devices           []DeviceConfig        `json:"devices"`
@@ -43,10 +43,8 @@ type BootstrapData struct {
 	Region            string                `json:"region"`
 	BedrockVsockProxy string                `json:"bedrock_vsock_proxy"` // e.g. "3:8003"
 
-	// OpenRouter (populated for the openrouter target and Meta Muse in multi). The
-	// API key is pulled from KMS-sealed config alongside the device-key
-	// blob; same trust posture as the Bedrock creds (parent decrypts and
-	// hands plaintext over vsock).
+	// OpenRouter credentials, when configured, use the same cloud-specific
+	// secret-release boundary as the other provider credentials.
 	OpenRouterAPIKey     string `json:"openrouter_api_key,omitempty"`
 	OpenRouterVsockProxy string `json:"openrouter_vsock_proxy,omitempty"` // e.g. "3:8004"
 
@@ -169,16 +167,11 @@ type BootstrapData struct {
 
 	// Cross-cloud GCP service-account key (JSON, plaintext).
 	//
-	// Populated only on the legacy AWS path, where the shared ACME cache and
-	// BYOK KMS unwrapper still authenticate to Google at runtime.
-	//
-	// AWS: the parent fetches the AWS-KMS-wrapped ciphertext from
-	// `quill/trustedrouter-aws-cross-cloud-sa-key` in AWS Secrets Manager,
-	// decrypts via `alias/quill-enclave-cmk`, and ships the plaintext JSON
-	// over vsock. V1 trust caveat (parallel to BedrockAccessKey): the parent
-	// sees plaintext for ~ms at boot. V1.1 will switch to attestation-gated
-	// KMS Decrypt where the parent only forwards still-encrypted bytes and the
-	// enclave does the unwrap inside the measured boundary.
+	// AWS still uses this key for its shared ACME cache and BYOK KMS unwrapper.
+	// On the strict path it is sealed with the other bootstrap credentials,
+	// signed off-host, and decrypted only inside an accepted attested enclave.
+	// The legacy migration path instead fetched and decrypted it on the parent;
+	// retirement of that path does not rotate previously readable credentials.
 	//
 	// Azure explicitly rejects this field. Its provider secrets and ACME cache
 	// key are cloud-local and released from Key Vault under attestation.
@@ -213,9 +206,9 @@ type BootstrapData struct {
 	// Cloudflare Zone ID for the DNS-01 ACME fallback. The CF API's
 	// DNS-record endpoints are zone-scoped. The zone for
 	// quillrouter.com is currently eba5653b08f4483d9c496c41c3a7393b
-	// — the parent's bootstrap server reads it from a separate
-	// Secret Manager entry (or env) so it can be rotated without
-	// re-baking the enclave image.
+	// It is loaded with the other cloud-specific bootstrap configuration.
+	// On AWS a change requires a newly signed encrypted bundle and a restart,
+	// not an unsigned parent environment override.
 	CloudflareZoneID string `json:"cloudflare_zone_id,omitempty"`
 
 	// External Account Binding for the FALLBACK ACME CA (task: a Let's

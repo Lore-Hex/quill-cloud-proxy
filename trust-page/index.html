@@ -123,6 +123,8 @@
         <h2>AWS &middot; Nitro Enclaves</h2>
         <p>Measures the enclave image file into PCR0 (SHA-384). Compare <code>pcr0</code> in <a href="/trust/aws-release.json">aws-release.json</a> against PCR0 in a live attestation document. Rebuild it yourself with <code>tools/verify-pcr0.sh</code>.</p>
         <p>This plane obtains a Let's Encrypt certificate via ACME dns01 inside the enclave, so WebPKI chain validation works normally. The certificate's SHA-256 and the TLS exporter value are also bound into the attestation's <code>user_data</code>, so the connection you are on is the connection that was attested.</p>
+        <p><strong>Credential release.</strong> AWS KMS releases the bootstrap data key encrypted to an ephemeral key inside an approved Nitro enclave. The enclave verifies the bundle against its measured operator-signing key and minimum version. The host transports ciphertext; it cannot obtain the plaintext data key. Production images have no plaintext bootstrap fallback, and the gateway role is denied access to the old secret records and decryption keys.</p>
+        <p><strong>Migration limit.</strong> Older AWS hosts could read credentials. The new release path does not erase historical copies. Rotation of those credentials is a separate, pending step; we do not claim it is complete. Operators who seal bundles still handle their plaintext, and a compromised signer could authorize a replacement bundle. See the <a href="https://github.com/Lore-Hex/quill-cloud-proxy/blob/main/docs/design/aws-attested-secret-release.md">design and verification requirements</a>.</p>
         <p><code>https://api-aws.trustedrouter.com/attestation</code></p>
       </div>
       <div class="panel">

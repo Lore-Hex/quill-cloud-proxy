@@ -1,11 +1,13 @@
 # AWS V1.1: attested secret release on Nitro
 
-Status: migration in progress. The approved Phase 0/1 infrastructure and
-Phase 3 transitional image are deployed; the serving fleet still uses legacy
-bootstrap and retains legacy secret access. See the evidence in
-[the runbook](../runbooks/aws-sealed-bootstrap.md). IAM, KMS and Secrets Manager
-writes must stay within Joseph's explicit phase approvals. This status is not
-a claim that the confidentiality or integrity cutover is complete.
+Status: strict images, strict-only admission and v2-only parents are deployed
+in both AWS regions. Legacy host secret-reading and decryption permissions
+were revoked on 2026-11-17. All four serving hosts were then replaced and
+passed individual fresh-boot verification; both regional rollouts completed
+with two healthy targets. See [the deployment record](../runbooks/aws-sealed-bootstrap.md).
+Old secret records are retained. Historical credential rotation and record
+deletion are separately approved work, not completed by access revocation.
+IAM, KMS and Secrets Manager writes must stay within Joseph's phase approvals.
 
 ## Problem
 

@@ -1,9 +1,10 @@
 # AWS attested bootstrap infrastructure
 
-This directory is the first stage of
+This directory owns the infrastructure for
 [`aws-attested-secret-release.md`](../../docs/design/aws-attested-secret-release.md).
-It does **not** make the current AWS credential plane confidential. The serving
-fleet still uses V1 until the later phases pass their deployment gates.
+Terraform alone does not prove a confidential serving path. The
+[deployment record](../../docs/runbooks/aws-sealed-bootstrap.md) tracks live
+attestation, encrypted bootstrap, host access denial and fresh-boot evidence.
 
 ## Phase 6: legacy permission retirement
 
@@ -87,7 +88,7 @@ the signer's public DER key for Phase 3; never generate a substitute local key.
 After creation, keep `provision_signer=true` for later plans. Turning it off
 is not rollback and is blocked by `prevent_destroy`.
 
-## Remaining gates
+## Migration gates
 
 1. Publish a pinned, CI-built EIF; verify its PCR0 on isolated candidates in
    both regions. Do not learn an admission measurement from the candidate host.
@@ -101,7 +102,9 @@ is not rollback and is blocked by `prevent_destroy`.
 6. Remove fallback and all accepted fallback-capable images before revoking
    legacy reads. Soak before deletion; coordinate every exposed-key rotation.
 
-Do not claim AWS secret confidentiality or retire the V1 secrets at Phase 0.
+These describe the original migration order, not a procedure for restoring
+legacy access. Do not infer completion from an infrastructure apply. Old-record
+deletion and historical credential rotation require separate approval.
 
 ## Phase 1: approved artifact storage
 

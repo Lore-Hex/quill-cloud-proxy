@@ -4,9 +4,11 @@ Build once in protected-main CI, admit the signed measurement, then boot.
 An instance is never a source of a new admission value. TLS terminates inside
 the enclave; do not add an ALB, CDN, or other prompt TLS terminator.
 
-This runbook covers the published-EIF release path. It does not complete the
-attested-secret migration. While bootstrap V1 or transitional fallback remains,
-the AWS parent can still read secrets. See
+This runbook covers the published-EIF release path. Production bootstrap must
+remain strict: no plaintext fallback, only strict images in every admission
+set, a v2-only parent, and no host permission to read the old secrets or decrypt
+with their legacy keys. A rollback must preserve those properties. Historical
+credential rotation is a separate step; see
 [the migration plan](design/aws-attested-secret-release.md).
 
 ## 0. Preconditions and rollback record
