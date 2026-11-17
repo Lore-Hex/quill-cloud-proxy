@@ -149,6 +149,7 @@ DARKBLOOM_SECRET="${DARKBLOOM_SECRET:-trustedrouter-darkbloom-api-key}"
 BAIDU_SECRET="${BAIDU_SECRET:-trustedrouter-baidu-api-key}"
 RIVERFLOW_SECRET="${RIVERFLOW_SECRET:-trustedrouter-riverflow-api-key}"
 DATABRICKS_SECRET="${DATABRICKS_SECRET:-trustedrouter-databricks-token}"
+DATABRICKS_UNITY_SECRET="${DATABRICKS_UNITY_SECRET:-trustedrouter-databricks-unity-token}"
 DATABRICKS_HOST_SECRET="${DATABRICKS_HOST_SECRET:-trustedrouter-databricks-host}"
 ALIBABA_SECRET="${ALIBABA_SECRET:-trustedrouter-alibaba-api-key}"
 AZURE_SECRET="${AZURE_SECRET:-trustedrouter-azure-api-key}"
@@ -334,6 +335,7 @@ for secret in \
   "$BAIDU_SECRET" \
   "$RIVERFLOW_SECRET" \
   "$DATABRICKS_SECRET" \
+  "$DATABRICKS_UNITY_SECRET" \
   "$DATABRICKS_HOST_SECRET" \
   "$ALIBABA_SECRET" \
   "$AZURE_SECRET" \

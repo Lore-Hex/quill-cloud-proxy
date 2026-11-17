@@ -184,6 +184,7 @@ func Fetch(ctx context.Context) (*types.BootstrapData, error) {
 	recraftSecret := os.Getenv("QUILL_RECRAFT_SECRET")
 	bflSecret := os.Getenv("QUILL_BFL_SECRET")
 	databricksSecret := os.Getenv("QUILL_DATABRICKS_SECRET")
+	databricksUnitySecret := os.Getenv("QUILL_DATABRICKS_UNITY_SECRET")
 	databricksHostSecret := os.Getenv("QUILL_DATABRICKS_HOST_SECRET")
 	zeroGSecret := os.Getenv("QUILL_ZERO_G_SECRET")
 	alibabaSecret := os.Getenv("QUILL_ALIBABA_SECRET")
@@ -652,6 +653,13 @@ func Fetch(ctx context.Context) (*types.BootstrapData, error) {
 		}
 	}
 	var databricksHost []byte
+	var databricksUnityToken []byte
+	if databricksUnitySecret != "" {
+		databricksUnityToken, err = fetchSecret(ctx, httpc, token, project, databricksUnitySecret)
+		if err != nil {
+			return nil, fmt.Errorf("bootstrap/gcp: databricks unity token: %w", err)
+		}
+	}
 	if databricksHostSecret != "" {
 		databricksHost, err = fetchSecret(ctx, httpc, token, project, databricksHostSecret)
 		if err != nil {
@@ -852,6 +860,7 @@ func Fetch(ctx context.Context) (*types.BootstrapData, error) {
 		RecraftAPIKey:                strings.TrimSpace(string(recraftKey)),
 		BFLAPIKey:                    strings.TrimSpace(string(bflKey)),
 		DatabricksToken:              strings.TrimSpace(string(databricksToken)),
+		DatabricksUnityToken:         strings.TrimSpace(string(databricksUnityToken)),
 		DatabricksHost:               strings.TrimSpace(string(databricksHost)),
 		ZeroGAPIKey:                  strings.TrimSpace(string(zeroGKey)),
 		AlibabaAPIKey:                strings.TrimSpace(string(alibabaKey)),

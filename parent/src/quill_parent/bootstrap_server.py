@@ -143,6 +143,7 @@ _PROVIDER_KEYS: Final[tuple[tuple[str, str], ...]] = (
     # cannot dispatch. (databricks_host is config, not a provider secret, but it
     # rides the same fetch loop.)
     ("databricks_token", "trustedrouter-databricks-token"),
+    ("databricks_unity_token", "trustedrouter-databricks-unity-token"),
     ("databricks_host", "trustedrouter-databricks-host"),
 )
 

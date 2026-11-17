@@ -149,18 +149,19 @@ type BootstrapData struct {
 	// provider-owned OpenAI-compatible endpoints. Provider names are accepted
 	// only when the enclave has a compiled-in base URL; bootstrap data can never
 	// supply an arbitrary upstream hostname.
-	ProviderAPIKeys map[string]string `json:"provider_api_keys,omitempty"`
-	DecartAPIKey    string            `json:"decart_api_key,omitempty"`
-	RecraftAPIKey   string            `json:"recraft_api_key,omitempty"`
-	BFLAPIKey       string            `json:"bfl_api_key,omitempty"`
-	DatabricksToken string            `json:"databricks_token,omitempty"`
-	DatabricksHost  string            `json:"databricks_host,omitempty"`
-	ZeroGAPIKey     string            `json:"zero_g_api_key,omitempty"`
-	AlibabaAPIKey   string            `json:"alibaba_api_key,omitempty"`
-	AzureAPIKey     string            `json:"azure_api_key,omitempty"`
-	LTXAPIKey       string            `json:"ltx_api_key,omitempty"`
-	RunwayAPIKey    string            `json:"runway_api_key,omitempty"`
-	KlingAPIKey     string            `json:"kling_api_key,omitempty"`
+	ProviderAPIKeys      map[string]string `json:"provider_api_keys,omitempty"`
+	DecartAPIKey         string            `json:"decart_api_key,omitempty"`
+	RecraftAPIKey        string            `json:"recraft_api_key,omitempty"`
+	BFLAPIKey            string            `json:"bfl_api_key,omitempty"`
+	DatabricksToken      string            `json:"databricks_token,omitempty"`
+	DatabricksUnityToken string            `json:"databricks_unity_token,omitempty"`
+	DatabricksHost       string            `json:"databricks_host,omitempty"`
+	ZeroGAPIKey          string            `json:"zero_g_api_key,omitempty"`
+	AlibabaAPIKey        string            `json:"alibaba_api_key,omitempty"`
+	AzureAPIKey          string            `json:"azure_api_key,omitempty"`
+	LTXAPIKey            string            `json:"ltx_api_key,omitempty"`
+	RunwayAPIKey         string            `json:"runway_api_key,omitempty"`
+	KlingAPIKey          string            `json:"kling_api_key,omitempty"`
 
 	// Xiaomi MiMo — OpenAI-compatible chat completions at api.xiaomimimo.com/v1.
 	XiaomiAPIKey string `json:"xiaomi_api_key,omitempty"`

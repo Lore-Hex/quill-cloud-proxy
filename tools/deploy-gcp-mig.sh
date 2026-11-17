@@ -566,6 +566,12 @@ fi
 DATABRICKS_TEE_ENV=""
 if [ -n "${QUILL_DATABRICKS_SECRET}" ]; then
   DATABRICKS_TEE_ENV="|tee-env-QUILL_DATABRICKS_SECRET=${QUILL_DATABRICKS_SECRET}|tee-env-QUILL_DATABRICKS_HOST_SECRET=${QUILL_DATABRICKS_HOST_SECRET}"
+  if [ "${QUILL_DATABRICKS_UNITY_SECRET+x}" != "x" ] && secret_inventory_has trustedrouter-databricks-unity-token; then
+    QUILL_DATABRICKS_UNITY_SECRET=trustedrouter-databricks-unity-token
+  fi
+  if [ -n "${QUILL_DATABRICKS_UNITY_SECRET:-}" ]; then
+    DATABRICKS_TEE_ENV+="|tee-env-QUILL_DATABRICKS_UNITY_SECRET=${QUILL_DATABRICKS_UNITY_SECRET}"
+  fi
 fi
 
 # Bootstrap treats every named secret as required. Prove the runtime service

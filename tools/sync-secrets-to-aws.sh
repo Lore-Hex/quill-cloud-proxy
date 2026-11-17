@@ -162,6 +162,7 @@ SECRETS=(
   trustedrouter-zero-g-api-key
   # Databricks needs both the token and the workspace host.
   trustedrouter-databricks-token
+  trustedrouter-databricks-unity-token
   trustedrouter-databricks-host
   trustedrouter-nextbit-api-key
   trustedrouter-nextbit-eu-api-key

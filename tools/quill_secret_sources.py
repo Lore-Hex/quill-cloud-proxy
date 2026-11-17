@@ -86,6 +86,7 @@ PROVIDER_KEY_ALIASES: dict[str, str] = {
     "CHUTES_API_KEY": "trustedrouter-chutes-api-key",
     "CLOUDFLARE_WORKERS_AI_API_TOKEN": "trustedrouter-cloudflare-workers-ai-api-token",
     "DATABRICKS_TOKEN": "trustedrouter-databricks-token",
+    "DATABRICKS_UNITY_TOKEN": "trustedrouter-databricks-unity-token",
     "DATABRICKS_HOST": "trustedrouter-databricks-host",
     "DIGITAL_OCEAN_API_KEY": "trustedrouter-digitalocean-api-key",
     "ENGY_API_KEY": "trustedrouter-engy-api-key",
