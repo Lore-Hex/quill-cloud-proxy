@@ -327,12 +327,7 @@ _DEPLOY_DEFAULT = re.compile(
 # both SYSTEM1MODELS bindings, all sealed and serving, because their defaults
 # stayed empty after the bundle that carries them was sealed. Entries here
 # must be in the manifest and must not be named by default; stale ones fail CI.
-SEALED_BUT_DARK_ON_AZURE: dict[str, str] = {
-    "trustedrouter-context-dev-api-key": (
-        "Azure activation pending (docs/providers/context-dev.md): sealed, but "
-        "not yet enabled on the Azure gateways"
-    ),
-}
+SEALED_BUT_DARK_ON_AZURE: dict[str, str] = {}
 
 
 def deploy_demanded_names(deploy_text: str) -> dict[str, str]:

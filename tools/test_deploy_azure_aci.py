@@ -2440,6 +2440,21 @@ class TestSharedHostnameForFailover(DeployHarness):
         self.assertFalse(self.state_file("verify.log").exists())
 
 
+class TestContextDevBinding(DeployHarness):
+    def test_default_context_dev_binding(self) -> None:
+        result = self.run_script("print-env")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(
+            json.loads(result.stdout)["QUILL_CONTEXT_DEV_SECRET"],
+            "trustedrouter-context-dev-api-key",
+        )
+
+    def test_explicit_empty_context_dev_binding_disables_provider(self) -> None:
+        result = self.run_script("print-env", QUILL_CONTEXT_DEV_SECRET="")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertNotIn("QUILL_CONTEXT_DEV_SECRET", json.loads(result.stdout))
+
+
 class TestControlPlaneBoundary(DeployHarness):
     """Azure's observer service must never receive money-path RPCs."""
 

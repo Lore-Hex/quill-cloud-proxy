@@ -12,6 +12,7 @@ import (
 	"os"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/Lore-Hex/quill-cloud-proxy/enclave-go/internal/decide"
 	"github.com/Lore-Hex/quill-cloud-proxy/enclave-go/internal/llm"
@@ -247,6 +248,8 @@ func TestNativeDecideCountsUpstreamAttemptsAndKeepsTheServedProvider(t *testing.
 		{"refunded call then failover again", []string{"", "", "", goodNative}, []error{down, down, down, nil}, 1, 1, 4},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
+			// Each case is its own outage of the fallback-first candidate.
+			resetProviderCircuitsForTest(t, time.Now)
 			backend := &scriptedLLM{replies: tc.replies, errors: tc.errors}
 			log := &controlPlaneLog{
 				authorizationResponses: []string{nativeRouteAuthorization("first", false, true), nativeRouteAuthorization("second", false, true)},

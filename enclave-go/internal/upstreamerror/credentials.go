@@ -2,6 +2,7 @@ package upstreamerror
 
 import (
 	"context"
+	"errors"
 	"strings"
 	"sync"
 )
@@ -28,7 +29,7 @@ func WithCredentialRedaction(ctx context.Context, values ...string) (context.Con
 		}
 		c.mu.Lock()
 		defer c.mu.Unlock()
-		return &Error{Status: status, Body: sanitize(body, c.values...)}
+		return preserveMarkers(err, &Error{Status: status, Body: sanitize(body, c.values...)}, c.values...)
 	}
 }
 
@@ -53,4 +54,38 @@ func IsCredentialName(name string) bool {
 		return true
 	}
 	return false
+}
+
+// clientInputMarker is how the gateway marks a failure as the caller's input
+// (cmd/enclave's clientInputError), not the provider's.
+type clientInputMarker interface {
+	ClientInputMessage() string
+}
+
+// clientInput keeps a caller-input marker on a redacted error.
+type clientInput struct {
+	err     error
+	message string
+}
+
+func (e *clientInput) Error() string              { return e.err.Error() }
+func (e *clientInput) Unwrap() error              { return e.err }
+func (e *clientInput) ClientInputMessage() string { return e.message }
+
+// preserveMarkers re-applies the original error's classification markers to
+// its redacted replacement. Redaction rebuilds the error so no unsanitized
+// body survives in its chain; without this it would also drop what the
+// gateway knows about it (caller input, the gateway's own failure), and a
+// caller-input or local failure carrying an HTTP status would be read as the
+// provider failing.
+func preserveMarkers(original, redacted error, secrets ...string) error {
+	out := redacted
+	var input clientInputMarker
+	if errors.As(original, &input) {
+		out = &clientInput{err: out, message: sanitizeText(input.ClientInputMessage(), secrets...)}
+	}
+	if IsLocal(original) {
+		out = &Local{Err: out}
+	}
+	return out
 }

@@ -13,6 +13,7 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/Lore-Hex/quill-cloud-proxy/enclave-go/internal/auth"
 	"github.com/Lore-Hex/quill-cloud-proxy/enclave-go/internal/trustedrouter"
@@ -145,6 +146,9 @@ func TestLiberty40FusesWhatReturnedAndFailsOverFusersThroughLocalGateway(t *test
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			// Each scenario is its own outage; a member that failed three
+			// times opens its tenant circuit, which is checked below.
+			resetProviderCircuitsForTest(t, time.Now)
 			trGateway, recorder, closeGateway := newFusionGatewayRecorder(t)
 			defer closeGateway()
 			streamer := &fusionEchoLLM{failModels: tt.failModels}
@@ -164,6 +168,26 @@ func TestLiberty40FusesWhatReturnedAndFailsOverFusersThroughLocalGateway(t *test
 			streamer.mu.Unlock()
 			if !reflect.DeepEqual(gotCalls, tt.wantCalls) {
 				t.Fatalf("calls per model = %#v, want %#v", gotCalls, tt.wantCalls)
+			}
+			if !tt.stream {
+				// Every failed member failed three times for this tenant, so
+				// its circuit is open: the next request routes around it
+				// without calling it and still gets the same final.
+				status, body = postLiberty40(t, trGateway, streamer, false)
+				if status != http.StatusOK || !strings.Contains(string(body), "final answer from "+tt.wantFinal) {
+					t.Fatalf("follow-up with open member circuits: status=%d body=%s", status, body)
+				}
+				streamer.mu.Lock()
+				followUp := map[string]int{}
+				for _, call := range streamer.calls {
+					followUp[call.Model]++
+				}
+				streamer.mu.Unlock()
+				for model := range tt.failModels {
+					if followUp[model] != gotCalls[model] {
+						t.Fatalf("open-circuit member %s was called again: %d -> %d", model, gotCalls[model], followUp[model])
+					}
+				}
 			}
 
 			recorder.mu.Lock()
