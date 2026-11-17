@@ -268,6 +268,7 @@ jobs:
           python3 tools/test_verify_gcp_runtime_secret_access.py
           python3 tools/test_verify_pcr0_build_args.py
           python3 tools/test_aws_iam_cmk_scope.py
+          python3 tools/test_settle_outbox_alert_filter.py
           python3 -m unittest tools.test_aws_eif_manifest
           python3 -m unittest tools.test_publish_aws_eif
           python3 -m unittest tools.test_aws_eif_compute
