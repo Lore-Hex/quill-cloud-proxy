@@ -11,6 +11,7 @@ import (
 	"strings"
 
 	qtypes "github.com/Lore-Hex/quill-cloud-proxy/enclave-go/internal/types"
+	"github.com/Lore-Hex/quill-cloud-proxy/enclave-go/internal/upstreamerror"
 )
 
 var scaleDownPaths = map[string]string{
@@ -201,6 +202,9 @@ func (c *openAICompatibleClient) invokeScaleDown(ctx context.Context, req *qtype
 		// but never include response content or credentials in logged errors.
 		return &upstreamHTTPError{status: response.StatusCode, body: "ScaleDown task request failed"}
 	}
+	// The provider answered. The body is buffered and validated below; a bad
+	// body is not the provider being down.
+	upstreamerror.Answered(out)
 	const maxResponseBytes = 8 << 20
 	raw, err := io.ReadAll(io.LimitReader(response.Body, maxResponseBytes+1))
 	if err != nil || len(raw) > maxResponseBytes {
