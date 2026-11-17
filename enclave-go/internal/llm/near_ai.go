@@ -10,6 +10,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log"
 	"net"
 	"net/http"
 	"net/netip"
@@ -25,8 +26,16 @@ import (
 
 const (
 	nearAIAttestationMaxBytes = 8 << 20
-	nearAIAttestationTimeout  = 3 * time.Minute
-	nearAIAttestationAttempts = 3
+	// nearAIAttestationTimeout is one budget shared by every attempt below,
+	// and it is further capped by the request context. More attempts never
+	// extend the time spent before inference.
+	nearAIAttestationTimeout = 3 * time.Minute
+	// A pinned NEAR domain can route a connection to an instance outside the
+	// pinned policy. Such a connection is discarded before any prompt is sent,
+	// and the next attempt opens a new connection with a fresh nonce and full
+	// verification. With about a quarter of connections refused, 3 attempts
+	// fail about 1.8% of requests and 6 attempts fail about 0.03%.
+	nearAIAttestationAttempts = 6
 )
 
 var nearAIDirectDomains = map[string]string{
@@ -62,6 +71,7 @@ type nearAIClient struct {
 	verifyEvidence func(context.Context, *nearAIEvidenceEnvelope) (*nearAIVerificationResult, error)
 	openConnection func(string, int) (nearAIConnection, *http.Client, error)
 	newNonce       func() (string, error)
+	logf           func(string, ...any)
 }
 
 type nearAIConnection interface {
@@ -82,6 +92,7 @@ func newNearAI(apiKey string) *nearAIClient {
 			return connection, client, err
 		},
 		newNonce: nearAINonce,
+		logf:     log.Printf,
 	}
 }
 
@@ -127,6 +138,10 @@ func (c *nearAIClient) InvokeStreaming(
 }
 
 func (c *nearAIClient) openVerifiedConnection(ctx context.Context, upstreamModel, domain string) (nearAIConnection, *http.Client, error) {
+	// Every attempt, including its dial, attestation fetch and sidecar
+	// verification, runs under this one context. The loop therefore stops at
+	// the earlier of the request's own cancellation (for example the caller's
+	// first-byte budget) and nearAIAttestationTimeout, whatever the count.
 	attestCtx, cancel := context.WithTimeout(ctx, nearAIAttestationTimeout)
 	defer cancel()
 	var lastErr error
@@ -147,6 +162,7 @@ func (c *nearAIClient) openVerifiedConnection(ctx context.Context, upstreamModel
 			transport.CloseIdleConnections()
 			var transportError net.Error
 			if errors.As(err, &transportError) && attestCtx.Err() == nil {
+				c.logAttemptFailure(domain, attempt, "fetch", err)
 				lastErr = err
 				continue
 			}
@@ -165,6 +181,7 @@ func (c *nearAIClient) openVerifiedConnection(ctx context.Context, upstreamModel
 			// Discard its connection; the next one needs a fresh nonce and
 			// complete verification before it can receive any prompt.
 			transport.CloseIdleConnections()
+			c.logAttemptFailure(domain, attempt, "verify", err)
 			lastErr = err
 			continue
 		}
@@ -179,6 +196,16 @@ func (c *nearAIClient) openVerifiedConnection(ctx context.Context, upstreamModel
 		return transport, httpc, nil
 	}
 	return nil, nil, fmt.Errorf("llm/near-ai: no verified connection after %d attempts: %w", nearAIAttestationAttempts, lastErr)
+}
+
+// logAttemptFailure records which attempt failed. The sidecar still logs the
+// refusal reason itself; this line adds the attempt number on the enclave side.
+func (c *nearAIClient) logAttemptFailure(domain string, attempt int, stage string, err error) {
+	if c.logf == nil {
+		return
+	}
+	c.logf("near-ai.attest.attempt_failed domain=%q attempt=%d/%d stage=%s err=%q",
+		domain, attempt+1, nearAIAttestationAttempts, stage, err.Error())
 }
 
 func nearAINonce() (string, error) {
