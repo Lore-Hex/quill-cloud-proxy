@@ -137,15 +137,30 @@ booting — wait). A **`TLSV1_ALERT_INTERNAL_ERROR`** means `autocert` rejected 
 canonical SNI — the instance's `API_HOST` is missing the canonical names (see
 #5). A **500** means the Confidential Space teeserver couldn't mint the
 attestation token (usually a wedged launcher — recreate the VM, see #7). The
-common boot-failure substrings to look for on the serial console: same list as
-below.
+common boot-failure substrings to look for in the workload's output: same list
+as below. A **503 "Attestation issuer temporarily unavailable"** means a token
+mint waited past the enclave's token queue budget; look for
+`attestation.gcp_issuer outcome=` lines (below) and check whether the issuer
+itself was slow.
 
-Pull the workload's serial console:
+Templates set `tee-container-log-redirect=cloud_logging`, so workload output
+is in Cloud Logging only (lowercase `jsonPayload.message`). The serial console
+carries only the launcher's own lines (for example launch-policy refusals):
 
 ```bash
+gcloud logging read 'logName="projects/quill-cloud-proxy/logs/confidential-space-launcher"
+  AND resource.labels.instance_id="<instance-id>" AND jsonPayload.message:*' \
+  --project=quill-cloud-proxy --freshness=30m --limit=50 \
+  --format='value(timestamp,jsonPayload.message)'
+
 gcloud compute instances get-serial-port-output <new-instance> \
   --zone=<zone> --project=quill-cloud-proxy | tail -50
 ```
+
+To put workload lines back on the serial console for one debugging deploy, set
+`TEE_CONTAINER_LOG_REDIRECT=true`. Do not leave it on: a request-log flood
+backs the console up, which stalls the launcher's token handler and turns
+`/attestation` into 503s.
 
 Common substring → cause:
 
