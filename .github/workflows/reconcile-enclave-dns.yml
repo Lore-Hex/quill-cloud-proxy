@@ -31,11 +31,23 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
+      # The reconciler's own account, the one its Cloud Run job runs as
+      # (deploy-enclave-dns-reconciler.yml): Compute and Artifact Registry
+      # reads and Cloud DNS writes, nothing a deploy needs. That account
+      # accepts this workflow alone: the workload identity provider puts it
+      # in the dns tier (quill-router infra/gcp_wif.tf and
+      # infra/ci_identities.tf). The provider does not yet stop this workflow
+      # asking for the deploy identity, which still accepts every admitted
+      # workflow of this repository until its repository-wide binding is
+      # removed (phase 5 of quill-router docs/runbooks/ci-identities.md).
+      # Until then, naming the reconciler's account here is what keeps this
+      # schedule off the deploy identity, and tools/test_rollout_safety.py
+      # holds this file to it.
       - name: Authenticate to GCP via WIF
         uses: Lore-Hex/quill-cloud-proxy/.github/actions/gcp-auth@582cbdee7b7023cfeb915b62a7f635aa1e4662b1 # main 2026-11-13
         with:
           workload_identity_provider: projects/44325983244/locations/global/workloadIdentityPools/github-actions/providers/github
-          service_account: tr-deploy@quill-cloud-proxy.iam.gserviceaccount.com
+          service_account: enclave-dns-reconciler@quill-cloud-proxy.iam.gserviceaccount.com
 
       - name: Authenticate to AWS for backup-domain DNS
         uses: Lore-Hex/quill-cloud-proxy/.github/actions/aws-credentials@582cbdee7b7023cfeb915b62a7f635aa1e4662b1 # main 2026-11-13
