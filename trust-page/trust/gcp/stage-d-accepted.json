@@ -1,10 +1,11 @@
 {
   "schema": "tr.stage-d-accepted/1",
   "plane": "gcp",
-  "sequence": 1435,
-  "kind": "final",
-  "issued_at": "2026-11-17T22:53:55Z",
+  "sequence": 1436,
+  "kind": "transitional",
+  "issued_at": "2026-11-17T23:13:36Z",
   "image_digests": [
+    "sha256:6873e10a4440243545af072b5a2ac1c32e9060a287f1ee0379c0acc86360c0f3",
     "sha256:8c6cbdaf83006bd5eae1046e1a175987ad22a5b7c2201142a35910dce3a24c84"
   ]
 }
