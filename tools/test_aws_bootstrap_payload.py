@@ -19,6 +19,7 @@ class PayloadTests(unittest.TestCase):
                      self.catalog["_CLOUDFLARE_ZONE_ID_SECRET_SUFFIX"]):
             self.values[name] = "synthetic-test-only"
         self.values[self.lease_name] = '{"version":1}'
+        self.values["trustedrouter-databricks-unity-token"] = "synthetic-unity"
 
     def build(self, omitted=None):
         return payload.build(self.values, region="eu-west-3", service_account=self.sa, omitted=omitted or [])
@@ -42,6 +43,15 @@ class PayloadTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "incomplete"):
             self.build()
         self.assertNotIn(self.catalog["_PROVIDER_KEYS"][0][0], self.build([name]))
+
+    def test_unity_token_is_sealed_only_and_requires_explicit_omission(self):
+        name = "trustedrouter-databricks-unity-token"
+        self.assertNotIn(name, dict(self.catalog["_PROVIDER_KEYS"]).values())
+        self.assertEqual(self.build()["databricks_unity_token"], "synthetic-unity")
+        del self.values[name]
+        with self.assertRaisesRegex(ValueError, "incomplete"):
+            self.build()
+        self.assertNotIn("databricks_unity_token", self.build([name]))
 
     def test_unknown_and_contradictory_omissions_are_rejected(self):
         for omitted in (["wrong-name"], [self.token_name], [self.token_name, self.token_name]):

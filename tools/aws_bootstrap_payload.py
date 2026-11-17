@@ -46,6 +46,8 @@ def build(values: dict[str, str], *, region: str, service_account: str,
     config = catalog()
     fields = dict(config["_PROVIDER_KEYS"] + config["_PROMPT_KEYS"])
     fields.update({
+        # Sealed only: never mirror this credential to the legacy parent.
+        "databricks_unity_token": "trustedrouter-databricks-unity-token",
         "trustedrouter_internal_token": config["_TR_INTERNAL_TOKEN_SECRET_SUFFIX"],
         "cloudflare_api_token": config["_CLOUDFLARE_API_TOKEN_SECRET_SUFFIX"],
         "cloudflare_zone_id": config["_CLOUDFLARE_ZONE_ID_SECRET_SUFFIX"],
