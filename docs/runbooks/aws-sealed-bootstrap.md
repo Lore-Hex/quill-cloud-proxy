@@ -81,6 +81,76 @@ parents were in dual mode, and the gateway role still had legacy access.
 Those are separate cutover gates and must not be inferred from an attested
 version 1 boot alone.
 
+### Strict cutover record: 2026-11-17
+
+The strict image is source `c1863c2c154b3aadfc3b1ee4b7be0675e29756f8`,
+published by [protected-main CI run 43995426874](https://github.com/Lore-Hex/quill-cloud-proxy/actions/runs/43995426874).
+Its EIF SHA-256 is
+`b0bf0713620f9ce1df123511d7066db93aebe282100c01d0eec1594ddfcb9268`
+and its PCR0 is
+`baf7f4fd2a8de81c1661345afe7e57e0a42fbbf9effded4f055c65874865641bf6a46fa966c0dd1ac6c2256200f769e6`.
+All four serving instances passed individual strict attested-bootstrap proofs
+before both runtime pin sets, both recipient-key policies and the signed public
+accepted set were narrowed to that measurement. The two public trust hosts
+were independently checked against all seven published AWS artifacts and their
+exact signing-workflow identity. This authenticates the published CI artifact;
+it is not an independent source-to-image reproduction.
+
+The parent-only rolls then disabled port 9100 without changing the parent
+image, EIF or bundle. Paris completed on template 55 at `11:45:43Z` (observed),
+and Dublin on template 61 at `12:29:37Z`. All four replacements passed the
+Nitro chain, exact instance, fresh nonce, TLS certificate and exporter checks,
+then reported `policy=strict`, `mode=attested`, `bundle_version=2` over that
+same verified connection. Separate host checks found only port 9101 and the
+expected `v2-only` parent. Full warmup, healthy-capacity, checkpoint, connection
+drain, rollback and final observation safeguards were retained.
+
+[PR #823](https://github.com/Lore-Hex/quill-cloud-proxy/pull/823) merged as
+`e2b88befcaefb16c057afec2356100c0944c3dac` with the exact tree tested by all
+13 CI jobs. Only after both parent rolls completed, the operator applied a
+fresh, machine-validated plan changing one existing IAM inline policy, with
+zero additions or deletions. Live policy readback matched exactly. Actual
+instance-role credentials in each region were denied three legacy secret
+reads and legacy-key decryption, each with `AccessDeniedException` and an AWS
+request ID, while reading the independently verified encrypted version 2
+bundle still succeeded. The test used random, non-customer ciphertext and
+never emitted secret values. SSM, DSQL, EIF reading, encrypted-bundle access,
+image pulls and logging permissions were preserved.
+
+The denial evidence is identified by SSM commands
+`b432c56e-979c-472f-b236-e8cfe61e1894` (Paris) and
+`02d36a22-7fbc-4181-9acd-ca6cae28850d` (Dublin). Their deliberate denials can
+appear in security monitoring; alarms were not disabled. New isolated hosts in
+both regions also booted successfully after revocation. Every final serving
+host was then created after the `12:32:41Z` policy readback and independently
+passed strict attested version 2 bootstrap and no-9100 listener checks:
+
+| Region | Instance | Launched (UTC) | Verified (UTC) |
+| --- | --- | --- | --- |
+| Paris | `i-08fcfb15ebac03833` | `12:38:23Z` | `12:43:11Z` |
+| Paris | `i-03770a3c1e149c337` | `12:58:30Z` | `13:02:40Z` |
+| Dublin | `i-0da638e61f5b81539` | `13:20:25Z` | `13:24:17Z` |
+| Dublin | `i-054065b7a5b4d0a76` | `13:40:35Z` | `13:45:04Z` |
+
+Paris's post-revocation refresh completed successfully at `13:14:41Z`
+(observed), and Dublin's at `13:56:47Z`. Both ended with exactly two healthy
+verified targets and no old serving targets. The isolated test hosts were
+terminated; no other operator's candidate was touched. The post-retirement
+Terraform drift check reported no changes; the merged code's
+[main CI run 44083862818](https://github.com/Lore-Hex/quill-cloud-proxy/actions/runs/44083862818)
+passed all 13 jobs. These checks sent no inference request or customer prompt.
+
+Future admission refuses pre-cutover source commits even when their historical
+CI signatures remain valid. The publisher also tests the compiled strict
+bootstrap policy. Missing Git history fails closed; there is no legacy rollback
+switch. Keep only strict images in KMS, runtime and public admission sets.
+
+Old secret records and historical credential copies are not erased by this
+cutover. Their deletion and rotation remain pending separate approval. Bundle
+publication does not itself revoke older signed bundles: preventing replay
+after a security-sensitive rotation requires raising the measured minimum
+version and revoking the replaced credentials at their issuers.
+
 ### Signing-key monitoring
 
 The central CloudTrail trail records KMS management events in
