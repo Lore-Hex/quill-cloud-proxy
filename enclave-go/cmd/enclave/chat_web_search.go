@@ -63,7 +63,7 @@ func maybeServeChatWebSearch(
 		outcome, err := executeResponsesWebSearch(ctx, req, runner, searcher, rootID, nil)
 		if err != nil {
 			logResponsesWebSearchEnd(requestLogID, started, outcome, err)
-			writeResponsesWebSearchError(conn, err)
+			writeResponsesWebSearchFailure(conn, outcome, err)
 			return true
 		}
 		logResponsesWebSearchEnd(requestLogID, started, outcome, nil)

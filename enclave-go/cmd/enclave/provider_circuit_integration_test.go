@@ -110,6 +110,9 @@ func newProviderCircuitControlPlane(t *testing.T, model string, candidates ...pr
 				"endpoint_id": candidates[0].endpoint, "provider": candidates[0].provider,
 				"usage_type": "Credits", "limit_usage_type": "Credits",
 				"route_candidates": routeCandidates,
+				// Hosted tools (web search) reserve their own bound; echo it as
+				// the real control plane does.
+				"additional_cost_reservation_microdollars": body["additional_cost_reservation_microdollars"],
 			}})
 			_, _ = w.Write(encoded)
 		case "/internal/gateway/refund":
@@ -750,6 +753,77 @@ func TestProviderCircuitDecideRefusalCarriesRetryAfterWithoutASecondAttempt(t *t
 	if len(backend.requests) != calls || len(log.authorize) != authorizes+1 || log.refund != refunds+1 {
 		t.Fatalf("decide refusal: calls %d->%d authorizes %d->%d refunds %d->%d", calls, len(backend.requests), authorizes, len(log.authorize), refunds, log.refund)
 	}
+}
+
+// Hosted web search runs its model calls through the orchestration runner,
+// not the plain chat handler, so it needs the same contract: a refusal is a
+// 503 with Retry-After, and once the route is remembered it takes no hold.
+// Without this, a single-provider outage turned every web-search request of a
+// batch into an authorize, a refund and a bare 502 on one balance row.
+func TestProviderCircuitWebSearchRefusesBeforeAuthorize(t *testing.T) {
+	enableProviderCircuitsForTest(t)
+	previousSearcher := enclaveWebSearchClient
+	enclaveWebSearchClient = &fakeResponsesWebSearcher{}
+	t.Cleanup(func() { enclaveWebSearchClient = previousSearcher })
+	const model = "circuit-search/glm-5.3-flash"
+	const provider = "circuit-search"
+	plane := newProviderCircuitControlPlane(t, model, providerCircuitTestCandidate{provider, "circuit-search/glm-5.3-flash@circuit-search/prepaid"})
+	upstream := &providerCircuitTestUpstream{}
+	upstream.setFailure(provider, providerCircuitUpstreamStatus(503))
+	openSharedCircuit(t, plane, upstream, model, "circuit-search")
+	upstreamCalls := upstream.total()
+
+	for _, route := range []struct{ path, bearer, body string }{
+		{"/v1/chat/completions", "circuit-search-chat", fmt.Sprintf(`{"model":%q,"stream":false,"messages":[{"role":"user","content":"hello"}],"tools":[{"type":"web_search_preview"}]}`, model)},
+		{"/v1/responses", "circuit-search-responses", fmt.Sprintf(`{"model":%q,"stream":false,"input":"hello","tools":[{"type":"web_search","search_context_size":"low"}],"store":false}`, model)},
+	} {
+		// The first request learns the route: authorized, refunded, no provider
+		// call, and told when to come back.
+		authorizes, refunds, _ := plane.counts()
+		response, body := serveProviderCircuitRequest(t, plane, upstream, route.bearer, route.path, route.body)
+		assertProviderCircuitRefusal(t, route.path+" first", response, body, "60")
+		if gotAuthorizes, gotRefunds, _ := plane.counts(); gotAuthorizes != authorizes+1 || gotRefunds != refunds+1 {
+			t.Fatalf("%s first: authorizes %d->%d refunds %d->%d, want one each", route.path, authorizes, gotAuthorizes, refunds, gotRefunds)
+		}
+
+		// The next one is refused before authorize: no hold and no refund.
+		for i := 0; i < 2; i++ {
+			response, body = serveProviderCircuitRequest(t, plane, upstream, route.bearer, route.path, route.body)
+			assertProviderCircuitRefusal(t, fmt.Sprintf("%s fast fail %d", route.path, i), response, body, "60")
+		}
+		if gotAuthorizes, gotRefunds, _ := plane.counts(); gotAuthorizes != authorizes+1 || gotRefunds != refunds+1 {
+			t.Fatalf("%s fast fail reached the control plane: authorizes %d->%d refunds %d->%d", route.path, authorizes, gotAuthorizes, refunds, gotRefunds)
+		}
+	}
+	if upstream.total() != upstreamCalls {
+		t.Fatalf("an open circuit reached the provider: calls %d->%d", upstreamCalls, upstream.total())
+	}
+}
+
+// A refusal at the final stage comes after the planner settled, so re-sending
+// the request is not free. Other failures keep their existing rendering.
+func TestWebSearchFailureRendersCircuitRefusal(t *testing.T) {
+	refused := &fusionRefundedProviderError{err: &orchestrationCallError{err: &providerCircuitOpenError{retryAfter: 20 * time.Second}}}
+	var out bytes.Buffer
+	writeResponsesWebSearchFailure(&out, responsesWebSearchOutcome{}, refused)
+	response, body := readRawHTTPResponse(t, out.Bytes())
+	assertProviderCircuitRefusal(t, "planner refusal", response, body, "20")
+
+	out.Reset()
+	writeResponsesWebSearchFailure(&out, responsesWebSearchOutcome{ModelCalls: []fusionCallResult{webSearchPlannerCall("q")}}, refused)
+	response, body = readRawHTTPResponse(t, out.Bytes())
+	if response.StatusCode != http.StatusServiceUnavailable || response.Header.Get("Retry-After") != "20" || response.Header.Get("X-Should-Retry") != "false" {
+		t.Fatalf("final refusal after a settled planner: status=%d retry-after=%q x-should-retry=%q body=%s",
+			response.StatusCode, response.Header.Get("Retry-After"), response.Header.Get("X-Should-Retry"), body)
+	}
+
+	out.Reset()
+	writeResponsesWebSearchFailure(&out, responsesWebSearchOutcome{}, providerCircuitUpstreamStatus(503))
+	response, body = readRawHTTPResponse(t, out.Bytes())
+	if response.StatusCode != http.StatusBadGateway || !strings.Contains(string(body), "web_search_failed") {
+		t.Fatalf("non-circuit failure changed: status=%d body=%s", response.StatusCode, body)
+	}
+	assertNotProviderCircuitRefusal(t, "non-circuit failure", response, body)
 }
 
 func TestProviderCircuitFusionRefusalCarriesRetryAfter(t *testing.T) {
