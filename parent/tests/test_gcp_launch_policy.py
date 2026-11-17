@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import os
 import re
+import subprocess
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -304,3 +306,65 @@ def test_billing_402_backoff_override_is_optional_for_rollback_safety() -> None:
     assert 'if [ -n "${QUILL_BILLING_402_BACKOFF_MS:-}" ]; then' in deploy
     assert "${BILLING_402_BACKOFF_TEE_ENV}|tee-env-QUILL_KEEPALIVE=" in deploy
     assert "|tee-env-QUILL_BILLING_402_BACKOFF_MS=${QUILL_BILLING_402_BACKOFF_MS}|" not in deploy
+
+
+def _log_redirect_block(deploy: str) -> str:
+    match = re.search(
+        r'^TEE_CONTAINER_LOG_REDIRECT="\$\{TEE_CONTAINER_LOG_REDIRECT:-[^}]*\}"\n'
+        r"case .*?^esac\n",
+        deploy,
+        re.MULTILINE | re.DOTALL,
+    )
+    assert match is not None
+    return match.group(0)
+
+
+def _run_log_redirect_block(block: str, value: str | None) -> subprocess.CompletedProcess[str]:
+    env = {key: item for key, item in os.environ.items() if key != "TEE_CONTAINER_LOG_REDIRECT"}
+    if value is not None:
+        env["TEE_CONTAINER_LOG_REDIRECT"] = value
+    return subprocess.run(
+        ["bash", "-c", block + 'printf "%s" "$TEE_CONTAINER_LOG_REDIRECT"'],
+        env=env,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+
+def test_workload_logs_skip_the_serial_console_by_default() -> None:
+    """Workload stdout goes to Cloud Logging only, never the serial console, by default.
+
+    tee-container-log-redirect=true also copies every workload line to the serial
+    console. A request-log flood backed that console up, which stalled the
+    launcher's /v1/token handler (it logs there too) and turned /attestation into
+    503s once the enclave's 5 s token queue wait expired.
+    """
+    deploy = (REPO_ROOT / "tools" / "deploy-gcp-mig.sh").read_text()
+    block = _log_redirect_block(deploy)
+
+    for unset in (None, ""):
+        default = _run_log_redirect_block(block, unset)
+        assert default.returncode == 0, default.stderr
+        assert default.stdout == "cloud_logging"
+
+    for value in ("cloud_logging", "true", "serial", "false"):
+        explicit = _run_log_redirect_block(block, value)
+        assert explicit.returncode == 0, (value, explicit.stderr)
+        assert explicit.stdout == value
+
+    for value in ("TRUE", "everywhere", "cloud_logging|tee-env-X=1"):
+        rejected = _run_log_redirect_block(block, value)
+        assert rejected.returncode == 1, value
+        assert "unsupported TEE_CONTAINER_LOG_REDIRECT" in rejected.stderr
+
+    assert deploy.count("tee-container-log-redirect=") == 1
+    assert '--metadata="^|^tee-container-log-redirect=${TEE_CONTAINER_LOG_REDIRECT}|' in deploy
+
+
+def test_every_gcp_launch_policy_permits_the_log_redirect_override() -> None:
+    # Confidential Space refuses to launch when the operator sets
+    # tee-container-log-redirect and the image's log_redirect policy forbids it.
+    for suffix in ("gcp.multi", "gcp.anthropic"):
+        dockerfile = (REPO_ROOT / "enclave-go" / f"Dockerfile.enclave.{suffix}").read_text()
+        assert 'LABEL "tee.launch_policy.log_redirect"="always"' in dockerfile, suffix

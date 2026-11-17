@@ -364,7 +364,30 @@ CSP_IMAGE_PROJECT="${CSP_IMAGE_PROJECT:-confidential-space-images}"
 # Route the workload's stdout/stderr into Cloud Logging so metadata-only
 # request lifecycle lines such as advisor.request_end and enclave.request_end
 # are observable. Prompt/output content must still never be logged by the app.
-TEE_CONTAINER_LOG_REDIRECT="${TEE_CONTAINER_LOG_REDIRECT:-true}"
+#
+# cloud_logging, NOT true. "true" also copies every workload line to the serial
+# console, and the Confidential Space launcher writes its own lines there too,
+# including the three it logs inside every /v1/token call. When a client storm
+# pushed the workload to tens of KB/s of request logs (2026-11-16, europe-west4
+# and us-central1), the launcher's log output backed up: workload lines reached
+# Cloud Logging up to 35 s late, each step of the token handler took ~2.9 s
+# instead of ~0.15 s, tokens took 8.7-20 s (multiples of ~2.9 s), the enclave's
+# 5 s token queue wait expired, and /attestation answered 503 "Attestation
+# issuer temporarily unavailable". Google Cloud Attestation and Cloud Logging
+# answered at normal speed throughout and the VMs were nearly idle, which
+# leaves the serial console as the slow sink. Google documents the risk for
+# this variable: high serial console log volume can slow the workload.
+# Set TEE_CONTAINER_LOG_REDIRECT=true only on a one-off debugging
+# deploy that needs workload lines on the serial console. Allowed values are
+# the launcher's own: cloud_logging, true, serial, false.
+TEE_CONTAINER_LOG_REDIRECT="${TEE_CONTAINER_LOG_REDIRECT:-cloud_logging}"
+case "${TEE_CONTAINER_LOG_REDIRECT}" in
+  cloud_logging|true|serial|false) ;;
+  *)
+    echo "unsupported TEE_CONTAINER_LOG_REDIRECT=${TEE_CONTAINER_LOG_REDIRECT}; expected cloud_logging, true, serial or false" >&2
+    exit 1
+    ;;
+esac
 
 log() { echo "[$(date +%H:%M:%S)] $*" >&2; }
 gc() { gcloud --project "$PROJECT_ID" "$@"; }
