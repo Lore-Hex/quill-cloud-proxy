@@ -879,7 +879,14 @@ func writeVideoProviderError(conn io.Writer, err error, fallback string) {
 	if status == 429 {
 		code = "rate_limit_exceeded"
 	}
-	writeOpenAIError(conn, status, fallback, "provider_error", code, "")
+	// A status the provider returned is the provider's failure. Local quote
+	// or support errors and transport failures stay attributed to the router.
+	source := "router"
+	var httpErr *video.HTTPError
+	if errors.As(err, &httpErr) {
+		source = "provider"
+	}
+	writeOpenAIErrorWithSource(conn, status, fallback, "provider_error", code, "", source)
 }
 
 func videoErrorStatus(err error) int {

@@ -914,11 +914,22 @@ func writeAdapterOpenAIError(w io.Writer, err *adapter.AdapterError) {
 }
 
 func writeOpenAIError(w io.Writer, status int, message, errType, code, param string) {
-	writeOpenAIErrorWithHeaders(w, status, message, errType, code, param, nil)
+	writeOpenAIErrorFull(w, status, message, errType, code, param, "router", nil)
+}
+
+// writeOpenAIErrorWithSource names who produced the failure: "router" for the
+// gateway's own decisions, "provider" for a status an upstream returned.
+func writeOpenAIErrorWithSource(w io.Writer, status int, message, errType, code, param, source string) {
+	writeOpenAIErrorFull(w, status, message, errType, code, param, source, nil)
 }
 
 // writeOpenAIErrorWithHeaders is writeOpenAIError plus extra response headers.
 func writeOpenAIErrorWithHeaders(w io.Writer, status int, message, errType, code, param string, extra map[string]string) {
+	writeOpenAIErrorFull(w, status, message, errType, code, param, "router", extra)
+}
+
+// writeOpenAIErrorFull writes the error with its source and any extra headers.
+func writeOpenAIErrorFull(w io.Writer, status int, message, errType, code, param, source string, extra map[string]string) {
 	if errType == "" {
 		errType = "invalid_request_error"
 	}
@@ -931,7 +942,7 @@ func writeOpenAIErrorWithHeaders(w io.Writer, status int, message, errType, code
 			"type":    errType,
 			"param":   orNilString(param),
 			"code":    code,
-			"source":  "router",
+			"source":  source,
 		},
 	})
 	fmt.Fprintf(w, "HTTP/1.1 %d %s\r\nContent-Type: application/json\r\nContent-Length: %d\r\nConnection: %s\r\n",
