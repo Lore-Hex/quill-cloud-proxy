@@ -11,7 +11,7 @@ PARENT = Path(__file__).resolve().parents[1] / "parent/src/quill_parent/bootstra
 
 def catalog() -> dict[str, Any]:
     # Parse only the literal catalog, never execute the parent or its AWS clients.
-    names = {"_PROVIDER_KEYS", "_DIRECT_PROVIDER_KEYS", "_PROMPT_KEYS",
+    names = {"_PROVIDER_KEYS", "_SEALED_ONLY_PROVIDER_KEYS", "_DIRECT_PROVIDER_KEYS", "_PROMPT_KEYS",
              "_TR_INTERNAL_TOKEN_SECRET_SUFFIX", "_SPEND_LEASE_ISSUER_CONFIG_SECRET_SUFFIX",
              "_CLOUDFLARE_API_TOKEN_SECRET_SUFFIX", "_CLOUDFLARE_ZONE_ID_SECRET_SUFFIX"}
     result = {}
@@ -44,10 +44,8 @@ def build(values: dict[str, str], *, region: str, service_account: str,
                                          or not v.strip() for k, v in values.items()):
         raise ValueError("bootstrap values must be nonempty strings")
     config = catalog()
-    fields = dict(config["_PROVIDER_KEYS"] + config["_PROMPT_KEYS"])
+    fields = dict(config["_PROVIDER_KEYS"] + config["_SEALED_ONLY_PROVIDER_KEYS"] + config["_PROMPT_KEYS"])
     fields.update({
-        # Sealed only: never mirror this credential to the legacy parent.
-        "databricks_unity_token": "trustedrouter-databricks-unity-token",
         "trustedrouter_internal_token": config["_TR_INTERNAL_TOKEN_SECRET_SUFFIX"],
         "cloudflare_api_token": config["_CLOUDFLARE_API_TOKEN_SECRET_SUFFIX"],
         "cloudflare_zone_id": config["_CLOUDFLARE_ZONE_ID_SECRET_SUFFIX"],

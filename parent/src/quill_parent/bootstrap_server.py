@@ -146,6 +146,11 @@ _PROVIDER_KEYS: Final[tuple[tuple[str, str], ...]] = (
     ("databricks_host", "trustedrouter-databricks-host"),
 )
 
+# Consumed only by the offline sealed-bundle builder, never by a parent fetch loop.
+_SEALED_ONLY_PROVIDER_KEYS: Final[tuple[tuple[str, str], ...]] = (
+    ("databricks_unity_token", "trustedrouter-databricks-unity-token"),
+)
+
 # Simple provider-owned OpenAI-compatible endpoints share one bounded map in
 # BootstrapData. The enclave still owns the provider -> HTTPS base URL table;
 # neither this parent nor a secret value can select an arbitrary hostname.
