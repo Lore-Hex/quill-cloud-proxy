@@ -100,7 +100,22 @@ func (runner liveResponsesWebSearchModelRunner) Run(
 	validate func(adapter.StreamResult) error,
 	streamed bool,
 ) (fusionCallResult, error) {
-	return runFusionCallValidatedObserved(
+	// Web search never reaches the plain chat handler's pre-authorize check,
+	// so it does its own: refuse before any hold when every provider this
+	// credential and stage were last authorized for has an open circuit.
+	// Otherwise an outage costs an authorize and a refund per request.
+	routeMemoryKey := providerRouteMemoryKey(ctx, runner.bearer, routeType, req)
+	routeDemand := providerRouteDemandFor(req)
+	if refusal := providerCircuitRefusal(ctx, routeMemoryKey, routeDemand, routeType, req.Model, runner.requestLogID); refusal != nil {
+		return fusionCallResult{}, refusal
+	}
+	started := time.Now()
+	authz, options, err := authorizeFusionCall(ctx, req, runner.trGateway, runner.secretCache, runner.bearer, routeType, idempotencyKey)
+	if err != nil {
+		return fusionCallResult{}, err
+	}
+	providerCircuits.RememberRoutes(routeMemoryKey, routeDemand, options, providerCircuitTenant(authz))
+	return runAuthorizedFusionCallAttempt(
 		ctx,
 		runner.br,
 		req,
@@ -116,6 +131,9 @@ func (runner liveResponsesWebSearchModelRunner) Run(
 		true,
 		observer,
 		streamed,
+		true,
+		0,
+		fusionCallAuthorization{authz, options, started},
 	)
 }
 
@@ -188,7 +206,7 @@ func maybeServeResponsesWebSearch(
 		outcome, err := executeResponsesWebSearch(ctx, req, runner, searcher, rootID, nil)
 		if err != nil {
 			logResponsesWebSearchEnd(requestLogID, started, outcome, err)
-			writeResponsesWebSearchError(conn, err)
+			writeResponsesWebSearchFailure(conn, outcome, err)
 			return true
 		}
 		logResponsesWebSearchEnd(requestLogID, started, outcome, nil)
@@ -751,6 +769,20 @@ func classifiedWebSearchError(err error) error {
 		return &adapter.AdapterError{Status: status, Message: "web search provider unavailable", Context: "web_search"}
 	}
 	return &adapter.AdapterError{Status: http.StatusBadGateway, Message: "web search provider unavailable", Context: "web_search"}
+}
+
+// writeResponsesWebSearchFailure renders a failed non-streaming web-search
+// run. A provider circuit refusal keeps the plain chat path's contract (503,
+// Retry-After, x-should-retry); a retry is free only when no model call of
+// this run settled.
+func writeResponsesWebSearchFailure(conn io.Writer, outcome responsesWebSearchOutcome, err error) {
+	if circuitErr, ok := providerCircuitOpenFrom(err); ok {
+		refusal := *circuitErr
+		refusal.spent = refusal.spent || len(outcome.ModelCalls) > 0
+		writeProviderCircuitOpen(conn, "web_search", &refusal)
+		return
+	}
+	writeResponsesWebSearchError(conn, err)
 }
 
 func writeResponsesWebSearchError(conn io.Writer, err error) {

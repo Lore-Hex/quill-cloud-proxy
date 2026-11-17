@@ -874,16 +874,27 @@ func providerRouteMemoryKey(ctx context.Context, bearer, routeType string, req *
 // circuit, so no credit or key hold is taken and no refund follows. It writes
 // the 503 and reports true when it refused.
 func providerCircuitFastFail(ctx context.Context, w io.Writer, key string, demand providerRouteDemand, routeType, model, requestLogID string) bool {
+	refusal := providerCircuitRefusal(ctx, key, demand, routeType, model, requestLogID)
+	if refusal == nil {
+		return false
+	}
+	writeProviderCircuitOpen(w, routeType, refusal)
+	return true
+}
+
+// providerCircuitRefusal is providerCircuitFastFail for callers that render
+// their own errors (orchestration model calls): it logs the refusal and
+// returns it instead of writing it. Nil when the request may go to authorize.
+func providerCircuitRefusal(ctx context.Context, key string, demand providerRouteDemand, routeType, model, requestLogID string) *providerCircuitOpenError {
 	wait, refused := providerCircuits.FastFail(key, demand)
 	if !refused {
-		return false
+		return nil
 	}
 	fmt.Fprintf(os.Stderr,
 		"enclave.provider_circuit_fast_fail request_log_id=%q route=%q model=%q retry_after_seconds=%d\n",
 		requestLogID, routeType, model, retryAfterSeconds(wait),
 	)
-	writeProviderCircuitOpen(w, routeType, &providerCircuitOpenError{retryAfter: wait, spent: polyphemusSelectionCharged(ctx)})
-	return true
+	return &providerCircuitOpenError{retryAfter: wait, spent: polyphemusSelectionCharged(ctx)}
 }
 
 // polyphemusSelectionCharged reports whether this request already paid for a
