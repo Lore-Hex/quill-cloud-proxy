@@ -55,7 +55,7 @@ AWS_EIF_SOURCE_COMMIT="${AWS_EIF_SOURCE_COMMIT:-}"
 CANDIDATE_TEMPLATE_ONLY="${CANDIDATE_TEMPLATE_ONLY:-0}"
 # Parent mode is a staged operator choice, not an enclave trust override.
 # The strict enclave image never falls back regardless of this setting.
-AWS_BOOTSTRAP_MODE="${AWS_BOOTSTRAP_MODE:-legacy}"
+AWS_BOOTSTRAP_MODE="${AWS_BOOTSTRAP_MODE:-v2-only}"
 # The release image has run ACME since 2026-08-23. Keep this overrideable for
 # the standalone self-signed deployment, whose separation model deliberately
 # carries no cross-cloud GCP credential and therefore must skip the ACME-only
@@ -682,7 +682,7 @@ phase_compute() {
   # the run early if a prereq is missing — better than producing a
   # half-wired ASG.
   local parent_image parent_digest="${AWS_PARENT_IMAGE_DIGEST:-}"
-  local bootstrap_mode="${AWS_BOOTSTRAP_MODE:-legacy}" bootstrap_key
+  local bootstrap_mode="${AWS_BOOTSTRAP_MODE:-v2-only}" bootstrap_key
   bootstrap_key=$(python3 "$SCRIPT_DIR/aws_kms_admission.py" parent-key \
     --region "$AWS_REGION" --mode "$bootstrap_mode")
   if [ "$bootstrap_mode" != legacy ] && [ -z "$parent_digest" ]; then
@@ -1527,13 +1527,14 @@ phase_quotas() {
 # ─── Phase: cross-cloud-key (GCP SA → AWS KMS-wrapped → Secrets Manager) ─
 phase_cross_cloud_key() {
   log "=== phase: cross-cloud-key ==="
+  python3 "$SCRIPT_DIR/aws_kms_admission.py" require-legacy-provisioning
   # The AWS-side enclave needs to talk to GCP Spanner + Bigtable + KMS +
   # Secret Manager (cross-cloud). It does that with a GCP service-account
   # JSON key, wrapped at rest by an AWS KMS CMK and stored in AWS Secrets
-  # Manager. The Nitro enclave bootstrap unwraps the key inside the
-  # measured enclave (KMS policy gates the decrypt on the enclave's
-  # attestation document; setup of that policy happens on the enclave
-  # side, not here).
+  # Manager. This legacy path was decrypted by the parent, not gated by
+  # recipient attestation. After activation, rotate through complete off-host
+  # sealed bundles instead; the guard above refuses to mint a key that the
+  # serving sealed bootstrap would never receive.
   #
   # This phase is responsible for:
   #   1. GCP service account: tr-aws-cross-cloud@quill-cloud-proxy.iam.gserviceaccount.com

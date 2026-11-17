@@ -4,8 +4,10 @@ import copy
 import io
 import json
 import subprocess
+import tempfile
 import unittest
 import urllib.error
+from pathlib import Path
 from unittest.mock import patch
 
 from tools import aws_eif_admission as admission
@@ -20,6 +22,9 @@ class AdmissionTests(unittest.TestCase):
         kms = patch.object(admission.aws_kms_admission, "check_keys")
         kms.start()
         self.addCleanup(kms.stop)
+        strict = patch.object(admission, "require_strict_source")
+        strict.start()
+        self.addCleanup(strict.stop)
         self.trust = self.root / "trust-page" / "trust"
         self.trust.mkdir(parents=True)
         self.current = {
@@ -48,6 +53,20 @@ class AdmissionTests(unittest.TestCase):
                 admission.prepare(self.path, self.signature, "a" * 40, write=True, trust=self.trust)
             self.assertEqual((self.trust / "aws-release.json").read_bytes(), baseline)
             self.assertFalse((self.trust / "eif").exists())
+
+    def test_pre_cutover_signed_artifact_cannot_be_staged(self):
+        baseline = (self.trust / "aws-release.json").read_bytes()
+        with patch.object(admission.manifests, "verify", return_value=self.record), \
+             patch.object(admission, "require_strict_source", side_effect=ValueError("pre-cutover")), \
+             self.assertRaisesRegex(ValueError, "pre-cutover"):
+            admission.prepare(self.path, self.signature, "a" * 40, write=True, trust=self.trust)
+        self.assertEqual((self.trust / "aws-release.json").read_bytes(), baseline)
+        self.assertFalse((self.trust / "eif").exists())
+
+    def test_pre_cutover_current_record_cannot_be_signed(self):
+        with patch.object(admission, "require_strict_source", side_effect=ValueError("pre-cutover")), \
+             self.assertRaisesRegex(ValueError, "pre-cutover"):
+            admission.verify_record(self.trust / "aws-release.json")
 
     def test_conflicting_pending_candidate_is_not_overwritten(self):
         first = admission.staged_record(self.current, self.record, self.path.read_bytes())
@@ -250,6 +269,54 @@ class AdmissionTests(unittest.TestCase):
                 admission.validate_current({**self.current, "accepted_pcr0s": bad})
         with self.assertRaises(ValueError):
             admission.validate_current({**self.current, "source_commit": None})
+
+
+class StrictSourceTests(unittest.TestCase):
+    def setUp(self):
+        self.directory = tempfile.TemporaryDirectory()
+        self.addCleanup(self.directory.cleanup)
+        self.root = Path(self.directory.name)
+        self.git("init", "-q")
+        self.git("config", "user.email", "test@example.invalid")
+        self.git("config", "user.name", "Admission test")
+        self.git("config", "commit.gpgSign", "false")
+        self.git("commit", "--allow-empty", "-qm", "legacy")
+        self.legacy = self.git("rev-parse", "HEAD")
+        self.git("commit", "--allow-empty", "-qm", "strict cutover")
+        self.strict = self.git("rev-parse", "HEAD")
+        self.git("commit", "--allow-empty", "-qm", "later strict release")
+        self.latest = self.git("rev-parse", "HEAD")
+        root = patch.object(admission, "ROOT", self.root)
+        floor = patch.object(admission, "STRICT_BOOTSTRAP_SOURCE", self.strict)
+        root.start()
+        floor.start()
+        self.addCleanup(root.stop)
+        self.addCleanup(floor.stop)
+
+    def git(self, *arguments):
+        return subprocess.check_output(["git", *arguments], cwd=self.root, text=True).strip()
+
+    def test_cutover_and_descendant_are_allowed(self):
+        admission.require_strict_source(self.strict)
+        admission.require_strict_source(self.latest)
+
+    def test_legacy_and_missing_history_fail_closed(self):
+        for source in (self.legacy, "0" * 40):
+            with self.subTest(source=source), self.assertRaisesRegex(ValueError, "strict-bootstrap"):
+                admission.require_strict_source(source)
+
+    def test_unmerged_descendant_is_not_a_release(self):
+        self.git("checkout", "-q", "-b", "unmerged", self.strict)
+        self.git("commit", "--allow-empty", "-qm", "unmerged release")
+        unmerged = self.git("rev-parse", "HEAD")
+        self.git("checkout", "-q", self.latest)
+        with self.assertRaisesRegex(ValueError, "strict-bootstrap"):
+            admission.require_strict_source(unmerged)
+
+    def test_short_or_option_like_sources_are_rejected(self):
+        for source in (self.strict[:8], "--help", "main", None):
+            with self.subTest(source=source), self.assertRaisesRegex(ValueError, "full source"):
+                admission.require_strict_source(source)
 
 
 if __name__ == "__main__":

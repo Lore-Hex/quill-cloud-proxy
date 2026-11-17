@@ -5,23 +5,54 @@ This directory is the first stage of
 It does **not** make the current AWS credential plane confidential. The serving
 fleet still uses V1 until the later phases pass their deployment gates.
 
-## Default: adoption only
+## Phase 6: legacy permission retirement
+
+Applying this revision updates `quill-enclave-policy` to
+`ciphertext-only-parent-policy.json`. Do not apply it until all serving
+instances have verified strict, attested bootstrap, both new key policies and
+all admission consumers accept only strict CI-published images, and every
+serving parent is in `v2-only` mode. These are production evidence gates, not
+facts established by Terraform tests or by merging this change.
+
+The replacement removes the three legacy secret/KMS grants, preserves the
+existing ECR and logging grants, explicitly denies reads of secrets other than
+the two regional ciphertext-bundle names, and explicitly denies Decrypt and
+ReEncrypt on both legacy wrapping keys. The six `?` characters match only the
+Secrets Manager ARN's generated suffix, not an arbitrary secret-name prefix.
+This policy grants no access to either bundle: the separate attested-reader
+policy still grants only the two exact provisioned bundle and key ARNs.
+Other inline and managed policies, including DSQL and SSM, are untouched.
+
+Keep all three provisioning opt-ins enabled and retain the strict-only
+`accepted_pcr0` set. Review a fresh saved plan under the AWS rollout reservation;
+expect one inline-policy update and no key, secret, role, or storage deletion.
+Read back the complete role policy inventory, prove legacy reads and unwraps
+are denied with the actual host role, then prove a fresh strict enclave boot
+and verified health in each region. Use random non-customer ciphertext for
+the legacy KMS denial test. Never print an unexpectedly successful secret read.
+
+There is deliberately no flag that restores the old grants. Defaults must not
+silently re-enable plaintext bootstrap after retirement. Keep the historical
+baseline JSON for auditing only. Secret deletion and credential rotation remain
+separate approvals; permission revocation does not invalidate old copies.
+
+## Original adoption stage
 
 Run `terraform init`, `terraform validate`, and `terraform test` here. The
 provider lock file pins the provider. Tests use mock providers and no cloud
-credentials. A default `terraform plan` imports the parent role, its inline
-policy and the two existing CMKs, without modifying those resources. All four
-have `prevent_destroy` and `ignore_changes = all`: imports are not permission
-to rewrite serving IAM or replace existing root-delegated legacy key policies.
-The JSON file is a metadata-only baseline, not a new runtime policy.
+credentials. Phase 0 imported the parent role, its inline policy and the two
+existing CMKs without modifying them. The role and legacy CMKs remain frozen
+with `prevent_destroy` and `ignore_changes = all`. The parent's inline policy
+now retains `prevent_destroy` but is managed for the approved Phase 6 update
+above. Imports never authorize replacing existing legacy key policies.
 
 The legacy shell IAM phase now refuses missing CMKs or failed alias lookups
 before any IAM write. For a new region, provision and approve its CMK explicitly
 before that phase; the old `--phase all` ordering is not a fresh-region shortcut.
 
 Review the saved plan before any apply. Abort if adoption proposes creation,
-deletion or modification of a legacy object. Never apply with a resource target
-to work around an unexpected diff. State and saved plans are ignored by Git;
+deletion or an unapproved modification of a legacy object. Never apply with a
+resource target to work around an unexpected diff. State and saved plans are ignored by Git;
 keep them in restricted operator storage and retain the state between phases.
 No secret values or encrypted bundles belong in Terraform state.
 
@@ -141,3 +172,22 @@ policy test is not live KMS evidence. Later releases must widen this variable
 and the signed/runtime admission sets before boot, and narrow both only after
 verifying the surviving fleet. Removing the opt-in is not rollback and is
 blocked by `prevent_destroy`.
+
+After activation, `deploy-aws-nitro.sh --phase cross-cloud-key` also refuses
+before any GCP key mint or legacy secret write. That command cannot rotate a
+credential used inside the sealed bundle. Use the complete off-host publication
+procedure and coordinate credential revocation separately.
+
+After the gated retirement, compute defaults to `v2-only` and the activated
+key configuration rejects both `legacy` and `dual` before any cloud call.
+An explicit immutable parent-image digest remains required. Do not merge
+this retirement change while any serving parent still needs the V1 listener.
+
+The release admission tool also requires the CI-authenticated source commit to
+include strict-bootstrap cutover `c1863c2c154b3aadfc3b1ee4b7be0675e29756f8`
+and belong to the checked-out release history. A historical CI signature alone
+cannot re-admit a pre-cutover image. Both candidate admission and signing the
+current release record fail closed on older source or incomplete Git history.
+Keep full history in release checkouts; do not bypass this guard for rollback.
+The measured publisher's compiled-policy test must continue to require strict
+bootstrap for every later image.

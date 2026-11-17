@@ -129,6 +129,29 @@ elif args[:2] not in [
         self.assertIn("No wildcard decrypt grant is permitted", result.stderr)
         self.assertEqual(len(calls), 2)
 
+    def test_retired_cross_cloud_rotation_stops_before_any_cloud_call(self):
+        source = (ROOT / "tools/deploy-aws-nitro.sh").read_text()
+        phase = "phase_cross_cloud_key() {" + source.split("phase_cross_cloud_key() {", 1)[1].split('\ncase "$PHASE" in', 1)[0]
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            config = root / "aws-secrets"
+            config.mkdir()
+            shutil.copyfile(ROOT / "tools/aws_kms_admission.py", root / "aws_kms_admission.py")
+            (config / "attested-release.json").write_text(json.dumps({
+                "schema_version": 1, "required": True,
+                "key_arns": {region: f"arn:aws:kms:{region}:330422590279:key/{key}"
+                             for region, key in KEYS.items()},
+            }))
+            script = ("set -euo pipefail\nlog() { :; }\n"
+                      "aws() { echo unexpected-cloud-call >&2; return 97; }\n"
+                      "gcloud() { echo unexpected-cloud-call >&2; return 97; }\n"
+                      + phase + "\nphase_cross_cloud_key\n")
+            result = subprocess.run(["bash", "-c", script], capture_output=True, text=True,
+                timeout=10, env={**os.environ, "SCRIPT_DIR": str(root), "PHASE": "cross-cloud-key"})
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("legacy IAM provisioner is retired", result.stderr)
+        self.assertNotIn("unexpected-cloud-call", result.stderr)
+
 
 if __name__ == "__main__":
     unittest.main()
