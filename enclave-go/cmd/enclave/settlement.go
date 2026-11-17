@@ -66,6 +66,9 @@ func settleAndBroadcast(
 	if trGateway == nil || !trGateway.Enabled() || authorization == nil {
 		return nil, nil
 	}
+	// From here the request is charged for this call: settled now, or by the
+	// retry queue when this attempt fails.
+	markRequestCharged(ctx)
 	result, err := trGateway.Settle(ctx, authorization, usage)
 	if err != nil {
 		return nil, err

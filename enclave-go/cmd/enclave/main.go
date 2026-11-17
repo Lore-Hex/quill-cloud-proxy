@@ -299,6 +299,7 @@ func main() {
 	authProtector := abuse.NewProtector(nil, nil)
 	trGateway.SetCredentialGuard(authProtector)
 	authProtector.StartStats(ctx, os.Stderr, time.Minute)
+	startProviderCircuitStats(ctx, os.Stderr, time.Minute)
 	videoGateway = newVideoService(videoProviderKeys(boot), trGateway)
 	videoGateway.Start(ctx)
 	var byokSecrets *byokcache.Cache
@@ -715,6 +716,7 @@ func serveOneRequest(
 	ctx = abuse.WithRequestState(ctx, &abuse.RequestState{})
 	ctx = trustedrouter.WithRequestLogID(ctx, requestLogID)
 	ctx = trustedrouter.WithAuthorizationInvocation(ctx)
+	ctx = withRequestCharges(ctx)
 
 	requestStartedAt := time.Now()
 	phases := requesttiming.FromContext(ctx)
@@ -1371,7 +1373,16 @@ func serveOneRequest(
 	requestStarted := time.Now()
 	var spendLeasePlan *trustedrouter.SpendLeaseAdmissionPlan
 	var spendLeaseReserveRequest *types.OpenAIChatRequest
+	var routeMemoryKey string
+	var routeDemand providerRouteDemand
 	if trEnabled {
+		// Before any hold: refuse when every provider this credential and
+		// routing policy was last authorized for has an open circuit.
+		routeMemoryKey = providerRouteMemoryKey(ctx, bearer, routeType, &req)
+		routeDemand = providerRouteDemandFor(&req)
+		if providerCircuitFastFail(ctx, conn, routeMemoryKey, routeDemand, routeType, req.Model, requestLogID) {
+			return
+		}
 		spendLeasePlan, err = trGateway.PrepareSpendLeaseAdmission(ctx, bearer, &req, routeType, requestStarted)
 		if err != nil {
 			writeGatewayAuthorizationError(conn, err)
@@ -1435,6 +1446,7 @@ func serveOneRequest(
 			writeError(conn, 502, "BYOK provider key unavailable")
 			return
 		}
+		providerCircuits.RememberRoutes(routeMemoryKey, routeDemand, invokeOptions, providerCircuitTenant(authorization))
 		if len(invokeOptions) > 0 && invokeOptions[0].Model != "" {
 			req.Model = invokeOptions[0].Model
 		} else {
@@ -1484,6 +1496,7 @@ func serveOneRequest(
 				writeError(conn, 502, "BYOK provider key unavailable")
 				return
 			}
+			providerCircuits.RememberRoutes(routeMemoryKey, routeDemand, invokeOptions, providerCircuitTenant(authorization))
 			if len(invokeOptions) > 0 && invokeOptions[0].Model != "" {
 				req.Model = invokeOptions[0].Model
 			} else {
@@ -1810,7 +1823,7 @@ func serveResponsesNonStreaming(
 		RouteType:         "responses",
 		SelectedModel:     selectedModel,
 		SelectedEndpoint:  selectedEndpoint,
-		RouteFallbacks:    selectedRoute.FallbackCount(),
+		RouteFallbacks:    selectedRoute.RoutedAround(),
 		RouteFailures:     selectedRoute.Failures(),
 		User:              req.User,
 		SessionID:         req.SessionID,
@@ -1918,7 +1931,7 @@ func serveChatNonStreaming(
 		RouteType:         "chat.completions",
 		SelectedModel:     selectedModel,
 		SelectedEndpoint:  selectedEndpoint,
-		RouteFallbacks:    selectedRoute.FallbackCount(),
+		RouteFallbacks:    selectedRoute.RoutedAround(),
 		RouteFailures:     selectedRoute.Failures(),
 		User:              req.User,
 		SessionID:         req.SessionID,
@@ -2157,7 +2170,7 @@ func serveStreaming(
 			Streamed: true, RouteType: routeType,
 			SelectedModel:    selectedRoute.Model(req.Model, authorization),
 			SelectedEndpoint: selectedRoute.Endpoint("", authorization),
-			RouteFallbacks:   selectedRoute.FallbackCount(),
+			RouteFallbacks:   selectedRoute.RoutedAround(),
 			RouteFailures:    selectedRoute.Failures(),
 			User:             req.User, SessionID: req.SessionID, Trace: req.Trace, Metadata: req.Metadata,
 			ServiceTier: requestedServiceTierForSettlement(req),
@@ -2561,6 +2574,11 @@ func serveMessages(
 	var authorization *trustedrouter.Authorization
 	var invokeOptions []llm.InvokeOptions
 	if trEnabled {
+		routeMemoryKey := providerRouteMemoryKey(ctx, bearer, "messages", req)
+		routeDemand := providerRouteDemandFor(req)
+		if providerCircuitFastFail(ctx, conn, routeMemoryKey, routeDemand, "messages", req.Model, requestLogID) {
+			return
+		}
 		authorization, err = trGateway.AuthorizeWithRoute(ctx, bearer, req, "messages")
 		if err != nil {
 			writeAnthropicGatewayAuthorizationError(conn, err)
@@ -2572,6 +2590,7 @@ func serveMessages(
 			writeAnthropicError(conn, 502, "BYOK provider key unavailable")
 			return
 		}
+		providerCircuits.RememberRoutes(routeMemoryKey, routeDemand, invokeOptions, providerCircuitTenant(authorization))
 		if len(invokeOptions) > 0 && invokeOptions[0].Model != "" {
 			req.Model = invokeOptions[0].Model
 		} else {
@@ -2626,7 +2645,7 @@ func serveMessages(
 			RouteType:        "messages",
 			SelectedModel:    selectedModel,
 			SelectedEndpoint: selectedEndpoint,
-			RouteFallbacks:   selectedRoute.FallbackCount(),
+			RouteFallbacks:   selectedRoute.RoutedAround(),
 			RouteFailures:    selectedRoute.Failures(),
 			Metadata:         req.Metadata,
 		}
@@ -2704,7 +2723,7 @@ func serveMessages(
 			RouteType:         "messages",
 			SelectedModel:     selectedRoute.Model(req.Model, authorization),
 			SelectedEndpoint:  selectedRoute.Endpoint("", authorization),
-			RouteFallbacks:    selectedRoute.FallbackCount(),
+			RouteFallbacks:    selectedRoute.RoutedAround(),
 			RouteFailures:     selectedRoute.Failures(),
 			Metadata:          req.Metadata,
 		}

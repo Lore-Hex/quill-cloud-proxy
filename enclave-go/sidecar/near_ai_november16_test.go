@@ -8,25 +8,27 @@ import (
 	"testing"
 )
 
-// docs/near-ai-policy-review-2026-11-12.md: gpu03 (instance 19aea169) booted a
-// new base manifest on the same dstack-nvidia-0.5.12 image and rolled its
-// engines to SGLang v0.5.23 and a new proxy. gpu04 left the pool. Only these
+// docs/near-ai-policy-review-2026-11-16.md: gpu03 (instance 19aea169) kept
+// its November 12 boot (compose c900dc73, same event log) and redeployed only
+// its proxy and registrar, twice: v0.0.581 on November 13 and v0.0.593 on
+// November 14. The engines still run the November 12 v0.0.567 file. Only these
 // exact sources were reviewed.
 type nearAIReviewedSource struct{ file, commit, sha256 string }
 
 var (
-	// v0.0.567: r1-r4 on nearaidev/sglang@sha256:050b1adf..., proxy
-	// nearaidev/vllm-proxy-rs@sha256:e2893ff4.... This is the policy pin.
+	// v0.0.593: proxy-glm53 on nearaidev/vllm-proxy-rs@sha256:c57cd9ea...
+	// and model-proxy-registrar. This is the policy pin.
+	nearAIV0593Proxy = nearAIReviewedSource{
+		"prod/GLM-5.3-Flash-SGL-TP2x4-W4AFP8-V12Q8.yaml",
+		"7d62ec6762bb1288ea5d5cf40b05e8a7c5305df9",
+		"08a56ab2437cd75ba613c8f4dc6022747e59311b571844b0d3da42003188911a",
+	}
+	// v0.0.567: r1-r4 on nearaidev/sglang@sha256:050b1adf..., the November 12
+	// policy pin.
 	nearAIV0523Fleet = nearAIReviewedSource{
 		"prod/GLM-5.3-Flash-SGL-TP2x4-W4AFP8-V12Q8.yaml",
 		"dfbb641fdf3fb98ab38078300a39526c7945db18",
 		"2d10ba2c3dbcf021ccf888f180c23454c3209736f00836093c583af0f2f742df",
-	}
-	// v0.0.554: the registrar's last compose_up. Same bytes as v0.0.553.
-	nearAIV12Q8Registrar = nearAIReviewedSource{
-		"prod/GLM-5.3-Flash-SGL-TP2x4-W4AFP8-V12Q8.yaml",
-		"fe7493ee3a0b3d36c1079c095de554e7b218da5c",
-		"e88b040e8ecdb7869ac855880719f6d184c035f0199753bef64ed338f8622922",
 	}
 	// v0.0.541: the November 6 policy pin, still serving nginx.
 	nearAIV12Q8Edge = nearAIReviewedSource{
@@ -51,21 +53,21 @@ func latestNearAIServiceActions(t *testing.T, raw json.RawMessage) map[string]ne
 	return latest
 }
 
-func TestNearAIReviewedNovember12Pool(t *testing.T) {
-	const actionsSHA = "e196ae7210ec5344b3c0c78b918126a195ff37b8e116fb0766e7df9e55180faa"
+func TestNearAIReviewedNovember16Pool(t *testing.T) {
+	const actionsSHA = "6a66ec22a079334155f064f084066ae4dcb310a2398c7031797a4ad4244e1600"
 	serving := map[string]nearAIReviewedSource{
 		"model-sg-glm53-w4afp8-tp2-r1": nearAIV0523Fleet,
 		"model-sg-glm53-w4afp8-tp2-r2": nearAIV0523Fleet,
 		"model-sg-glm53-w4afp8-tp2-r3": nearAIV0523Fleet,
 		"model-sg-glm53-w4afp8-tp2-r4": nearAIV0523Fleet,
 		"otelcol-contrib":              nearAIV0523Fleet,
-		"proxy-glm53":                  nearAIV0523Fleet,
-		"model-proxy-registrar":        nearAIV12Q8Registrar,
+		"proxy-glm53":                  nearAIV0593Proxy,
+		"model-proxy-registrar":        nearAIV0593Proxy,
 		"nginx":                        nearAIV12Q8Edge,
 		"model-downloader":             nearAIV12Q8Edge,
 	}
 	c := reviewedNearAIPoolCase(t, nearAIGPU03Compose)
-	pin := nearAIV0523Fleet
+	pin := nearAIV0593Proxy
 	if c.policy.DeploymentFile != pin.file || c.policy.DeploymentCommit != pin.commit ||
 		c.policy.DeploymentSHA256 != pin.sha256 || c.policy.DeploymentActionsSHA256 != actionsSHA {
 		t.Fatalf("gpu03 must pin its exact reviewed source and complete history: %+v", c.policy)
@@ -85,12 +87,17 @@ func TestNearAIReviewedNovember12Pool(t *testing.T) {
 	if latest["rotate-token"].Action != "compose_down" {
 		t.Fatalf("rotate-token must be stopped: %+v", latest["rotate-token"])
 	}
+	// v0.0.593 dropped the verification-only soak relay from the file; it has
+	// been stopped since October 19 and must stay stopped.
+	if latest["glm53-soak-relay"].Action != "compose_down" {
+		t.Fatalf("glm53-soak-relay must be stopped: %+v", latest["glm53-soak-relay"])
+	}
 	if _, err := c.verifier.verify(context.Background(), c.request); err != nil {
 		t.Fatalf("reviewed gpu03 history rejected: %v", err)
 	}
 }
 
-func TestNearAINovember12PoolRequiresDstack0512Identity(t *testing.T) {
+func TestNearAINovember16PoolRequiresDstack0512Identity(t *testing.T) {
 	const retiredOSImage = "a6eafc5f007f642d8ea90c7fa8881f1e6715720ccb531941a28218f4f26d7b02"
 	c := reviewedNearAIPoolCase(t, nearAIGPU03Compose)
 	if c.policy.OSImageHash != "91fd5d69ccee3e5ea4f2aeb8c9b632c4358c4ecfc29ba1aa6fb1e402af209829" {

@@ -67,6 +67,7 @@ func maybeServeSubagent(
 	originalInput any,
 	requestLogID string,
 ) (bool, error) {
+	ctx = withRequestCharges(ctx)
 	config, requested, err := subagentConfigForRequest(req)
 	if err != nil {
 		return true, err

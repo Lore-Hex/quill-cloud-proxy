@@ -20,7 +20,8 @@ func TestResponsesValidationIdentifiesFieldWithoutExportingContent(t *testing.T)
 		{"blank input", `{"model":"m","input":" "}`, "input", `"[redacted:string]"`},
 		{"invalid role", `{"model":"m","input":[{"role":"private role","content":"private prompt"}]}`, "input[0].role", `"[redacted:string]"`},
 		{"missing content", `{"model":"m","input":[{"role":"user"}]}`, "input[0].content", ""},
-		{"empty content", `{"model":"m","input":[{"role":"user","content":""}]}`, "input[0].content", `"[redacted:string]"`},
+		// An empty message is dropped; alone it leaves nothing to send.
+		{"empty content only", `{"model":"m","input":[{"role":"user","content":""}]}`, "input", `"[redacted:array]"`},
 		{"invalid content part", `{"model":"m","input":[{"role":"user","content":["private prompt"]}]}`, "input[0].content", `"[redacted:array]"`},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
