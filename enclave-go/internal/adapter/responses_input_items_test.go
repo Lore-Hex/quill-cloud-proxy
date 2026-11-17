@@ -315,14 +315,14 @@ func TestResponsesInputItemsEmptyAssistantText(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			chat, err := ResponsesToChat(&types.OpenAIResponsesRequest{Model: "m", Input: []any{tc.item, "continue"}})
-			// Keep existing user-empty and literal-empty-array behavior in the
-			// same assertion as the newly accepted empty assistant replay.
+			// The same empty content as the only user message leaves nothing
+			// to send; the literal empty input array keeps its behavior.
 			_, userErr := ResponsesToChat(&types.OpenAIResponsesRequest{Model: "m", Input: []any{map[string]any{
 				"type": "message", "role": "user", "content": tc.item.(map[string]any)["content"],
 			}}})
 			empty, emptyErr := ResponsesToChat(&types.OpenAIResponsesRequest{Model: "m", Instructions: "x", Input: []any{}})
 			if err != nil || chat == nil || !reflect.DeepEqual(chat.Messages, []types.OpenAIChatMessage{{Role: "user", Content: "continue"}}) ||
-				!reflect.DeepEqual(userErr, &AdapterError{Status: 400, Message: "input item must contain text or image", Context: "input[0].content"}) ||
+				!reflect.DeepEqual(userErr, &AdapterError{Status: 400, Message: "input must contain text", Context: "input"}) ||
 				emptyErr != nil || empty == nil || !reflect.DeepEqual(empty.Messages, []types.OpenAIChatMessage{{Role: "system", Content: "x"}}) {
 				t.Errorf("replay = %#v, error = %v; user error = %v; empty array = %#v, error = %v", chat, err, userErr, empty, emptyErr)
 			}
@@ -339,6 +339,114 @@ func TestResponsesInputItemsEmptyAssistantText(t *testing.T) {
 						}
 					})
 				}
+			}
+		})
+	}
+}
+
+// An empty message of any role is dropped, as an empty assistant replay is.
+// Refusing a user, system or developer one failed every later turn of a
+// conversation that had one in its history.
+func TestResponsesInputItemsEmptyMessageAnyRole(t *testing.T) {
+	nothingToSend := &AdapterError{Status: 400, Message: "input must contain text", Context: "input"}
+	for _, role := range []string{"user", "system", "developer", "assistant", ""} {
+		for _, content := range []struct {
+			name  string
+			value any
+		}{
+			{"empty string", ""},
+			{"whitespace string", " \n\t"},
+			{"no parts", []any{}},
+			{"empty text parts", []any{map[string]any{"type": "input_text", "text": ""}, map[string]any{"type": "output_text", "text": ""}, map[string]any{"text": ""}}},
+			{"blank text part", []any{map[string]any{"type": "input_text", "text": " \n"}}},
+		} {
+			t.Run(fmt.Sprintf("%q/%s", role, content.name), func(t *testing.T) {
+				item := map[string]any{"type": "message", "content": content.value}
+				if role != "" {
+					item["role"] = role
+				}
+				chat, err := ResponsesToChat(&types.OpenAIResponsesRequest{Model: "m", Instructions: "sys", Input: []any{
+					map[string]any{"role": "user", "content": "first"},
+					map[string]any{"role": "assistant", "content": "reply"},
+					item,
+					map[string]any{"role": "user", "content": "next"},
+				}})
+				want := []types.OpenAIChatMessage{
+					{Role: "system", Content: "sys"}, {Role: "user", Content: "first"},
+					{Role: "assistant", Content: "reply"}, {Role: "user", Content: "next"},
+				}
+				if err != nil || chat == nil || !reflect.DeepEqual(chat.Messages, want) {
+					t.Fatalf("history: chat = %#v, error = %#v, want %#v", chat, err, want)
+				}
+				// Alone, as the only item or as the whole input object, it
+				// leaves nothing to send.
+				for _, input := range []any{[]any{item}, item} {
+					chat, err := ResponsesToChat(&types.OpenAIResponsesRequest{Model: "m", Input: input})
+					if chat != nil || !reflect.DeepEqual(err, nothingToSend) {
+						t.Fatalf("alone (%T): chat = %#v, error = %#v, want %#v", input, chat, err, nothingToSend)
+					}
+				}
+			})
+		}
+	}
+
+	t.Run("a call after a dropped message joins the assistant turn", func(t *testing.T) {
+		chat, err := ResponsesToChat(&types.OpenAIResponsesRequest{Model: "m", Input: []any{
+			map[string]any{"role": "user", "content": "weather?"},
+			map[string]any{"role": "assistant", "content": "checking"},
+			map[string]any{"role": "user", "content": ""},
+			map[string]any{"type": "function_call", "call_id": "c1", "name": "weather", "arguments": "{}"},
+			map[string]any{"type": "function_call_output", "call_id": "c1", "output": "sunny"},
+		}})
+		want := []types.OpenAIChatMessage{
+			{Role: "user", Content: "weather?"},
+			{Role: "assistant", Content: "checking", ToolCalls: []types.OpenAIToolCall{{ID: "c1", Type: "function", Function: types.OpenAIToolFunction{Name: "weather", Arguments: "{}"}}}},
+			{Role: "tool", Content: "sunny", ToolCallID: "c1"},
+		}
+		if err != nil || chat == nil || !reflect.DeepEqual(chat.Messages, want) {
+			t.Fatalf("chat = %#v, error = %#v, want %#v", chat, err, want)
+		}
+	})
+
+	t.Run("an image with blank text is kept", func(t *testing.T) {
+		const image = "data:image/png;base64,iVBORw0KGgo="
+		chat, err := ResponsesToChat(&types.OpenAIResponsesRequest{Model: "m", Input: []any{map[string]any{"role": "user", "content": []any{
+			map[string]any{"type": "input_text", "text": ""},
+			map[string]any{"type": "input_image", "image_url": image},
+		}}}})
+		want := []types.OpenAIChatMessage{{Role: "user", Content: []types.ChatContentPart{{Type: "image_url", ImageURL: &types.ChatImageURL{URL: image, Detail: "auto"}}}}}
+		if err != nil || chat == nil || !reflect.DeepEqual(chat.Messages, want) {
+			t.Fatalf("chat = %#v, error = %#v, want %#v", chat, err, want)
+		}
+	})
+
+	// Malformed content is not empty content and is still refused.
+	for _, tc := range []struct {
+		name string
+		item map[string]any
+		want *AdapterError
+	}{
+		{"no content", map[string]any{"role": "user"},
+			&AdapterError{Status: 400, Message: "input item must contain text or image", Context: "input[1].content"}},
+		{"number content", map[string]any{"role": "user", "content": 7},
+			&AdapterError{Status: 400, Message: "input item must contain text or image", Context: "input[1].content"}},
+		{"part that is not an object", map[string]any{"role": "system", "content": []any{""}},
+			&AdapterError{Status: 400, Message: "content part must be text object", Context: "input[1].content"}},
+		{"text part without text", map[string]any{"role": "developer", "content": []any{map[string]any{"type": "input_text"}}},
+			&AdapterError{Status: 400, Message: "input item must contain text or image", Context: "input[1].content"}},
+		{"text part with non-string text", map[string]any{"role": "user", "content": []any{map[string]any{"type": "input_text", "text": 1}}},
+			&AdapterError{Status: 400, Message: "input item must contain text or image", Context: "input[1].content"}},
+		{"unsupported part", map[string]any{"role": "user", "content": []any{map[string]any{"type": "input_file", "file_id": "f"}}},
+			&AdapterError{Status: 501, Message: "not_supported_in_alpha", Context: "input_file"}},
+		{"unsupported role", map[string]any{"role": "tool", "content": ""},
+			&AdapterError{Status: 400, Message: "unsupported input role", Context: "input[1].role"}},
+	} {
+		t.Run("refused/"+tc.name, func(t *testing.T) {
+			chat, err := ResponsesToChat(&types.OpenAIResponsesRequest{Model: "m", Input: []any{
+				map[string]any{"role": "user", "content": "first"}, tc.item, map[string]any{"role": "user", "content": "next"},
+			}})
+			if chat != nil || !reflect.DeepEqual(err, tc.want) {
+				t.Fatalf("chat = %#v, error = %#v, want %#v", chat, err, tc.want)
 			}
 		})
 	}

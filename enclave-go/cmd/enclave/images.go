@@ -240,6 +240,9 @@ func serveImages(
 		}
 		refundImageGeneration(ctx, trGateway, authorization, status, failureReason(collectErr), started, req.Metadata)
 		fmt.Fprintf(os.Stderr, "enclave.images_failed model=%q err=%v\n", req.Model, errorClass(collectErr))
+		if writeProviderCircuitError(conn, "images", collectErr) {
+			return
+		}
 		writeClassifiedOpenAIError(conn, status, message, collectErr)
 		return
 	}

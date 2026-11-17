@@ -108,8 +108,18 @@ type tokenResponse struct {
 
 // fetchToken pulls a fresh access token from the GCE metadata server.
 // Tokens are cached until ~30 s before expiry to avoid bouncing the
-// metadata server on every request.
+// metadata server on every request. The metadata server is the gateway's own
+// credential source, so its failures are marked Local: they never say Vertex
+// is down.
 func (c *gcpClient) fetchToken(ctx context.Context) (string, error) {
+	token, err := c.fetchMetadataToken(ctx)
+	if err != nil {
+		return "", &upstreamerror.Local{Err: err}
+	}
+	return token, nil
+}
+
+func (c *gcpClient) fetchMetadataToken(ctx context.Context) (string, error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	if c.token != "" && time.Now().Before(c.tokenExp.Add(-30*time.Second)) {
