@@ -23,6 +23,24 @@ ROOT = Path(__file__).resolve().parents[1]
 TRUST = ROOT / "trust-page" / "trust"
 PUBLIC_RECORD = "https://trust.trustedrouter.com/trust/aws-release.json"
 PUBLIC_IDENTITY = "https://github.com/Lore-Hex/quill-cloud-proxy/.github/workflows/publish-trust-aws.yml@refs/heads/main"
+STRICT_BOOTSTRAP_SOURCE = "c1863c2c154b3aadfc3b1ee4b7be0675e29756f8"
+
+
+def require_strict_source(source: str) -> None:
+    """Historical CI signatures remain valid; they must not enable V1 rollback."""
+    if not isinstance(source, str) or re.fullmatch(r"[0-9a-f]{40}", source) is None:
+        raise ValueError("strict AWS admission requires a full source commit")
+    try:
+        for ancestor, descendant in ((STRICT_BOOTSTRAP_SOURCE, source), (source, "HEAD")):
+            subprocess.run(
+                ["git", "merge-base", "--is-ancestor", ancestor, descendant],
+                cwd=ROOT, check=True, capture_output=True, timeout=15,
+            )
+    except (OSError, subprocess.SubprocessError) as exc:
+        raise ValueError(
+            "AWS source must include the strict-bootstrap cutover and belong to this history; "
+            "pre-cutover rollbacks and incomplete Git history are refused"
+        ) from exc
 
 
 def verified_snapshot(manifest: Path, signature: Path, source: str) -> tuple[dict[str, Any], bytes, bytes]:
@@ -34,6 +52,7 @@ def verified_snapshot(manifest: Path, signature: Path, source: str) -> tuple[dic
         path.write_bytes(raw)
         sig.write_bytes(bundle)
         record = manifests.verify(path, sig, expected_source=source)
+    require_strict_source(record["source_commit"])
     return record, raw, bundle
 
 
@@ -84,6 +103,7 @@ def staged_record(current: dict[str, Any], artifact: dict[str, Any], raw: bytes)
 
 def verify_record(record_path: Path) -> dict[str, Any] | None:
     current = validate_current(json.loads(manifests._read_bytes(record_path, 128 << 10)))
+    require_strict_source(current["source_commit"])
     candidate = current.get("candidate_eif")
     if candidate is None:
         return None
@@ -106,6 +126,7 @@ def prepare(manifest: Path, signature: Path, source: str, *, write: bool, trust:
     artifact, raw, bundle = verified_snapshot(manifest, signature, source)
     current_path = trust / "aws-release.json"
     current = json.loads(manifests._read_bytes(current_path, 128 << 10))
+    require_strict_source(validate_current(current)["source_commit"])
     result = staged_record(current, artifact, raw)
     if not write:
         return result

@@ -182,3 +182,12 @@ After the gated retirement, compute defaults to `v2-only` and the activated
 key configuration rejects both `legacy` and `dual` before any cloud call.
 An explicit immutable parent-image digest remains required. Do not merge
 this retirement change while any serving parent still needs the V1 listener.
+
+The release admission tool also requires the CI-authenticated source commit to
+include strict-bootstrap cutover `c1863c2c154b3aadfc3b1ee4b7be0675e29756f8`
+and belong to the checked-out release history. A historical CI signature alone
+cannot re-admit a pre-cutover image. Both candidate admission and signing the
+current release record fail closed on older source or incomplete Git history.
+Keep full history in release checkouts; do not bypass this guard for rollback.
+The measured publisher's compiled-policy test must continue to require strict
+bootstrap for every later image.
