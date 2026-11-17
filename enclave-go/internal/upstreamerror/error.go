@@ -31,7 +31,45 @@ func Open(w io.Writer) bool {
 	if w, ok := w.(interface{ UpstreamOpened() bool }); ok {
 		return w.UpstreamOpened()
 	}
+	Answered(w)
 	return false
+}
+
+// Answered tells the writer the provider accepted the call (a 2xx head)
+// without committing the response, for clients that buffer the whole body.
+// The provider circuit breaker counts no failure after this point: the
+// provider is up even if what it sent cannot be used.
+func Answered(w io.Writer) {
+	if w, ok := w.(interface{ UpstreamAnswered() }); ok {
+		w.UpstreamAnswered()
+	}
+}
+
+// Local marks a failure the gateway produced itself (its own credentials,
+// a policy check) rather than the provider's inference endpoint. It may carry
+// an HTTP status for the client, but it never says the provider is down.
+type Local struct {
+	Err error
+}
+
+func (e *Local) Error() string {
+	if e == nil || e.Err == nil {
+		return ""
+	}
+	return e.Err.Error()
+}
+
+func (e *Local) Unwrap() error {
+	if e == nil {
+		return nil
+	}
+	return e.Err
+}
+
+// IsLocal reports whether err is marked Local anywhere in its chain.
+func IsLocal(err error) bool {
+	var local *Local
+	return errors.As(err, &local)
 }
 
 type Detail struct {
@@ -213,6 +251,20 @@ func responseBody(err error) (int, string, bool) {
 	}
 	status, _ := strconv.Atoi(s[match[2]:match[3]])
 	return status, s[match[1]:], true
+}
+
+// Status reports the HTTP status a provider failure actually carries. Unlike
+// Parse, which falls back to 502 for anything it cannot read, it says false
+// for a failure with no status at all (a refused connection, a timeout).
+func Status(err error) (int, bool) {
+	if err == nil {
+		return 0, false
+	}
+	status, _, ok := responseBody(err)
+	if !ok || status < 100 || status >= 600 {
+		return 0, false
+	}
+	return status, true
 }
 
 func Parse(err error) Detail {

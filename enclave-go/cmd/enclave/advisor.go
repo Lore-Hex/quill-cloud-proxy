@@ -368,6 +368,7 @@ func maybeServeAdvisor(
 	originalInput any,
 	requestLogID string,
 ) (bool, error) {
+	ctx = withRequestCharges(ctx)
 	config, requested, err := advisorConfigForRequest(req)
 	if err != nil {
 		return true, err
@@ -753,7 +754,14 @@ func serveAdvisorNonStreaming(
 			req.Metadata,
 		)
 		if config.HidePublicMetadata && !errors.Is(ctx.Err(), context.DeadlineExceeded) {
-			writeErrorWithSourceHeaders(conn, statusFromControlPlaneError(err), messageFromControlPlaneError(err, "model request failed"), "router", retryHeadersFromControlPlaneError(err))
+			headers := retryHeadersFromControlPlaneError(err)
+			if requestCharged(ctx) {
+				if headers == nil {
+					headers = map[string]string{}
+				}
+				headers[shouldRetryHeader] = "false"
+			}
+			writeErrorWithSourceHeaders(conn, statusFromControlPlaneError(err), messageFromControlPlaneError(err, "model request failed"), "router", headers)
 			return
 		}
 		writeFusionError(ctx, conn, trGateway, advisorRequestError(ctx, err))

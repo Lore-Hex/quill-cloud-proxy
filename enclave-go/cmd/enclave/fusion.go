@@ -930,6 +930,7 @@ func maybeServeFusion(
 	originalInput any,
 	requestLogID string,
 ) (bool, error) {
+	ctx = withRequestCharges(ctx)
 	config, requested, err := fusionConfigForRequest(req)
 	if err != nil {
 		return true, err
@@ -1505,13 +1506,13 @@ func serveFusionNonStreaming(
 	requestID := newRequestID()
 	panel, err := runFusionPanel(ctx, br, req, config, trGateway, secretCache, bearer, requestID, requestLogID)
 	if err != nil {
-		writeFusionError(ctx, conn, trGateway, err)
+		writeFusionErrorSpent(ctx, conn, trGateway, err, fusionCharged(panel))
 		return
 	}
 	if config.SelectionStrategy != "synthesize" && config.SelectionStrategy != "synthesize_non_refusals" {
 		selected, err := selectFusionPanelResult(panel, config.SelectionStrategy)
 		if err != nil {
-			writeFusionError(ctx, conn, trGateway, err)
+			writeFusionErrorSpent(ctx, conn, trGateway, err, fusionCharged(panel))
 			return
 		}
 		totalIn, totalOut := fusionPanelUsageTotals(panel)
@@ -1547,17 +1548,17 @@ func serveFusionNonStreaming(
 	}
 	synthesisPanel, err := fusionPanelForSynthesis(panel, config.SelectionStrategy)
 	if err != nil {
-		writeFusionError(ctx, conn, trGateway, err)
+		writeFusionErrorSpent(ctx, conn, trGateway, err, fusionCharged(panel))
 		return
 	}
 	judge, judgeAttempts, err := runFusionJudge(ctx, br, req, config, judgeModels, synthesisPanel, trGateway, secretCache, bearer, requestID, requestLogID)
 	if err != nil {
-		writeFusionError(ctx, conn, trGateway, err)
+		writeFusionErrorSpent(ctx, conn, trGateway, err, fusionCharged(panel, judgeAttempts))
 		return
 	}
 	final, finalAttempts, err := runFusionFinal(ctx, br, req, config, finalModels, judge.Result.Text, synthesisPanel, trGateway, secretCache, bearer, requestID, requestLogID, originalInput)
 	if err != nil {
-		writeFusionError(ctx, conn, trGateway, err)
+		writeFusionErrorSpent(ctx, conn, trGateway, err, fusionCharged(panel, judgeAttempts, finalAttempts))
 		return
 	}
 	totalIn, totalOut := fusionUsageTotals(panel, judgeAttempts, finalAttempts...)
@@ -3871,18 +3872,62 @@ func selectedRouteModel(item fusionCallResult, fallback string) string {
 }
 
 func writeFusionError(ctx context.Context, conn io.Writer, trGateway *trustedrouter.Client, err error) {
-	_ = ctx
+	writeFusionErrorSpent(ctx, conn, trGateway, err, false)
+}
+
+// fusionCharged reports whether any call of this request already settled,
+// so re-sending it would pay for those calls again. requestCharged also covers
+// settled calls these results do not carry (a panel that returned nothing).
+func fusionCharged(groups ...[]fusionCallResult) bool {
+	for _, group := range groups {
+		for _, call := range group {
+			if call.SettlementResult != nil {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// writeFusionErrorSpent is writeFusionError for a failure after some calls
+// were already charged: the client is told not to re-send (x-should-retry:
+// false), as decide does.
+func writeFusionErrorSpent(ctx context.Context, conn io.Writer, trGateway *trustedrouter.Client, err error, spent bool) {
 	_ = trGateway
+	// Any sub-call of this request that reached settlement charged it, whether
+	// or not it produced a usable answer.
+	spent = spent || requestCharged(ctx)
+	var spentHeaders map[string]string
+	if spent {
+		spentHeaders = map[string]string{shouldRetryHeader: "false"}
+	}
 	var aerr *adapter.AdapterError
 	if asAdapterErr(err, &aerr) {
-		writeError(conn, aerr.Status, aerr.Message)
+		writeErrorWithSourceHeaders(conn, aerr.Status, aerr.Message, "router", spentHeaders)
 		return
 	}
-	if _, ok := idempotencyReplayError(err); ok {
+	if controlErr, ok := idempotencyReplayError(err); ok {
+		if spent {
+			writeOpenAIErrorWithHeaders(conn, http.StatusConflict, controlErr.Message, "idempotency_replay", "idempotency_replay", "", spentHeaders)
+			return
+		}
 		writeGatewayAuthorizationError(conn, err)
 		return
 	}
-	writeErrorWithSourceHeaders(conn, statusFromControlPlaneError(err), messageFromControlPlaneError(err, "fusion failed"), "router", retryHeadersFromControlPlaneError(err))
+	if circuitErr, ok := providerCircuitOpenFrom(err); ok {
+		refusal := *circuitErr
+		refusal.spent = refusal.spent || spent
+		writeProviderCircuitOpen(conn, "fusion", &refusal)
+		return
+	}
+	headers := retryHeadersFromControlPlaneError(err)
+	if spent {
+		if headers == nil {
+			headers = map[string]string{}
+		}
+		headers[shouldRetryHeader] = "false"
+	}
+	writeErrorWithSourceHeaders(conn, statusFromControlPlaneError(err), messageFromControlPlaneError(err, "fusion failed"), "router", headers)
 }
 
 func resolveFusionModelID(model string) string {
