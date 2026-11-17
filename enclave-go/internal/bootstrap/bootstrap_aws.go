@@ -35,10 +35,10 @@ const (
 )
 
 // These values are linked into the measured binary, never read from parent
-// configuration or runtime environment. This Phase 3 build is transitional;
-// Phase 6 changes it to strict. A signer rotation changes the measurement.
+// configuration or runtime environment. Production refuses the legacy
+// plaintext path. Changing this policy or signer changes the measurement.
 var (
-	AWSBootstrapMode        = "transition"
+	AWSBootstrapMode        = "strict"
 	AWSBundleSignerDER      = "MHYwEAYHKoZIzj0CAQYFK4EEACIDYgAEMlctJbn0WQ7D5J+XBOtI2SW9alu4DXzUwBi60xO0ULnh5KmCMPzd1NDwUbZzorPGnqgUPqpMz/Hqfcp8XjtYnwxaR25F92wQ4veNNzNK4OpZzk+CNmmtCBVwHI+mmmLx"
 	AWSMinimumBundleVersion = "1"
 )
