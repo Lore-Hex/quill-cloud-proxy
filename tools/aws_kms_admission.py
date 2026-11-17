@@ -119,6 +119,8 @@ def parent_key(region: str, mode: str, *, config_path: Path = CONFIG) -> str:
     if region not in REGIONS or mode not in {"legacy", "dual", "v2-only"}:
         raise ValueError("invalid parent bootstrap mode or region")
     keys = configured_keys(config_path)
+    if keys and mode != "v2-only":
+        raise ValueError("legacy bootstrap listener is retired; use v2-only")
     if mode == "legacy":
         return ""
     if not keys:

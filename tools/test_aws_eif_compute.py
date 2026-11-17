@@ -173,7 +173,7 @@ else: sys.exit('Unexpected AWS operation: '+repr(a))
             self.assertEqual(calls, [])
 
     def test_attested_parent_requires_explicit_pin_even_with_configured_key(self):
-        for mode in ("dual", "v2-only"):
+        for mode in ("v2-only",):
             with self.subTest(mode=mode):
                 result, calls = self.run_candidate(bootstrap_mode=mode, configured_key=True)
                 self.assertNotEqual(result.returncode, 0)
@@ -181,7 +181,7 @@ else: sys.exit('Unexpected AWS operation: '+repr(a))
                 self.assertEqual(calls, [])
 
     def test_attested_template_keeps_mode_key_and_immutable_parent(self):
-        for mode in ("dual", "v2-only"):
+        for mode in ("v2-only",):
             with self.subTest(mode=mode):
                 result, calls = self.run_candidate(
                     bootstrap_mode=mode, configured_key=True, parent_digest="sha256:" + "7" * 64,
@@ -198,6 +198,29 @@ else: sys.exit('Unexpected AWS operation: '+repr(a))
                 )
                 self.assertIn("quill-parent@sha256:" + "7" * 64, user_data)
                 self.assertNotIn("quill-parent:test", user_data)
+
+    def test_retired_listener_cannot_be_reintroduced_by_compute(self):
+        for mode in ("legacy", "dual"):
+            with self.subTest(mode=mode):
+                result, calls = self.run_candidate(
+                    bootstrap_mode=mode, configured_key=True, parent_digest="sha256:" + "7" * 64,
+                )
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn("listener is retired", result.stderr)
+                self.assertEqual(calls, [])
+
+    def test_unspecified_mode_defaults_to_ciphertext_only(self):
+        result, calls = self.run_candidate(
+            bootstrap_mode="", configured_key=True, parent_digest="sha256:" + "7" * 64,
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        write = next(call for call in calls if call[:2] == ["ec2", "create-launch-template-version"])
+        data = json.loads(write[write.index("--launch-template-data") + 1])
+        raw = base64.b64decode(data["UserData"])
+        startup = (gzip.decompress(raw) if raw[:2] == b"\x1f\x8b" else raw).decode()
+        self.assertIn("QUILL_BOOTSTRAP_MODE=v2-only", startup)
+        source = (ROOT / "tools/deploy-aws-nitro.sh").read_text()
+        self.assertIn('AWS_BOOTSTRAP_MODE="${AWS_BOOTSTRAP_MODE:-v2-only}"', source)
 
     def test_explicit_parent_digest_is_verified_in_registry(self):
         digest = "sha256:" + "7" * 64
