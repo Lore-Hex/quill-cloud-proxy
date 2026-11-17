@@ -63,25 +63,45 @@ before the first fleet rollout; no failed proof was promoted.
 ### Signing-key monitoring
 
 The central CloudTrail trail records KMS management events in
-`/aws/cloudtrail/quill`, in `us-east-1`. The
-`quill-enclave-bundle-signer-use` metric filter matches `kms.amazonaws.com`
-`Sign` calls naming this signer by key ARN, key ID, alias, or alias ARN. It
-counts both successful and denied attempts; public-key reads and unrelated
-keys do not match. AWS's filter test passed all four signer forms and both
-negative examples before installation.
+`/aws/cloudtrail/quill`, in `us-east-1`. Two metric filters there split every
+`kms.amazonaws.com` `Sign` call on this signer, whether it names the key by
+key ARN, key ID, alias, alias ARN or (on success) `resources[0]`, into exactly
+one of two metrics. They are Terraform in quill-router
+(`infra/aws_security_alarms.tf`, pinned by `tests/test_aws_security_alarms.py`);
+change them there, not with the CLI.
 
-`TR-EnclaveBundleSignerUse` alarms on at least one event in a 60-second period
-and uses the existing `tr-security-alarms` SNS topic, whose confirmed recipient
-is `security@trustedrouter.com`. Its metric is
-`TrustedRouter/Security / EnclaveBundleSignerUse`. Missing data is not a signer
-use event; CloudTrail delivery health must be monitored separately. The
-existing unauthorized-API-call alarm remains enabled and unchanged.
+* `quill-enclave-bundle-signer-use` counts unexpected use into
+  `TrustedRouter/Security / EnclaveBundleSignerUse`: every denied `Sign`, by
+  anyone, the release signer included; any `Sign` by another principal; and
+  any release-signer `Sign` that is not a `DIGEST` / `ECDSA_SHA_384` bundle
+  signature. A denied `Sign` carries no `requestParameters` or `resources`,
+  only the key ARN in `errorMessage`, so the filter matches that too. The
+  first, CLI-created version of this filter matched `requestParameters.keyId`
+  only and therefore never counted a denial, including the denial controls
+  below (the unauthorized-API-call alarm did count them).
+  `TR-EnclaveBundleSignerUse` alarms on one event in a 60-second period.
+* `quill-enclave-bundle-release-sign` counts routine release signatures into
+  `TrustedRouter/Security / EnclaveBundleReleaseSign`: successful, by the
+  release signer (the one principal the key policy lets sign), `DIGEST` with
+  `ECDSA_SHA_384`, as `tools/aws_sealed_bundle.py` sends. A release signs one
+  bundle per region, two in all, and does not email.
+  `TR-EnclaveBundleReleaseSignBurst` alarms on more than four in an hour.
 
-An approved bundle publication or a deliberate parent-role denial test can
-trigger these alarms. Retain its CloudTrail/KMS request IDs and rollout
-reservation in the operation record. Do not mute the alarms for a release;
-investigate every signer event that does not match approved work. This alarm
-detects use, not compromise prevention, and is not two-person approval.
+Both alarms use the existing `tr-security-alarms` SNS topic, whose confirmed
+recipient is `security@trustedrouter.com`. Missing data is not a signer use
+event; CloudTrail delivery health must be monitored separately. Public-key
+reads and unrelated keys match neither filter.
+
+A routine release no longer emails, by operator decision on 2026-11-16 (each
+AWS release had emailed twice). Retain each release's CloudTrail/KMS request
+IDs and rollout reservation in the operation record anyway. A deliberate
+denial test still alarms. Investigate every unexpected-use alarm and every
+burst alarm that does not match approved work. Because the release signer is
+an operator IAM user, a stolen access key signing a single bundle in the
+release shape would now show only in `EnclaveBundleReleaseSign` and
+CloudTrail; requiring an MFA session for the release signature and adding it
+to the release shape would close most of that gap. These alarms detect use;
+they are not compromise prevention and not two-person approval.
 
 ## Before publication
 
