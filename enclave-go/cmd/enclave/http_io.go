@@ -65,6 +65,9 @@ type responseStatsConn struct {
 	browserCORS   bool
 	keepAlive     bool
 	reusable      bool
+	// ignoredParameters is the header-safe list a lenient request dropped. It
+	// is injected into the first response head, like the request ID.
+	ignoredParameters string
 }
 
 func (c *responseStatsConn) Write(p []byte) (int, error) {
@@ -82,15 +85,20 @@ func (c *responseStatsConn) Write(p []byte) (int, error) {
 	if c.status == 0 {
 		requestID := c.requestID
 		browserCORS := c.browserCORS
+		ignoredParameters := c.ignoredParameters
 		// The injection opportunity exists only on the first write. Clearing the
 		// ID here keeps a partial or non-HTTP first write from being modified later.
 		c.requestID = ""
 		c.browserCORS = false
-		if statusLineEnd := bytes.Index(p, []byte("\r\n")); (requestID != "" || browserCORS) && bytes.HasPrefix(p, []byte("HTTP/")) && statusLineEnd >= 0 {
+		c.ignoredParameters = ""
+		if statusLineEnd := bytes.Index(p, []byte("\r\n")); (requestID != "" || browserCORS || ignoredParameters != "") && bytes.HasPrefix(p, []byte("HTTP/")) && statusLineEnd >= 0 {
 			statusLineEnd += len("\r\n")
 			var headers []byte
 			if requestID != "" {
 				headers = append(headers, "x-request-id: "+requestID+"\r\nrequest-id: "+requestID+"\r\n"...)
+			}
+			if ignoredParameters != "" {
+				headers = append(headers, ignoredParametersHeader+": "+ignoredParameters+"\r\n"...)
 			}
 			if browserCORS {
 				headers = append(headers, bearerCORSResponseHeaders...)
@@ -162,8 +170,24 @@ func (c *responseStatsConn) BeginRequest(requestID string) {
 	c.responseBytes = 0
 	c.requestID = requestID
 	c.browserCORS = false
+	c.ignoredParameters = ""
 	c.keepAlive = false
 	c.reusable = false
+}
+
+// SetIgnoredParameters records the parameters a lenient request dropped so the
+// response head names them. A nil receiver is a no-op for test writers.
+func (c *responseStatsConn) SetIgnoredParameters(dropped []string) {
+	if c == nil || len(dropped) == 0 {
+		return
+	}
+	value := ignoredParametersHeaderValue(dropped)
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.ignoredParameters = value
+	// A cached insufficient-credit reply is replayed before parsing, so it
+	// could not name the dropped parameters. Such a request is not cached.
+	c.billingDenial = nil
 }
 
 func (c *responseStatsConn) SetBrowserCORS(enabled bool) {
@@ -316,10 +340,13 @@ type requestAttributionHeaders struct {
 	App                string
 	AppCategories      []string
 	OpenRouterMetadata bool
-	ClientContext      clientContextHeaders
-	InferenceReceipt   string
-	httpVersion        string
-	connectionClose    bool
+	// Lenient is the per-request opt-in to drop unknown and unsupported
+	// parameters instead of refusing the request.
+	Lenient          bool
+	ClientContext    clientContextHeaders
+	InferenceReceipt string
+	httpVersion      string
+	connectionClose  bool
 	// acceptEncoding is the combined Accept-Encoding field. Only the public
 	// catalog routes read it, to choose a gzip response; it is never
 	// forwarded to the control plane or a provider.
@@ -441,6 +468,8 @@ func readRequestWithTiming(
 			if v != "" {
 				legacyTitle = v
 			}
+		case lenientRequestHeader:
+			attribution.Lenient = lenientHeaderEnabled(v)
 		case "x-openrouter-categories":
 			attribution.AppCategories = splitAttributionCategories(v)
 		case "x-openrouter-metadata", "x-openrouter-experimental-metadata":

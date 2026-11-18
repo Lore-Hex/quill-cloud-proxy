@@ -74,6 +74,8 @@ func writeBillingBackoff(w io.Writer, route string, rejection trustedrouter.Bill
 //     parsed value includes opt-in and nonce. Disabled support ignores it.
 //   - Host plus effective confidential mode (Host OR TLS SNI) affect validation
 //     and authorize routing. SNI must not alias an ordinary-host request.
+//   - X-TrustedRouter-Lenient (parsed flag) decides whether an unknown or
+//     unsupported parameter is dropped or refused.
 //
 // Exclusions: Client telemetry (User-Agent, X-TR-Client, and all X-Stainless
 // fields, presence flags and oversize counters) is observational only: forwarded
@@ -101,7 +103,10 @@ func billingBackoffHeaderGroups(a requestAttributionHeaders, confidential bool) 
 		a.SessionID, a.HTTPReferer, a.App, strconv.FormatBool(a.OpenRouterMetadata),
 	}, a.AppCategories...)...)
 	receipt := billingBackoffFrame(a.InferenceReceipt)
-	return [][]byte{attribution, receipt, billingBackoffFrame(a.Host, strconv.FormatBool(confidential))}
+	// X-TrustedRouter-Lenient changes which requests parse, so a lenient and
+	// a strict request with the same bytes must not share a cached refusal.
+	lenient := billingBackoffFrame(strconv.FormatBool(a.Lenient))
+	return [][]byte{attribution, receipt, billingBackoffFrame(a.Host, strconv.FormatBool(confidential)), lenient}
 }
 
 func billingBackoffFrame(fields ...string) []byte {

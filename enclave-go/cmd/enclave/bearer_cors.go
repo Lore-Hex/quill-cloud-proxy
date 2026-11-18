@@ -19,7 +19,7 @@ func isBearerCORSRoute(path string) bool {
 }
 
 const bearerCORSResponseHeaders = "Access-Control-Allow-Origin: *\r\n" +
-	"Access-Control-Expose-Headers: X-Request-ID, Request-ID, Retry-After, X-Should-Retry, X-Inference-Receipt\r\n"
+	"Access-Control-Expose-Headers: X-Request-ID, Request-ID, Retry-After, X-Should-Retry, X-Inference-Receipt, X-TrustedRouter-Ignored-Parameters\r\n"
 
 func maybeServeBearerPreflight(w io.Writer, method, path string) bool {
 	if method != "OPTIONS" || !isBearerCORSRoute(path) {
