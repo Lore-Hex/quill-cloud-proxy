@@ -1,14 +1,34 @@
 //! Transport building blocks. Catalog activation remains separately gated.
 pub mod relay;
 
+use maple_sdk::{Pcr0Environment, Pcr0TrustPolicy};
+
 pub const BACKEND: &str = "https://enclave.trymaple.ai";
 pub const MODEL: &str = "deepseek-v4-1-flash-1017-uncensored";
 // Independently reproduced release; identity: ../verified-release.json.
 pub const PCR0: &str = "c0963d7af8aff8b65020ffddd8ed902a881838385073fb24d0d74b8b52eca7843a0288927a9eaa76e1193ac8cf767c95";
+/// Maple's canonical signed production PCR history, as the SDK fetches it.
+pub const SIGNED_HISTORY_URL: &str = maple_sdk::pcr::OFFICIAL_PRODUCTION_PCR_HISTORY_URL;
+
+/// The serving trust policy: the one Maple's own SDK clients use.
+///
+/// After the SDK validates the Nitro attestation document, PCR0 must be one of
+/// OpenSecret's embedded production measurements or appear in an entry of the
+/// signed production history at [`SIGNED_HISTORY_URL`] whose P-384 signature
+/// verifies against the key bundled in the SDK. Our independently reproduced
+/// [`PCR0`] is added to the static set, so that release needs no history fetch.
+///
+/// A Maple front-enclave rotation is therefore accepted as soon as Maple signs
+/// it, instead of failing closed until we re-pin. A measurement Maple has not
+/// signed is still refused, and so is every request when the history cannot be
+/// fetched and PCR0 is not in the static set.
+pub fn serving_policy() -> maple_sdk::Result<Pcr0TrustPolicy> {
+    Pcr0TrustPolicy::official_for(Pcr0Environment::Production).with_additional_pcr0s([PCR0])
+}
 
 #[cfg(test)]
 mod tests {
-    use super::PCR0;
+    use super::{serving_policy, PCR0, SIGNED_HISTORY_URL};
 
     #[test]
     fn front_pin_matches_independently_verified_release() {
@@ -33,5 +53,49 @@ mod tests {
             assert_ne!(PCR0, retired);
         }
         assert!(maple_sdk::Pcr0TrustPolicy::from_static_allowlist([PCR0]).is_ok());
+    }
+
+    #[test]
+    fn serving_policy_is_the_official_production_policy_plus_our_pin() {
+        let policy = format!("{:?}", serving_policy().unwrap());
+        assert!(
+            policy.contains(PCR0),
+            "the reproduced PCR0 must be in the static set"
+        );
+        assert!(policy.contains("raw.githubusercontent.com"));
+        assert!(policy
+            .contains("/MaplePrivacyLabs/Maple/master/services/opensecret/pcrProdHistory.json"));
+        // Production only: never the development history or its measurements.
+        assert!(!policy.contains("pcrDevHistory.json"));
+        assert_eq!(
+            policy.matches("Url {").count(),
+            1,
+            "exactly one history location"
+        );
+    }
+
+    #[test]
+    fn signed_history_is_makers_canonical_file_verified_with_the_reviewed_key() {
+        assert_eq!(
+            SIGNED_HISTORY_URL,
+            "https://raw.githubusercontent.com/MaplePrivacyLabs/Maple/master/services/opensecret/pcrProdHistory.json"
+        );
+        // The SDK verifies history entries with its bundled P-384 key. It must be
+        // the key our release review authenticated history with: an SDK bump
+        // that changes it fails here instead of silently moving the trust root.
+        let release: serde_json::Value =
+            serde_json::from_str(include_str!("../verified-release.json")).unwrap();
+        let reviewed_key = release["history_public_key_der"].as_str().unwrap();
+        let sdk_pcr = include_str!("../.vendor-sdk/src/pcr.rs");
+        assert!(
+            sdk_pcr.contains(&format!("\"{reviewed_key}\"")),
+            "the vendored SDK must bundle the reviewed history key"
+        );
+        assert_eq!(
+            sdk_pcr
+                .matches("const PCR_HISTORY_VERIFICATION_KEY_B64")
+                .count(),
+            1
+        );
     }
 }

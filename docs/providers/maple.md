@@ -1,10 +1,64 @@
 # Maple pilot qualification
 
+## Serving trust policy (2026-11-18)
+
+The serving helper (`src/bin/maple-transport.rs`) now trusts Maple's front
+enclave the way Maple's own TypeScript and Rust SDK clients do.
+`serving_policy()` in `src/lib.rs` is the SDK's official production policy,
+`Pcr0TrustPolicy::official_for(Pcr0Environment::Production)`, plus our
+independently reproduced `PCR0`.
+
+After the SDK validates the AWS Nitro attestation document (certificate chain
+to the pinned AWS Nitro root, COSE signature, fresh challenge and key binding),
+PCR0 must be one of these:
+
+1. One of OpenSecret's production measurements embedded in the SDK, or our
+   reproduced `PCR0`.
+2. The PCR0 of an entry in Maple's signed production history,
+   `services/opensecret/pcrProdHistory.json` in `MaplePrivacyLabs/Maple`,
+   whose P-384 ECDSA signature over the PCR0 hex string verifies against the
+   public key bundled in the SDK. The SDK fetches it from
+   `raw.githubusercontent.com` with redirects refused, a 5 s timeout, and at
+   most 1 MiB and 2048 entries.
+
+A unit test pins the history location and checks that the vendored SDK bundles
+the same key (`history_public_key_der` in `verified-release.json`) that our
+release review authenticates the history with, so an SDK update cannot move
+the trust root unnoticed.
+
+Why: a single reproduced pin failed closed on every Maple front-enclave
+rotation until a review and a gateway release caught up. The 2026-11-16
+rotation took the route down for about 48 hours on GCP (#849). Under this
+policy a rotation is accepted as soon as Maple signs it.
+
+What changes and what does not:
+
+- A measurement Maple has not signed is still refused. A PCR0 outside the
+  static set also fails closed whenever the history cannot be fetched.
+- Serving no longer requires our independent reproduction. The trust root for
+  a new measurement is Maple's history signing key, as it is for Maple's own
+  clients. The `Verify Maple release` review and reproduction continue and
+  refresh the static pin, as additional assurance rather than a precondition
+  for serving. Maple plans to move the signed GitHub entry to Sigstore; update
+  `serving_policy()` when the SDK supports it.
+- The managed-model restriction, Transport V2 encryption, workspace cache
+  isolation and the rejection of every other Maple model are unchanged.
+- AWS: the helper reaches Maple only through a parent tunnel limited to
+  `enclave.trymaple.ai:443`, so it cannot fetch the history there. The AWS
+  standby keeps the static set only and fails closed on a rotation, as before.
+  GCP and Azure connect directly.
+- Qualification: `trustedrouter-maple-pilot attest-serving` checks the serving
+  policy live. `attest-history` admits the live enclave only through a signed
+  history entry, because its static pin is deliberately impossible. Neither
+  sends credentials or inference. On 2026-11-18 both passed (the history path
+  in 360 ms), and `reject-pin` still refused the impossible pin on its own.
+
 ## Verified update automation
 
 `Verify Maple release` checks the signed production approval every 30 minutes.
-It does not learn pins from the live server, accept every vendor-signed build,
-or change any request's attestation policy at runtime.
+It does not learn pins from the live server. It maintains the independently
+reproduced static pin; since 2026-11-18 the serving policy additionally accepts
+any measurement in Maple's signed production history (see above).
 
 The reviewed baseline is `enclave-go/maple-transport/verified-release.json`.
 Only changes under `apps/`, `docs/`, the root README/license/agent instructions,
@@ -41,8 +95,9 @@ The only qualified managed model remains
 upstream API call. Auto models, stock DeepSeek, shared Tinfoil routes and all
 other Maple models remain rejected before the encrypted helper is started.
 Changes to the dedicated worker are security-sensitive even if the model name
-is unchanged. Provider deployment overlap is still necessary to avoid an
-outage while a new security-sensitive release is reviewed and staged.
+is unchanged. Because serving accepts Maple-signed measurements, a
+security-sensitive release under review no longer causes an outage; the review
+still gates the reproduced static pin.
 
 ## Reviewed backend update (2026-11-18)
 

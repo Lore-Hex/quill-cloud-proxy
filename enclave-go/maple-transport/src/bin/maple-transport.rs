@@ -6,13 +6,13 @@ use futures::StreamExt;
 use http::Request;
 use maple_sdk::{
     client::{InferenceSendBudget, TransportV2CacheNamespaceRoot},
-    OpenSecretClient, Pcr0TrustPolicy,
+    OpenSecretClient,
 };
 use serde_json::Value;
 use std::io::{Read, Write};
 use std::process::ExitCode;
 use tokio::time::{timeout, Duration};
-use trustedrouter_maple_pilot::{relay::Relay, BACKEND, MODEL, PCR0};
+use trustedrouter_maple_pilot::{relay::Relay, serving_policy, BACKEND, MODEL};
 use zeroize::Zeroizing;
 
 const REQUEST_LIMIT: usize = 16 * 1024 * 1024;
@@ -79,7 +79,8 @@ async fn run(input: Input, out: &mut impl Write) -> Result<()> {
     let client = OpenSecretClient::new_with_api_key_and_pcr0_trust_policy(
         BACKEND,
         input.key.to_string(),
-        Pcr0TrustPolicy::from_static_allowlist([PCR0]).map_err(|_| "invalid_policy")?,
+        // Maple's signed history, as its SDK clients trust it (see serving_policy).
+        serving_policy().map_err(|_| "invalid_policy")?,
     )
     .map_err(|_| "client_initialization_failed")?
     .with_cache_namespace_root(input.root);
