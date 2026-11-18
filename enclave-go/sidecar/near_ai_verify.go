@@ -240,9 +240,13 @@ func (v *nearAIVerifier) verify(ctx context.Context, request *nearAIVerification
 	if appName == "" {
 		appName, osImage = nearAIAppName, nearAIOSImageHash
 	}
+	// A pinned workload on another app or OS image gets its own reason. The
+	// enclave reads the reason above as "this connection reached an unpinned
+	// pool member" and keeps sampling the pool until its deadline; this one
+	// counts toward its short budget of immediate retries instead.
 	if report.Info.AppName != appName || report.Info.OSImageHash != osImage ||
 		report.Info.ComposeHash != policy.ComposeHash {
-		return nil, errors.New("NEAR AI workload identity is outside the pinned policy")
+		return nil, errors.New("NEAR AI workload identity has an app or OS image outside the pinned policy")
 	}
 
 	topBody, err := v.verifyQuote(report.IntelQuote)

@@ -26,16 +26,29 @@ import (
 
 const (
 	nearAIAttestationMaxBytes = 8 << 20
-	// nearAIAttestationTimeout is one budget shared by every attempt below,
-	// and it is further capped by the request context. More attempts never
-	// extend the time spent before inference.
+	// nearAIAttestationTimeout is one budget shared by every attempt below and
+	// the waits between them, and it is further capped by the request context.
+	// More attempts never extend the time spent before inference.
 	nearAIAttestationTimeout = 3 * time.Minute
-	// A pinned NEAR domain can route a connection to an instance outside the
-	// pinned policy. Such a connection is discarded before any prompt is sent,
-	// and the next attempt opens a new connection with a fresh nonce and full
-	// verification. With about a quarter of connections refused, 3 attempts
-	// fail about 1.8% of requests and 6 attempts fail about 0.03%.
+	// nearAIAttestationAttempts bounds failed attempts other than routing
+	// misses: transport errors, and refusals of an instance whose workload is
+	// pinned. They are retried at once, each on a new connection.
 	nearAIAttestationAttempts = 6
+	// A pinned NEAR domain can route a connection to an instance outside the
+	// pinned policy (a routing miss). Such a connection is discarded before any
+	// prompt is sent, and the next attempt opens a new connection with a fresh
+	// nonce and full verification.
+	//
+	// NEAR's front end does not choose an instance per connection. For
+	// stretches of seconds to minutes it sends every new connection, on every
+	// advertised address, to the same instance, so attempts made back to back
+	// share one outcome. After the first miss the next attempt still goes out
+	// at once, on the other address. Later misses wait first (see
+	// nearAIMissDelay), so the attempts keep sampling the front end until the
+	// pinned instance answers or the attestation deadline passes.
+	// nearAIRoutingMissLimit only backstops that deadline.
+	nearAIRoutingMissLimit = 48
+	nearAIMaxMissDelay     = 5 * time.Second
 )
 
 var nearAIDirectDomains = map[string]string{
@@ -71,6 +84,7 @@ type nearAIClient struct {
 	verifyEvidence func(context.Context, *nearAIEvidenceEnvelope) (*nearAIVerificationResult, error)
 	openConnection func(string, int) (nearAIConnection, *http.Client, error)
 	newNonce       func() (string, error)
+	sleep          func(context.Context, time.Duration) error
 	logf           func(string, ...any)
 }
 
@@ -92,6 +106,7 @@ func newNearAI(apiKey string) *nearAIClient {
 			return connection, client, err
 		},
 		newNonce: nearAINonce,
+		sleep:    sleepNearAIRetry,
 		logf:     log.Printf,
 	}
 }
@@ -145,9 +160,20 @@ func (c *nearAIClient) openVerifiedConnection(ctx context.Context, upstreamModel
 	attestCtx, cancel := context.WithTimeout(ctx, nearAIAttestationTimeout)
 	defer cancel()
 	var lastErr error
-	for attempt := 0; attempt < nearAIAttestationAttempts; attempt++ {
+	failures, misses, lastWasMiss := 0, 0, false
+	for attempt := 0; ; attempt++ {
+		if failures >= nearAIAttestationAttempts || misses >= nearAIRoutingMissLimit {
+			return nil, nil, fmt.Errorf("llm/near-ai: no verified connection after %d attempts: %w", attempt, lastErr)
+		}
+		// No connection is open during the wait: the refused one was closed,
+		// and the next is dialed only after the wait.
+		if delay := nearAIMissDelay(misses); lastWasMiss && delay > 0 {
+			if err := c.sleep(attestCtx, delay); err != nil {
+				return nil, nil, nearAIRetriesStopped(err, attempt, lastErr)
+			}
+		}
 		if err := attestCtx.Err(); err != nil {
-			return nil, nil, err
+			return nil, nil, nearAIRetriesStopped(err, attempt, lastErr)
 		}
 		nonce, err := c.newNonce()
 		if err != nil {
@@ -163,7 +189,8 @@ func (c *nearAIClient) openVerifiedConnection(ctx context.Context, upstreamModel
 			var transportError net.Error
 			if errors.As(err, &transportError) && attestCtx.Err() == nil {
 				c.logAttemptFailure(domain, attempt, "fetch", err)
-				lastErr = err
+				lastErr, lastWasMiss = err, false
+				failures++
 				continue
 			}
 			return nil, nil, err
@@ -179,10 +206,16 @@ func (c *nearAIClient) openVerifiedConnection(ctx context.Context, upstreamModel
 		}); err != nil {
 			// Mixed deployment pools can contain an unreviewed member.
 			// Discard its connection; the next one needs a fresh nonce and
-			// complete verification before it can receive any prompt.
+			// complete verification before it can receive any prompt. The
+			// kind of refusal only sets when the next attempt starts.
 			transport.CloseIdleConnections()
 			c.logAttemptFailure(domain, attempt, "verify", err)
-			lastErr = err
+			lastErr, lastWasMiss = err, nearAIRoutingMiss(err)
+			if lastWasMiss {
+				misses++
+			} else {
+				failures++
+			}
 			continue
 		}
 		if transport.Dials() != 1 {
@@ -195,7 +228,40 @@ func (c *nearAIClient) openVerifiedConnection(ctx context.Context, upstreamModel
 		}
 		return transport, httpc, nil
 	}
-	return nil, nil, fmt.Errorf("llm/near-ai: no verified connection after %d attempts: %w", nearAIAttestationAttempts, lastErr)
+}
+
+// nearAIMissDelay is the wait before the attempt that follows the given
+// number of routing misses: none after the first (the next attempt uses the
+// other address), then 1s, 2s and 4s, then nearAIMaxMissDelay.
+func nearAIMissDelay(misses int) time.Duration {
+	step := misses - 2
+	if step < 0 {
+		return 0
+	}
+	if step < 3 {
+		return min(time.Second<<step, nearAIMaxMissDelay)
+	}
+	return nearAIMaxMissDelay
+}
+
+func sleepNearAIRetry(ctx context.Context, delay time.Duration) error {
+	timer := time.NewTimer(delay)
+	defer timer.Stop()
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-timer.C:
+		return nil
+	}
+}
+
+// nearAIRetriesStopped keeps the cancellation as the only wrapped cause and,
+// when an attempt was already refused, adds that refusal's text for the log.
+func nearAIRetriesStopped(err error, attempts int, lastErr error) error {
+	if lastErr == nil {
+		return err
+	}
+	return fmt.Errorf("llm/near-ai: no verified connection after %d attempts: %w (last refusal: %v)", attempts, err, lastErr)
 }
 
 // logAttemptFailure records which attempt failed. The sidecar still logs the
@@ -204,8 +270,8 @@ func (c *nearAIClient) logAttemptFailure(domain string, attempt int, stage strin
 	if c.logf == nil {
 		return
 	}
-	c.logf("near-ai.attest.attempt_failed domain=%q attempt=%d/%d stage=%s err=%q",
-		domain, attempt+1, nearAIAttestationAttempts, stage, err.Error())
+	c.logf("near-ai.attest.attempt_failed domain=%q attempt=%d stage=%s routing_miss=%t err=%q",
+		domain, attempt+1, stage, nearAIRoutingMiss(err), err.Error())
 }
 
 func nearAINonce() (string, error) {
