@@ -43,10 +43,25 @@ func invokeBYOKStreaming(
 		return true, invokeAnthropicBYOKStreaming(ctx, req, body, out, options.ProviderAPIKey, options.UpstreamModel)
 	case isOpenAICompatibleBYOKProvider(provider):
 		return true, invokeOpenAICompatibleBYOKStreaming(ctx, provider, req, body, out, options)
-	default:
-		return true, fmt.Errorf("llm/byok: unsupported provider %q", options.Provider)
 	}
+	if cloudBYOKInvoker != nil {
+		if handled, err := cloudBYOKInvoker(ctx, provider, req, body, out, options); handled {
+			return true, err
+		}
+	}
+	return true, fmt.Errorf("llm/byok: unsupported provider %q", options.Provider)
 }
+
+// cloudBYOKInvoker serves amazon-bedrock, google-vertex and azure BYOK routes
+// with native credentials. It is set only in builds that carry those clients.
+var cloudBYOKInvoker func(
+	ctx context.Context,
+	provider string,
+	req *qtypes.OpenAIChatRequest,
+	body *qtypes.AnthropicMessagesRequest,
+	out io.Writer,
+	options InvokeOptions,
+) (bool, error)
 
 func isOpenAICompatibleBYOKProvider(provider string) bool {
 	switch provider {
@@ -218,6 +233,9 @@ func invokeOpenAICompatibleBYOKStreamingWithClient(
 type openAICompatibleInvocationOptions struct {
 	providerCacheScope string
 	waferZDRRequired   bool
+	// wireModel is sent as "model" in place of the upstream model (an Azure
+	// BYOK deployment name); request preparation still uses the model.
+	wireModel string
 }
 
 // InvokeOpenAICompatibleStreaming is the shared OpenAI-compatible upstream
@@ -327,7 +345,7 @@ func invokeOpenAICompatibleStreamingWithClientOptions(
 		}
 	}
 	prepared, err := PrepareChatRequest(provider, upstreamModel, req, body, msgs, ChatPreparationOptions{
-		ProviderCacheScope: options.providerCacheScope, privateWire: privateWire,
+		ProviderCacheScope: options.providerCacheScope, privateWire: privateWire, wireModel: options.wireModel,
 	})
 	if err != nil {
 		return err
