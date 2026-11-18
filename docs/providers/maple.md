@@ -9,8 +9,8 @@ enclave the way Maple's own TypeScript and Rust SDK clients do.
 independently reproduced `PCR0`.
 
 After the SDK validates the AWS Nitro attestation document (certificate chain
-to the pinned AWS Nitro root, COSE signature, fresh challenge and key binding),
-PCR0 must be one of these:
+to the pinned AWS Nitro root, COSE signature and fresh challenge), PCR0 must be
+one of these, and then the document must bind the client's key:
 
 1. One of OpenSecret's production measurements embedded in the SDK, or our
    reproduced `PCR0`.
@@ -21,10 +21,23 @@ PCR0 must be one of these:
    `raw.githubusercontent.com` with redirects refused, a 5 s timeout, and at
    most 1 MiB and 2048 entries.
 
-A unit test pins the history location and checks that the vendored SDK bundles
-the same key (`history_public_key_der` in `verified-release.json`) that our
-release review authenticates the history with, so an SDK update cannot move
-the trust root unnoticed.
+The SDK source is pinned by archive SHA-256 in `prepare-sdk.sh`. On top of
+that, unit tests check that the static set is exactly the SDK's embedded
+production PCR0s plus ours (no development measurement, no other entry), that
+the single history URL is the HTTPS production file, and that the key constant
+the SDK's signature check reads is the key our release review authenticates
+the history with (`history_public_key_der` in `verified-release.json`).
+
+Two properties of the signed history follow from the SDK model:
+
+- Every signed production measurement is accepted, back to the first entry in
+  April 2025, including the ones our static pin retired. Maple revokes a
+  measurement only by removing its entry from the file. The retired list in
+  `src/lib.rs` governs the static pin only.
+- One key signs both the production and the development history, and the
+  signature covers the PCR0 alone. An entry counts as production because it is
+  in `pcrProdHistory.json` on Maple's `master` branch, fetched over TLS. Maple's
+  own clients share this exposure to a write to that file.
 
 Why: a single reproduced pin failed closed on every Maple front-enclave
 rotation until a review and a gateway release caught up. The 2026-11-16
@@ -44,9 +57,16 @@ What changes and what does not:
 - The managed-model restriction, Transport V2 encryption, workspace cache
   isolation and the rejection of every other Maple model are unchanged.
 - AWS: the helper reaches Maple only through a parent tunnel limited to
-  `enclave.trymaple.ai:443`, so it cannot fetch the history there. The AWS
-  standby keeps the static set only and fails closed on a rotation, as before.
+  `enclave.trymaple.ai:443`, so it cannot fetch the history there; the fetch
+  fails closed in well under a second. The AWS standby therefore accepts only
+  the static set (our `PCR0` plus the SDK's two embedded production
+  measurements) and, unlike GCP and Azure, still fails closed on a rotation.
   GCP and Azure connect directly.
+- Availability while the static pin is stale: each request starts its own
+  helper, so every request fetches the history (92 KB, about 35 ms extra in a
+  local test). A GitHub rate limit or outage then fails those requests closed.
+  Prompt re-pins keep this window short; serving a cached copy from the parent
+  over a loopback URL is a possible follow-up.
 - Qualification: `trustedrouter-maple-pilot attest-serving` checks the serving
   policy live. `attest-history` admits the live enclave only through a signed
   history entry, because its static pin is deliberately impossible. Neither
@@ -58,7 +78,8 @@ What changes and what does not:
 `Verify Maple release` checks the signed production approval every 30 minutes.
 It does not learn pins from the live server. It maintains the independently
 reproduced static pin; since 2026-11-18 the serving policy additionally accepts
-any measurement in Maple's signed production history (see above).
+any measurement in Maple's signed production history on GCP and Azure (see
+above).
 
 The reviewed baseline is `enclave-go/maple-transport/verified-release.json`.
 Only changes under `apps/`, `docs/`, the root README/license/agent instructions,
@@ -95,9 +116,10 @@ The only qualified managed model remains
 upstream API call. Auto models, stock DeepSeek, shared Tinfoil routes and all
 other Maple models remain rejected before the encrypted helper is started.
 Changes to the dedicated worker are security-sensitive even if the model name
-is unchanged. Because serving accepts Maple-signed measurements, a
-security-sensitive release under review no longer causes an outage; the review
-still gates the reproduced static pin.
+is unchanged. Because GCP and Azure serving accepts Maple-signed measurements,
+a security-sensitive release under review no longer causes an outage there (the
+AWS standby still waits for the pin); the review still gates the reproduced
+static pin.
 
 ## Reviewed backend update (2026-11-18)
 

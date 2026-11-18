@@ -29,6 +29,37 @@ pub fn serving_policy() -> maple_sdk::Result<Pcr0TrustPolicy> {
 #[cfg(test)]
 mod tests {
     use super::{serving_policy, PCR0, SIGNED_HISTORY_URL};
+    use std::collections::BTreeSet;
+
+    const SDK_PCR: &str = include_str!("../.vendor-sdk/src/pcr.rs");
+
+    /// Every 96-hex-digit run in TEXT: the PCR0s it carries.
+    fn pcr0s_in(text: &str) -> BTreeSet<String> {
+        text.split(|c: char| !c.is_ascii_hexdigit())
+            .filter(|run| run.len() == 96)
+            .map(str::to_owned)
+            .collect()
+    }
+
+    /// The PCR0s inside one `const NAME: &[&str] = &[ ... ];` of the vendored SDK.
+    fn sdk_list(name: &str) -> BTreeSet<String> {
+        let start = SDK_PCR
+            .find(&format!("const {name}: &[&str] = &["))
+            .unwrap_or_else(|| panic!("vendored SDK has no {name}"));
+        let end = start + SDK_PCR[start..].find("];").unwrap();
+        pcr0s_in(&SDK_PCR[start..end])
+    }
+
+    /// The string literal assigned to `const NAME: &str =` in the vendored SDK.
+    fn sdk_str(name: &str) -> &'static str {
+        let start = SDK_PCR
+            .find(&format!("const {name}: &str ="))
+            .unwrap_or_else(|| panic!("vendored SDK has no {name}"));
+        let rest = &SDK_PCR[start..];
+        let open = rest.find('"').unwrap() + 1;
+        let close = open + rest[open..].find('"').unwrap();
+        &rest[open..close]
+    }
 
     #[test]
     fn front_pin_matches_independently_verified_release() {
@@ -39,7 +70,9 @@ mod tests {
         assert_eq!(Some(super::MODEL), release["model"].as_str());
         assert_eq!(PCR0.len(), 96);
         assert!(PCR0.bytes().all(|byte| byte.is_ascii_hexdigit()));
-        // Superseded measurements are replaced, never kept as extra allowances.
+        // In the static pin, superseded measurements are replaced, never kept as
+        // extra allowances. Serving still accepts them while they remain in
+        // Maple's signed history (see serving_policy).
         for retired in [
             "4d867ac23d7a42b46a458452fe59f2f2c831b0c553d768287c9ca01f2015b177272b9e807ad585b498ff8a5f3b4141c2",
             "0cb6ebb04723d420a6e1c6cde213792a3917f1cadfde1143caf4091f45aa7ed8c3e6915787887ca03ad936f07b70f063",
@@ -58,20 +91,32 @@ mod tests {
     #[test]
     fn serving_policy_is_the_official_production_policy_plus_our_pin() {
         let policy = format!("{:?}", serving_policy().unwrap());
-        assert!(
-            policy.contains(PCR0),
-            "the reproduced PCR0 must be in the static set"
-        );
-        assert!(policy.contains("raw.githubusercontent.com"));
-        assert!(policy
-            .contains("/MaplePrivacyLabs/Maple/master/services/opensecret/pcrProdHistory.json"));
-        // Production only: never the development history or its measurements.
-        assert!(!policy.contains("pcrDevHistory.json"));
+        // The static set is exactly OpenSecret's embedded production PCR0s plus
+        // our reproduced one: any other static entry would bypass Maple's
+        // signature, and no development measurement belongs here.
+        let production = sdk_list("OFFICIAL_PRODUCTION_PCR0S");
+        let development = sdk_list("OFFICIAL_DEVELOPMENT_PCR0S");
+        assert!(!production.is_empty() && !development.is_empty());
+        let mut expected = production.clone();
+        expected.insert(PCR0.to_owned());
+        assert_eq!(pcr0s_in(&policy), expected);
+        assert!(pcr0s_in(&policy).is_disjoint(&development));
+        // Exactly one history location: the production file, over HTTPS, on
+        // GitHub's raw host.
         assert_eq!(
             policy.matches("Url {").count(),
             1,
             "exactly one history location"
         );
+        for part in [
+            "scheme: \"https\"",
+            "host: Some(Domain(\"raw.githubusercontent.com\"))",
+            "port: None",
+            "path: \"/MaplePrivacyLabs/Maple/master/services/opensecret/pcrProdHistory.json\"",
+            "query: None",
+        ] {
+            assert!(policy.contains(part), "history URL lacks {part}: {policy}");
+        }
     }
 
     #[test]
@@ -80,22 +125,22 @@ mod tests {
             SIGNED_HISTORY_URL,
             "https://raw.githubusercontent.com/MaplePrivacyLabs/Maple/master/services/opensecret/pcrProdHistory.json"
         );
-        // The SDK verifies history entries with its bundled P-384 key. It must be
-        // the key our release review authenticated history with: an SDK bump
-        // that changes it fails here instead of silently moving the trust root.
+        assert_eq!(
+            sdk_str("OFFICIAL_PRODUCTION_PCR_HISTORY_URL"),
+            SIGNED_HISTORY_URL
+        );
+        // The SDK verifies history entries with its bundled P-384 key. The value
+        // of that constant must be the key our release review authenticated the
+        // history with, and signature checking must read that constant. The SDK
+        // archive is also pinned by SHA-256 in prepare-sdk.sh.
         let release: serde_json::Value =
             serde_json::from_str(include_str!("../verified-release.json")).unwrap();
         let reviewed_key = release["history_public_key_der"].as_str().unwrap();
-        let sdk_pcr = include_str!("../.vendor-sdk/src/pcr.rs");
-        assert!(
-            sdk_pcr.contains(&format!("\"{reviewed_key}\"")),
-            "the vendored SDK must bundle the reviewed history key"
-        );
-        assert_eq!(
-            sdk_pcr
-                .matches("const PCR_HISTORY_VERIFICATION_KEY_B64")
-                .count(),
-            1
-        );
+        assert_eq!(sdk_str("PCR_HISTORY_VERIFICATION_KEY_B64"), reviewed_key);
+        let verify = &SDK_PCR[SDK_PCR.find("fn has_valid_signature").unwrap()..];
+        let verify = &verify[..verify.find("\n    }\n").unwrap()];
+        assert!(verify.contains("BASE64.decode(PCR_HISTORY_VERIFICATION_KEY_B64)"));
+        assert!(verify.contains("ECDSA_P384_SHA384_FIXED"));
+        assert!(verify.contains(".verify(self.pcr0.as_bytes(), &signature_bytes)"));
     }
 }

@@ -167,7 +167,8 @@ def report_review(candidate: dict) -> str:
     body = (
         "The verified-release checker refused automatic promotion of the reproduced static pin. Serving "
         "already accepts measurements in Maple's signed production history (docs/providers/maple.md, "
-        "Serving trust policy), so this review is additional assurance, not on the availability path.\n\n"
+        "Serving trust policy), so on GCP and Azure this review is additional assurance, not on the "
+        "availability path. The AWS standby cannot fetch the history and still needs the new pin.\n\n"
         "Candidate source: https://github.com/MaplePrivacyLabs/Maple/commit/"
         + source
         + "\n\n"
