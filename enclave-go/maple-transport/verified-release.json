@@ -3,27 +3,27 @@
   "provider": "maple",
   "backend": "https://enclave.trymaple.ai",
   "model": "deepseek-v4-1-flash-1017-uncensored",
-  "source_commit": "bcca93e3c336c4b9eb07a651926f62ea1b8b80e6",
-  "approval_commit": "9604dc8f345bbd08882ce35aa8c254d581240540",
-  "pcr0": "4d867ac23d7a42b46a458452fe59f2f2c831b0c553d768287c9ca01f2015b177272b9e807ad585b498ff8a5f3b4141c2",
-  "eif_sha256": "41b84cf9d85c7594659e718e71c5c106a09d83d9996e7cf8bb10c98224e62346",
-  "security_boundary_sha256": "1bb20ff5b9bd4759e388bfd0a245481bd78e38b0240125e5375870d975a71a92",
+  "source_commit": "c4b2cba57c0bd4184a2684ef999b63fb234c5f2f",
+  "approval_commit": "605e8618632ad55de54cf1e14084bbfae04f2020",
+  "pcr0": "c0963d7af8aff8b65020ffddd8ed902a881838385073fb24d0d74b8b52eca7843a0288927a9eaa76e1193ac8cf767c95",
+  "eif_sha256": "387567faabf0c4de580b719744d6f8f27d2ce6d79ccc01063ce84c7639cda99b",
+  "security_boundary_sha256": "c9a7a7d95e83c31a06fa227dc009fc73251bd93cf76660ec5ac4b772310091d0",
   "history_public_key_der": "MHYwEAYHKoZIzj0CAQYFK4EEACIDYgAEHiUY9kFWK1GqBGzczohhwEwElXzgWLDZa9R6wBx3JOBocgSt9+UIzZlJbPDjYeGBfDUXh7Z62BG2vVsh2NgclLB5S7A2ucBBtb1wd8vSQHP8jpdPhZX1slauPgbnROIP",
-  "review": "https://github.com/Lore-Hex/quill-cloud-proxy/issues/762",
+  "review": "https://github.com/Lore-Hex/quill-cloud-proxy/issues/845",
   "evidence": {
-    "source_commit": "bcca93e3c336c4b9eb07a651926f62ea1b8b80e6",
-    "build_commit": "9604dc8f345bbd08882ce35aa8c254d581240540",
-    "pcr0": "4d867ac23d7a42b46a458452fe59f2f2c831b0c553d768287c9ca01f2015b177272b9e807ad585b498ff8a5f3b4141c2",
-    "security_boundary_sha256": "1bb20ff5b9bd4759e388bfd0a245481bd78e38b0240125e5375870d975a71a92",
+    "source_commit": "c4b2cba57c0bd4184a2684ef999b63fb234c5f2f",
+    "build_commit": "c4b2cba57c0bd4184a2684ef999b63fb234c5f2f",
+    "pcr0": "c0963d7af8aff8b65020ffddd8ed902a881838385073fb24d0d74b8b52eca7843a0288927a9eaa76e1193ac8cf767c95",
+    "security_boundary_sha256": "c9a7a7d95e83c31a06fa227dc009fc73251bd93cf76660ec5ac4b772310091d0",
     "reproduction_verified": true,
     "provenance_verified": true,
     "history_verified": true,
     "review_only": true,
     "files": {
-      "image.eif": "41b84cf9d85c7594659e718e71c5c106a09d83d9996e7cf8bb10c98224e62346",
-      "pcr.json": "99f23fa41ba869aa2aa6544d84ee6fa3b6c3688d1f51bdbe6e04ccc0001c0401",
-      "SHA256SUMS": "bf0e8f39625e97270bcf2f161a484cb6fed6f8e44100f79df03a9be11cffb5b1",
-      "handoff.json": "f1f68f34f3570b8f7245f848c34358998d8ae72116e8025983af7877ddb8e82d"
+      "image.eif": "387567faabf0c4de580b719744d6f8f27d2ce6d79ccc01063ce84c7639cda99b",
+      "pcr.json": "987da06b13f76682df94b5b272e6f5d9253d696faaee5970d3b30597f1c5592f",
+      "SHA256SUMS": "8e1ed7d66a0fbe5f5b132b5a4e4f935c25635819f888980a714256486c994751",
+      "handoff.json": "485334fd4cb6f7fd102595493a5258ef3da80856de09dfe056cd2c95f818b9bb"
     }
   }
 }

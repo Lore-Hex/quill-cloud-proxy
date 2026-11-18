@@ -44,6 +44,71 @@ Changes to the dedicated worker are security-sensitive even if the model name
 is unchanged. Provider deployment overlap is still necessary to avoid an
 outage while a new security-sensitive release is reviewed and staged.
 
+## Reviewed backend update (2026-11-18)
+
+The exact candidate tracked in [review #845](https://github.com/Lore-Hex/quill-cloud-proxy/issues/845)
+replaces the front PCR0 with
+`c0963d7af8aff8b65020ffddd8ed902a881838385073fb24d0d74b8b52eca7843a0288927a9eaa76e1193ac8cf767c95`.
+It binds source `c4b2cba57c0bd4184a2684ef999b63fb234c5f2f` and the signed
+production approval `605e8618632ad55de54cf1e14084bbfae04f2020`, which descends
+from `bcca93e3` (no downgrade) and changes only `pcrProd.json` and
+`pcrProdHistory.json`. The former `4d867ac2...` measurement is replaced and
+added to the retired list. Maple's intermediate release from `87efb99d`
+(PCR0 `f5a19760...`, review #835, approved in `ad8575e7`) was never pinned and
+is superseded.
+
+Maple production already serves this measurement. The
+`maple/dealignai/deepseek-v4.1-flash-1017-uncensored` route-availability probe
+has returned HTTP 502 against the old pin since 2026-11-16 21:01 UTC
+(QUILL-ROUTER-DX), with the enclave failing before any upstream response
+(`ttfb_ms=-1`, the transport-start error path). On November 18 a credential-free attestation against the
+`4d867ac2...` pin returned `attestation_verification_failed`. The pin below
+comes from the rebuild, not from live values.
+
+The independent credential-free review-only build in
+[run 44293036526](https://github.com/Lore-Hex/quill-cloud-proxy/actions/runs/44293036526)
+matches `image.eif`, `pcr.json`, `SHA256SUMS` and `handoff.json` byte for byte.
+EIF SHA-256 is
+`387567faabf0c4de580b719744d6f8f27d2ce6d79ccc01063ce84c7639cda99b`.
+The same run passed exact-commit provenance, the append-only P-384 approval
+history check signed by the unchanged pinned history key, a credential-free
+front attestation against the new pin in 334 ms, and a deliberate wrong-pin
+rejection. A local repeat passed in 363 ms and rejected the wrong pin. No
+credential or inference was sent.
+
+PCR1 changes (`a91689e3...` to `e83dc536...`) along with PCR0 because the
+enclave kernel moves from Linux 6.12.113 to 6.12.118, a forward point release
+of the same 6.12 LTS branch fetched from `cdn.kernel.org` with a fixed hash.
+The protected tree changes in 62 paths, so this update could not qualify for
+automatic publication. The source diff from `bcca93e3` (34 commits) was
+reviewed:
+
+- Build inputs: `services/opensecret/nix/kernel-upstream.nix` (the kernel
+  point release above) and `services/opensecret/flake.nix` plus the root
+  `flake.nix`, which only replace Git in build and CI shells with the fixed
+  upstream point release (2.54.1 and 2.56.1) from `kernel.org`, hash-pinned.
+  No change to `flake.lock`, `Cargo.lock`, toolchain or the EIF build script.
+- Most other paths are CI workflows, CI scripts, SDK tests and docs outside
+  the image. `proxy/src/proxy.rs` changes one test expectation.
+- Image source: a new bounded Transport V2 diagnostics module
+  (`transport_v2/diagnostics.rs`) wired into `gateway.rs`. It records stage,
+  allowlisted route class, method, outcome and status codes; before
+  decryption it records `route=unknown`, and its tests assert that paths,
+  identifiers and query strings are not logged. The gateway still seals every
+  response through the unchanged `seal_framed`; `crypto.rs`, `envelope.rs`
+  and `framing.rs` are unchanged. Provider context-limit errors now map to
+  OpenAI's `context_length_exceeded`. Inkling 2 Small is added as a paid
+  Tinfoil-routed model.
+- The managed model's route, dedicated worker identity and routing policy are
+  unchanged. Attestation routes, `encrypt.rs`, `jwt.rs`, `private_key.rs`,
+  `log_redaction.rs`, `maple_inference.rs` and the proxy configuration are
+  unchanged.
+
+The helper's one-model admission restriction is unchanged. Required CI, fresh
+trust verification, measured cloud builds, signed trust publication and
+production canaries remain release gates. Future security-sensitive changes
+must still stop for review.
+
 ## Reviewed backend update (2026-11-12)
 
 The exact candidate tracked in [review #762](https://github.com/Lore-Hex/quill-cloud-proxy/issues/762)
