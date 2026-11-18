@@ -490,6 +490,20 @@ var transportErrorClasses = []struct{ marker, class string }{
 	{"first-byte budget exceeded", "user_model_first_byte_timeout"},
 	{"thinking budget exceeded", "thinking_budget_exceeded"},
 	{"attestation verification required", "attestation_required"},
+	// Maple's measured helper (internal/maple's fixed start failures). None is
+	// in providerCircuitTransportFailures, as before they had a label. A
+	// rejected attestation is the one an operator acts on: an invalid Nitro
+	// document, or a front-enclave PCR0 Maple has not signed.
+	{"maple: front enclave attestation rejected", "maple_attestation_rejected"},
+	{"maple: encrypted request failed before a response", "maple_request_failed"},
+	{"maple: encrypted response did not start in time", "maple_response_start_timeout"},
+	{"maple: encrypted adapter setup failed", "maple_adapter_setup_failed"},
+	{"maple: encrypted adapter rejected its input", "maple_adapter_input_rejected"},
+	{"maple: encrypted adapter capacity exhausted", "maple_capacity_exhausted"},
+	{"maple: encrypted adapter unavailable", "maple_adapter_unavailable"},
+	{"maple: invalid encrypted adapter status", "maple_no_adapter_status"},
+	{"llm/maple: encrypted request verification failed", "maple_start_failed"},
+	{"llm/maple: encrypted response incomplete or invalid", "maple_response_invalid"},
 	// io.ErrClosedPipe: the gateway stopped reading this provider stream,
 	// usually because the client side failed first. Not a provider failure.
 	{"read/write on closed pipe", "downstream_closed"},

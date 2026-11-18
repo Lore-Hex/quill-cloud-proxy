@@ -28,6 +28,61 @@ const (
 
 var slots = make(chan uint32, concurrency)
 
+// Start's failures before the helper answers. Each is a fixed string with no
+// request, credential or provider text, so callers may log and label them
+// (errorClass in cmd/enclave); IsStartFailure recognises exactly these.
+var (
+	ErrCapacityExhausted    = errors.New("maple: encrypted adapter capacity exhausted")
+	ErrAdapterUnavailable   = errors.New("maple: encrypted adapter unavailable")
+	ErrInvalidAdapterStatus = errors.New("maple: invalid encrypted adapter status")
+	// The helper's front-enclave attestation was refused: an invalid Nitro
+	// document, or a PCR0 neither pinned nor in Maple's signed history.
+	ErrAttestationRejected  = errors.New("maple: front enclave attestation rejected")
+	ErrRequestFailed        = errors.New("maple: encrypted request failed before a response")
+	ErrResponseStartTimeout = errors.New("maple: encrypted response did not start in time")
+	ErrAdapterSetupFailed   = errors.New("maple: encrypted adapter setup failed")
+	ErrAdapterInputRejected = errors.New("maple: encrypted adapter rejected its input")
+)
+
+var startFailures = []error{
+	ErrCapacityExhausted, ErrAdapterUnavailable, ErrInvalidAdapterStatus, ErrAttestationRejected,
+	ErrRequestFailed, ErrResponseStartTimeout, ErrAdapterSetupFailed, ErrAdapterInputRejected,
+}
+
+// adapterFailures maps the reason in the helper's `{"error":"<reason>"}` line
+// (maple-transport writes one when it fails before any status line) to a fixed
+// error. An unknown reason is an invalid status: helper text never leaves here.
+var adapterFailures = map[string]error{
+	"attestation_rejected":         ErrAttestationRejected,
+	"encrypted_request_failed":     ErrRequestFailed,
+	"response_start_timeout":       ErrResponseStartTimeout,
+	"request_timeout":              ErrResponseStartTimeout,
+	"client_initialization_failed": ErrAdapterSetupFailed,
+	"invalid_policy":               ErrAdapterSetupFailed,
+	"request_construction_failed":  ErrAdapterSetupFailed,
+	"invalid_send_budget":          ErrAdapterSetupFailed,
+	"request_read_failed":          ErrAdapterInputRejected,
+	"request_too_large":            ErrAdapterInputRejected,
+	"invalid_request":              ErrAdapterInputRejected,
+	"invalid_request_fields":       ErrAdapterInputRejected,
+	"invalid_credential":           ErrAdapterInputRejected,
+	"invalid_cache_root":           ErrAdapterInputRejected,
+	"missing_body":                 ErrAdapterInputRejected,
+	"invalid_body":                 ErrAdapterInputRejected,
+	"unsupported_request":          ErrAdapterInputRejected,
+	"encode_failed":                ErrAdapterInputRejected,
+}
+
+// IsStartFailure reports whether err is one of Start's fixed failures.
+func IsStartFailure(err error) bool {
+	for _, known := range startFailures {
+		if errors.Is(err, known) {
+			return true
+		}
+	}
+	return false
+}
+
 func init() {
 	for i := range uint32(concurrency) {
 		slots <- childUID + i
@@ -60,14 +115,14 @@ func start(ctx context.Context, key, scope string, body []byte, launch processSt
 		return 0, nil, ctx.Err()
 	case uid = <-slots:
 	default:
-		return 0, nil, errors.New("maple: encrypted adapter capacity exhausted")
+		return 0, nil, ErrCapacityExhausted
 	}
 	ctx, cancel := context.WithTimeout(ctx, 10*time.Minute)
 	p, err := launch(ctx, input, uid)
 	if err != nil {
 		cancel()
 		slots <- uid
-		return 0, nil, errors.New("maple: encrypted adapter unavailable")
+		return 0, nil, ErrAdapterUnavailable
 	}
 	var once sync.Once
 	var waitErr error
@@ -86,13 +141,17 @@ func start(ctx context.Context, key, scope string, body []byte, launch processSt
 	statusLine, err := reader.ReadSlice('\n')
 	startTimer.Stop()
 	var header struct {
-		Status int `json:"status"`
+		Status int    `json:"status"`
+		Error  string `json:"error"`
 	}
-	if err != nil || len(statusLine) > 64 || json.Unmarshal(statusLine, &header) != nil ||
-		(header.Status != 200 && (header.Status < 400 || header.Status > 599)) {
+	parsed := err == nil && len(statusLine) <= 64 && json.Unmarshal(statusLine, &header) == nil
+	if !parsed || (header.Status != 200 && (header.Status < 400 || header.Status > 599)) {
 		cancel()
 		_ = wait()
-		return 0, nil, errors.New("maple: invalid encrypted adapter status")
+		if failure, known := adapterFailures[header.Error]; parsed && header.Status == 0 && known {
+			return 0, nil, failure
+		}
+		return 0, nil, ErrInvalidAdapterStatus
 	}
 	if header.Status != 200 {
 		if err := finishProcess(reader, wait); err != nil {

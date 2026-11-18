@@ -195,3 +195,69 @@ func TestCapacityIsBounded(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+// The helper's pre-status reasons (maple-transport's PRE_STATUS_REASONS in
+// src/bin/maple-transport.rs). Each must map to a fixed error.
+var helperPreStatusReasons = []string{
+	"attestation_rejected", "encrypted_request_failed", "response_start_timeout", "request_timeout",
+	"client_initialization_failed", "invalid_policy", "request_construction_failed", "invalid_send_budget",
+	"request_read_failed", "request_too_large", "invalid_request", "invalid_request_fields",
+	"invalid_credential", "invalid_cache_root", "missing_body", "invalid_body", "unsupported_request",
+	"encode_failed",
+}
+
+func TestEveryHelperReasonHasAFixedStartFailure(t *testing.T) {
+	for _, reason := range helperPreStatusReasons {
+		failure := adapterFailures[reason]
+		if failure == nil || errors.Is(failure, ErrInvalidAdapterStatus) || !IsStartFailure(failure) {
+			t.Errorf("reason %q maps to %v", reason, failure)
+		}
+	}
+	if len(adapterFailures) != len(helperPreStatusReasons) {
+		t.Errorf("adapterFailures has %d reasons, the helper %d", len(adapterFailures), len(helperPreStatusReasons))
+	}
+	for _, other := range []error{errors.New("maple: front enclave attestation rejected"), context.Canceled, io.EOF} {
+		if IsStartFailure(other) {
+			t.Errorf("IsStartFailure(%v) = true; only this package's own values qualify", other)
+		}
+	}
+}
+
+func TestAdapterFailureLineBecomesAFixedError(t *testing.T) {
+	for _, tc := range []struct {
+		name, output string
+		want         error
+	}{
+		{"attestation", "{\"error\":\"attestation_rejected\"}\n", ErrAttestationRejected},
+		{"send", "{\"error\":\"encrypted_request_failed\"}\n", ErrRequestFailed},
+		{"start timeout", "{\"error\":\"response_start_timeout\"}\n", ErrResponseStartTimeout},
+		{"setup", "{\"error\":\"client_initialization_failed\"}\n", ErrAdapterSetupFailed},
+		{"input", "{\"error\":\"invalid_credential\"}\n", ErrAdapterInputRejected},
+		{"unknown reason", "{\"error\":\"secret helper text\"}\n", ErrInvalidAdapterStatus},
+		{"empty reason", "{\"error\":\"\"}\n", ErrInvalidAdapterStatus},
+		{"reason beside a bad status", "{\"status\":302,\"error\":\"attestation_rejected\"}\n", ErrInvalidAdapterStatus},
+		{"oversized", "{\"error\":\"attestation_rejected\",\"pad\":\"" + strings.Repeat("x", 64) + "\"}\n", ErrInvalidAdapterStatus},
+		{"no newline", "{\"error\":\"attestation_rejected\"}", ErrInvalidAdapterStatus},
+		{"not a string", "{\"error\":7}\n", ErrInvalidAdapterStatus},
+		{"nothing", "", ErrInvalidAdapterStatus},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var waits atomic.Int32
+			status, body, err := start(t.Context(), "synthetic-key", "scope", testBody(), func(context.Context, []byte, uint32) (process, error) {
+				return process{stdout: io.NopCloser(strings.NewReader(tc.output)), wait: func() error {
+					waits.Add(1)
+					return errors.New("exit status 1")
+				}}, nil
+			})
+			if status != 0 || body != nil || !errors.Is(err, tc.want) {
+				t.Fatalf("status=%d body=%v err=%v, want %v", status, body != nil, err, tc.want)
+			}
+			if strings.Contains(err.Error(), "secret") || strings.Contains(err.Error(), "exit status") {
+				t.Fatalf("helper text leaked: %v", err)
+			}
+			if waits.Load() != 1 || len(slots) != concurrency {
+				t.Fatal("process or concurrency slot leaked")
+			}
+		})
+	}
+}

@@ -43,6 +43,13 @@ func invokeMapleWith(ctx context.Context, key string, req *qtypes.OpenAIChatRequ
 	defer clear(prepared.Bytes)
 	status, response, err := start(ctx, key, option.ProviderCacheScope, prepared.Bytes)
 	if err != nil {
+		// internal/maple's own start failures are fixed strings with no request,
+		// credential or provider text, so they pass through for the gateway's
+		// logs to label (a rejected attestation reads as one). Anything else
+		// keeps the generic message.
+		if maple.IsStartFailure(err) {
+			return err
+		}
 		return errors.New("llm/maple: encrypted request verification failed")
 	}
 	if response == nil {

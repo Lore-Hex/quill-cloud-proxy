@@ -1,5 +1,7 @@
 //! One-shot adapter protocol: a bounded JSON request on stdin, a status line
-//! then canonical SSE on stdout. No credentials in arguments or diagnostics.
+//! then canonical SSE on stdout. A failure before the status line writes one
+//! `{"error":"<reason>"}` line instead, from this file's fixed vocabulary.
+//! No credentials in arguments or diagnostics.
 //! Runs inside the measured serving image, never on an untrusted parent host.
 use bytes::Bytes;
 use futures::StreamExt;
@@ -11,12 +13,41 @@ use maple_sdk::{
 use serde_json::Value;
 use std::io::{Read, Write};
 use std::process::ExitCode;
+use std::sync::atomic::{AtomicBool, Ordering};
 use tokio::time::{timeout, Duration};
 use trustedrouter_maple_pilot::{relay::Relay, serving_policy, BACKEND, MODEL};
 use zeroize::Zeroizing;
 
 const REQUEST_LIMIT: usize = 16 * 1024 * 1024;
 type Result<T> = std::result::Result<T, &'static str>;
+
+/// Set once a status line is on stdout. After that the parent reads a status
+/// and a stream, so a failure must not add a reason line to it.
+static STATUS_WRITTEN: AtomicBool = AtomicBool::new(false);
+
+fn write_status(out: &mut impl Write, status: u16) -> Result<()> {
+    writeln!(out, "{{\"status\":{status}}}")
+        .and_then(|_| out.flush())
+        .map_err(|_| "consumer_closed")?;
+    STATUS_WRITTEN.store(true, Ordering::SeqCst);
+    Ok(())
+}
+
+/// The line the parent reads when the helper fails before any status. REASON
+/// is always one of this file's fixed strings, never SDK or provider text.
+fn failure_line(reason: &str) -> String {
+    format!("{{\"error\":\"{reason}\"}}")
+}
+
+/// The fixed reason a request failed before Maple answered. A refused
+/// attestation (an invalid Nitro document, or a PCR0 neither pinned nor in
+/// Maple's signed history) is told apart: it is the one an operator acts on.
+fn send_failure(error: maple_sdk::Error) -> &'static str {
+    match error {
+        maple_sdk::Error::AttestationVerificationFailed(_) => "attestation_rejected",
+        _ => "encrypted_request_failed",
+    }
+}
 
 struct Input {
     key: Zeroizing<String>,
@@ -98,7 +129,7 @@ async fn run(input: Input, out: &mut impl Write) -> Result<()> {
     )
     .await
     .map_err(|_| "response_start_timeout")?
-    .map_err(|_| "encrypted_request_failed")?;
+    .map_err(send_failure)?;
     let status = response.status().as_u16();
     let mut body = response.into_body();
     if status != 200 {
@@ -115,14 +146,10 @@ async fn run(input: Input, out: &mut impl Write) -> Result<()> {
                 return Err("error_body_too_large");
             }
         }
-        writeln!(out, "{{\"status\":{status}}}")
-            .and_then(|_| out.flush())
-            .map_err(|_| "consumer_closed")?;
+        write_status(out, status)?;
         return Ok(());
     }
-    writeln!(out, "{{\"status\":200}}")
-        .and_then(|_| out.flush())
-        .map_err(|_| "consumer_closed")?;
+    write_status(out, 200)?;
     let mut relay = Relay::default();
     while let Some(chunk) = timeout(Duration::from_secs(90), body.next())
         .await
@@ -166,6 +193,10 @@ async fn main() -> ExitCode {
         Ok(()) => ExitCode::SUCCESS,
         Err(reason) => {
             eprintln!("maple.{reason}");
+            if !STATUS_WRITTEN.load(Ordering::SeqCst) {
+                let mut out = std::io::stdout().lock();
+                let _ = writeln!(out, "{}", failure_line(reason)).and_then(|_| out.flush());
+            }
             ExitCode::FAILURE
         }
     }
@@ -223,5 +254,65 @@ mod tests {
             request["cache_root"] = root;
             assert!(decode(&serde_json::to_vec(&request).unwrap()).is_err());
         }
+    }
+
+    /// Every reason the helper can fail with before a status line. The parent's
+    /// adapterFailures (internal/maple/client.go) maps each; keep them in step.
+    const PRE_STATUS_REASONS: &[&str] = &[
+        "attestation_rejected",
+        "encrypted_request_failed",
+        "response_start_timeout",
+        "request_timeout",
+        "client_initialization_failed",
+        "invalid_policy",
+        "request_construction_failed",
+        "invalid_send_budget",
+        "request_read_failed",
+        "request_too_large",
+        "invalid_request",
+        "invalid_request_fields",
+        "invalid_credential",
+        "invalid_cache_root",
+        "missing_body",
+        "invalid_body",
+        "unsupported_request",
+        "encode_failed",
+    ];
+
+    #[test]
+    fn attestation_rejection_is_told_apart_from_other_send_failures() {
+        assert_eq!(
+            send_failure(maple_sdk::Error::AttestationVerificationFailed(
+                "PCR0 is not approved by the configured trust policy".into()
+            )),
+            "attestation_rejected"
+        );
+        for other in [
+            maple_sdk::Error::Session("x".into()),
+            maple_sdk::Error::InvalidResponse("x".into()),
+            maple_sdk::Error::KeyExchange("x".into()),
+            maple_sdk::Error::Configuration("x".into()),
+        ] {
+            assert_eq!(send_failure(other), "encrypted_request_failed");
+        }
+    }
+
+    #[test]
+    fn failure_line_is_one_short_fixed_json_object() {
+        for reason in PRE_STATUS_REASONS {
+            let line = failure_line(reason);
+            // The parent reads at most 64 bytes, newline included.
+            assert!(line.len() < 64, "{reason}");
+            let parsed: Value = serde_json::from_str(&line).unwrap();
+            assert_eq!(parsed, json!({ "error": reason }));
+        }
+    }
+
+    #[test]
+    fn a_written_status_suppresses_the_failure_line() {
+        let mut out = Vec::new();
+        write_status(&mut out, 401).unwrap();
+        assert_eq!(out, b"{\"status\":401}\n");
+        assert!(STATUS_WRITTEN.load(Ordering::SeqCst));
     }
 }

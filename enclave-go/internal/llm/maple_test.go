@@ -96,3 +96,23 @@ func TestMapleFailureIsNotReplayed(t *testing.T) {
 		t.Fatalf("calls=%d err=%v", calls, err)
 	}
 }
+
+func TestMapleStartFailuresKeepTheirFixedReason(t *testing.T) {
+	invoke := func(failure error) error {
+		return invokeMapleWith(t.Context(), "key", &qtypes.OpenAIChatRequest{}, &qtypes.AnthropicMessagesRequest{}, io.Discard,
+			InvokeOptions{Provider: "maple", UpstreamModel: maple.Model},
+			func(context.Context, string, string, []byte) (int, io.ReadCloser, error) { return 0, nil, failure })
+	}
+	for _, failure := range []error{maple.ErrAttestationRejected, maple.ErrInvalidAdapterStatus,
+		maple.ErrCapacityExhausted, maple.ErrResponseStartTimeout} {
+		if err := invoke(failure); !errors.Is(err, failure) {
+			t.Errorf("start failure %v became %v", failure, err)
+		}
+	}
+	// Anything else, including cancellation, keeps the generic message.
+	for _, other := range []error{context.Canceled, errors.New("maple: front enclave attestation rejected")} {
+		if err := invoke(other); err == nil || err.Error() != "llm/maple: encrypted request verification failed" {
+			t.Errorf("start error %v became %v", other, err)
+		}
+	}
+}

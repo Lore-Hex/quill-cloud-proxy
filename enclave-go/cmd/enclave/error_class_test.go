@@ -9,6 +9,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/Lore-Hex/quill-cloud-proxy/enclave-go/internal/maple"
 	"github.com/Lore-Hex/quill-cloud-proxy/enclave-go/internal/upstreamcert"
 )
 
@@ -103,5 +104,31 @@ func TestStreamStatsWriterRecordsFirstClientWriteError(t *testing.T) {
 	_, _ = ok.Write([]byte("data: z\n\n"))
 	if ok.ClientWriteErr() != nil {
 		t.Fatal("successful writes recorded an error")
+	}
+}
+
+// 2026-11-16: a Maple front-enclave rotation logged only
+// err="other:*errors.errorString" for two days. Each fixed Maple start failure
+// now has its own label, and labelling changes no circuit decision: none was
+// ever a provider-down failure.
+func TestErrorClassNamesMapleStartFailures(t *testing.T) {
+	for want, err := range map[string]error{
+		"maple_attestation_rejected":   maple.ErrAttestationRejected,
+		"maple_request_failed":         maple.ErrRequestFailed,
+		"maple_response_start_timeout": maple.ErrResponseStartTimeout,
+		"maple_adapter_setup_failed":   maple.ErrAdapterSetupFailed,
+		"maple_adapter_input_rejected": maple.ErrAdapterInputRejected,
+		"maple_capacity_exhausted":     maple.ErrCapacityExhausted,
+		"maple_adapter_unavailable":    maple.ErrAdapterUnavailable,
+		"maple_no_adapter_status":      maple.ErrInvalidAdapterStatus,
+		"maple_start_failed":           errors.New("llm/maple: encrypted request verification failed"),
+		"maple_response_invalid":       errors.New("llm/maple: encrypted response incomplete or invalid"),
+	} {
+		if got := errorClass(err); got != want {
+			t.Errorf("errorClass(%v) = %q, want %q", err, got, want)
+		}
+		if providerDownFailure(err, false) || providerDownFailure(err, true) {
+			t.Errorf("%v now counts as provider down", err)
+		}
 	}
 }
