@@ -3,7 +3,10 @@ package upstreamerror
 import "strconv"
 
 // Diagnostic emits only status numbers and exact allowlisted symbols, never
-// provider messages, raw bodies, or arbitrary code/parameter values.
+// provider messages, raw bodies, or arbitrary code/parameter values. A
+// failure that says the calling account is out of funds ends with ";funding"
+// (our own symbol), so the control plane can take that provider's prepaid
+// routes out of rotation without ever seeing the provider's text.
 func Diagnostic(err error) string {
 	if err == nil {
 		return ""
@@ -37,6 +40,9 @@ func Diagnostic(err error) string {
 			"service_tier", "prompt_cache_key", "prompt_cache_retention", "store", "include":
 			result += ";param=" + param
 		}
+	}
+	if FundingExhausted(err) {
+		result += ";funding"
 	}
 	return result
 }

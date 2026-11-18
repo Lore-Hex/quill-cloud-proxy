@@ -1000,8 +1000,13 @@ var providerCircuitTransportFailures = map[string]bool{
 //   - The final candidate's time-to-first-byte budget, which is a hang
 //     detector. A non-final candidate's short budget is a failover trigger that
 //     silent-reasoning models legitimately exceed, so it never counts.
+//   - A provider account out of funds (upstreamerror.FundingExhausted: a 402,
+//     or funding wording on a 4xx). Every request on that account fails until
+//     it is refilled, exactly like an outage; a half-open probe brings the
+//     route back once it serves again. On a prepaid route it still takes the
+//     usual distinct tenants to open the shared circuit.
 //
-// Client errors (4xx), local input errors, the gateway's own failures
+// Other client errors (4xx), local input errors, the gateway's own failures
 // (credentials, policy checks), a 2xx with no bytes, a closed downstream pipe
 // and cancellation never count.
 func providerDownFailure(err error, finalFirstByteBudget bool) bool {
@@ -1020,6 +1025,9 @@ func providerDownFailure(err error, finalFirstByteBudget bool) bool {
 	}
 	if strings.Contains(err.Error(), "time-to-first-byte exceeded") {
 		return finalFirstByteBudget
+	}
+	if upstreamerror.FundingExhausted(err) {
+		return true
 	}
 	if status, ok := upstreamerror.Status(err); ok {
 		return status == 502 || status == 503 || status == 504

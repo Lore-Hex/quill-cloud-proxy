@@ -1253,8 +1253,27 @@ func upstreamErrorResponse(err error) (int, string) {
 	if message, ok := clientInputErrorMessage(err); ok {
 		return 400, message
 	}
+	if prepaidFundingFailure(err) {
+		return http.StatusServiceUnavailable, providerFundingUnavailableMessage
+	}
 	d := upstreamerror.Parse(err)
 	return d.Status, d.Message
+}
+
+// providerFundingUnavailableMessage replaces a provider's own out-of-funds
+// reply on a TrustedRouter-funded route. That account is TrustedRouter's,
+// not the caller's: its top-up text and links must never reach a customer.
+const providerFundingUnavailableMessage = "The provider for this model is temporarily unavailable. Retry later or choose another model."
+
+// prepaidFundingFailure reports a provider out-of-funds failure on a route
+// TrustedRouter pays for. Only a route known to be BYOK (the caller's own
+// provider account, whose top-up message is theirs to read) is excluded.
+func prepaidFundingFailure(err error) bool {
+	if err == nil || isClientInputError(err) || !upstreamerror.FundingExhausted(err) {
+		return false
+	}
+	option, ok := invokeAttemptOption(err)
+	return !ok || !strings.EqualFold(strings.TrimSpace(option.UsageType), "BYOK")
 }
 
 func providerErrorBody(err error, authorization *trustedrouter.Authorization) (int, map[string]any) {
@@ -1265,11 +1284,16 @@ func providerErrorBody(err error, authorization *trustedrouter.Authorization) (i
 		source, d.Type = "router", "invalid_request_error"
 	}
 	hidden := hidesPublicRouteMetadata(authorization) && !isClientInputError(err)
+	funding := prepaidFundingFailure(err)
 	if hidden {
 		d.Message, d.Type, d.Code, d.Param = "upstream provider error", "provider_error", nil, nil
+	} else if funding {
+		// Status and message are already neutral; drop the provider's own
+		// code and parameter along with its raw body.
+		d.Type, d.Code, d.Param = "provider_error", nil, nil
 	}
 	body := map[string]any{"message": d.Message, "type": d.Type, "code": d.Code, "param": d.Param, "source": source, "status": d.Status}
-	if !hidden && d.Raw != "" {
+	if !hidden && !funding && d.Raw != "" {
 		provider := ""
 		if option, ok := invokeAttemptOption(err); ok {
 			provider = option.Provider
@@ -1331,6 +1355,11 @@ func clientInputErrorMessage(err error) (string, bool) {
 func failureReason(err error) string {
 	if isClientInputError(err) {
 		return "client_error"
+	}
+	if prepaidFundingFailure(err) {
+		// The refund carries the neutral 503 the caller saw; this type is
+		// what tells the control plane the provider account is out of funds.
+		return "provider_funding"
 	}
 	return "provider_error"
 }
