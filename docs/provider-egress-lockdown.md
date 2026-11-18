@@ -35,8 +35,13 @@ inference dispatch:
 - Tinfoil retains attestation and certificate pinning to its exact inference
   host. NEAR uses only its compiled model-to-domain map and a single verified
   connection. Both reject HTTP downgrades and destination changes before I/O.
-- Privatemode and Maple retain their dedicated pinned encrypted clients. Their
-  endpoints are deliberately absent from the ordinary HTTPS allowlist.
+- Privatemode and Maple retain their dedicated encrypted clients. Their
+  endpoints are deliberately absent from the ordinary HTTPS allowlist. Maple's
+  measured helper accepts the front enclave's PCR0 from its static set or from
+  Maple's signed production history, which on GCP and Azure it fetches from
+  `raw.githubusercontent.com` (one fixed URL, redirects refused, signature
+  checked against the SDK's bundled key; docs/providers/maple.md). On AWS its
+  tunnel allows only `enclave.trymaple.ai:443`, so it never reaches GitHub.
 - Caller-provided image/video inputs retain their separate SSRF-checked fetch
   paths. Provider-generated signed CDN URLs use a separate public-IP-checked,
   origin-pinned, GET-only download client with no inference body or credentials.
