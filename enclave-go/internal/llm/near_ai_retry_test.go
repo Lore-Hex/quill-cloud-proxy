@@ -472,14 +472,18 @@ func TestNearAIRoutingMissComesOnlyFromTheSidecarUnpinnedRefusal(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	var status atomic.Int32
-	var body atomic.Value
-	server := &http.Server{Handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	type sidecarReply struct {
+		status int
+		body   string
+	}
+	var reply atomic.Pointer[sidecarReply]
+	server := &http.Server{ReadHeaderTimeout: 5 * time.Second, Handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/verify-near-ai" {
 			http.NotFound(w, r)
 			return
 		}
-		http.Error(w, body.Load().(string), int(status.Load()))
+		current := reply.Load()
+		http.Error(w, current.body, current.status)
 	})}
 	go func() { _ = server.Serve(listener) }()
 	defer server.Close()
@@ -503,8 +507,7 @@ func TestNearAIRoutingMissComesOnlyFromTheSidecarUnpinnedRefusal(t *testing.T) {
 		{status: http.StatusBadRequest, body: reason},
 		{status: http.StatusServiceUnavailable, body: reason},
 	} {
-		status.Store(int32(test.status))
-		body.Store(test.body)
+		reply.Store(&sidecarReply{status: test.status, body: test.body})
 		_, err := verifyNearAIEvidenceWithSidecar(context.Background(), envelope)
 		if err == nil || nearAIRoutingMiss(err) != test.wantMiss {
 			t.Fatalf("HTTP %d %q: err=%v routing miss=%t, want %t", test.status, test.body, err, nearAIRoutingMiss(err), test.wantMiss)
