@@ -16,6 +16,7 @@ import (
 
 	"github.com/Lore-Hex/quill-cloud-proxy/enclave-go/internal/adapter"
 	"github.com/Lore-Hex/quill-cloud-proxy/enclave-go/internal/llm"
+	"github.com/Lore-Hex/quill-cloud-proxy/enclave-go/internal/maple"
 	"github.com/Lore-Hex/quill-cloud-proxy/enclave-go/internal/requesttiming"
 	"github.com/Lore-Hex/quill-cloud-proxy/enclave-go/internal/shadowobserve"
 	"github.com/Lore-Hex/quill-cloud-proxy/enclave-go/internal/trustedrouter"
@@ -442,6 +443,13 @@ func errorClass(err error) string {
 	case strings.Contains(msg, "context canceled"):
 		return "ctx_canceled"
 	}
+	// Maple's fixed start failures travel behind a generic message (llm/maple),
+	// so they are recognised by value, not text. After the checks above: a
+	// first-byte timeout or cancellation that cut a Maple start short is that,
+	// not a helper fault.
+	if class := maple.StartFailureClass(err); class != "" {
+		return class
+	}
 	var setup *upstreamcert.SetupError
 	var timeout net.Error
 	if errors.As(err, &setup) && errors.As(setup.Err, &timeout) && timeout.Timeout() {
@@ -490,6 +498,11 @@ var transportErrorClasses = []struct{ marker, class string }{
 	{"first-byte budget exceeded", "user_model_first_byte_timeout"},
 	{"thinking budget exceeded", "thinking_budget_exceeded"},
 	{"attestation verification required", "attestation_required"},
+	// Maple failures that are not one of internal/maple's labelled start
+	// failures (errorClass checks those first). Neither label is in
+	// providerCircuitTransportFailures, as before they had one.
+	{"llm/maple: encrypted request verification failed", "maple_start_failed"},
+	{"llm/maple: encrypted response incomplete or invalid", "maple_response_invalid"},
 	// io.ErrClosedPipe: the gateway stopped reading this provider stream,
 	// usually because the client side failed first. Not a provider failure.
 	{"read/write on closed pipe", "downstream_closed"},

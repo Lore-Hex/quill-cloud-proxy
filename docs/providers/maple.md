@@ -30,10 +30,12 @@ the history with (`history_public_key_der` in `verified-release.json`).
 
 Two properties of the signed history follow from the SDK model:
 
-- Every signed production measurement is accepted, back to the first entry in
-  April 2025, including the ones our static pin retired. Maple revokes a
-  measurement only by removing its entry from the file. The retired list in
-  `src/lib.rs` governs the static pin only.
+- On GCP and Azure every signed production measurement is accepted, back to
+  the first entry in April 2025, including the ones our static pin retired.
+  Maple revokes a measurement admitted through the history only by removing
+  its entry from the file. The SDK's two embedded measurements and our `PCR0`
+  stay accepted whatever the file says, until we update the SDK or the pin.
+  The retired list in `src/lib.rs` governs the static pin only.
 - One key signs both the production and the development history, and the
   signature covers the PCR0 alone. An entry counts as production because it is
   in `pcrProdHistory.json` on Maple's `master` branch, fetched over TLS. Maple's
@@ -42,7 +44,8 @@ Two properties of the signed history follow from the SDK model:
 Why: a single reproduced pin failed closed on every Maple front-enclave
 rotation until a review and a gateway release caught up. The 2026-11-16
 rotation took the route down for about 48 hours on GCP (#849). Under this
-policy a rotation is accepted as soon as Maple signs it.
+policy, on GCP and Azure, a rotation is accepted once Maple's signed entry is
+on `master` and GitHub's raw cache (`max-age=300`) has refreshed.
 
 What changes and what does not:
 
@@ -67,6 +70,14 @@ What changes and what does not:
   local test). A GitHub rate limit or outage then fails those requests closed.
   Prompt re-pins keep this window short; serving a cached copy from the parent
   over a loopback URL is a possible follow-up.
+- Logs: a Maple start failure is labelled on `enclave.invoke_attempt` (for
+  example `err="maple_attestation_rejected"`), while the error text callers
+  and orchestration clients see stays "llm/maple: encrypted request
+  verification failed". `maple_attestation_rejected` means the document was
+  invalid or its PCR0 was neither pinned nor found in the signed history,
+  which includes the history being unreachable (GitHub down or rate-limited;
+  always on AWS). Check the history fetch before suspecting an unsigned
+  rotation.
 - Qualification: `trustedrouter-maple-pilot attest-serving` checks the serving
   policy live. `attest-history` admits the live enclave only through a signed
   history entry, because its static pin is deliberately impossible. Neither
@@ -846,7 +857,10 @@ PCR0 are compiled constants, not environment or request overrides. Caller cache
 fields are removed and usage is mandatory. An SDK send budget of one forbids
 automatic inference replay.
 
-Output is one JSON status line followed by canonical SSE. The relay validates
+Output is one JSON status line followed by canonical SSE, or, when the helper
+fails before any status line, one `{"error":"<reason>"}` line from its fixed
+vocabulary. The parent maps a known reason to a fixed error and treats any
+other line as an invalid status; stderr stays discarded. The relay validates
 model identity, integer cumulative token/cache counts and frame/response limits.
 It withholds `[DONE]` until the SDK reports authenticated encrypted EOF.
 Malformed/truncated streams and upstream error events never emit success.

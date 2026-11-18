@@ -14,6 +14,15 @@ import (
 
 type mapleStart func(context.Context, string, string, []byte) (int, io.ReadCloser, error)
 
+const mapleStartFailedMessage = "llm/maple: encrypted request verification failed"
+
+// mapleStartError keeps mapleStartFailedMessage as its text and unwraps to one
+// of internal/maple's fixed start failures, for errorClass.
+type mapleStartError struct{ failure error }
+
+func (e *mapleStartError) Error() string { return mapleStartFailedMessage }
+func (e *mapleStartError) Unwrap() error { return e.failure }
+
 // Maple never reaches the ordinary HTTP adapter, including on verification
 // failure. Public catalog activation is separately gated on qualified images.
 func invokeMaple(ctx context.Context, key string, req *qtypes.OpenAIChatRequest,
@@ -43,7 +52,14 @@ func invokeMapleWith(ctx context.Context, key string, req *qtypes.OpenAIChatRequ
 	defer clear(prepared.Bytes)
 	status, response, err := start(ctx, key, option.ProviderCacheScope, prepared.Bytes)
 	if err != nil {
-		return errors.New("llm/maple: encrypted request verification failed")
+		// internal/maple's own start failures ride along for the gateway's log
+		// label (a rejected attestation reads as one), behind the same message
+		// every caller, and through orchestration events every client, has
+		// always seen.
+		if failure := maple.StartFailure(err); failure != nil {
+			return &mapleStartError{failure: failure}
+		}
+		return errors.New(mapleStartFailedMessage)
 	}
 	if response == nil {
 		return errors.New("llm/maple: missing encrypted response")
