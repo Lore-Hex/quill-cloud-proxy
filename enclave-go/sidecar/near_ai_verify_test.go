@@ -320,6 +320,32 @@ func TestNearAIVerifierRejectsMutatedBindingsAndDeployment(t *testing.T) {
 	}
 }
 
+// The enclave keeps sampling a load-balanced pool after the first reason (the
+// connection reached an unpinned member) and fails fast after any other. A
+// pinned workload that changed app or OS image must therefore not share it.
+func TestNearAIUnpinnedMemberRefusalIsDistinctFromPinnedWorkloadDrift(t *testing.T) {
+	const unpinned = "NEAR AI workload identity is outside the pinned policy"
+	for name, test := range map[string]struct {
+		mutate func(*nearAITestCase)
+		want   string
+	}{
+		"unpinned compose": {mutate: func(c *nearAITestCase) { c.report.Info.ComposeHash = strings.Repeat("dd", 32) }, want: unpinned},
+		"pinned compose, other app": {mutate: func(c *nearAITestCase) { c.report.Info.AppName = "dstack-nvidia-0.5.12" },
+			want: "NEAR AI workload identity has an app or OS image outside the pinned policy"},
+		"pinned compose, other OS": {mutate: func(c *nearAITestCase) { c.report.Info.OSImageHash = strings.Repeat("dd", 32) },
+			want: "NEAR AI workload identity has an app or OS image outside the pinned policy"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			testCase := newNearAITestCase(t)
+			test.mutate(testCase)
+			testCase.encodeReport(t)
+			if _, err := testCase.verifier.verify(context.Background(), testCase.request); err == nil || err.Error() != test.want {
+				t.Fatalf("refusal = %v, want %q", err, test.want)
+			}
+		})
+	}
+}
+
 func TestNearAIVerifierRejectsGPUVerifierFailure(t *testing.T) {
 	testCase := newNearAITestCase(t)
 	testCase.verifier.verifyGPU = func(context.Context, string, []chutesGPUEvidence, []string) error {

@@ -14,6 +14,19 @@ import (
 
 const nearAIProofLifetime = 2 * time.Minute
 
+// nearAIUnpinnedInstanceRefusal is the exact error verifyNearAIEvidenceWithSidecar
+// returns when the sidecar finds that the quoted workload is not pinned for the
+// domain (sidecar near_ai_verify.go). On a load-balanced NEAR domain it means
+// this connection reached an unreviewed pool member: a routing miss.
+const nearAIUnpinnedInstanceRefusal = "near-ai: attestation refused (HTTP 403): NEAR AI workload identity is outside the pinned policy"
+
+// nearAIRoutingMiss reports whether a refusal was a routing miss. It only
+// decides when the next attempt starts; the refused connection is already
+// discarded, and every attempt is verified in full.
+func nearAIRoutingMiss(err error) bool {
+	return err != nil && err.Error() == nearAIUnpinnedInstanceRefusal
+}
+
 type nearAIEvidenceEnvelope struct {
 	Model          string          `json:"model"`
 	Domain         string          `json:"domain"`
