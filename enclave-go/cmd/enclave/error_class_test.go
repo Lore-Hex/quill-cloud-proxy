@@ -144,4 +144,14 @@ func TestErrorClassNamesMapleStartFailures(t *testing.T) {
 	if got := errorClass(errors.New("maple: front enclave attestation rejected")); got == "maple_attestation_rejected" {
 		t.Errorf("a look-alike error got the attestation label")
 	}
+	// A Maple start the gateway's first-byte timer or a cancellation cut short
+	// keeps that label (operators filter on ttfb_exceeded), as on main.
+	for want, err := range map[string]error{
+		"ttfb_exceeded": fmt.Errorf("llm/upstream: time-to-first-byte exceeded 20s: %w", maple.ErrInvalidAdapterStatus),
+		"ctx_canceled":  fmt.Errorf("maple start: context canceled: %w", maple.ErrInvalidAdapterStatus),
+	} {
+		if got := errorClass(err); got != want {
+			t.Errorf("errorClass(%v) = %q, want %q", err, got, want)
+		}
+	}
 }

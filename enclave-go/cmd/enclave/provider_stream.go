@@ -436,17 +436,19 @@ func errorClass(err error) string {
 	if err == nil {
 		return ""
 	}
-	// Maple's fixed start failures travel behind a generic message (llm/maple),
-	// so they are recognised by value, not text.
-	if class := maple.StartFailureClass(err); class != "" {
-		return class
-	}
 	msg := err.Error()
 	switch {
 	case strings.Contains(msg, "time-to-first-byte exceeded"):
 		return "ttfb_exceeded"
 	case strings.Contains(msg, "context canceled"):
 		return "ctx_canceled"
+	}
+	// Maple's fixed start failures travel behind a generic message (llm/maple),
+	// so they are recognised by value, not text. After the checks above: a
+	// first-byte timeout or cancellation that cut a Maple start short is that,
+	// not a helper fault.
+	if class := maple.StartFailureClass(err); class != "" {
+		return class
 	}
 	var setup *upstreamcert.SetupError
 	var timeout net.Error

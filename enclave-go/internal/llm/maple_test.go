@@ -112,6 +112,10 @@ func TestMapleStartFailuresKeepTheirFixedReason(t *testing.T) {
 		if maple.StartFailure(err) == nil || maple.StartFailure(err) != maple.StartFailure(failure) {
 			t.Errorf("start failure %v became %v", failure, err)
 		}
+		// The wrapper holds the package's own value, never the caller's error.
+		if errors.Unwrap(err) != maple.StartFailure(failure) {
+			t.Errorf("start failure %v unwraps to %v", failure, errors.Unwrap(err))
+		}
 		// ...but the text every caller and orchestration client sees is unchanged.
 		if err.Error() != generic {
 			t.Errorf("start failure %v changed the visible text to %q", failure, err.Error())
