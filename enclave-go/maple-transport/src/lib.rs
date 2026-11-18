@@ -142,5 +142,9 @@ mod tests {
         assert!(verify.contains("BASE64.decode(PCR_HISTORY_VERIFICATION_KEY_B64)"));
         assert!(verify.contains("ECDSA_P384_SHA384_FIXED"));
         assert!(verify.contains(".verify(self.pcr0.as_bytes(), &signature_bytes)"));
+        // And history admission requires that check for the matching entry.
+        let admit = &SDK_PCR[SDK_PCR.find("async fn verify_pcr0").unwrap()..];
+        let admit = &admit[..admit.find("\n    }\n").unwrap()];
+        assert!(admit.contains("entry.pcr0 == pcr0_hex && entry.has_valid_signature()"));
     }
 }

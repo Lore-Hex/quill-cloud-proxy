@@ -30,10 +30,12 @@ the history with (`history_public_key_der` in `verified-release.json`).
 
 Two properties of the signed history follow from the SDK model:
 
-- Every signed production measurement is accepted, back to the first entry in
-  April 2025, including the ones our static pin retired. Maple revokes a
-  measurement only by removing its entry from the file. The retired list in
-  `src/lib.rs` governs the static pin only.
+- On GCP and Azure every signed production measurement is accepted, back to
+  the first entry in April 2025, including the ones our static pin retired.
+  Maple revokes a measurement admitted through the history only by removing
+  its entry from the file. The SDK's two embedded measurements and our `PCR0`
+  stay accepted whatever the file says, until we update the SDK or the pin.
+  The retired list in `src/lib.rs` governs the static pin only.
 - One key signs both the production and the development history, and the
   signature covers the PCR0 alone. An entry counts as production because it is
   in `pcrProdHistory.json` on Maple's `master` branch, fetched over TLS. Maple's
@@ -42,7 +44,8 @@ Two properties of the signed history follow from the SDK model:
 Why: a single reproduced pin failed closed on every Maple front-enclave
 rotation until a review and a gateway release caught up. The 2026-11-16
 rotation took the route down for about 48 hours on GCP (#849). Under this
-policy a rotation is accepted as soon as Maple signs it.
+policy, on GCP and Azure, a rotation is accepted once Maple's signed entry is
+on `master` and GitHub's raw cache (`max-age=300`) has refreshed.
 
 What changes and what does not:
 
