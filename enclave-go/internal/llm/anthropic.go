@@ -84,6 +84,9 @@ type anthropicClient struct {
 	apiKey                 string
 	httpc                  *http.Client
 	useAuthorizedModelName bool
+	// wireModel, when set, is the name sent as "model" (an Azure BYOK
+	// deployment); the request is still built for the authorized model.
+	wireModel string
 }
 
 // newAnthropic constructs the Anthropic-direct client. Used as THE Client
@@ -148,6 +151,9 @@ func (c *anthropicClient) InvokeStreaming(
 	// Credits and BYOK share one explicit provider projection so router-only
 	// metadata cannot diverge across the two Anthropic paths.
 	reqBody := buildAnthropicWireRequest(model, messages, anthropicChatReasoningBody(model, req, body))
+	if c.wireModel != "" {
+		reqBody.Model = c.wireModel
+	}
 	bodyBytes, err := json.Marshal(reqBody)
 	if err != nil {
 		return fmt.Errorf("llm/%s: marshal body: %w", c.provider, err)

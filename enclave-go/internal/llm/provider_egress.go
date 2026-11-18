@@ -6,6 +6,7 @@ import (
 	"net"
 	"net/http"
 	"net/url"
+	"regexp"
 	"strings"
 	"time"
 
@@ -68,9 +69,34 @@ var errProviderEgress = errors.New("provider egress: destination is not approved
 // policy rejection from a transient provider/network error when polling.
 func IsProviderEgressDenied(err error) bool { return errors.Is(err, errProviderEgress) }
 
+// providerEgressHostPatterns admit the customer-chosen hosts of native
+// cloud BYOK credentials (Amazon Bedrock, Google Vertex, Azure). They are
+// compiled into the measured image like the exact list above and name only
+// provider-operated domains: an AWS region's Bedrock endpoints, a Vertex
+// location, and an Azure OpenAI / AI Foundry resource. No request, credential
+// or catalog entry can widen them, and every dial still requires public IPs.
+var providerEgressHostPatterns = []*regexp.Regexp{
+	regexp.MustCompile(`^bedrock-runtime\.[a-z]{2}(-gov)?-[a-z]+-[0-9]\.amazonaws\.com$`),
+	regexp.MustCompile(`^bedrock-mantle\.[a-z]{2}(-gov)?-[a-z]+-[0-9]\.api\.aws$`),
+	regexp.MustCompile(`^[a-z]+-[a-z]+[0-9]+-aiplatform\.googleapis\.com$`),
+	regexp.MustCompile(`^[a-z0-9][a-z0-9-]{0,62}\.(openai\.azure\.com|services\.ai\.azure\.com|cognitiveservices\.azure\.com)$`),
+}
+
+// googleOAuthHost is where a BYOK service account's signed assertion is
+// exchanged for an access token. Nothing else is sent there.
+const googleOAuthHost = "oauth2.googleapis.com"
+
 func approvedProviderHost(host string) bool {
-	_, ok := providerEgressHosts[strings.ToLower(host)]
-	return ok
+	host = strings.ToLower(host)
+	if _, ok := providerEgressHosts[host]; ok || host == googleOAuthHost {
+		return true
+	}
+	for _, pattern := range providerEgressHostPatterns {
+		if pattern.MatchString(host) {
+			return true
+		}
+	}
+	return false
 }
 
 func approvedProviderURL(u *url.URL) bool {

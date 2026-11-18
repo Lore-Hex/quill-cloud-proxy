@@ -283,3 +283,43 @@ func TestArtifactTransportCannotSendPromptsOrCredentials(t *testing.T) {
 		}
 	}
 }
+
+func TestProviderEgressAdmitsOnlyProviderOperatedCloudBYOKHosts(t *testing.T) {
+	for _, host := range []string{
+		"oauth2.googleapis.com",
+		"bedrock-runtime.eu-west-1.amazonaws.com",
+		"bedrock-runtime.us-gov-west-1.amazonaws.com",
+		"bedrock-mantle.ap-northeast-1.api.aws",
+		"us-east5-aiplatform.googleapis.com",
+		"europe-west1-aiplatform.googleapis.com",
+		"customer.openai.azure.com",
+		"customer-foundry.services.ai.azure.com",
+		"customer.cognitiveservices.azure.com",
+		"CUSTOMER.OPENAI.AZURE.COM",
+	} {
+		if !approvedProviderHost(host) {
+			t.Fatalf("%s refused", host)
+		}
+	}
+	for _, host := range []string{
+		"evil.example.com",
+		"bedrock-runtime.evil.amazonaws.com",
+		"bedrock-runtime.us-east-1.amazonaws.com.evil.example.com",
+		"bedrock-mantle.us-east-1.amazonaws.com",
+		"x.bedrock-runtime.us-east-1.amazonaws.com",
+		"s3.us-east-1.amazonaws.com",
+		"evil-aiplatform.googleapis.com",
+		"us-east5-aiplatform.googleapis.com.evil.example.com",
+		"storage.googleapis.com",
+		"oauth2.googleapis.com.evil.example.com",
+		"a.b.openai.azure.com",
+		"customer.blob.core.windows.net",
+		"customer.azurewebsites.net",
+		"-bad.openai.azure.com",
+		"",
+	} {
+		if approvedProviderHost(host) {
+			t.Fatalf("%s admitted", host)
+		}
+	}
+}

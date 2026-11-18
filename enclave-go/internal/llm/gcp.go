@@ -98,6 +98,10 @@ type gcpClient struct {
 	mu       sync.Mutex
 	token    string
 	tokenExp time.Time
+
+	// tokens, when set, supplies access tokens in place of the metadata
+	// server: a BYOK service account's.
+	tokens func(context.Context) (string, error)
 }
 
 type tokenResponse struct {
@@ -112,6 +116,10 @@ type tokenResponse struct {
 // credential source, so its failures are marked Local: they never say Vertex
 // is down.
 func (c *gcpClient) fetchToken(ctx context.Context) (string, error) {
+	if c.tokens != nil {
+		// A customer credential's failure is the customer's, not the gateway's.
+		return c.tokens(ctx)
+	}
 	token, err := c.fetchMetadataToken(ctx)
 	if err != nil {
 		return "", &upstreamerror.Local{Err: err}

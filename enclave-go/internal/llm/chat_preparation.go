@@ -14,6 +14,10 @@ import (
 type ChatPreparationOptions struct {
 	ProviderCacheScope string
 	privateWire        *openAICompatibleRequest
+	// wireModel, when set, is the name sent as "model" (an Azure BYOK
+	// deployment). Every model-specific decision still uses the authorized
+	// upstream model, so an alias never changes how the request is built.
+	wireModel string
 }
 
 // PreparedChatRequest owns the exact ordinary-dispatch wire bytes and routing metadata.
@@ -87,6 +91,9 @@ func PrepareChatRequest(provider, upstreamModel string, req *qtypes.OpenAIChatRe
 		reqBody.Thinking, reqBody.Reasoning = nil, nil
 		reqBody.ReasoningEffort = options.privateWire.ReasoningEffort
 		reqBody.CacheSalt = options.privateWire.CacheSalt
+	}
+	if options.wireModel != "" {
+		reqBody.Model = options.wireModel
 	}
 	var err error
 	var payload any = reqBody

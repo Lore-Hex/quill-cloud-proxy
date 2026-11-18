@@ -121,14 +121,31 @@ func (c *bedrockRuntimeClient) InvokeStreaming(ctx context.Context, req *qtypes.
 	if err := c.requireZeroRetention(ctx); err != nil {
 		return err
 	}
+	return c.invokeProfile(ctx, req, body, out, profile)
+}
+
+// invokeProfile streams one Claude inference profile. The managed path checks
+// its own account's zero-retention policy first; a BYOK path runs on the
+// customer's account and policy.
+func (c *bedrockRuntimeClient) invokeProfile(ctx context.Context, req *qtypes.OpenAIChatRequest, body *qtypes.AnthropicMessagesRequest, out io.Writer, profile string) error {
+	if req == nil || body == nil {
+		return fmt.Errorf("llm/bedrock-runtime: request required")
+	}
+	if req.ServiceTier != "" && req.ServiceTier != "default" && req.ServiceTier != "standard" {
+		return &upstreamHTTPError{status: 400, body: "Bedrock Runtime supports the standard service tier only"}
+	}
+	if err := validateBedrockRuntimeCacheTTL(body); err != nil {
+		return err
+	}
 	converted, err := anthropicBodyWithFetchedImages(ctx, body)
 	if err != nil {
 		return err
 	}
-	converted = anthropicChatReasoningBody(strings.TrimPrefix(profile, "us.anthropic."), req, converted)
+	modelName := bedrockClaudeModelName(profile)
+	converted = anthropicChatReasoningBody(modelName, req, converted)
 	projection := *converted
 	projection.AnthropicVersion = "bedrock-2023-05-31"
-	projection.Temperature = anthropicTemperature(strings.TrimPrefix(profile, "us.anthropic."), converted.Temperature)
+	projection.Temperature = anthropicTemperature(modelName, converted.Temperature)
 	payload, err := json.Marshal(bedrock.BuildRequestShape(&projection))
 	if err != nil {
 		return err
@@ -180,4 +197,13 @@ func validateBedrockRuntimeCacheTTL(body *qtypes.AnthropicMessagesRequest) error
 		return &upstreamHTTPError{status: 400, body: "Bedrock Runtime supports only five-minute cache writes"}
 	}
 	return nil
+}
+
+// bedrockClaudeModelName is the Claude model of an inference profile id such
+// as us.anthropic.claude-sonnet-5-5 or eu.anthropic.claude-opus-4-8.
+func bedrockClaudeModelName(profile string) string {
+	if i := strings.Index(profile, "anthropic."); i >= 0 {
+		return profile[i+len("anthropic."):]
+	}
+	return profile
 }

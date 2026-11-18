@@ -175,6 +175,12 @@ func (m *multiClient) InvokeStreaming(
 ) error {
 	option := firstOptions(options)
 	provider := normalizeDirectProvider(option.Provider)
+	// A cloud provider's BYOK route carries the workspace's own credential;
+	// it must never reach a managed client built on TrustedRouter's.
+	if strings.TrimSpace(option.ProviderAPIKey) != "" && (provider == "amazon-bedrock" || provider == "google-vertex" || provider == "azure") {
+		_, err := invokeBYOKStreaming(ctx, req, body, out, option)
+		return err
+	}
 	if provider == "amazon-bedrock" && strings.HasPrefix(option.UpstreamModel, "us.anthropic.") {
 		return m.bedrockRuntime.InvokeStreaming(ctx, req, body, out, options...)
 	}
