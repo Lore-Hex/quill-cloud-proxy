@@ -7,7 +7,7 @@ use maple_sdk::{client::InferenceSendBudget, OpenSecretClient, Pcr0TrustPolicy};
 use serde_json::{json, Value};
 use std::{env, process::ExitCode, time::Instant};
 use tokio::time::{timeout, Duration};
-use trustedrouter_maple_pilot::{BACKEND, MODEL, PCR0};
+use trustedrouter_maple_pilot::{serving_policy, BACKEND, MODEL, PCR0, SIGNED_HISTORY_URL};
 
 const BAD_PCR0: &str = "bda74c7aa10cbde75f83d7ec674cc4fc4a4cf9cc555e367189fbec332dffa985c6082ae4647fd50242a590bf9cd1d3f0";
 const LIMIT: usize = 4 * 1024 * 1024;
@@ -363,6 +363,34 @@ async fn probe_cache(client: &OpenSecretClient, key: &str) -> Check<()> {
 }
 
 async fn run(mode: &str) -> Check<()> {
+    if mode == "attest-serving" || mode == "attest-history" {
+        // No credentials and no inference: a front-enclave handshake only.
+        let policy = if mode == "attest-serving" {
+            serving_policy().map_err(|_| "invalid_serving_policy")?
+        } else {
+            // An impossible static pin, so only an entry of Maple's signed
+            // history can admit the live front enclave, as after a rotation.
+            Pcr0TrustPolicy::from_static_allowlist([BAD_PCR0])
+                .and_then(|policy| policy.with_remote_history_urls([SIGNED_HISTORY_URL]))
+                .map_err(|_| "invalid_history_policy")?
+        };
+        let client = OpenSecretClient::new_with_pcr0_trust_policy(BACKEND, policy)
+            .map_err(|_| "client_configuration_failed")?;
+        let start = Instant::now();
+        timeout(
+            Duration::from_secs(60),
+            client.perform_attestation_handshake(),
+        )
+        .await
+        .map_err(|_| "attestation_timeout")?
+        .map_err(|_| "attestation_verification_failed")?;
+        println!(
+            "{}",
+            json!({"check":mode, "ok":true, "elapsed_ms":start.elapsed().as_millis(),
+            "end_to_end_qualified":false})
+        );
+        return Ok(());
+    }
     if mode == "reject-pin" {
         // A failing network or broken deployment must not pass a negative test.
         let control = OpenSecretClient::new_with_pcr0_trust_policy(
@@ -451,10 +479,18 @@ async fn main() -> ExitCode {
     if args.len() != 1
         || !matches!(
             args[0].as_str(),
-            "attest" | "reject-pin" | "reject-key" | "probe" | "cache"
+            "attest"
+                | "attest-serving"
+                | "attest-history"
+                | "reject-pin"
+                | "reject-key"
+                | "probe"
+                | "cache"
         )
     {
-        eprintln!("usage: trustedrouter-maple-pilot attest|reject-pin|reject-key|probe|cache");
+        eprintln!(
+            "usage: trustedrouter-maple-pilot attest|attest-serving|attest-history|reject-pin|reject-key|probe|cache"
+        );
         return ExitCode::FAILURE;
     }
     match run(&args[0]).await {

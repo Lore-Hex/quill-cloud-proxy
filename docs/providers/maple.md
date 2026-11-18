@@ -1,10 +1,85 @@
 # Maple pilot qualification
 
+## Serving trust policy (2026-11-18)
+
+The serving helper (`src/bin/maple-transport.rs`) now trusts Maple's front
+enclave the way Maple's own TypeScript and Rust SDK clients do.
+`serving_policy()` in `src/lib.rs` is the SDK's official production policy,
+`Pcr0TrustPolicy::official_for(Pcr0Environment::Production)`, plus our
+independently reproduced `PCR0`.
+
+After the SDK validates the AWS Nitro attestation document (certificate chain
+to the pinned AWS Nitro root, COSE signature and fresh challenge), PCR0 must be
+one of these, and then the document must bind the client's key:
+
+1. One of OpenSecret's production measurements embedded in the SDK, or our
+   reproduced `PCR0`.
+2. The PCR0 of an entry in Maple's signed production history,
+   `services/opensecret/pcrProdHistory.json` in `MaplePrivacyLabs/Maple`,
+   whose P-384 ECDSA signature over the PCR0 hex string verifies against the
+   public key bundled in the SDK. The SDK fetches it from
+   `raw.githubusercontent.com` with redirects refused, a 5 s timeout, and at
+   most 1 MiB and 2048 entries.
+
+The SDK source is pinned by archive SHA-256 in `prepare-sdk.sh`. On top of
+that, unit tests check that the static set is exactly the SDK's embedded
+production PCR0s plus ours (no development measurement, no other entry), that
+the single history URL is the HTTPS production file, and that the key constant
+the SDK's signature check reads is the key our release review authenticates
+the history with (`history_public_key_der` in `verified-release.json`).
+
+Two properties of the signed history follow from the SDK model:
+
+- Every signed production measurement is accepted, back to the first entry in
+  April 2025, including the ones our static pin retired. Maple revokes a
+  measurement only by removing its entry from the file. The retired list in
+  `src/lib.rs` governs the static pin only.
+- One key signs both the production and the development history, and the
+  signature covers the PCR0 alone. An entry counts as production because it is
+  in `pcrProdHistory.json` on Maple's `master` branch, fetched over TLS. Maple's
+  own clients share this exposure to a write to that file.
+
+Why: a single reproduced pin failed closed on every Maple front-enclave
+rotation until a review and a gateway release caught up. The 2026-11-16
+rotation took the route down for about 48 hours on GCP (#849). Under this
+policy a rotation is accepted as soon as Maple signs it.
+
+What changes and what does not:
+
+- A measurement Maple has not signed is still refused. A PCR0 outside the
+  static set also fails closed whenever the history cannot be fetched.
+- Serving no longer requires our independent reproduction. The trust root for
+  a new measurement is Maple's history signing key, as it is for Maple's own
+  clients. The `Verify Maple release` review and reproduction continue and
+  refresh the static pin, as additional assurance rather than a precondition
+  for serving. Maple plans to move the signed GitHub entry to Sigstore; update
+  `serving_policy()` when the SDK supports it.
+- The managed-model restriction, Transport V2 encryption, workspace cache
+  isolation and the rejection of every other Maple model are unchanged.
+- AWS: the helper reaches Maple only through a parent tunnel limited to
+  `enclave.trymaple.ai:443`, so it cannot fetch the history there; the fetch
+  fails closed in well under a second. The AWS standby therefore accepts only
+  the static set (our `PCR0` plus the SDK's two embedded production
+  measurements) and, unlike GCP and Azure, still fails closed on a rotation.
+  GCP and Azure connect directly.
+- Availability while the static pin is stale: each request starts its own
+  helper, so every request fetches the history (92 KB, about 35 ms extra in a
+  local test). A GitHub rate limit or outage then fails those requests closed.
+  Prompt re-pins keep this window short; serving a cached copy from the parent
+  over a loopback URL is a possible follow-up.
+- Qualification: `trustedrouter-maple-pilot attest-serving` checks the serving
+  policy live. `attest-history` admits the live enclave only through a signed
+  history entry, because its static pin is deliberately impossible. Neither
+  sends credentials or inference. On 2026-11-18 both passed (the history path
+  in 360 ms), and `reject-pin` still refused the impossible pin on its own.
+
 ## Verified update automation
 
 `Verify Maple release` checks the signed production approval every 30 minutes.
-It does not learn pins from the live server, accept every vendor-signed build,
-or change any request's attestation policy at runtime.
+It does not learn pins from the live server. It maintains the independently
+reproduced static pin; since 2026-11-18 the serving policy additionally accepts
+any measurement in Maple's signed production history on GCP and Azure (see
+above).
 
 The reviewed baseline is `enclave-go/maple-transport/verified-release.json`.
 Only changes under `apps/`, `docs/`, the root README/license/agent instructions,
@@ -41,8 +116,10 @@ The only qualified managed model remains
 upstream API call. Auto models, stock DeepSeek, shared Tinfoil routes and all
 other Maple models remain rejected before the encrypted helper is started.
 Changes to the dedicated worker are security-sensitive even if the model name
-is unchanged. Provider deployment overlap is still necessary to avoid an
-outage while a new security-sensitive release is reviewed and staged.
+is unchanged. Because GCP and Azure serving accepts Maple-signed measurements,
+a security-sensitive release under review no longer causes an outage there (the
+AWS standby still waits for the pin); the review still gates the reproduced
+static pin.
 
 ## Reviewed backend update (2026-11-18)
 

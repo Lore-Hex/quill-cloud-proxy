@@ -165,7 +165,10 @@ def report_review(candidate: dict) -> str:
         if row["title"] == title:
             return row["url"]
     body = (
-        "The verified-release checker refused automatic promotion. Runtime attestation remains fail-closed.\n\n"
+        "The verified-release checker refused automatic promotion of the reproduced static pin. Serving "
+        "already accepts measurements in Maple's signed production history (docs/providers/maple.md, "
+        "Serving trust policy), so on GCP and Azure this review is additional assurance, not on the "
+        "availability path. The AWS standby cannot fetch the history and still needs the new pin.\n\n"
         "Candidate source: https://github.com/MaplePrivacyLabs/Maple/commit/"
         + source
         + "\n\n"
@@ -173,8 +176,8 @@ def report_review(candidate: dict) -> str:
         + json.dumps(candidate["security_sensitive_paths"], indent=2)
         + "\n```\n\nReview the exact source and downstream worker identities, independently reproduce the EIF, "
         "verify signed provenance and the history signature, and run positive-pin and wrong-pin controls. "
-        "Obtain operator approval before updating the protected baseline. Do not copy live measurements, "
-        "accept remote history as policy, add a plaintext path, or enable shared/third-party Maple models.\n"
+        "Obtain operator approval before updating the protected baseline. Do not copy live measurements "
+        "into the static pin, add a plaintext path, or enable shared/third-party Maple models.\n"
     )
     return (
         gh("issue", "create", "--repo", REPOSITORY, "--title", title, "--body", body)
