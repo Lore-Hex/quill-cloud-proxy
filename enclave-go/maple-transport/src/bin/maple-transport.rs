@@ -26,17 +26,23 @@ type Result<T> = std::result::Result<T, &'static str>;
 static STATUS_WRITTEN: AtomicBool = AtomicBool::new(false);
 
 fn write_status(out: &mut impl Write, status: u16) -> Result<()> {
+    // Set first: once any status byte may be out, no reason line may follow.
+    STATUS_WRITTEN.store(true, Ordering::SeqCst);
     writeln!(out, "{{\"status\":{status}}}")
         .and_then(|_| out.flush())
-        .map_err(|_| "consumer_closed")?;
-    STATUS_WRITTEN.store(true, Ordering::SeqCst);
-    Ok(())
+        .map_err(|_| "consumer_closed")
 }
 
 /// The line the parent reads when the helper fails before any status. REASON
 /// is always one of this file's fixed strings, never SDK or provider text.
 fn failure_line(reason: &str) -> String {
     format!("{{\"error\":\"{reason}\"}}")
+}
+
+/// What a failed helper adds to stdout: its reason line, unless a status line
+/// has started, after which the parent is reading a status and a stream.
+fn failure_output(reason: &str, status_written: bool) -> Option<String> {
+    (!status_written).then(|| failure_line(reason))
 }
 
 /// The fixed reason a request failed before Maple answered. A refused
@@ -193,9 +199,9 @@ async fn main() -> ExitCode {
         Ok(()) => ExitCode::SUCCESS,
         Err(reason) => {
             eprintln!("maple.{reason}");
-            if !STATUS_WRITTEN.load(Ordering::SeqCst) {
+            if let Some(line) = failure_output(reason, STATUS_WRITTEN.load(Ordering::SeqCst)) {
                 let mut out = std::io::stdout().lock();
-                let _ = writeln!(out, "{}", failure_line(reason)).and_then(|_| out.flush());
+                let _ = writeln!(out, "{line}").and_then(|_| out.flush());
             }
             ExitCode::FAILURE
         }
@@ -256,8 +262,10 @@ mod tests {
         }
     }
 
-    /// Every reason the helper can fail with before a status line. The parent's
-    /// adapterFailures (internal/maple/client.go) maps each; keep them in step.
+    /// Every reason the helper can fail with before a status line, except
+    /// consumer_closed: the parent has gone and reads nothing. The parent's
+    /// adapterFailures (internal/maple/client.go) must have exactly these keys;
+    /// a Go test reads this list from this file.
     const PRE_STATUS_REASONS: &[&str] = &[
         "attestation_rejected",
         "encrypted_request_failed",
@@ -277,6 +285,9 @@ mod tests {
         "invalid_body",
         "unsupported_request",
         "encode_failed",
+        "error_body_timeout",
+        "encrypted_body_failed",
+        "error_body_too_large",
     ];
 
     #[test]
@@ -310,9 +321,29 @@ mod tests {
 
     #[test]
     fn a_written_status_suppresses_the_failure_line() {
+        assert_eq!(
+            failure_output("attestation_rejected", false).as_deref(),
+            Some("{\"error\":\"attestation_rejected\"}")
+        );
+        assert_eq!(failure_output("attestation_rejected", true), None);
         let mut out = Vec::new();
         write_status(&mut out, 401).unwrap();
         assert_eq!(out, b"{\"status\":401}\n");
+        assert!(STATUS_WRITTEN.load(Ordering::SeqCst));
+    }
+
+    #[test]
+    fn a_failed_status_write_still_suppresses_the_failure_line() {
+        struct Closed;
+        impl Write for Closed {
+            fn write(&mut self, _: &[u8]) -> std::io::Result<usize> {
+                Err(std::io::ErrorKind::BrokenPipe.into())
+            }
+            fn flush(&mut self) -> std::io::Result<()> {
+                Ok(())
+            }
+        }
+        assert_eq!(write_status(&mut Closed, 200), Err("consumer_closed"));
         assert!(STATUS_WRITTEN.load(Ordering::SeqCst));
     }
 }

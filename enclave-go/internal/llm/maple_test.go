@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"strings"
 	"testing"
@@ -103,15 +104,21 @@ func TestMapleStartFailuresKeepTheirFixedReason(t *testing.T) {
 			InvokeOptions{Provider: "maple", UpstreamModel: maple.Model},
 			func(context.Context, string, string, []byte) (int, io.ReadCloser, error) { return 0, nil, failure })
 	}
+	const generic = "llm/maple: encrypted request verification failed"
 	for _, failure := range []error{maple.ErrAttestationRejected, maple.ErrInvalidAdapterStatus,
-		maple.ErrCapacityExhausted, maple.ErrResponseStartTimeout} {
-		if err := invoke(failure); !errors.Is(err, failure) {
+		maple.ErrCapacityExhausted, maple.ErrResponseStartTimeout, fmt.Errorf("private: %w", maple.ErrRequestFailed)} {
+		err := invoke(failure)
+		// The label rides along for errorClass...
+		if maple.StartFailure(err) == nil || maple.StartFailure(err) != maple.StartFailure(failure) {
 			t.Errorf("start failure %v became %v", failure, err)
 		}
+		// ...but the text every caller and orchestration client sees is unchanged.
+		if err.Error() != generic {
+			t.Errorf("start failure %v changed the visible text to %q", failure, err.Error())
+		}
 	}
-	// Anything else, including cancellation, keeps the generic message.
 	for _, other := range []error{context.Canceled, errors.New("maple: front enclave attestation rejected")} {
-		if err := invoke(other); err == nil || err.Error() != "llm/maple: encrypted request verification failed" {
+		if err := invoke(other); err == nil || err.Error() != generic || maple.StartFailure(err) != nil {
 			t.Errorf("start error %v became %v", other, err)
 		}
 	}

@@ -14,6 +14,7 @@ import (
 	"io"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -29,29 +30,43 @@ const (
 var slots = make(chan uint32, concurrency)
 
 // Start's failures before the helper answers. Each is a fixed string with no
-// request, credential or provider text, so callers may log and label them
-// (errorClass in cmd/enclave); IsStartFailure recognises exactly these.
+// request, credential or provider text. StartFailure recognises exactly these
+// and StartFailureClass gives each a fixed log label (errorClass in
+// cmd/enclave).
 var (
 	ErrCapacityExhausted    = errors.New("maple: encrypted adapter capacity exhausted")
 	ErrAdapterUnavailable   = errors.New("maple: encrypted adapter unavailable")
 	ErrInvalidAdapterStatus = errors.New("maple: invalid encrypted adapter status")
 	// The helper's front-enclave attestation was refused: an invalid Nitro
-	// document, or a PCR0 neither pinned nor in Maple's signed history.
-	ErrAttestationRejected  = errors.New("maple: front enclave attestation rejected")
-	ErrRequestFailed        = errors.New("maple: encrypted request failed before a response")
-	ErrResponseStartTimeout = errors.New("maple: encrypted response did not start in time")
-	ErrAdapterSetupFailed   = errors.New("maple: encrypted adapter setup failed")
-	ErrAdapterInputRejected = errors.New("maple: encrypted adapter rejected its input")
+	// document, or a PCR0 neither pinned nor found in Maple's signed history,
+	// which includes the history being unreachable (always so on AWS).
+	ErrAttestationRejected     = errors.New("maple: front enclave attestation rejected")
+	ErrRequestFailed           = errors.New("maple: encrypted request failed before a response")
+	ErrResponseStartTimeout    = errors.New("maple: encrypted response did not start in time")
+	ErrAdapterSetupFailed      = errors.New("maple: encrypted adapter setup failed")
+	ErrAdapterInputRejected    = errors.New("maple: encrypted adapter rejected its input")
+	ErrUpstreamErrorUnreadable = errors.New("maple: upstream error response unreadable")
 )
 
-var startFailures = []error{
-	ErrCapacityExhausted, ErrAdapterUnavailable, ErrInvalidAdapterStatus, ErrAttestationRejected,
-	ErrRequestFailed, ErrResponseStartTimeout, ErrAdapterSetupFailed, ErrAdapterInputRejected,
+var startFailures = []struct {
+	err   error
+	class string
+}{
+	{ErrCapacityExhausted, "maple_capacity_exhausted"},
+	{ErrAdapterUnavailable, "maple_adapter_unavailable"},
+	{ErrInvalidAdapterStatus, "maple_no_adapter_status"},
+	{ErrAttestationRejected, "maple_attestation_rejected"},
+	{ErrRequestFailed, "maple_request_failed"},
+	{ErrResponseStartTimeout, "maple_response_start_timeout"},
+	{ErrAdapterSetupFailed, "maple_adapter_setup_failed"},
+	{ErrAdapterInputRejected, "maple_adapter_input_rejected"},
+	{ErrUpstreamErrorUnreadable, "maple_upstream_error_unreadable"},
 }
 
 // adapterFailures maps the reason in the helper's `{"error":"<reason>"}` line
 // (maple-transport writes one when it fails before any status line) to a fixed
 // error. An unknown reason is an invalid status: helper text never leaves here.
+// The keys must equal maple-transport's PRE_STATUS_REASONS (a test checks).
 var adapterFailures = map[string]error{
 	"attestation_rejected":         ErrAttestationRejected,
 	"encrypted_request_failed":     ErrRequestFailed,
@@ -71,17 +86,37 @@ var adapterFailures = map[string]error{
 	"invalid_body":                 ErrAdapterInputRejected,
 	"unsupported_request":          ErrAdapterInputRejected,
 	"encode_failed":                ErrAdapterInputRejected,
+	// Maple answered with an error status, and its error body could not be
+	// read within bounds before the helper would have relayed that status.
+	"error_body_timeout":    ErrUpstreamErrorUnreadable,
+	"encrypted_body_failed": ErrUpstreamErrorUnreadable,
+	"error_body_too_large":  ErrUpstreamErrorUnreadable,
 }
 
-// IsStartFailure reports whether err is one of Start's fixed failures.
-func IsStartFailure(err error) bool {
+// StartFailure returns the fixed start failure err is, or wraps, and nil for
+// anything else. Callers get the package's own value, never err itself, so no
+// text added around it can travel further.
+func StartFailure(err error) error {
 	for _, known := range startFailures {
-		if errors.Is(err, known) {
-			return true
+		if errors.Is(err, known.err) {
+			return known.err
 		}
 	}
-	return false
+	return nil
 }
+
+// StartFailureClass is StartFailure's fixed log label, or "".
+func StartFailureClass(err error) string {
+	for _, known := range startFailures {
+		if errors.Is(err, known.err) {
+			return known.class
+		}
+	}
+	return ""
+}
+
+// startBudget bounds attestation plus encrypted response headers.
+var startBudget = 125 * time.Second
 
 func init() {
 	for i := range uint32(concurrency) {
@@ -136,7 +171,11 @@ func start(ctx context.Context, key, scope string, body []byte, launch processSt
 		return waitErr
 	}
 	// Start-time budget includes attestation and encrypted response headers.
-	startTimer := time.AfterFunc(125*time.Second, cancel)
+	var startTimedOut atomic.Bool
+	startTimer := time.AfterFunc(startBudget, func() {
+		startTimedOut.Store(true)
+		cancel()
+	})
 	reader := bufio.NewReaderSize(p.stdout, lineLimit)
 	statusLine, err := reader.ReadSlice('\n')
 	startTimer.Stop()
@@ -150,6 +189,9 @@ func start(ctx context.Context, key, scope string, body []byte, launch processSt
 		_ = wait()
 		if failure, known := adapterFailures[header.Error]; parsed && header.Status == 0 && known {
 			return 0, nil, failure
+		}
+		if startTimedOut.Load() {
+			return 0, nil, ErrResponseStartTimeout
 		}
 		return 0, nil, ErrInvalidAdapterStatus
 	}

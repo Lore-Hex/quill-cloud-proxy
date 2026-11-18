@@ -109,26 +109,39 @@ func TestStreamStatsWriterRecordsFirstClientWriteError(t *testing.T) {
 
 // 2026-11-16: a Maple front-enclave rotation logged only
 // err="other:*errors.errorString" for two days. Each fixed Maple start failure
-// now has its own label, and labelling changes no circuit decision: none was
-// ever a provider-down failure.
+// now has its own label, recognised by value (llm/maple keeps the old text),
+// and labelling changes no circuit decision: none was ever a provider-down
+// failure.
 func TestErrorClassNamesMapleStartFailures(t *testing.T) {
 	for want, err := range map[string]error{
-		"maple_attestation_rejected":   maple.ErrAttestationRejected,
-		"maple_request_failed":         maple.ErrRequestFailed,
-		"maple_response_start_timeout": maple.ErrResponseStartTimeout,
-		"maple_adapter_setup_failed":   maple.ErrAdapterSetupFailed,
-		"maple_adapter_input_rejected": maple.ErrAdapterInputRejected,
-		"maple_capacity_exhausted":     maple.ErrCapacityExhausted,
-		"maple_adapter_unavailable":    maple.ErrAdapterUnavailable,
-		"maple_no_adapter_status":      maple.ErrInvalidAdapterStatus,
-		"maple_start_failed":           errors.New("llm/maple: encrypted request verification failed"),
-		"maple_response_invalid":       errors.New("llm/maple: encrypted response incomplete or invalid"),
+		"maple_attestation_rejected":      maple.ErrAttestationRejected,
+		"maple_request_failed":            maple.ErrRequestFailed,
+		"maple_response_start_timeout":    maple.ErrResponseStartTimeout,
+		"maple_adapter_setup_failed":      maple.ErrAdapterSetupFailed,
+		"maple_adapter_input_rejected":    maple.ErrAdapterInputRejected,
+		"maple_capacity_exhausted":        maple.ErrCapacityExhausted,
+		"maple_adapter_unavailable":       maple.ErrAdapterUnavailable,
+		"maple_no_adapter_status":         maple.ErrInvalidAdapterStatus,
+		"maple_upstream_error_unreadable": maple.ErrUpstreamErrorUnreadable,
+		"maple_start_failed":              errors.New("llm/maple: encrypted request verification failed"),
+		"maple_response_invalid":          errors.New("llm/maple: encrypted response incomplete or invalid"),
 	} {
-		if got := errorClass(err); got != want {
-			t.Errorf("errorClass(%v) = %q, want %q", err, got, want)
+		candidates := []error{err}
+		if maple.StartFailure(err) != nil {
+			// A value label survives wrapping, whatever text surrounds it.
+			candidates = append(candidates, fmt.Errorf("llm/maple: encrypted request verification failed: %w", err))
 		}
-		if providerDownFailure(err, false) || providerDownFailure(err, true) {
-			t.Errorf("%v now counts as provider down", err)
+		for _, candidate := range candidates {
+			if got := errorClass(candidate); got != want {
+				t.Errorf("errorClass(%v) = %q, want %q", candidate, got, want)
+			}
+			if providerDownFailure(candidate, false) || providerDownFailure(candidate, true) {
+				t.Errorf("%v now counts as provider down", candidate)
+			}
 		}
+	}
+	// Text alone never earns a value label.
+	if got := errorClass(errors.New("maple: front enclave attestation rejected")); got == "maple_attestation_rejected" {
+		t.Errorf("a look-alike error got the attestation label")
 	}
 }

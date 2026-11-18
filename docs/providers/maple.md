@@ -70,6 +70,14 @@ What changes and what does not:
   local test). A GitHub rate limit or outage then fails those requests closed.
   Prompt re-pins keep this window short; serving a cached copy from the parent
   over a loopback URL is a possible follow-up.
+- Logs: a Maple start failure is labelled on `enclave.invoke_attempt` (for
+  example `err="maple_attestation_rejected"`), while the error text callers
+  and orchestration clients see stays "llm/maple: encrypted request
+  verification failed". `maple_attestation_rejected` means the document was
+  invalid or its PCR0 was neither pinned nor found in the signed history,
+  which includes the history being unreachable (GitHub down or rate-limited;
+  always on AWS). Check the history fetch before suspecting an unsigned
+  rotation.
 - Qualification: `trustedrouter-maple-pilot attest-serving` checks the serving
   policy live. `attest-history` admits the live enclave only through a signed
   history entry, because its static pin is deliberately impossible. Neither
@@ -849,7 +857,10 @@ PCR0 are compiled constants, not environment or request overrides. Caller cache
 fields are removed and usage is mandatory. An SDK send budget of one forbids
 automatic inference replay.
 
-Output is one JSON status line followed by canonical SSE. The relay validates
+Output is one JSON status line followed by canonical SSE, or, when the helper
+fails before any status line, one `{"error":"<reason>"}` line from its fixed
+vocabulary. The parent maps a known reason to a fixed error and treats any
+other line as an invalid status; stderr stays discarded. The relay validates
 model identity, integer cumulative token/cache counts and frame/response limits.
 It withholds `[DONE]` until the SDK reports authenticated encrypted EOF.
 Malformed/truncated streams and upstream error events never emit success.
