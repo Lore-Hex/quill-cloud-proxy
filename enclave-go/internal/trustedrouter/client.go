@@ -687,12 +687,29 @@ func (a *Authorization) pinnedControlPlaneEndpoint() int {
 	return a.ControlPlaneEndpoint
 }
 
+type lenienceProbeContextKey struct{}
+
+// WithLenienceProbe marks a key validation as the gateway asking whether the
+// key is lenient before it drops a parameter. The control plane does not count
+// a refusal attached to such a probe for a lenient key: that request goes on.
+func WithLenienceProbe(ctx context.Context) context.Context {
+	return context.WithValue(ctx, lenienceProbeContextKey{}, true)
+}
+
+func lenienceProbe(ctx context.Context) bool {
+	probe, _ := ctx.Value(lenienceProbeContextKey{}).(bool)
+	return probe
+}
+
 // KeyIdentity is metadata-only ownership information returned by the
 // control plane's validation endpoint. It is safe for internal operational
 // attribution: neither field is a raw credential, prompt, or response.
 type KeyIdentity struct {
 	WorkspaceID string `json:"workspace_id"`
 	APIKeyHash  string `json:"api_key_hash"`
+	// Lenient is the key's opt-in to drop unknown and unsupported request
+	// parameters instead of refusing the request. Absent means strict.
+	Lenient bool `json:"lenient,omitempty"`
 }
 
 type CustomModel struct {
@@ -942,6 +959,9 @@ func (c *Client) ValidateKeyInfo(ctx context.Context, bearer string, routeType s
 		body["route_type"] = routeType
 	}
 	addContractRejection(ctx, body, routeType)
+	if lenienceProbe(ctx) {
+		body["lenience_probe"] = true
+	}
 	var decoded struct {
 		Data KeyIdentity `json:"data"`
 	}

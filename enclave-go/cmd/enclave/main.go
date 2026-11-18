@@ -1143,6 +1143,9 @@ func serveOneRequest(
 	var req types.OpenAIChatRequest
 	req.IdempotencyKey = idempotencyKey
 	routeType := "chat.completions"
+	// The body de-identification reads: the request body, or for a lenient
+	// request the body without its dropped parameters.
+	deidentifyBody := body
 	originalInput := any(nil)
 	if strings.HasPrefix(routePath, "/v1/conversations") {
 		if !validateMetadataRoute(ctx, conn, trGateway, bearer, "conversations") {
@@ -1175,8 +1178,20 @@ func serveOneRequest(
 			return
 		}
 		routeType = "responses"
-		responsesReq, err := parseResponsesRequest(body)
+		parsed, parsedBody, err := parseWithLenience(ctx, os.Stderr, statsConn, trGateway, bearer, routePath, requestLogID, attribution.Lenient, &requestIdentity, body, parseResponsesToChat, nil)
 		if err != nil {
+			var conversion responsesConversionError
+			if errors.As(err, &conversion) {
+				err = conversion.err
+				var aerr *adapter.AdapterError
+				if asAdapterErr(err, &aerr) {
+					requestIdentity.recordContractRejection(os.Stderr, requestLogID, routePath, aerr.Status, aerr.Context, body)
+					writeAdapterOpenAIError(conn, aerr)
+					return
+				}
+				writeOpenAIError(conn, 400, "invalid responses request", "invalid_request_error", "bad_request", "")
+				return
+			}
 			if message, ok := tagValidationMessage(err); ok {
 				writeOpenAIError(conn, 400, message, "invalid_request_error", "invalid_tags", "tags")
 				return
@@ -1190,17 +1205,10 @@ func serveOneRequest(
 			writeOpenAIError(conn, 400, "invalid JSON", "invalid_request_error", "bad_request", "")
 			return
 		}
-		chatReq, err := adapter.ResponsesToChat(responsesReq)
-		if err != nil {
-			var aerr *adapter.AdapterError
-			if asAdapterErr(err, &aerr) {
-				requestIdentity.recordContractRejection(os.Stderr, requestLogID, routePath, aerr.Status, aerr.Context, body)
-				writeAdapterOpenAIError(conn, aerr)
-				return
-			}
-			writeOpenAIError(conn, 400, "invalid responses request", "invalid_request_error", "bad_request", "")
-			return
-		}
+		responsesReq, chatReq := parsed.responses, parsed.chat
+		// De-identification re-reads the body, so it must read the one that
+		// parsed. Ingress provenance (speculation) keeps reading the original.
+		deidentifyBody = parsedBody
 		req = *chatReq
 		req.InferenceReceipt = receiptRequest
 		req.NormalizeMaxTokens()
@@ -1210,7 +1218,7 @@ func serveOneRequest(
 			writeError(conn, 404, "route not found")
 			return
 		}
-		chatReq, err := parseChatRequest(body)
+		chatReq, parsedBody, err := parseWithLenience(ctx, os.Stderr, statsConn, trGateway, bearer, routePath, requestLogID, attribution.Lenient, &requestIdentity, body, parseChatRequest, func(req *types.OpenAIChatRequest, _ []byte) error { return laterChatChecks(req) })
 		if err != nil {
 			if message, ok := tagValidationMessage(err); ok {
 				writeOpenAIError(conn, 400, message, "invalid_request_error", "invalid_tags", "tags")
@@ -1225,6 +1233,7 @@ func serveOneRequest(
 			writeError(conn, 400, "invalid JSON")
 			return
 		}
+		deidentifyBody = parsedBody
 		req = *chatReq
 		req.InferenceReceipt = receiptRequest
 		req.NormalizeMaxTokens()
@@ -1240,7 +1249,7 @@ func serveOneRequest(
 			return
 		}
 		var privacyErr error
-		body, br, privacyErr = prepareDeidentified(ctx, true, body, routeType, br)
+		body, br, privacyErr = prepareDeidentified(ctx, true, deidentifyBody, routeType, br)
 		if privacyErr != nil {
 			writeDeidentifyError(conn, routeType, privacyErr)
 			return
@@ -1579,6 +1588,32 @@ func parseResponsesRequest(body []byte) (*types.OpenAIResponsesRequest, error) {
 	}
 	req.Polyphemus = options
 	return &req, nil
+}
+
+// responsesConversionError marks a failure converting a parsed Responses
+// request to chat, so the caller keeps its distinct fallback message.
+type responsesConversionError struct{ err error }
+
+func (e responsesConversionError) Error() string { return e.err.Error() }
+func (e responsesConversionError) Unwrap() error { return e.err }
+
+type parsedResponsesRequest struct {
+	responses *types.OpenAIResponsesRequest
+	chat      *types.OpenAIChatRequest
+}
+
+// parseResponsesToChat parses and converts in one step so lenient mode can
+// drop a parameter that either stage refuses.
+func parseResponsesToChat(body []byte) (parsedResponsesRequest, error) {
+	responsesReq, err := parseResponsesRequest(body)
+	if err != nil {
+		return parsedResponsesRequest{}, err
+	}
+	chatReq, err := adapter.ResponsesToChat(responsesReq)
+	if err != nil {
+		return parsedResponsesRequest{}, responsesConversionError{err: err}
+	}
+	return parsedResponsesRequest{responses: responsesReq, chat: chatReq}, nil
 }
 
 func parseChatRequest(body []byte) (*types.OpenAIChatRequest, error) {
