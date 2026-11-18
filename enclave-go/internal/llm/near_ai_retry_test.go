@@ -268,7 +268,7 @@ func TestNearAIAttestationRetriesOutlastIneligibleStretch(t *testing.T) {
 	var opened []time.Duration
 	var connections []*nearAITestConnection
 	verified := -1
-	client.openConnection = func(_ string, attempt int) (nearAIConnection, *http.Client, error) {
+	client.openConnection = func(string, int) (nearAIConnection, *http.Client, error) {
 		index := len(connections)
 		opened = append(opened, time.Since(start))
 		conn := &nearAITestConnection{fingerprint: fmt.Sprintf("%064x", index+1), dials: 1}
@@ -288,6 +288,8 @@ func TestNearAIAttestationRetriesOutlastIneligibleStretch(t *testing.T) {
 	client.verifyEvidence = func(context.Context, *nearAIEvidenceEnvelope) (*nearAIVerificationResult, error) {
 		index := len(connections) - 1
 		if opened[index] < ineligible {
+			// Spelled out rather than nearAIUnpinnedInstanceRefusal so that this
+			// test also runs, and fails, against the client before pacing.
 			return nil, errors.New("near-ai: attestation refused (HTTP 403): NEAR AI workload identity is outside the pinned policy")
 		}
 		verified = index
