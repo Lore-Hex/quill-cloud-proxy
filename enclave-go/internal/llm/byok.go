@@ -402,6 +402,9 @@ func invokeOpenAICompatibleStreamingWithClientOptions(
 		}
 		return &upstreamHTTPError{status: resp.StatusCode, body: string(errBody)}
 	}
+	if provider == "openai" {
+		openAISafetyEgress.observe(resp, bodyBytes, options.openAISafetyIdentifier)
+	}
 	upstreamerror.Open(out)
 	if nativeResponses {
 		return translateOpenAIResponsesStream(resp.Body, out)
