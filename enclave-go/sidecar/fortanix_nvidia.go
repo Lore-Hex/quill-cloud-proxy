@@ -103,7 +103,15 @@ func fortanixClaims(v *nrasVerifier, raw []byte, kind, nonce string, count int) 
 
 func fortanixFresh(c map[string]any, now time.Time) bool {
 	iat, ok := numericDate(c["iat"])
-	return ok && !iat.Before(now.Add(-5*time.Minute)) && !iat.After(now.Add(2*time.Minute))
+	exp, hasExpiry := numericDate(c["exp"])
+	if v, exists := c["nbf"]; exists {
+		start, valid := numericDate(v)
+		if !valid || start.After(now) {
+			return false
+		}
+	}
+	// The first group must still be valid when the second group finishes.
+	return ok && !iat.Before(now.Add(-5*time.Minute)) && !iat.After(now.Add(2*time.Minute)) && hasExpiry && exp.After(now.Add(fortanixAppraisalWindow))
 }
 
 func fortanixDevicePolicy(c map[string]any, kind string) error {

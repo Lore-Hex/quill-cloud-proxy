@@ -57,7 +57,7 @@ func TestFortanixNVIDIAAppraisal(t *testing.T) {
 		if kind == "switch" {
 			count = 4
 		}
-		for _, scenario := range []string{"valid", "wrong device nonce", "revoked", "duplicate identity", "expired", "stale", "missing issue time", "detached mismatch", "declined", "wrong hardware", "warning", "bad signature"} {
+		for _, scenario := range []string{"valid", "wrong device nonce", "revoked", "duplicate identity", "expired", "expires during appraisal", "not yet valid", "stale", "missing issue time", "detached mismatch", "declined", "wrong hardware", "warning", "bad signature"} {
 			t.Run(kind+"/"+scenario, func(t *testing.T) {
 				mods := map[string]any{}
 				detached := map[string]string{}
@@ -73,6 +73,10 @@ func TestFortanixNVIDIAAppraisal(t *testing.T) {
 							c["ueid"] = fmt.Sprintf("fixture-%s-0", kind)
 						case "expired":
 							c["exp"] = now.Add(-time.Minute).Unix()
+						case "expires during appraisal":
+							c["exp"] = now.Add(30 * time.Second).Unix()
+						case "not yet valid":
+							c["nbf"] = now.Add(time.Minute).Unix()
 						case "stale":
 							c["iat"] = now.Add(-time.Hour).Unix()
 						case "missing issue time":

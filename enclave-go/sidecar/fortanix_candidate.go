@@ -9,10 +9,12 @@ import (
 	"time"
 )
 
+const fortanixAppraisalWindow = 90 * time.Second
+
 // Candidate qualification, intentionally not registered as a production
 // verifier. A CPU-only pass is never a successful full appraisal.
 func appraiseFortanixCandidate(ctx context.Context, raw []byte, nonce, spki [sha256.Size]byte) error {
-	ctx, cancel := context.WithTimeout(ctx, 90*time.Second)
+	ctx, cancel := context.WithTimeout(ctx, fortanixAppraisalWindow)
 	defer cancel()
 	devices, err := fortanixBoundDevices(raw, nonce, spki)
 	if err != nil {
