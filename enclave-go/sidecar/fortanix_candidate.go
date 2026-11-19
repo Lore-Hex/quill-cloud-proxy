@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"errors"
+	"fmt"
 	"net/http"
 	"time"
 )
@@ -25,14 +26,14 @@ func appraiseFortanixCandidate(ctx context.Context, raw []byte, nonce, spki [sha
 	n := hex.EncodeToString(nonce[:])
 	g, err := fortanixGroup(ctx, v, "gpu", "HOPPER", n, devices.GPUs)
 	if err != nil {
-		return err
+		return fmt.Errorf("GPU group: %w", err)
 	}
 	s, err := fortanixGroup(ctx, v, "switch", "LS10", n, devices.Switches)
 	if err != nil {
-		return err
+		return fmt.Errorf("NVSwitch group: %w", err)
 	}
 	if err := fortanixFabric(g, s); err != nil {
-		return err
+		return fmt.Errorf("PPCIe topology: %w", err)
 	}
 	return ctx.Err()
 }

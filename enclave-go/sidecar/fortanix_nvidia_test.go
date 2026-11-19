@@ -5,9 +5,27 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"strings"
 	"testing"
 	"time"
 )
+
+func TestFortanixModelMismatchDoesNotRepinOrDisclose(t *testing.T) {
+	for _, tc := range []struct {
+		model      any
+		diagnostic string
+	}{
+		{"GH100", `signed hwmodel "GH100"`}, {"private-fixture-id", "value withheld"},
+		{nil, "missing or invalid"}, {map[string]string{"ueid": "private-fixture-id"}, "missing or invalid"},
+	} {
+		claims := testFortanixClaims("gpu", 0, "test nonce", time.Now())
+		claims["hwmodel"] = tc.model
+		err := fortanixDevicePolicy(claims, "gpu")
+		if err == nil || !strings.Contains(err.Error(), tc.diagnostic) || strings.Contains(err.Error(), "private-fixture-id") {
+			t.Fatal("unexpected model accepted, mislabeled or disclosed")
+		}
+	}
+}
 
 func testFabricIDs(start, count int) []any {
 	out := make([]any, count)

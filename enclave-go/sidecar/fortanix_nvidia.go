@@ -65,8 +65,14 @@ func fortanixClaims(v *nrasVerifier, raw []byte, kind, nonce string, count int) 
 	if err != nil {
 		return nil, err
 	}
-	if !fortanixFresh(c, v.now()) || c["iss"] != chutesNRASIssuer || c["sub"] != "NVIDIA-PLATFORM-ATTESTATION" || c["eat_nonce"] != nonce || c["x-nvidia-ver"] != "3.0" || c["x-nvidia-overall-att-result"] != true {
-		return nil, errors.New("NVIDIA overall attestation refused")
+	if !fortanixFresh(c, v.now()) {
+		return nil, errors.New("NVIDIA overall token freshness check failed")
+	}
+	if c["iss"] != chutesNRASIssuer || c["sub"] != "NVIDIA-PLATFORM-ATTESTATION" || c["eat_nonce"] != nonce || c["x-nvidia-ver"] != "3.0" {
+		return nil, errors.New("NVIDIA overall token issuer, subject, nonce or claims version mismatch")
+	}
+	if c["x-nvidia-overall-att-result"] != true {
+		return nil, errors.New("NVIDIA did not attest the device group")
 	}
 	mods, ok := c["submods"].(map[string]any)
 	if !ok || len(mods) != count {
@@ -125,13 +131,13 @@ func fortanixDevicePolicy(c map[string]any, kind string) error {
 	case "gpu":
 		// NVIDIA signs the silicon identity, not the marketing memory SKU.
 		if c["hwmodel"] != "GH100 A01 GSP BROM" {
-			return errors.New("unexpected Hopper hardware identity")
+			return fortanixModelMismatch("GPU", c["hwmodel"])
 		}
 		checks = append(checks, "vbios-index-no-conflict")
 		rims = []string{"vbios-rim", "driver-rim"}
 	case "switch":
 		if c["hwmodel"] != "LS_10 A01 FSP BROM" {
-			return errors.New("unexpected NVSwitch hardware identity")
+			return fortanixModelMismatch("NVSwitch", c["hwmodel"])
 		}
 		rims = []string{"bios-rim"}
 	default:
@@ -152,10 +158,25 @@ func fortanixDevicePolicy(c map[string]any, kind string) error {
 	for _, key := range chains {
 		m, _ := c[prefix+key].(map[string]any)
 		if m["x-nvidia-cert-status"] != "valid" || m["x-nvidia-cert-ocsp-status"] != "good" || m["x-nvidia-cert-revocation-reason"] != nil {
-			return errors.New("NVIDIA device certificate chain not valid and good")
+			return fmt.Errorf("NVIDIA %s%s certificate chain not valid and good", prefix, key)
 		}
 	}
 	return nil
+}
+
+// Print known, public model labels only. This is a diagnostic vocabulary,
+// not an acceptance list. Never print arbitrary device-supplied identifiers.
+func fortanixModelMismatch(group string, claim any) error {
+	label, ok := claim.(string)
+	if !ok || label == "" {
+		return fmt.Errorf("%s has a missing or invalid signed hwmodel", group)
+	}
+	switch label {
+	case "GH100", "LS_10", "GH100 A01 GSP BROM", "LS_10 A01 FSP BROM":
+		return fmt.Errorf("%s signed hwmodel %q differs from the qualification policy", group, label)
+	default:
+		return fmt.Errorf("%s signed hwmodel differs from the qualification policy (unrecognized value withheld)", group)
+	}
 }
 
 func fortanixPDI(v any) (string, bool) {
