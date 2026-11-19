@@ -15,7 +15,8 @@ func TestFortanixModelMismatchDoesNotRepinOrDisclose(t *testing.T) {
 		model      any
 		diagnostic string
 	}{
-		{"GH100", `signed hwmodel "GH100"`}, {"private-fixture-id", "value withheld"},
+		{"LS_10", `signed hwmodel "LS_10"`}, {"private-fixture-id", "value withheld"},
+		{"GH100 A02 GSP BROM", "value withheld"}, {"GH100 ", "value withheld"},
 		{nil, "missing or invalid"}, {map[string]string{"ueid": "private-fixture-id"}, "missing or invalid"},
 	} {
 		claims := testFortanixClaims("gpu", 0, "test nonce", time.Now())
@@ -81,6 +82,9 @@ func TestFortanixNVIDIAAppraisal(t *testing.T) {
 				detached := map[string]string{}
 				for i := 0; i < count; i++ {
 					c := testFortanixClaims(kind, i, nonce, now)
+					if kind == "gpu" && i%2 == 1 {
+						c["hwmodel"] = "GH100"
+					}
 					if i == 1 {
 						switch scenario {
 						case "wrong device nonce":

@@ -129,8 +129,9 @@ func fortanixDevicePolicy(c map[string]any, kind string) error {
 	var rims []string
 	switch kind {
 	case "gpu":
-		// NVIDIA signs the silicon identity, not the marketing memory SKU.
-		if c["hwmodel"] != "GH100 A01 GSP BROM" {
+		// Both exact encodings identify the Hopper die, not an H200 SKU.
+		// Firmware and certificate checks below apply to either spelling.
+		if c["hwmodel"] != "GH100 A01 GSP BROM" && c["hwmodel"] != "GH100" {
 			return fortanixModelMismatch("GPU", c["hwmodel"])
 		}
 		checks = append(checks, "vbios-index-no-conflict")

@@ -41,6 +41,20 @@ and firmware checks, unique devices, and consistent signed 8-GPU/4-switch
 [topology](https://github.com/NVIDIA/nvtrust/blob/main/guest_tools/ppcie-verifier-sdk-cpp/ppcie/verifier/src/topology/validate_topology.py).
 Keep raw evidence and certificates out of commits, issue trackers, and logs.
 
+The candidate GPU identity check accepts only `GH100 A01 GSP BROM` and
+`GH100`. NVIDIA's [claims example](https://docs.nvidia.com/attestation/nv-attestation-sdk-cpp/latest/sdk-c/claims_schema.html)
+uses the former; Intel's [multi-GPU migration guide](https://docs.trustauthority.inteltaprd.adsdcsp.com/main/articles/articles/ita/multi-gpu-attestation-migration-guide.html)
+shows the latter, and an independent [eight-H200 qualification](https://voltagegpu.com/blog/8x-h200-nvswitch-attestation-tdx-guest)
+reports the short form. Neither spelling proves the H200 marketing SKU or
+the model weights. Do not use a prefix match or derive new policy values
+from live devices. The switch pin is unchanged. A previous GPU-only check
+stopped on the short spelling; do not count it as a passing run of this policy.
+
+Before enabling Confidential, require a measured dm-verity root for the exact
+weight volume, no raw-device fallback, and a test where corruption prevents
+readiness or inference. A signed expected manifest and a boot-time scan alone
+do not verify a later read by the loader.
+
 Production enablement is separate: review the trust reference and runtime
 weight-integrity evidence, qualify a fresh full hardware proof, integrate the
 enclave's verifier connection and cloud egress path, run guarded canaries, and

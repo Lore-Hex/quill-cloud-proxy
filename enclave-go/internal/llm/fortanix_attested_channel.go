@@ -17,10 +17,34 @@ import (
 	"strings"
 	"sync/atomic"
 	"time"
+
+	"github.com/Lore-Hex/quill-cloud-proxy/enclave-go/internal/trustedrouter"
+	qtypes "github.com/Lore-Hex/quill-cloud-proxy/enclave-go/internal/types"
 )
 
 const fortanixAuthority = "ctf.armet.ai"
 const fortanixNativeModel = "GLM-5.3-Flash"
+
+// Defense in depth behind catalog selection: the ordinary route is ZDR only.
+func fortanixOrdinaryAllowed(ctx context.Context, req *qtypes.OpenAIChatRequest) bool {
+	if req == nil || trustedrouter.ConfidentialOnly(ctx) {
+		return false
+	}
+	model, _, _ := strings.Cut(qtypes.CanonicalRouterModelID(strings.ToLower(strings.TrimSpace(req.Model))), ":")
+	switch model {
+	case "trustedrouter/confidential", "trustedrouter/e2e", "trustedrouter/trusted":
+		return false
+	}
+	if req.Provider == nil {
+		return true
+	}
+	switch strings.ToLower(strings.TrimSpace(req.Provider.MinPrivacy)) {
+	case "", "any", "standard", "no_store", "no-store", "nostore", "zdr", "zero_retention", "zero-retention":
+		return true
+	default:
+		return false
+	}
+}
 
 // This candidate transport is not selected by the live ZDR client. Give it
 // one request and a platform-specific authenticated TLS dialer. The HTTP

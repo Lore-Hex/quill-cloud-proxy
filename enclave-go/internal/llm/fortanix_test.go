@@ -4,14 +4,54 @@ package llm
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"io"
 	"net/http"
 	"strings"
 	"testing"
 
+	"github.com/Lore-Hex/quill-cloud-proxy/enclave-go/internal/trustedrouter"
 	qtypes "github.com/Lore-Hex/quill-cloud-proxy/enclave-go/internal/types"
 )
+
+func TestFortanixOrdinaryClientRefusesConfidentialBeforeEgress(t *testing.T) {
+	floor := &qtypes.ProviderRouting{MinPrivacy: "confidential"}
+	for _, tc := range []struct {
+		name string
+		ctx  context.Context
+		chat *qtypes.ProviderRouting
+	}{
+		{"hostname", trustedrouter.WithConfidentialOnly(t.Context()), nil},
+		{"request", t.Context(), floor},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			client := &http.Client{Transport: byokRoundTripFunc(func(*http.Request) (*http.Response, error) {
+				t.Fatal("ordinary Fortanix transport received a Confidential request")
+				return nil, nil
+			})}
+			req := &qtypes.OpenAIChatRequest{Model: "fortanix/glm-5.3-flash", Provider: tc.chat}
+			body := &qtypes.AnthropicMessagesRequest{MaxTokens: 16, Messages: []qtypes.AnthropicMessage{{Role: "user", Content: "test"}}}
+			err := invokeOpenAICompatibleStreamingWithClient(tc.ctx, client, "fortanix", directBaseURL("fortanix"), "test-key", req, body, io.Discard, fortanixNativeModel)
+			if err == nil || !strings.Contains(err.Error(), "Confidential") {
+				t.Fatalf("expected a privacy refusal, got %v", err)
+			}
+		})
+	}
+}
+
+func TestFortanixOrdinaryPrivacyAliases(t *testing.T) {
+	for _, floor := range []string{"e2e", "e2ee", "max", "maximum", "trusted", " CONFIDENTIAL ", "unknown"} {
+		if fortanixOrdinaryAllowed(t.Context(), &qtypes.OpenAIChatRequest{Provider: &qtypes.ProviderRouting{MinPrivacy: floor}}) {
+			t.Errorf("accepted ineligible privacy floor %q", floor)
+		}
+	}
+	for _, model := range []string{"nyte/confidential", "trustedrouter/e2e", "trustedrouter/trusted:fastest"} {
+		if fortanixOrdinaryAllowed(t.Context(), &qtypes.OpenAIChatRequest{Model: model}) {
+			t.Errorf("accepted restricted model alias %q", model)
+		}
+	}
+}
 
 func TestFortanixInternalStreamingNativeModelAndUsage(t *testing.T) {
 	clients := newBootstrapDirectClients(map[string]string{"fortanix": "test-key"})
@@ -38,7 +78,7 @@ func TestFortanixInternalStreamingNativeModelAndUsage(t *testing.T) {
 	})}
 	var out bytes.Buffer
 	multi := &multiClient{direct: clients}
-	err := multi.InvokeStreaming(t.Context(), &qtypes.OpenAIChatRequest{Model: "trustedrouter/fortanix-test"},
+	err := multi.InvokeStreaming(t.Context(), &qtypes.OpenAIChatRequest{Model: "fortanix/glm-5.3-flash", Provider: &qtypes.ProviderRouting{MinPrivacy: "zdr"}},
 		&qtypes.AnthropicMessagesRequest{MaxTokens: 256, Messages: []qtypes.AnthropicMessage{{Role: "user", Content: "PONG"}}},
 		&out, InvokeOptions{Provider: "fortanix", UpstreamModel: "GLM-5.3-Flash"})
 	if err != nil {
