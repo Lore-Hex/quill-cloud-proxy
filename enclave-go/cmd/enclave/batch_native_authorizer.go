@@ -122,11 +122,12 @@ func (a *batchNativeAuthorizer) Authorize(
 	routes := nativeRoutes(authorization)
 	managedOnly := authorization.CustomModel != nil || len(authorization.BroadcastDestinations) > 0
 	return batchapi.NativeAuthorization{
-		Handle:              handle,
-		Routes:              routes,
-		NativeBatchEligible: authorization.NativeBatchEligible,
-		CustomModel:         authorization.CustomModel != nil,
-		ManagedPathOnly:     managedOnly,
+		OpenAISafetyIdentifier: openAISafetyIdentifier("openai", authorization),
+		Handle:                 handle,
+		Routes:                 routes,
+		NativeBatchEligible:    authorization.NativeBatchEligible,
+		CustomModel:            authorization.CustomModel != nil,
+		ManagedPathOnly:        managedOnly,
 	}, nil
 }
 

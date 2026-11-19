@@ -349,6 +349,7 @@ func (s *ShadowState) handleResponse(lookupHash, keyHash, workspaceID string, re
 	if current != nil && lease.Claims.Generation <= current.lease.Claims.Generation {
 		return nil
 	}
+	lease.OpenAISafetyIdentifier = response.OpenAISafetyIdentifier
 	next := &grant{lease: lease}
 	next.remaining.Store(lease.Claims.CapMicro)
 	next.status.Store(grantActive)

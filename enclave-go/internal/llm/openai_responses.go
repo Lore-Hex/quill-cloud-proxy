@@ -99,7 +99,7 @@ func buildOpenAIResponsesRequest(req openAICompatibleRequest) (map[string]any, e
 	// wire. Converted fields are handled below; everything else fails closed.
 	for field, value := range normalized {
 		switch field {
-		case "model", "stream", "temperature", "top_p", "tools", "tool_choice", "parallel_tool_calls", "prompt_cache_key", "service_tier":
+		case "model", "stream", "temperature", "top_p", "tools", "tool_choice", "parallel_tool_calls", "prompt_cache_key", "service_tier", "safety_identifier":
 			out[field] = value
 		case "messages", "max_tokens", "max_completion_tokens", "stream_options", "reasoning_effort", "reasoning", "response_format":
 		default:

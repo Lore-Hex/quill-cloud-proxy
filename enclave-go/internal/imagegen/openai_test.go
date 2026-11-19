@@ -6,8 +6,21 @@ import (
 	"encoding/json"
 	"io"
 	"net/http"
+	"strings"
 	"testing"
 )
+
+func TestNativeImageOpenAISafetyIdentifier(t *testing.T) {
+	resolved, err := Parse([]byte(`{"model":"openai/gpt-image-2","prompt":"square","user":"raw@example.invalid"}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	resolved.OpenAISafetyIdentifier = strings.Repeat("7b", 32)
+	_, body, err := nativeRequest(resolved)
+	if err != nil || body["safety_identifier"] != resolved.OpenAISafetyIdentifier || body["user"] != nil {
+		t.Fatal("unexpected OpenAI image attribution", err)
+	}
+}
 
 func TestOpenAI25ContractAndUsage(t *testing.T) {
 	for _, model := range []string{"openai/gpt-image-2.5-flare", "openai/gpt-image-2.5-sunburst"} {

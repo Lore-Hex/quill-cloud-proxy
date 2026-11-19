@@ -84,15 +84,18 @@ type Candidate struct {
 }
 
 type VerifiedLease struct {
-	Claims     Claims
-	Deadline   time.Time
-	AdmitUntil time.Time
+	// Metadata from the authenticated response, not a signed grant claim.
+	OpenAISafetyIdentifier string `json:"-"`
+	Claims                 Claims
+	Deadline               time.Time
+	AdmitUntil             time.Time
 }
 
 type Response struct {
-	Token          *string `json:"token"`
-	LeaseStatus    string  `json:"lease_status"`
-	RemainingMicro *int64  `json:"remaining_micro,omitempty"`
+	OpenAISafetyIdentifier string  `json:"-"`
+	Token                  *string `json:"token"`
+	LeaseStatus            string  `json:"lease_status"`
+	RemainingMicro         *int64  `json:"remaining_micro,omitempty"`
 }
 
 type Echo struct {

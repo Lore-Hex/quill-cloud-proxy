@@ -371,6 +371,9 @@ func nativeRequest(resolved *ResolvedRequest) (string, map[string]any, error) {
 		for key, value := range resolved.PassthroughOptions() {
 			base[key] = value
 		}
+		if resolved.OpenAISafetyIdentifier != "" {
+			base["safety_identifier"] = resolved.OpenAISafetyIdentifier
+		}
 		return "https://api.openai.com/v1/images/generations", base, nil
 	case "grok":
 		if resolved.Resolution != "" {

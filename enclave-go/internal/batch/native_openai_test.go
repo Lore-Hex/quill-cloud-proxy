@@ -17,6 +17,30 @@ import (
 	"time"
 )
 
+func TestSafetyIdentifierInNativeBatch(t *testing.T) {
+	digest := strings.Repeat("7b", 32)
+	for _, tc := range []struct {
+		provider, endpoint string
+		want               bool
+	}{
+		{"openai", "/v1/chat/completions", true},
+		{"openai", "/v1/embeddings", false},
+		{"parasail", "/v1/chat/completions", false},
+	} {
+		wire, err := openAIBatchJSONL(tc.provider, "batch", tc.endpoint, "model", []NativeProviderRequest{{
+			OpenAISafetyIdentifier: digest, Body: json.RawMessage(`{"safety_identifier":"spoof","user":"raw@example.invalid"}`),
+		}})
+		var line struct{ Body map[string]any }
+		if err != nil || json.Unmarshal(wire, &line) != nil {
+			t.Fatalf("invalid batch output: %v", err)
+		}
+		got, present := line.Body["safety_identifier"]
+		if present != tc.want || (present && got != digest) || line.Body["user"] != nil {
+			t.Fatalf("wrong attribution for %s %s", tc.provider, tc.endpoint)
+		}
+	}
+}
+
 func TestOpenAIFileBatchProviderUsesStreamingSafeHTTPTimeouts(t *testing.T) {
 	t.Parallel()
 

@@ -76,6 +76,7 @@ func isOpenAICompatibleBYOKProvider(provider string) bool {
 }
 
 type openAICompatibleRequest struct {
+	SafetyIdentifier  string        `json:"safety_identifier,omitempty"`
 	Model             string        `json:"model"`
 	Messages          []chatMessage `json:"messages"`
 	Stream            bool          `json:"stream"`
@@ -224,15 +225,17 @@ func invokeOpenAICompatibleBYOKStreamingWithClient(
 		out,
 		options.UpstreamModel,
 		openAICompatibleInvocationOptions{
-			providerCacheScope: options.ProviderCacheScope,
-			waferZDRRequired:   options.WaferZDRRequired,
+			providerCacheScope:     options.ProviderCacheScope,
+			openAISafetyIdentifier: options.OpenAISafetyIdentifier,
+			waferZDRRequired:       options.WaferZDRRequired,
 		},
 	)
 }
 
 type openAICompatibleInvocationOptions struct {
-	providerCacheScope string
-	waferZDRRequired   bool
+	openAISafetyIdentifier string
+	providerCacheScope     string
+	waferZDRRequired       bool
 	// wireModel is sent as "model" in place of the upstream model (an Azure
 	// BYOK deployment name); request preparation still uses the model.
 	wireModel string
@@ -346,6 +349,7 @@ func invokeOpenAICompatibleStreamingWithClientOptions(
 	}
 	prepared, err := PrepareChatRequest(provider, upstreamModel, req, body, msgs, ChatPreparationOptions{
 		ProviderCacheScope: options.providerCacheScope, privateWire: privateWire, wireModel: options.wireModel,
+		OpenAISafetyIdentifier: options.openAISafetyIdentifier,
 	})
 	if err != nil {
 		return err

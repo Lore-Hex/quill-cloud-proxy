@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/base64"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"os"
@@ -178,20 +179,39 @@ func invokeOptionsForAuthorization(
 			continue
 		}
 		options = append(options, llm.InvokeOptions{
-			Model:              candidate.Model,
-			UpstreamModel:      candidate.UpstreamModel,
-			ProviderAPIKey:     providerKey,
-			Provider:           candidate.Provider,
-			EndpointID:         candidate.EndpointID,
-			UsageType:          candidate.UsageType,
-			ProviderCacheScope: providerCacheScope(authorization.WorkspaceID),
-			WaferZDRRequired:   candidate.WaferZDRRequired,
+			Model:                  candidate.Model,
+			UpstreamModel:          candidate.UpstreamModel,
+			ProviderAPIKey:         providerKey,
+			Provider:               candidate.Provider,
+			EndpointID:             candidate.EndpointID,
+			UsageType:              candidate.UsageType,
+			ProviderCacheScope:     providerCacheScope(authorization.WorkspaceID),
+			OpenAISafetyIdentifier: openAISafetyIdentifier(candidate.Provider, authorization),
+			WaferZDRRequired:       candidate.WaferZDRRequired,
 		})
 	}
 	if len(options) == 0 && len(unavailable) > 0 {
 		return nil, fmt.Errorf("no authorized route candidate has an available provider key: %s", strings.Join(unavailable, "; "))
 	}
 	return options, nil
+}
+
+// Older control planes have no owner digest. Use the authenticated workspace
+// during a rolling upgrade; never substitute a client-provided identifier.
+func openAISafetyIdentifier(provider string, a *trustedrouter.Authorization) string {
+	if provider != "openai" || a == nil {
+		return ""
+	}
+	if value := a.OpenAISafetyIdentifier; len(value) == sha256.Size*2 && strings.ToLower(value) == value {
+		if _, err := hex.DecodeString(value); err == nil {
+			return value
+		}
+	}
+	if a.WorkspaceID == "" {
+		return ""
+	}
+	digest := sha256.Sum256([]byte("trustedrouter/openai-safety/v1\x00workspace\x00" + a.WorkspaceID))
+	return hex.EncodeToString(digest[:])
 }
 
 // providerCacheScope gives cache-capable providers a stable, opaque namespace

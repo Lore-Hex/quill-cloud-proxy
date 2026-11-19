@@ -128,6 +128,9 @@ func TestAuthorizeSendsLookupHashAndNoPromptContent(t *testing.T) {
 		if r.Header.Get(internalTokenHeader) != "internal" {
 			t.Fatalf("missing internal token")
 		}
+		if r.Header.Get("X-TR-OpenAI-Safety") != "v1" {
+			t.Error("missing OpenAI safety capability")
+		}
 		body, err := io.ReadAll(r.Body)
 		if err != nil {
 			t.Fatalf("read body: %v", err)
@@ -143,6 +146,7 @@ func TestAuthorizeSendsLookupHashAndNoPromptContent(t *testing.T) {
 	defer server.Close()
 
 	client := New(server.URL, "internal", server.Client())
+	client.EnableOpenAISafetyIdentifiers()
 	maxTokens := 7
 	auth, err := client.Authorize(t.Context(), rawKey, &qtypes.OpenAIChatRequest{
 		Model:                                 "openai/gpt-4o-mini",
