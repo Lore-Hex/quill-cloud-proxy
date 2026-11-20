@@ -34,20 +34,26 @@ class IAMScopeTests(unittest.TestCase):
 
     def test_mock_policy_checks_are_enforced_by_required_ci(self):
         jobs = yaml.safe_load((ROOT / ".github/workflows/ci.yml").read_text())["jobs"]
-        policy = jobs["aws-secret-policy"]
-        self.assertEqual(policy["permissions"], {"contents": "read"})
+        required = jobs["trust-page-validation"]
+        self.assertEqual(required["permissions"], {"contents": "read"})
+        self.assertNotIn("if", required)
+        self.assertFalse(required.get("continue-on-error", False))
+        policy = required["steps"][1]  # Immediately after the full checkout.
+        self.assertEqual(required["steps"][0]["with"]["fetch-depth"], 0)
+        self.assertEqual(policy["working-directory"], "tools/aws-secrets")
+        self.assertEqual(policy["timeout-minutes"], 10)
+        self.assertNotIn("if", policy)
+        self.assertFalse(policy.get("continue-on-error", False))
         self.assertEqual(policy["env"]["AWS_CONFIG_FILE"], "/dev/null")
         self.assertEqual(policy["env"]["AWS_SHARED_CREDENTIALS_FILE"], "/dev/null")
-        commands = "\n".join(step.get("run", "") for step in policy["steps"])
+        self.assertEqual(policy["env"]["AWS_EC2_METADATA_DISABLED"], "true")
+        commands = policy["run"]
+        self.assertIn("sha256sum --check --strict", commands)
         self.assertIn("terraform init -backend=false -input=false -lockfile=readonly", commands)
         self.assertIn("terraform test -no-color", commands)
         self.assertNotIn("terraform apply", commands)
-        required = jobs["trust-page-validation"]
-        self.assertEqual(required["needs"], "aws-secret-policy")
-        self.assertEqual(required["if"], "${{ always() }}")
-        gate = required["steps"][0]
-        self.assertEqual(gate["if"], "${{ needs.aws-secret-policy.result != 'success' }}")
-        self.assertIn("exit 1", gate["run"])
+        self.assertIn("terraform fmt -check -recursive", commands)
+        self.assertIn("terraform validate -no-color", commands)
 
     def run_phase(self, failure: str = "success", regions: str = "eu-west-1 eu-west-3"):
         with tempfile.TemporaryDirectory() as tmp:

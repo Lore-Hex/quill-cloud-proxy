@@ -24,35 +24,6 @@ jobs:
         working-directory: enclave-go/rampart
         run: npm audit --omit=dev --audit-level=high
 
-  aws-secret-policy:
-    runs-on: ubuntu-latest
-    timeout-minutes: 10
-    permissions:
-      contents: read
-    env:
-      AWS_CONFIG_FILE: /dev/null
-      AWS_SHARED_CREDENTIALS_FILE: /dev/null
-      AWS_EC2_METADATA_DISABLED: "true"
-      TF_IN_AUTOMATION: "true"
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - name: Install checksum-pinned Terraform (no third-party action)
-        working-directory: ${{ runner.temp }}
-        run: |
-          curl --fail --silent --show-error --retry 3 --max-time 120 \
-            -o terraform.zip https://releases.hashicorp.com/terraform/1.14.9/terraform_1.14.9_linux_amd64.zip
-          echo '2e5cffc20a0b48a67a76268723bd5a10b8666f69b2aa4f04906e206726bedd63  terraform.zip' | sha256sum --check --strict
-          mkdir terraform-bin
-          unzip -q terraform.zip -d terraform-bin
-          echo "$RUNNER_TEMP/terraform-bin" >> "$GITHUB_PATH"
-      - name: Validate import and signer policies with mocked AWS
-        working-directory: tools/aws-secrets
-        run: |
-          terraform fmt -check -recursive
-          terraform init -backend=false -input=false -lockfile=readonly
-          terraform validate -no-color
-          terraform test -no-color
-
   maple-pilot:
     runs-on: ubuntu-latest
     timeout-minutes: 15
@@ -207,25 +178,43 @@ jobs:
 
   trust-page-validation:
     # This is a required branch-protection check; policy regressions must block it.
-    needs: aws-secret-policy
-    if: ${{ always() }}
     # Catches accidental script tags / external font fetches / etc. on
     # the static trust page before publish.
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
     env:
       TR_REQUIRE_CRYPTO: "1"
     steps:
-      - name: Require AWS policy checks to pass
-        if: ${{ needs.aws-secret-policy.result != 'success' }}
-        run: |
-          echo "AWS policy checks did not pass; refusing trust validation." >&2
-          exit 1
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           # Provenance validation resolves the exact commit that built each
           # published enclave. A shallow checkout makes older release commits
           # appear invalid even when they are ancestors of main.
           fetch-depth: 0
+      - name: Validate import and signer policies with mocked AWS
+        working-directory: tools/aws-secrets
+        timeout-minutes: 10
+        env:
+          AWS_CONFIG_FILE: /dev/null
+          AWS_SHARED_CREDENTIALS_FILE: /dev/null
+          AWS_EC2_METADATA_DISABLED: "true"
+          TF_IN_AUTOMATION: "true"
+        run: |
+          (
+            cd "$RUNNER_TEMP"
+            curl --fail --silent --show-error --retry 3 --max-time 120 \
+              -o terraform.zip https://releases.hashicorp.com/terraform/1.14.9/terraform_1.14.9_linux_amd64.zip
+            echo '2e5cffc20a0b48a67a76268723bd5a10b8666f69b2aa4f04906e206726bedd63  terraform.zip' | sha256sum --check --strict
+            mkdir terraform-bin
+            unzip -q terraform.zip -d terraform-bin
+          )
+          export PATH="$RUNNER_TEMP/terraform-bin:$PATH"
+          export TF_DATA_DIR="$RUNNER_TEMP/aws-secret-policy-data"
+          terraform fmt -check -recursive
+          terraform init -backend=false -input=false -lockfile=readonly
+          terraform validate -no-color
+          terraform test -no-color
       - uses: Lore-Hex/quill-cloud-proxy/.github/actions/setup-uv@582cbdee7b7023cfeb915b62a7f635aa1e4662b1 # main 2026-11-13
         with:
           version: "0.13.4"
@@ -239,10 +228,29 @@ jobs:
           uv pip install --python "$RUNNER_TEMP/trust-validation/bin/python" 'PyYAML==6.0.3'
           echo "$RUNNER_TEMP/trust-validation/bin" >> "$GITHUB_PATH"
           echo "PYTHONNOUSERSITE=1" >> "$GITHUB_ENV"
+      - name: Test rollout hold, secondary wave and Azure ACI contracts
+        id: rollout-contracts
+        shell: bash
+        run: |
+          # These isolated harnesses use temporary state and stub cloud CLIs.
+          # Overlap real wall-clock waits, not production gates or deadlines.
+          failed=0
+          python3 tools/test_gate_hold.py > "$RUNNER_TEMP/gate-hold.log" 2>&1 &
+          hold_pid=$!
+          echo "::group::Secondary wave"
+          python3 tools/test_secondary_wave.py || failed=1
+          echo "::endgroup::"
+          echo "::group::Azure ACI"
+          python3 tools/test_deploy_azure_aci.py || failed=1
+          echo "::endgroup::"
+          wait "$hold_pid" || failed=1
+          echo "::group::Gate hold"
+          cat "$RUNNER_TEMP/gate-hold.log"
+          echo "::endgroup::"
+          exit "$failed"
       - name: Test deploy gate helpers
         run: |
           python3 tools/test_synthetic_gate_status.py
-          python3 tools/test_gate_hold.py
           python3 tools/test_provider_probe_status.py
           python3 tools/test_watchdog.py
           python3 tools/test_verify_attestation.py
@@ -262,7 +270,6 @@ jobs:
           python3 tools/test_rollout_safety.py
           python3 tools/test_prune_gcp_instance_templates.py
           python3 tools/test_cloud_rollout.py
-          python3 tools/test_secondary_wave.py
           python3 tools/test_superseded_rollout.py
           python3 tools/test_gcp_enclave_inventory.py
           python3 tools/test_verify_gcp_runtime_secret_access.py
@@ -292,19 +299,8 @@ jobs:
           python3 tools/test_relieve_mig_stockout.py
           python3 tools/test_ensure_trustedrouter_control_host_cert.py
           python3 -m unittest discover -s tools -p 'test_maple*.py'
-      # Separate step: this one is ~2 minutes where the others are seconds, so
-      # a failure here should be legible as "the Azure deploy script broke"
-      # rather than hiding at the bottom of a list. It stubs az, docker and the
-      # resolver onto PATH, shadows every other cloud CLI (gcloud, curl, ...)
-      # with a stub that records and refuses, and points CLOUDSDK_CONFIG and
-      # AZURE_CONFIG_DIR at throwaway directories and the AWS credential files
-      # at /dev/null — so it touches no network even on a runner that
-      # authenticated earlier in the job.
-      # TestTheHarnessCannotReachARealCloudCLI is what keeps that true.
       - name: Verify the attestation dependency lock
         run: uv lock --check --script tools/verify-attestation.py
-      - name: Test the Azure ACI deploy script
-        run: python3 tools/test_deploy_azure_aci.py
       - name: Assert trust page contains no <script> tags
         run: |
           if grep -qi '<script' trust-page/index.html; then
