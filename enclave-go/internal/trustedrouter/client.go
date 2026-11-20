@@ -103,6 +103,7 @@ func ClientContextFromContext(ctx context.Context) *qtypes.ClientContext {
 }
 
 type Client struct {
+	openAISafety    bool
 	asyncShadow     bool
 	asyncNegotiate  bool
 	asyncTicketKeys map[string]asyncTicketKey
@@ -296,6 +297,10 @@ func (c *Client) Enabled() bool {
 	}
 	return c.configurationError != nil || (len(c.baseURLs) > 0 && c.internalToken != "")
 }
+
+// EnableOpenAISafetyIdentifiers declares support on internal authorization
+// requests. Configure once at gateway startup, before serving traffic.
+func (c *Client) EnableOpenAISafetyIdentifiers() { c.openAISafety = true }
 
 // ConfigurationError reports a fail-closed control-plane configuration error.
 // Callers that own process startup should treat it as fatal so health checks
@@ -627,6 +632,7 @@ type Authorization struct {
 	InvocationNonce                       string                             `json:"invocation_nonce"`
 	WorkspaceID                           string                             `json:"workspace_id"`
 	APIKeyHash                            string                             `json:"api_key_hash"`
+	OpenAISafetyIdentifier                string                             `json:"openai_safety_identifier,omitempty"`
 	Model                                 string                             `json:"model"`
 	UpstreamModel                         string                             `json:"upstream_model"`
 	EndpointID                            string                             `json:"endpoint_id"`
@@ -1006,7 +1012,9 @@ func (c *Client) AuthorizeWithRoute(ctx context.Context, bearer string, req *qty
 	decoded.pinControlPlaneEndpoint(controlPlaneEndpoint)
 	decoded.cacheAffinityKey, decoded.cacheAffinityExplicit = cacheAffinity(lookupHash, req, routeType)
 	decoded.RouteType = routeType
-	c.bindAsyncAuthorization(decoded, req, routeType)
+	if asyncCohort(routeType) {
+		c.bindAsyncAuthorization(decoded, req, routeType)
+	}
 	startupStart := c.recordStartupAdmissionStart(decoded, routeType)
 	c.retainShadowAuthorization(decoded, req, routeType)
 	startupStart.record(decoded.shadowSettlement != nil)
@@ -1088,6 +1096,15 @@ func (c *Client) AuthorizeEmbeddingsWithRoute(
 	inputTokens int,
 	routeType string,
 ) (*Authorization, error) {
+	return c.authorizeEmbeddingsWithRoute(ctx, bearer, req, inputTokens, routeType, true)
+}
+
+// AuthorizeEmbeddingsWithRouteSync keeps hosted requests with images synchronous.
+func (c *Client) AuthorizeEmbeddingsWithRouteSync(ctx context.Context, bearer string, req *qtypes.EmbeddingRequest, inputTokens int, routeType string) (*Authorization, error) {
+	return c.authorizeEmbeddingsWithRoute(ctx, bearer, req, inputTokens, routeType, false)
+}
+
+func (c *Client) authorizeEmbeddingsWithRoute(ctx context.Context, bearer string, req *qtypes.EmbeddingRequest, inputTokens int, routeType string, allowAsync bool) (*Authorization, error) {
 	if err := rejectRetiredModels(req.Model, nil); err != nil {
 		return nil, err
 	}
@@ -1153,6 +1170,10 @@ func (c *Client) AuthorizeEmbeddingsWithRoute(
 	})
 	estimate.EstimatedInputTokens = int64(inputTokens)
 	estimate.MaxTokens = &maxTokens
+	negotiate := allowAsync && routeType == "decide" && !c.asyncShadow && c.asyncNegotiate && len(c.asyncTicketKeys) > 0
+	if negotiate {
+		ctx = context.WithValue(ctx, asyncModeKey{}, "async-v1")
+	}
 	decoded, controlPlaneEndpoint, err := c.authorizeAtDecodeSeam(ctx, lookupHash, body, estimate)
 	if err != nil {
 		c.afterCredentialCheck(ctx, lookupHash, err)
@@ -1161,6 +1182,9 @@ func (c *Client) AuthorizeEmbeddingsWithRoute(
 	c.afterCredentialCheck(ctx, lookupHash, nil)
 	decoded.pinControlPlaneEndpoint(controlPlaneEndpoint)
 	decoded.RouteType = routeType
+	if negotiate {
+		c.bindAsyncAuthorization(decoded, &qtypes.OpenAIChatRequest{}, routeType)
+	}
 	startupStart := c.recordStartupAdmissionStart(decoded, routeType)
 	c.retainShadowAuthorization(decoded, &qtypes.OpenAIChatRequest{}, routeType)
 	startupStart.record(decoded.shadowSettlement != nil)
@@ -1577,6 +1601,9 @@ func (c *Client) postToControlPlaneWithBootAuth(
 		}
 		req.Header.Set("Content-Type", "application/json")
 		req.Header.Set(internalTokenHeader, c.internalToken)
+		if c.openAISafety && path == "/internal/gateway/authorize" {
+			req.Header.Set("X-TR-OpenAI-Safety", "v1")
+		}
 		if c.asyncShadow && path == "/internal/gateway/authorize" {
 			req.Header.Set(shadowPolicyHeader, shadowPolicyV2)
 		}

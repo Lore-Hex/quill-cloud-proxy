@@ -12,8 +12,9 @@ import (
 // ChatPreparationOptions contains already resolved, trusted adapter inputs.
 // Secrets, image fetching and random cache isolation stay at dispatch.
 type ChatPreparationOptions struct {
-	ProviderCacheScope string
-	privateWire        *openAICompatibleRequest
+	OpenAISafetyIdentifier string
+	ProviderCacheScope     string
+	privateWire            *openAICompatibleRequest
 	// wireModel, when set, is the name sent as "model" (an Azure BYOK
 	// deployment). Every model-specific decision still uses the authorized
 	// upstream model, so an alias never changes how the request is built.
@@ -59,6 +60,9 @@ func PrepareChatRequest(provider, upstreamModel string, req *qtypes.OpenAIChatRe
 		}
 	}
 	reqBody := buildOpenAICompatibleRequest(provider, upstreamID, req, body, msgs)
+	if normalizeDirectProvider(provider) == "openai" {
+		reqBody.SafetyIdentifier = options.OpenAISafetyIdentifier
+	}
 	// Wharf omits decision confidence/probabilities from SSE. Fetch this small
 	// task result once as JSON, then use the same response pipeline for both
 	// caller modes. Other Neurometric models keep incremental upstream streams.

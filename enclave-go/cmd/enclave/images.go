@@ -361,6 +361,7 @@ func serveNativeImageAuthorized(
 	defer cancel()
 	clientClosed := cancelOnClientDisconnect(generationCtx, cancel, conn)
 	authorization.RecordShadowInvocation(option.EndpointID, option.Provider)
+	nativeRequest.OpenAISafetyIdentifier = option.OpenAISafetyIdentifier
 	result, err := imageProviderGateway.Generate(
 		generationCtx, nativeRequest, option.ProviderAPIKey, idempotencyKey,
 	)

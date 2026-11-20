@@ -551,6 +551,9 @@ func writeOpenAIBatchJSONL(
 		if err != nil {
 			return err
 		}
+		if provider == "openai" && endpoint == "/v1/chat/completions" && request.OpenAISafetyIdentifier != "" {
+			body["safety_identifier"] = request.OpenAISafetyIdentifier
+		}
 		line := map[string]any{
 			"custom_id": nativeResultID(token, request.Index),
 			"method":    http.MethodPost,
@@ -573,7 +576,7 @@ func nativeProviderBody(provider, endpoint string, raw []byte, upstreamModel str
 	}
 	for _, key := range []string{
 		"models", "provider", "metadata", "trace", "session_id", "tags",
-		"plugins", "depth", "stream_options", "service_tier", "user",
+		"plugins", "depth", "stream_options", "service_tier", "user", "safety_identifier",
 	} {
 		delete(body, key)
 	}

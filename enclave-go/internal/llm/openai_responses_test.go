@@ -22,6 +22,60 @@ func responsesTestTool() []any {
 	}}}
 }
 
+func TestDirectOpenAISafetyIdentifierOnWire(t *testing.T) {
+	const digest = "75b983789154ea8c43b3428f2cb4f373f299363b70372db379bd8da2a20249f5"
+	for _, tc := range []struct {
+		provider, path string
+		tools          bool
+	}{
+		{"openai", "/v1/chat/completions", false}, {"openai", "/v1/responses", true},
+		{"openrouter", "/api/v1/chat/completions", false},
+	} {
+		req := &qtypes.OpenAIChatRequest{Model: "openai/gpt-5.5", User: "raw@example.invalid",
+			Response: &qtypes.ResponseRequestMeta{SafetyIdentifier: "caller-controlled"},
+			Messages: []qtypes.OpenAIChatMessage{{Role: "user", Content: "hello"}}}
+		if tc.tools {
+			req.Tools = responsesTestTool()
+		}
+		body, err := adapter.ToAnthropic(req, req.Model)
+		if err != nil {
+			t.Fatal(err)
+		}
+		called := false
+		client := &http.Client{Transport: byokRoundTripFunc(func(r *http.Request) (*http.Response, error) {
+			called = true
+			payload, err := io.ReadAll(r.Body)
+			if err != nil {
+				t.Fatal(err)
+			}
+			var wire map[string]any
+			if err := json.Unmarshal(payload, &wire); err != nil {
+				t.Fatal(err)
+			}
+			if strings.Contains(string(payload), req.User) || strings.Contains(string(payload), "caller-controlled") {
+				t.Fatal("raw attribution on wire")
+			}
+			got, present := wire["safety_identifier"]
+			if r.URL.Path != tc.path || present != (tc.provider == "openai") || (present && got != digest) {
+				t.Fatalf("%s: wrong endpoint or safety identifier: path=%s present=%v", tc.provider, r.URL.Path, present)
+			}
+			return nil, errors.New("stop after observing request")
+		})}
+		credits := &openAICompatibleClient{provider: tc.provider, baseURL: directBaseURL(tc.provider), apiKey: "fixture", httpc: client}
+		options := InvokeOptions{Provider: tc.provider, UpstreamModel: "gpt-5.5", OpenAISafetyIdentifier: digest}
+		_ = credits.InvokeStreaming(t.Context(), req, body, io.Discard, options)
+		if !called {
+			t.Fatalf("%s: no credits upstream request", tc.provider)
+		}
+		called = false
+		options.ProviderAPIKey = "fixture"
+		_ = invokeOpenAICompatibleBYOKStreamingWithClient(t.Context(), client, tc.provider, req, body, io.Discard, options)
+		if !called {
+			t.Fatalf("%s: no BYOK upstream request", tc.provider)
+		}
+	}
+}
+
 func responsesTestSSE(events ...string) string {
 	return "data: " + strings.Join(events, "\n\ndata: ") + "\n\n"
 }

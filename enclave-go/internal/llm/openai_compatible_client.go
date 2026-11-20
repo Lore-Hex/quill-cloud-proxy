@@ -102,6 +102,12 @@ func (c *openAICompatibleClient) InvokeStreaming(
 	if option.Provider != "" {
 		provider = normalizeDirectProvider(option.Provider)
 	}
+	// This client sends to its configured base URL. A provider override
+	// alone must never send OpenAI's pseudonym to a compatible backend.
+	var safetyIdentifier string
+	if c.provider == "openai" && provider == "openai" {
+		safetyIdentifier = option.OpenAISafetyIdentifier
+	}
 	httpc, err := c.resolveHTTPClient()
 	if err != nil {
 		return fmt.Errorf("llm/%s: http client unavailable: %w", c.provider, err)
@@ -117,8 +123,9 @@ func (c *openAICompatibleClient) InvokeStreaming(
 		out,
 		option.UpstreamModel,
 		openAICompatibleInvocationOptions{
-			providerCacheScope: option.ProviderCacheScope,
-			waferZDRRequired:   option.WaferZDRRequired,
+			providerCacheScope:     option.ProviderCacheScope,
+			openAISafetyIdentifier: safetyIdentifier,
+			waferZDRRequired:       option.WaferZDRRequired,
 		},
 	)
 }

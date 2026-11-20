@@ -236,9 +236,10 @@ func (s *Service) tryNative(
 		providerRequests := make([]NativeProviderRequest, 0, len(pending))
 		for _, index := range pending {
 			providerRequests = append(providerRequests, NativeProviderRequest{
-				Index:    index,
-				CustomID: requests[index].CustomID,
-				Body:     requests[index].Body,
+				OpenAISafetyIdentifier: state.OpenAISafetyIdentifier,
+				Index:                  index,
+				CustomID:               requests[index].CustomID,
+				Body:                   requests[index].Body,
 			})
 		}
 		state, generation, err = s.ensureNativeSubmitted(
@@ -562,6 +563,10 @@ func (s *Service) prepareNative(
 	state.RetryAttempts = 0
 	if ok {
 		state.Stage = nativeStagePrepared
+		// A job has one authenticated owner; custom_id is never an identity.
+		if route.Provider == "openai" && len(authorizations) > 0 {
+			state.OpenAISafetyIdentifier = authorizations[0].OpenAISafetyIdentifier
+		}
 		state.Provider = strings.ToLower(strings.TrimSpace(route.Provider))
 		state.EndpointID = route.EndpointID
 		state.Model = route.Model

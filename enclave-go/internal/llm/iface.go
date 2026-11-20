@@ -40,14 +40,15 @@ type Client interface {
 }
 
 type InvokeOptions struct {
-	Model              string
-	UpstreamModel      string
-	ProviderAPIKey     string
-	Provider           string
-	EndpointID         string
-	UsageType          string
-	ProviderCacheScope string
-	WaferZDRRequired   bool
+	Model                  string
+	UpstreamModel          string
+	ProviderAPIKey         string
+	Provider               string
+	EndpointID             string
+	UsageType              string
+	ProviderCacheScope     string
+	OpenAISafetyIdentifier string
+	WaferZDRRequired       bool
 }
 
 // New builds the right Client for the build target. Defined exactly once
