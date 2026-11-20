@@ -396,7 +396,10 @@ func (p *projection) request(m map[string]any, route string) error {
 			if err := p.content(value, func(v any) { m[key] = v }); err != nil {
 				return err
 			}
-		case "instructions", "stop", "stop_sequences", "metadata", "user", "session_id", "trace", "tags", "safety_identifier":
+		case "safety_identifier":
+			// Router metadata: the caller digest has already been captured at ingress.
+			delete(m, key)
+		case "instructions", "stop", "stop_sequences", "metadata", "user", "session_id", "trace", "tags":
 			if err := p.free(value, func(v any) { m[key] = v }); err != nil {
 				return err
 			}

@@ -1244,6 +1244,8 @@ func serveOneRequest(
 		return
 	}
 	req.NormalizeRouterModelAliases()
+	callerSafetyDigest := req.CallerSafetyDigest
+	req.CallerSafetyDigest = ""
 	if req.Deidentify {
 		if !deidentifyDirectModels(&req) {
 			writeOpenAIError(conn, 400, "deidentify requires a direct model and local function tools", "invalid_request_error", "deidentify_unsupported", "deidentify")
@@ -1304,6 +1306,21 @@ func serveOneRequest(
 		}
 		writeError(conn, 400, "invalid request")
 		return
+	}
+	if callerSafetyDigest != "" {
+		if !trEnabled {
+			writeOpenAIError(conn, 503, "workspace attribution unavailable", "server_error", "attribution_unavailable", "")
+			return
+		}
+		ctx, err = trGateway.BindCallerSafety(ctx, bearer, routeType, callerSafetyDigest, &req)
+		if err != nil {
+			if message, ok := tagValidationMessage(err); ok {
+				writeOpenAIError(conn, 400, message, "invalid_request_error", "invalid_tags", "tags")
+			} else {
+				writeGatewayAuthorizationError(conn, err)
+			}
+			return
+		}
 	}
 
 	if retiredModelRequest(&req) {
@@ -1580,6 +1597,11 @@ func parseResponsesRequest(body []byte) (*types.OpenAIResponsesRequest, error) {
 		return nil, err
 	}
 	var req types.OpenAIResponsesRequest
+	digest, err := parseCallerSafety(raw["safety_identifier"])
+	if err != nil {
+		return nil, err
+	}
+	req.CallerSafetyDigest = digest
 	if err := json.Unmarshal(body, &req); err != nil {
 		return nil, err
 	}
@@ -1628,6 +1650,10 @@ func parseChatRequest(body []byte) (*types.OpenAIChatRequest, error) {
 	}
 	var req types.OpenAIChatRequest
 	if err := json.Unmarshal(body, &req); err != nil {
+		return nil, err
+	}
+	req.CallerSafetyDigest, err = parseCallerSafety(raw["safety_identifier"])
+	if err != nil {
 		return nil, err
 	}
 	if validation.RepetitionPenaltyAlias != nil {

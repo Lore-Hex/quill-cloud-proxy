@@ -71,6 +71,12 @@ func TestUnsupportedNeverCallsWorker(t *testing.T) {
 }
 
 func TestClientCompatibilityPrivacyProjection(t *testing.T) {
+	runner := &fakeRunner{}
+	body := []byte(`{"deidentify":true,"safety_identifier":"synthetic-private-id","input":"alice@example.com"}`)
+	projected, _, err := Prepare(context.Background(), body, "responses", runner)
+	if err != nil || bytes.Contains(projected, []byte("synthetic-private-id")) || strings.Contains(strings.Join(runner.seen, " "), "synthetic-private-id") {
+		t.Fatal("caller identity must stay out of the de-identification model and projected request")
+	}
 	for _, metadata := range []string{`null`, `{"session":"metadata-only@example.com","nested":{"name":"Never forward"}}`} {
 		r := &fakeRunner{}
 		raw := []byte(`{"deidentify":true,"input":"alice@example.com","client_metadata":` + metadata + `}`)

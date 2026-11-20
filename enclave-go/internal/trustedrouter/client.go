@@ -980,6 +980,13 @@ func (c *Client) ValidateKeyInfo(ctx context.Context, bearer string, routeType s
 }
 
 func (c *Client) AuthorizeWithRoute(ctx context.Context, bearer string, req *qtypes.OpenAIChatRequest, routeType string) (*Authorization, error) {
+	// Child model calls can construct fresh requests. Keep their usage under
+	// the same caller as the outer request before the normal hold is created.
+	if s, _ := ctx.Value(callerSafetyKey{}).(*callerSafety); s != nil {
+		if err := s.attach(req); err != nil {
+			return nil, err
+		}
+	}
 	if err := rejectRetiredModels(req.Model, req.Models); err != nil {
 		return nil, err
 	}

@@ -32,8 +32,8 @@ func TestDirectOpenAISafetyIdentifierOnWire(t *testing.T) {
 		{"openrouter", "/api/v1/chat/completions", false},
 	} {
 		req := &qtypes.OpenAIChatRequest{Model: "openai/gpt-5.5", User: "raw@example.invalid",
-			Response: &qtypes.ResponseRequestMeta{SafetyIdentifier: "caller-controlled"},
-			Messages: []qtypes.OpenAIChatMessage{{Role: "user", Content: "hello"}}}
+			CallerSafetyDigest: "caller-controlled",
+			Messages:           []qtypes.OpenAIChatMessage{{Role: "user", Content: "hello"}}}
 		if tc.tools {
 			req.Tools = responsesTestTool()
 		}
