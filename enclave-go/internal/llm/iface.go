@@ -48,6 +48,7 @@ type InvokeOptions struct {
 	UsageType              string
 	ProviderCacheScope     string
 	OpenAISafetyIdentifier string
+	OpenAICallerSafety     bool
 	WaferZDRRequired       bool
 }
 

@@ -41,11 +41,13 @@ func TestSafetyEgressWitness(t *testing.T) {
 			}
 			var log bytes.Buffer
 			w := safetyEgressWitness{out: &log}
-			w.observe(resp, body, tc.expected)
-			w.observe(resp, body, tc.expected)
+			for _, caller := range []bool{false, false, true, true} {
+				w.observe(resp, body, tc.expected, caller)
+			}
 			want := ""
 			if tc.want != "" {
 				want = "openai.safety_egress path=" + r.URL.Path + " upstream=2xx matched_sha256=" + tc.want + "\n"
+				want += strings.Replace(want, "openai.safety_egress", "openai.caller_safety_egress", 1)
 			}
 			if log.String() != want {
 				t.Fatal("unexpected egress evidence")

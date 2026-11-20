@@ -127,6 +127,10 @@ func invokeOptionsForAuthorization(
 	if authorization == nil {
 		return nil, nil
 	}
+	callerID, err := trustedrouter.CallerOpenAISafety(ctx, authorization)
+	if err != nil {
+		return nil, err
+	}
 	candidates := authorization.RouteCandidates
 	if len(candidates) == 0 {
 		candidates = []trustedrouter.RouteCandidate{{
@@ -178,6 +182,10 @@ func invokeOptionsForAuthorization(
 			unavailable = append(unavailable, fmt.Sprintf("%s: %v", candidate.EndpointID, err))
 			continue
 		}
+		safetyID := openAISafetyIdentifier(candidate.Provider, authorization)
+		if candidate.Provider == "openai" && callerID != "" {
+			safetyID = callerID
+		}
 		options = append(options, llm.InvokeOptions{
 			Model:                  candidate.Model,
 			UpstreamModel:          candidate.UpstreamModel,
@@ -186,7 +194,8 @@ func invokeOptionsForAuthorization(
 			EndpointID:             candidate.EndpointID,
 			UsageType:              candidate.UsageType,
 			ProviderCacheScope:     providerCacheScope(authorization.WorkspaceID),
-			OpenAISafetyIdentifier: openAISafetyIdentifier(candidate.Provider, authorization),
+			OpenAISafetyIdentifier: safetyID,
+			OpenAICallerSafety:     candidate.Provider == "openai" && callerID != "",
 			WaferZDRRequired:       candidate.WaferZDRRequired,
 		})
 	}
