@@ -75,7 +75,7 @@ func parseAsyncTicketClaims(raw []byte, now int64) (asyncTicketClaims, bool) {
 			return c, false
 		}
 	}
-	if !ticketNonce.MatchString(c.InvocationNonce) || !ticketDigest.MatchString(c.SnapshotHash) || c.BillingAuthority != "local" || c.Origin != "typed" || !asyncCohort(c.RouteType) || c.SnapshotVersion != 1 || c.Epoch < 1 || c.Iat < 0 || c.Exp < 0 {
+	if !ticketNonce.MatchString(c.InvocationNonce) || !ticketDigest.MatchString(c.SnapshotHash) || c.BillingAuthority != "local" || c.Origin != "typed" || (!liveAsyncRoute(c.RouteType) || (c.RouteType == "decide" && c.Streamed)) || c.SnapshotVersion != 1 || c.Epoch < 1 || c.Iat < 0 || c.Exp < 0 {
 		return c, false
 	}
 	if c.Iat > now || now >= c.Exp || c.Exp <= c.Iat || c.Exp-c.Iat > 300 {

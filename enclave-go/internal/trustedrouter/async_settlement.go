@@ -61,6 +61,10 @@ type asyncSettlementRequest struct {
 }
 
 func asyncCohort(route string) bool { return route == "chat.completions" || route == "responses" }
+
+// liveAsyncRoute includes hosted decisions; shadow admission stays on asyncCohort.
+func liveAsyncRoute(route string) bool { return asyncCohort(route) || route == "decide" }
+
 func asyncFlag(boot *qtypes.BootstrapData) bool {
 	if value, exists := os.LookupEnv("TR_ASYNC_SETTLE_NEGOTIATE"); exists {
 		return strings.EqualFold(strings.TrimSpace(value), "on")
@@ -81,7 +85,7 @@ func (c *Client) AsyncSettlementNegotiated(a *Authorization) bool {
 }
 
 func (c *Client) bindAsyncAuthorization(a *Authorization, req *qtypes.OpenAIChatRequest, route string) {
-	if c.asyncShadow || !c.asyncNegotiate || !asyncCohort(route) || !bool(a.AsyncEligible) {
+	if c.asyncShadow || !c.asyncNegotiate || !liveAsyncRoute(route) || !bool(a.AsyncEligible) {
 		return
 	}
 	if a.SettlementStatusURL != "/v1/settlements/"+url.PathEscape(a.AuthorizationID+".settle") {
