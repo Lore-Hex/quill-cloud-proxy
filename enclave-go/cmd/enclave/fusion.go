@@ -1057,10 +1057,20 @@ func validateGenericFusionConfig(config fusionConfig, model string) error {
 			return nil
 		}
 	}
+	// Name the model the caller sent: a bare trustedrouter/selector request
+	// used to be told that trustedrouter/synth needed configuring.
+	name := strings.ToLower(strings.TrimSpace(model))
+	if config.Mode == fusionModeSelector {
+		return &adapter.AdapterError{
+			Status:  400,
+			Message: name + " requires selector_models, an explicit preset, or analysis_models",
+			Context: trustedRouterSelectorTool,
+		}
+	}
 	return &adapter.AdapterError{
 		Status:  400,
-		Message: "trustedrouter/synth requires an explicit preset or analysis_models; use trustedrouter/iris, trustedrouter/prometheus, trustedrouter/zeus, or another named model for a preset",
-		Context: "trustedrouter:synth",
+		Message: name + " requires an explicit preset or analysis_models; use trustedrouter/iris, trustedrouter/prometheus, trustedrouter/zeus, or another named model for a preset",
+		Context: trustedRouterSynthTool,
 	}
 }
 
