@@ -980,6 +980,13 @@ func (c *Client) ValidateKeyInfo(ctx context.Context, bearer string, routeType s
 }
 
 func (c *Client) AuthorizeWithRoute(ctx context.Context, bearer string, req *qtypes.OpenAIChatRequest, routeType string) (*Authorization, error) {
+	// Child model calls can construct fresh requests. Keep their usage under
+	// the same caller as the outer request before the normal hold is created.
+	if s, _ := ctx.Value(callerSafetyKey{}).(*callerSafety); s != nil {
+		if err := s.attach(req); err != nil {
+			return nil, err
+		}
+	}
 	if err := rejectRetiredModels(req.Model, req.Models); err != nil {
 		return nil, err
 	}
@@ -1864,10 +1871,23 @@ func LookupHash(raw string) string {
 	return lookupHash(raw)
 }
 
+// EstimateInputTokens is the prompt estimate authorize prices: len/4 of each
+// message's content plus 4, plus len/4 of the tool definitions' JSON. The
+// provider bills tool definitions as prompt; before they were counted here a
+// tools-heavy request was priced as a few-token prompt (2026-11-19 report).
+// It stays an estimate: a provider's tool-use system prompt and a tokenizer
+// finer than four characters a token are not modelled, and Stage D's cap
+// allows for a delivered prompt above it (stageDController.
+// promptOverrunMicroLocked).
 func EstimateInputTokens(req *qtypes.OpenAIChatRequest) int {
 	total := 0
 	for _, message := range req.Messages {
 		total += qtypes.ContentTokenEstimate(message.Content) + 4
+	}
+	if len(req.Tools) > 0 {
+		if encoded, err := json.Marshal(req.Tools); err == nil {
+			total += len(encoded) / 4
+		}
 	}
 	if total < 1 {
 		return 1

@@ -162,6 +162,8 @@ credentials remain disabled. See [browser API usage](docs/browser-api.md).
 
 ## Routing
 
+For apps sharing an API key across end users, see [per-user usage and OpenAI safety identifiers](docs/caller-safety-identifiers.md).
+
 The GCP OpenRouter workload accepts OpenAI-compatible `model`, `models`, and
 `provider` request fields. It retries the next model candidate before streaming
 if OpenRouter returns `429` or `5xx`, forwards provider preferences such as

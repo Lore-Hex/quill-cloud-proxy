@@ -227,6 +227,7 @@ func invokeOpenAICompatibleBYOKStreamingWithClient(
 		openAICompatibleInvocationOptions{
 			providerCacheScope:     options.ProviderCacheScope,
 			openAISafetyIdentifier: options.OpenAISafetyIdentifier,
+			callerSafety:           options.OpenAICallerSafety,
 			waferZDRRequired:       options.WaferZDRRequired,
 		},
 	)
@@ -234,6 +235,7 @@ func invokeOpenAICompatibleBYOKStreamingWithClient(
 
 type openAICompatibleInvocationOptions struct {
 	openAISafetyIdentifier string
+	callerSafety           bool
 	providerCacheScope     string
 	waferZDRRequired       bool
 	// wireModel is sent as "model" in place of the upstream model (an Azure
@@ -403,7 +405,7 @@ func invokeOpenAICompatibleStreamingWithClientOptions(
 		return &upstreamHTTPError{status: resp.StatusCode, body: string(errBody)}
 	}
 	if provider == "openai" {
-		openAISafetyEgress.observe(resp, bodyBytes, options.openAISafetyIdentifier)
+		openAISafetyEgress.observe(resp, bodyBytes, options.openAISafetyIdentifier, options.callerSafety)
 	}
 	upstreamerror.Open(out)
 	if nativeResponses {

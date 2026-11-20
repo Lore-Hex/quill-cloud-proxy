@@ -125,6 +125,7 @@ func (c *openAICompatibleClient) InvokeStreaming(
 		openAICompatibleInvocationOptions{
 			providerCacheScope:     option.ProviderCacheScope,
 			openAISafetyIdentifier: safetyIdentifier,
+			callerSafety:           safetyIdentifier != "" && option.OpenAICallerSafety,
 			waferZDRRequired:       option.WaferZDRRequired,
 		},
 	)

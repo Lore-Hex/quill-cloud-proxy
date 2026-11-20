@@ -114,7 +114,16 @@ gateway's own tables name, so an older model cannot leave the Budget class,
 and a newer one cannot be put in it, unnoticed.
 
 An adaptive model is sent `thinking: {"type": "adaptive"}` and the effort as
-`output_config.effort`. A budget model is sent
+`output_config.effort`. On the Full class the thinking object also carries
+`"display": "summarized"`. Anthropic's default display on every model of that
+class is `"omitted"`, which streams thinking blocks with empty text, so a chat
+request that turned reasoning on got no reasoning back from Haiku 5.5, Sonnet
+5.5 or any other Full class model, while Haiku 4.5 returned it. Display
+changes what is returned, not what is thought or billed. A request that
+excludes reasoning from the response (`reasoning.exclude: true` or
+`include_reasoning: false`) is sent no display. The 4.6 class already returns
+summarized thinking and is sent no display. A native `POST /v1/messages`
+request is forwarded with the `thinking` object it wrote. A budget model is sent
 `thinking: {"type": "enabled", "budget_tokens": N}`. This is what each effort
 sends:
 
@@ -298,6 +307,38 @@ also fail there, as before: `reasoning: true` is not read as On, though
 provider authorized for the model, which is sent the `reasoning` object
 unchanged. If there is none, the caller gets the error and the hold is
 refunded.
+
+### OpenAI chat completions
+
+First-party OpenAI chat completions (provider `openai`, every request that
+does not take the Responses tool route above) has one reasoning control,
+top-level `reasoning_effort`, and answers 400 `Unknown parameter` to a
+`thinking` field or a `reasoning` object. Neither is ever sent there. Until
+2026-11-19 a request that turned reasoning on with no effort, for example
+`reasoning: {"enabled": true}` on `openai/gpt-5-nano`, was sent the Claude
+thinking budget that the shared projection writes for On, and OpenAI refused
+`thinking`. The switch is now an effort, read with the same spellings as on
+Claude models:
+
+* On alone is `reasoning_effort: "medium"`. Every reviewed OpenAI reasoning
+  model lists `medium`, it is OpenAI's documented default for the models that
+  reason by default, and gpt-5.1 and later chat models default to `none`, so
+  sending nothing would have left On ignored there.
+* On with an effort is that effort, sent as written.
+* Off is `reasoning_effort: "none"` on the models whose reviewed effort list
+  holds it: `gpt-5.1`, `gpt-5.2`, `gpt-5.4`, `gpt-5.4-mini`, `gpt-5.4-nano`,
+  `gpt-5.5`, `gpt-5.6-luna`, `gpt-5.6-sol`, `gpt-5.6-terra`, `gpt-6-luna`,
+  `gpt-6-sol` and `gpt-6.1-terra`, each alone or with a `-YYYY-MM-DD`
+  snapshot date. Off governs an effort beside it. On a model that does not
+  reason (`gpt-4*`, `gpt-3.5*`, `chat-latest`) Off is the request with no
+  reasoning control.
+* Off on any other model (`gpt-5`, `gpt-5-mini`, `gpt-5-nano`, the o-series,
+  and any model not listed) and a thinking token budget
+  (`reasoning.max_tokens`, `thinking.budget_tokens`) fail when the provider
+  request is prepared, after billing authorization, as on the Responses tool
+  route. The failure is retryable: the next provider authorized for the model
+  is tried, and if there is none the caller gets the error and the hold is
+  refunded.
 
 ### Hosts outside the effort list
 

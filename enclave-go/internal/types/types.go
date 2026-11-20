@@ -348,9 +348,10 @@ type InferenceReceiptRequest struct {
 
 // OpenAIChatRequest is the inbound shape we accept.
 type OpenAIChatRequest struct {
-	Deidentify DeidentifyFlag `json:"deidentify,omitempty"`
-	Model      string         `json:"model"`
-	Models     []string       `json:"models,omitempty"`
+	CallerSafetyDigest string         `json:"-"`
+	Deidentify         DeidentifyFlag `json:"deidentify,omitempty"`
+	Model              string         `json:"model"`
+	Models             []string       `json:"models,omitempty"`
 	// AllowFallbacks accepts the top-level compatibility spelling used by
 	// several OpenAI-compatible clients. NormalizeFallbackRouting consumes it
 	// into Provider before authorization so it cannot leak to an upstream API.
@@ -623,7 +624,7 @@ type OpenAIResponsesRequest struct {
 	PromptCacheOptions   map[string]any     `json:"prompt_cache_options,omitempty"`
 	PromptCacheRetention string             `json:"prompt_cache_retention,omitempty"`
 	Reasoning            any                `json:"reasoning,omitempty"`
-	SafetyIdentifier     string             `json:"safety_identifier,omitempty"`
+	CallerSafetyDigest   string             `json:"-"`
 	ServiceTier          string             `json:"service_tier,omitempty"`
 	StreamOptions        map[string]any     `json:"stream_options,omitempty"`
 	Text                 map[string]any     `json:"text,omitempty"`
@@ -639,7 +640,6 @@ type ResponseRequestMeta struct {
 	InputModalities      []string
 	ParallelToolCalls    *bool
 	PromptCacheKey       string
-	SafetyIdentifier     string
 	ServiceTier          string
 	ActualServiceTier    string
 	StreamOptions        map[string]any
