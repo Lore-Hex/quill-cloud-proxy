@@ -3,6 +3,7 @@ package llm
 import (
 	"fmt"
 	"net/http"
+	"regexp"
 	"strings"
 
 	qtypes "github.com/Lore-Hex/quill-cloud-proxy/enclave-go/internal/types"
@@ -189,4 +190,64 @@ func explicitHybridThinkingConflict(provider string, req *qtypes.OpenAIChatReque
 	enabled, _ := values["enabled"].(bool)
 	thinking, _ := wire.Thinking.(map[string]string)
 	return enabled && thinking["type"] == "disabled"
+}
+
+// openAIChatEffortNone names the first-party OpenAI models whose reviewed
+// reasoning_effort list holds none (quill-router
+// data/request_capabilities.json), each alone or with a -YYYY-MM-DD snapshot.
+// gpt-5, gpt-5-mini, gpt-5-nano and the o-series document no way to stop
+// reasoning, and neither does any model not listed here.
+var openAIChatEffortNone = regexp.MustCompile(`^gpt-(5\.(1|2|4)(-mini|-nano)?|5\.5|5\.6-(luna|sol|terra)|6-(luna|sol)|6\.1-terra)(-[0-9]{4}-[0-9]{2}-[0-9]{2})?$`)
+
+// openAIChatNoReasoning names the first-party OpenAI chat models that do not
+// reason (quill-router data/request_capabilities.json lists no effort for
+// them). Off asks nothing of them, so it is the request without a control.
+var openAIChatNoReasoning = regexp.MustCompile(`^(gpt-4|gpt-3\.5|chat-latest)`)
+
+// openAIChatOnEffort is the effort On alone sends to first-party OpenAI chat
+// completions. Every reviewed OpenAI reasoning model lists it, it is OpenAI's
+// documented default for the models that reason by default, and it is the
+// depth the shared projection already gives On alone elsewhere (the medium
+// budget). Sending nothing would leave On ignored on gpt-5.1 and later chat
+// models, whose default effort is none.
+const openAIChatOnEffort = "medium"
+
+// applyOpenAIChatReasoning projects the reasoning controls onto first-party
+// OpenAI chat completions, whose only reasoning control is top-level
+// reasoning_effort. OpenAI answers 400 "Unknown parameter" to a thinking
+// field or a reasoning object, so neither is ever sent. The switch becomes an
+// effort: On alone is medium, On with an effort is that effort, Off is none
+// and governs an effort beside it; on a model that does not reason Off is
+// the request without a control. Off on a reasoning model that cannot turn
+// reasoning off, and a thinking token budget, which OpenAI does not take, are refused
+// here, the same retryable 400 the Responses tool route gives them, so the
+// next candidate for the model is tried. The Responses tool route has its own
+// projection (responsesReasoning) and does not come here.
+func applyOpenAIChatReasoning(model string, req *qtypes.OpenAIChatRequest, wire *openAICompatibleRequest) error {
+	wire.Thinking = nil
+	wire.Reasoning = nil
+	if req == nil {
+		return nil
+	}
+	model = strings.TrimPrefix(strings.ToLower(strings.TrimSpace(model)), "openai/")
+	refuse := func(message string) error {
+		return &upstreamHTTPError{status: http.StatusBadRequest, body: "OpenAI chat route: " + message}
+	}
+	ask := claudeReasoningAskOf(req)
+	switch {
+	case ask.off && openAIChatNoReasoning.MatchString(model):
+		wire.ReasoningEffort = ""
+	case ask.off:
+		if !openAIChatEffortNone.MatchString(model) {
+			return refuse("this model cannot turn reasoning off")
+		}
+		wire.ReasoningEffort = "none"
+	case ask.budget:
+		return refuse("this model takes a reasoning effort, not a thinking token budget")
+	case ask.effort != "":
+		wire.ReasoningEffort = ask.effort
+	case ask.on:
+		wire.ReasoningEffort = openAIChatOnEffort
+	}
+	return nil
 }

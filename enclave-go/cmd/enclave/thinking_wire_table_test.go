@@ -158,9 +158,18 @@ func TestChatThinkingSwitchWireTable(t *testing.T) {
 		},
 		// Chat endpoints that read top-level reasoning_effort and no reasoning object.
 		"reasoning_effort hosts": {
-			routes: append(hosts("mistral", "alibaba", "grok", "cerebras", "crusoe", "baseten", "tinfoil"), chat("openai", "openai/gpt-5.5", "gpt-5.5"), chat("google-ai-studio", "google/gemini-2.5-flash", "gemini-2.5-flash")),
+			routes: append(hosts("mistral", "alibaba", "grok", "cerebras", "crusoe", "baseten", "tinfoil"), chat("google-ai-studio", "google/gemini-2.5-flash", "gemini-2.5-flash")),
 			effort: effortField, on: `{` + reasoningOn + `,` + budget + `}`, off: reasoningOff,
 			onWithEffort: effortField, offEffort: reasoningOff,
+		},
+		// First-party OpenAI chat completions refuses thinking and the
+		// reasoning object as unknown parameters. The switch is an effort:
+		// On alone is medium and Off is none. See
+		// TestOpenAIChatReasoningSwitchIsReasoningEffort.
+		"openai": {
+			routes: []wireRoute{chat("openai", "openai/gpt-5.5", "gpt-5.5")},
+			effort: effortField, on: `{"reasoning_effort":"medium"}`, off: `{"reasoning_effort":"none"}`,
+			onWithEffort: effortField, offEffort: `{"reasoning_effort":"none"}`,
 		},
 		"meta": {
 			routes: hosts("meta"),
@@ -223,14 +232,14 @@ func TestChatThinkingSwitchWireTable(t *testing.T) {
 		"claude adaptive": {
 			routes: claude("claude-opus-4-7", "claude-opus-4-8", "claude-opus-5-5", "claude-sonnet-5", "claude-haiku-5-5", "claude-mythos-5", "claude-fable-5-1",
 				"us.anthropic.claude-haiku-5-5", "claude-haiku-5-5@20261001"),
-			effort: `{"output_config":{"effort":"high"},"thinking":{"type":"adaptive"}}`, on: `{"thinking":{"type":"adaptive"}}`, off: `{"thinking":{"type":"disabled"}}`,
-			onWithEffort: `{"output_config":{"effort":"high"},"thinking":{"type":"adaptive"}}`, offEffort: `{"thinking":{"type":"disabled"}}`,
+			effort: `{"output_config":{"effort":"high"},"thinking":{"display":"summarized","type":"adaptive"}}`, on: `{"thinking":{"display":"summarized","type":"adaptive"}}`, off: `{"thinking":{"type":"disabled"}}`,
+			onWithEffort: `{"output_config":{"effort":"high"},"thinking":{"display":"summarized","type":"adaptive"}}`, offEffort: `{"thinking":{"type":"disabled"}}`,
 		},
 		// Sonnet 5.5 refuses disabled and names between_tools as its Off.
 		"claude sonnet 5.5": {
 			routes: claude("claude-sonnet-5-5", "us.anthropic.claude-sonnet-5-5", "claude-sonnet-5-5@20261001"),
-			effort: `{"output_config":{"effort":"high"},"thinking":{"type":"adaptive"}}`, on: `{"thinking":{"type":"adaptive"}}`, off: `{"thinking":{"type":"between_tools"}}`,
-			onWithEffort: `{"output_config":{"effort":"high"},"thinking":{"type":"adaptive"}}`, offEffort: `{"thinking":{"type":"between_tools"}}`,
+			effort: `{"output_config":{"effort":"high"},"thinking":{"display":"summarized","type":"adaptive"}}`, on: `{"thinking":{"display":"summarized","type":"adaptive"}}`, off: `{"thinking":{"type":"between_tools"}}`,
+			onWithEffort: `{"output_config":{"effort":"high"},"thinking":{"display":"summarized","type":"adaptive"}}`, offEffort: `{"thinking":{"type":"between_tools"}}`,
 		},
 	} {
 		for _, route := range tc.routes {
@@ -381,11 +390,11 @@ func TestClaudeThinkingSwitchWithEffortIsTheReasoningObject(t *testing.T) {
 		{"claude-sonnet-4-6", "xhigh", `{"output_config":{"effort":"high"},"thinking":{"type":"adaptive"}}`},
 		{"claude-sonnet-4-6", "minimal", `{"output_config":{"effort":"low"},"thinking":{"type":"adaptive"}}`},
 		{"claude-sonnet-4-6", "max", `{"output_config":{"effort":"max"},"thinking":{"type":"adaptive"}}`},
-		{"claude-opus-4-8", "xhigh", `{"output_config":{"effort":"xhigh"},"thinking":{"type":"adaptive"}}`},
-		{"claude-opus-4-8", "minimal", `{"output_config":{"effort":"low"},"thinking":{"type":"adaptive"}}`},
-		{"claude-haiku-5-5", "high", `{"output_config":{"effort":"high"},"thinking":{"type":"adaptive"}}`},
-		{"claude-haiku-5-5", "minimal", `{"output_config":{"effort":"low"},"thinking":{"type":"adaptive"}}`},
-		{"claude-haiku-5-5", "ultra", `{"output_config":{"effort":"ultra"},"thinking":{"type":"adaptive"}}`},
+		{"claude-opus-4-8", "xhigh", `{"output_config":{"effort":"xhigh"},"thinking":{"display":"summarized","type":"adaptive"}}`},
+		{"claude-opus-4-8", "minimal", `{"output_config":{"effort":"low"},"thinking":{"display":"summarized","type":"adaptive"}}`},
+		{"claude-haiku-5-5", "high", `{"output_config":{"effort":"high"},"thinking":{"display":"summarized","type":"adaptive"}}`},
+		{"claude-haiku-5-5", "minimal", `{"output_config":{"effort":"low"},"thinking":{"display":"summarized","type":"adaptive"}}`},
+		{"claude-haiku-5-5", "ultra", `{"output_config":{"effort":"ultra"},"thinking":{"display":"summarized","type":"adaptive"}}`},
 	} {
 		route := wireRoute{kind: "claude", provider: "anthropic", model: "anthropic/" + tc.upstream, upstream: tc.upstream}
 		if got := reasoningWire(t, route, `"thinking":{"type":"enabled"},"reasoning_effort":"`+tc.effort+`"`); got != tc.want {
@@ -452,6 +461,10 @@ func TestClaudeEffortLadderWireTable(t *testing.T) {
 	)
 	think := func(tokens string) string { return `"thinking":{"budget_tokens":` + tokens + `,"type":"enabled"}` }
 	adaptive := func(effort string) string {
+		return `{"max_tokens":32000,"output_config":{"effort":"` + effort + `"},"thinking":{"display":"summarized","type":"adaptive"}}`
+	}
+	// The 4.6 models already return summarized thinking and are sent no display.
+	adaptive46 := func(effort string) string {
 		return `{"max_tokens":32000,"output_config":{"effort":"` + effort + `"},"thinking":{"type":"adaptive"}}`
 	}
 	// Off on Opus 4.5 keeps the 4,096 wire default. Off on an adaptive class
@@ -465,32 +478,32 @@ func TestClaudeEffortLadderWireTable(t *testing.T) {
 		// The ladder: each effort is the nearest one the model has.
 		{"minimal", user, `"reasoning_effort":"minimal"`, map[string]string{
 			budget: `{"max_tokens":4096}`, opus45: `{"max_tokens":4096,"output_config":{"effort":"low"}}`,
-			v46: adaptive("low"), full: adaptive("low"), haiku55: adaptive("low"), sonnet55: adaptive("low"),
+			v46: adaptive46("low"), full: adaptive("low"), haiku55: adaptive("low"), sonnet55: adaptive("low"),
 		}},
 		{"low", user, `"reasoning_effort":"low"`, map[string]string{
 			budget: `{"max_tokens":4096,` + think("1024") + `}`, opus45: `{"max_tokens":4096,"output_config":{"effort":"low"},` + think("1024") + `}`,
-			v46: adaptive("low"), full: adaptive("low"), haiku55: adaptive("low"),
+			v46: adaptive46("low"), full: adaptive("low"), haiku55: adaptive("low"),
 		}},
 		{"medium", user, `"reasoning_effort":"medium"`, map[string]string{
 			budget: `{"max_tokens":8192,` + think("4096") + `}`, opus45: `{"max_tokens":8192,"output_config":{"effort":"medium"},` + think("4096") + `}`,
-			v46: adaptive("medium"), full: adaptive("medium"), haiku55: adaptive("medium"),
+			v46: adaptive46("medium"), full: adaptive("medium"), haiku55: adaptive("medium"),
 		}},
 		{"high", user, `"reasoning_effort":"high"`, map[string]string{
 			budget: `{"max_tokens":12288,` + think("8192") + `}`, opus45: `{"max_tokens":12288,"output_config":{"effort":"high"},` + think("8192") + `}`,
-			v46: adaptive("high"), full: adaptive("high"), haiku55: adaptive("high"),
+			v46: adaptive46("high"), full: adaptive("high"), haiku55: adaptive("high"),
 			future: adaptive("high"), sonnet4: `{"max_tokens":12288,` + think("8192") + `}`,
 		}},
 		{"xhigh", user, `"reasoning_effort":"xhigh"`, map[string]string{
 			budget: `{"max_tokens":12288,` + think("8192") + `}`, opus45: `{"max_tokens":12288,"output_config":{"effort":"high"},` + think("8192") + `}`,
-			v46: adaptive("high"), full: adaptive("xhigh"), haiku55: adaptive("xhigh"),
+			v46: adaptive46("high"), full: adaptive("xhigh"), haiku55: adaptive("xhigh"),
 		}},
 		{"max", user, `"reasoning_effort":"max"`, map[string]string{
 			budget: `{"max_tokens":12288,` + think("8192") + `}`, opus45: `{"max_tokens":12288,"output_config":{"effort":"high"},` + think("8192") + `}`,
-			v46: adaptive("max"), full: adaptive("max"), haiku55: adaptive("max"),
+			v46: adaptive46("max"), full: adaptive("max"), haiku55: adaptive("max"),
 		}},
 		{"an effort the gateway does not know", user, `"reasoning_effort":"ultra"`, map[string]string{
 			budget: `{"max_tokens":4096}`, opus45: `{"max_tokens":4096,"output_config":{"effort":"ultra"}}`,
-			v46: adaptive("ultra"), full: adaptive("ultra"),
+			v46: adaptive46("ultra"), full: adaptive("ultra"),
 		}},
 		// Off governs, and max_tokens keeps no room for the discarded budget.
 		{"Off object beside an effort", user, `"reasoning":{"enabled":false},"reasoning_effort":"high"`, map[string]string{
@@ -548,7 +561,7 @@ func TestClaudeEffortLadderWireTable(t *testing.T) {
 		// and Off at the top level is Off whatever the object says.
 		{"an Off word in the object beside a top-level effort", user, `"reasoning":{"effort":"none"},"reasoning_effort":"high"`, map[string]string{
 			budget: `{"max_tokens":12288,` + think("8192") + `}`, opus45: `{"max_tokens":12288,"output_config":{"effort":"high"},` + think("8192") + `}`,
-			v46: adaptive("high"), full: adaptive("high"), haiku55: adaptive("high"), sonnet55: adaptive("high"), future: adaptive("high"),
+			v46: adaptive46("high"), full: adaptive("high"), haiku55: adaptive("high"), sonnet55: adaptive("high"), future: adaptive("high"),
 		}},
 		{"a top-level Off word beside an effort in the object", user, `"reasoning":{"effort":"high"},"reasoning_effort":"none"`, map[string]string{
 			budget: `{"max_tokens":4096}`, opus45: disabled, v46: adaptiveOff, full: adaptiveOff, haiku55: adaptiveOff, future: adaptiveOff,
@@ -556,24 +569,24 @@ func TestClaudeEffortLadderWireTable(t *testing.T) {
 		}},
 		{"two efforts, the top-level one wins", user, `"reasoning":{"effort":"high"},"reasoning_effort":"low"`, map[string]string{
 			budget: `{"max_tokens":4096,` + think("1024") + `}`, opus45: `{"max_tokens":4096,"output_config":{"effort":"low"},` + think("1024") + `}`,
-			v46: adaptive("low"), full: adaptive("low"),
+			v46: adaptive46("low"), full: adaptive("low"),
 		}},
 		// A bare string in the reasoning field is an effort, read like
 		// reasoning.effort: the same ladder, and a top-level effort wins.
 		{"string effort high", user, `"reasoning":"high"`, map[string]string{
 			budget: `{"max_tokens":12288,` + think("8192") + `}`, opus45: `{"max_tokens":12288,"output_config":{"effort":"high"},` + think("8192") + `}`,
-			v46: adaptive("high"), full: adaptive("high"), haiku55: adaptive("high"), sonnet55: adaptive("high"), future: adaptive("high"),
+			v46: adaptive46("high"), full: adaptive("high"), haiku55: adaptive("high"), sonnet55: adaptive("high"), future: adaptive("high"),
 		}},
 		{"string effort max", user, `"reasoning":"max"`, map[string]string{
 			budget: `{"max_tokens":12288,` + think("8192") + `}`, opus45: `{"max_tokens":12288,"output_config":{"effort":"high"},` + think("8192") + `}`,
-			v46: adaptive("max"), full: adaptive("max"),
+			v46: adaptive46("max"), full: adaptive("max"),
 		}},
 		{"string effort xhigh", user, `"reasoning":"xhigh"`, map[string]string{
 			budget: `{"max_tokens":12288,` + think("8192") + `}`, opus45: `{"max_tokens":12288,"output_config":{"effort":"high"},` + think("8192") + `}`,
-			v46: adaptive("high"), full: adaptive("xhigh"),
+			v46: adaptive46("high"), full: adaptive("xhigh"),
 		}},
 		{"string effort minimal", user, `"reasoning":"minimal"`, map[string]string{
-			budget: `{"max_tokens":4096}`, opus45: `{"max_tokens":4096,"output_config":{"effort":"low"}}`, v46: adaptive("low"), full: adaptive("low"),
+			budget: `{"max_tokens":4096}`, opus45: `{"max_tokens":4096,"output_config":{"effort":"low"}}`, v46: adaptive46("low"), full: adaptive("low"),
 		}},
 		{"string effort none", user, `"reasoning":"none"`, map[string]string{
 			budget: `{"max_tokens":4096}`, opus45: disabled, v46: adaptiveOff, full: adaptiveOff,
@@ -587,22 +600,22 @@ func TestClaudeEffortLadderWireTable(t *testing.T) {
 		}},
 		{"string effort beside a top-level effort", user, `"reasoning":"high","reasoning_effort":"low"`, map[string]string{
 			budget: `{"max_tokens":4096,` + think("1024") + `}`, opus45: `{"max_tokens":4096,"output_config":{"effort":"low"},` + think("1024") + `}`,
-			v46: adaptive("low"), full: adaptive("low"),
+			v46: adaptive46("low"), full: adaptive("low"),
 		}},
 		{"string Off word beside a top-level effort", user, `"reasoning":"none","reasoning_effort":"high"`, map[string]string{
-			budget: `{"max_tokens":12288,` + think("8192") + `}`, v46: adaptive("high"), full: adaptive("high"),
+			budget: `{"max_tokens":12288,` + think("8192") + `}`, v46: adaptive46("high"), full: adaptive("high"),
 		}},
 		{"string effort beside a top-level Off word", user, `"reasoning":"high","reasoning_effort":"none"`, map[string]string{
 			budget: `{"max_tokens":4096}`, opus45: disabled, v46: adaptiveOff, full: adaptiveOff,
 		}},
 		{"string effort + required tool", user, `"reasoning":"high",` + required, map[string]string{
 			budget: `{"max_tokens":4096,"tool_choice":{"type":"any"}}`, opus45: `{"max_tokens":4096,"output_config":{"effort":"high"},"tool_choice":{"type":"any"}}`,
-			full: `{"max_tokens":32000,"output_config":{"effort":"high"},"thinking":{"type":"adaptive"},"tool_choice":{"type":"any"}}`,
+			full: `{"max_tokens":32000,"output_config":{"effort":"high"},"thinking":{"display":"summarized","type":"adaptive"},"tool_choice":{"type":"any"}}`,
 		}},
 		// On beside an effort is that effort, wherever the effort is written.
 		{"On object beside low", user, `"reasoning":{"enabled":true},"reasoning_effort":"low"`, map[string]string{
 			budget: `{"max_tokens":4096,` + think("1024") + `}`, opus45: `{"max_tokens":4096,"output_config":{"effort":"low"},` + think("1024") + `}`,
-			v46: adaptive("low"), full: adaptive("low"),
+			v46: adaptive46("low"), full: adaptive("low"),
 		}},
 		{"On object beside high", user, `"reasoning":{"enabled":true},"reasoning_effort":"high"`, map[string]string{
 			budget: `{"max_tokens":12288,` + think("8192") + `}`, opus45: `{"max_tokens":12288,"output_config":{"effort":"high"},` + think("8192") + `}`,
@@ -615,7 +628,7 @@ func TestClaudeEffortLadderWireTable(t *testing.T) {
 		// not know it is the 4,096 tokens of On alone.
 		{"On object beside minimal", user, `"reasoning":{"enabled":true},"reasoning_effort":"minimal"`, map[string]string{
 			budget: `{"max_tokens":4096,` + think("1024") + `}`, opus45: `{"max_tokens":4096,"output_config":{"effort":"low"},` + think("1024") + `}`,
-			v46: adaptive("low"), full: adaptive("low"), haiku55: adaptive("low"),
+			v46: adaptive46("low"), full: adaptive("low"), haiku55: adaptive("low"),
 		}},
 		{"On object holding minimal", user, `"reasoning":{"enabled":true,"effort":"minimal"}`, map[string]string{
 			budget: `{"max_tokens":4096,` + think("1024") + `}`, opus45: `{"max_tokens":4096,"output_config":{"effort":"low"},` + think("1024") + `}`,
@@ -625,7 +638,7 @@ func TestClaudeEffortLadderWireTable(t *testing.T) {
 		}},
 		{"On object beside an unknown effort", user, `"reasoning":{"enabled":true},"reasoning_effort":"ultra"`, map[string]string{
 			budget: `{"max_tokens":8192,` + think("4096") + `}`, opus45: `{"max_tokens":8192,"output_config":{"effort":"ultra"},` + think("4096") + `}`,
-			v46: adaptive("ultra"), full: adaptive("ultra"),
+			v46: adaptive46("ultra"), full: adaptive("ultra"),
 		}},
 		{"On switch beside an unknown effort", user, `"enable_thinking":true,"reasoning_effort":"ultra"`, map[string]string{
 			budget: `{"max_tokens":8192,` + think("4096") + `}`, opus45: `{"max_tokens":8192,"output_config":{"effort":"ultra"},` + think("4096") + `}`,
@@ -643,26 +656,26 @@ func TestClaudeEffortLadderWireTable(t *testing.T) {
 		// refuses a thinking budget, and the 4,096 token budget elsewhere.
 		{"On alone", user, `"reasoning":{"enabled":true}`, map[string]string{
 			budget: `{"max_tokens":8192,` + think("4096") + `}`, opus45: `{"max_tokens":8192,` + think("4096") + `}`, v46: `{"max_tokens":8192,` + think("4096") + `}`,
-			full: `{"max_tokens":32000,"thinking":{"type":"adaptive"}}`, haiku55: `{"max_tokens":32000,"thinking":{"type":"adaptive"}}`, sonnet55: `{"max_tokens":32000,"thinking":{"type":"adaptive"}}`,
+			full: `{"max_tokens":32000,"thinking":{"display":"summarized","type":"adaptive"}}`, haiku55: `{"max_tokens":32000,"thinking":{"display":"summarized","type":"adaptive"}}`, sonnet55: `{"max_tokens":32000,"thinking":{"display":"summarized","type":"adaptive"}}`,
 		}},
 		{"On alone, bare true", user, `"reasoning":true`, map[string]string{
 			budget: `{"max_tokens":8192,` + think("4096") + `}`, v46: `{"max_tokens":8192,` + think("4096") + `}`,
-			full: `{"max_tokens":32000,"thinking":{"type":"adaptive"}}`, haiku55: `{"max_tokens":32000,"thinking":{"type":"adaptive"}}`,
-			future: `{"max_tokens":32000,"thinking":{"type":"adaptive"}}`, sonnet4: `{"max_tokens":8192,` + think("4096") + `}`,
+			full: `{"max_tokens":32000,"thinking":{"display":"summarized","type":"adaptive"}}`, haiku55: `{"max_tokens":32000,"thinking":{"display":"summarized","type":"adaptive"}}`,
+			future: `{"max_tokens":32000,"thinking":{"display":"summarized","type":"adaptive"}}`, sonnet4: `{"max_tokens":8192,` + think("4096") + `}`,
 		}},
 		{"On alone, reasoning.type", user, `"reasoning":{"type":"enabled"}`, map[string]string{
 			opus45: `{"max_tokens":8192,` + think("4096") + `}`, v46: `{"max_tokens":8192,` + think("4096") + `}`,
-			full: `{"max_tokens":32000,"thinking":{"type":"adaptive"}}`, haiku55: `{"max_tokens":32000,"thinking":{"type":"adaptive"}}`,
+			full: `{"max_tokens":32000,"thinking":{"display":"summarized","type":"adaptive"}}`, haiku55: `{"max_tokens":32000,"thinking":{"display":"summarized","type":"adaptive"}}`,
 		}},
 		{"On switch alone", user, `"thinking":{"type":"enabled"}`, map[string]string{
 			budget: `{"max_tokens":8192,` + think("4096") + `}`, v46: `{"max_tokens":8192,` + think("4096") + `}`,
-			full: `{"max_tokens":32000,"thinking":{"type":"adaptive"}}`, haiku55: `{"max_tokens":32000,"thinking":{"type":"adaptive"}}`, sonnet55: `{"max_tokens":32000,"thinking":{"type":"adaptive"}}`,
+			full: `{"max_tokens":32000,"thinking":{"display":"summarized","type":"adaptive"}}`, haiku55: `{"max_tokens":32000,"thinking":{"display":"summarized","type":"adaptive"}}`, sonnet55: `{"max_tokens":32000,"thinking":{"display":"summarized","type":"adaptive"}}`,
 		}},
 		{"On alone with a cap", user, `"reasoning":{"enabled":true},"max_tokens":512`, map[string]string{
-			v46: `{"max_tokens":4608,` + think("4096") + `}`, full: `{"max_tokens":512,"thinking":{"type":"adaptive"}}`, haiku55: `{"max_tokens":512,"thinking":{"type":"adaptive"}}`,
+			v46: `{"max_tokens":4608,` + think("4096") + `}`, full: `{"max_tokens":512,"thinking":{"display":"summarized","type":"adaptive"}}`, haiku55: `{"max_tokens":512,"thinking":{"display":"summarized","type":"adaptive"}}`,
 		}},
 		{"On alone with sampling", user, `"reasoning":{"enabled":true},"temperature":0.2,"top_k":40,"top_p":0.5`, map[string]string{
-			full: `{"max_tokens":32000,"thinking":{"type":"adaptive"},"top_k":40}`, haiku55: `{"max_tokens":32000,"thinking":{"type":"adaptive"},"top_k":40}`,
+			full: `{"max_tokens":32000,"thinking":{"display":"summarized","type":"adaptive"},"top_k":40}`, haiku55: `{"max_tokens":32000,"thinking":{"display":"summarized","type":"adaptive"},"top_k":40}`,
 		}},
 		// A token budget the caller names is still sent to the full class as
 		// written. Those models refuse it: the provider judges.
@@ -750,9 +763,9 @@ func TestClaudeEffortLadderWireTable(t *testing.T) {
 		// The adaptive classes are not changed: adaptive thinking is sent
 		// beside a forced tool choice, which Haiku 5.5 was seen to accept.
 		{"adaptive effort + required tool", user, `"reasoning_effort":"high",` + required, map[string]string{
-			full:    `{"max_tokens":32000,"output_config":{"effort":"high"},"thinking":{"type":"adaptive"},"tool_choice":{"type":"any"}}`,
-			haiku55: `{"max_tokens":32000,"output_config":{"effort":"high"},"thinking":{"type":"adaptive"},"tool_choice":{"type":"any"}}`,
-			future:  `{"max_tokens":32000,"output_config":{"effort":"high"},"thinking":{"type":"adaptive"},"tool_choice":{"type":"any"}}`,
+			full:    `{"max_tokens":32000,"output_config":{"effort":"high"},"thinking":{"display":"summarized","type":"adaptive"},"tool_choice":{"type":"any"}}`,
+			haiku55: `{"max_tokens":32000,"output_config":{"effort":"high"},"thinking":{"display":"summarized","type":"adaptive"},"tool_choice":{"type":"any"}}`,
+			future:  `{"max_tokens":32000,"output_config":{"effort":"high"},"thinking":{"display":"summarized","type":"adaptive"},"tool_choice":{"type":"any"}}`,
 		}},
 	} {
 		for upstream, want := range tc.want {
