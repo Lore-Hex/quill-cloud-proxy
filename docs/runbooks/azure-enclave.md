@@ -163,6 +163,27 @@ The generated
 
 ### 3.4 Deploy
 
+**Automated path.** For an existing region pair, dispatch
+`rollout-azure-gateway.yml` on main with the full `release_sha` (and
+`bundle_version` only to change the sealed bundle). It acquires the Azure
+reservation and, Dubai then Sydney, performs exactly §3.4 to §3.6: verify the
+peer over the shared hostname, drain this region's Traffic Manager endpoint and
+wait out both TTLs, `deploy-azure-aci.sh --apply preflight build template
+policy bind deploy verify` from the release commit, publish the region's
+measurement through a trust PR it merges on green, `--apply narrow` once the
+record is public, then re-enable the endpoint and verify both regions. A failed
+deploy restores the previous key release policy and leaves the region drained;
+any failure leaves the reservation blocked. Its identity is the user-assigned
+managed identity in `tools/azure-gateway-rollout-identity/` (GitHub environment
+`azure-gateway-rollout`, main only).
+
+~~~bash
+gh workflow run rollout-azure-gateway.yml --repo Lore-Hex/quill-cloud-proxy --ref main -f release_sha=<full sha>
+~~~
+
+The manual steps below remain the fallback and the specification.
+
+
 For an existing region, drain its Traffic Manager endpoint before replacing
 the container. First verify the other region's health and attestation. Disable
 only the target endpoint, leaving its peer enabled:

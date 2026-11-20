@@ -11,6 +11,36 @@ with their legacy keys. A rollback must preserve those properties. Historical
 credential rotation is a separate step; see
 [the migration plan](design/aws-attested-secret-release.md).
 
+## Automated path: rollout-aws-gateway.yml
+
+Sections 2 to 5 are automated by the `rollout-aws-gateway.yml` workflow,
+dispatched on main with the full `release_sha` of a commit whose EIF
+`publish-aws-eif.yml` already published (section 1 stays a separate dispatch):
+
+~~~bash
+gh workflow run rollout-aws-gateway.yml --repo Lore-Hex/quill-cloud-proxy --ref main \
+  -f release_sha=<full sha> -f bundle_version=2
+~~~
+
+It acquires the AWS reservation, lands the candidate admission through a PR
+it merges on green, then **waits** for the key administrator's reviewed
+`tools/aws-secrets` Terraform apply that widens both recipient-only key
+policies (the summary prints the plan command; the workflow has no KMS write).
+It then widens the Fargate pins and, Paris then Dublin, generates the numbered
+candidate template, refuses any template change beyond the EIF identity unless
+re-dispatched with the reviewed diff's `template_diff_sha256`, verifies a
+standalone candidate over SSM (exact instance, CI PCR0, strict bootstrap and a
+wrong-PCR0 negative control), refreshes the ASG with automatic rollback and
+verifies every member. A failed census rolls that region back to its recorded
+template; candidates are always terminated. Finally it narrows the record and
+runtime pins through a second PR and verifies the public record. Any failure
+leaves the reservation blocked for a verified recovery. The KMS narrow to the
+single new measurement remains the key administrator's second apply.
+
+The workflow's identity is `trustedrouter-github-gateway-rollout`
+(quill-router `infra/aws_gateway_rollout_role.tf`). The manual procedure
+below remains the fallback and the specification the workflow follows.
+
 ## 0. Preconditions and rollback record
 
 Start from clean, reviewed, merged main. Required CI must pass. Acquire the

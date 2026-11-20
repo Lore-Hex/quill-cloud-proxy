@@ -1,0 +1,589 @@
+# Roll the AWS Nitro attested gateway (api-aws.trustedrouter.com) to one
+# CI-published EIF, region at a time: eu-west-3 (Paris), then eu-west-1
+# (Dublin). This is docs/runbook-aws-enclave-release.md, unattended:
+#
+#   1. preflight        the release is on main, has green CI and a signed EIF
+#                       in both regional buckets; both fleets are healthy on
+#                       one numbered template each.
+#   2. admit-cloud      reserve the aws lease in the shared two-repository
+#                       journal (quill-router scripts/deploy/cloud_rollout.py).
+#   3. stage-admission  aws_eif_admission prepare --write -> a trust PR, merged
+#                       on green, signed by publish-trust-aws.yml and public.
+#   4. kms-widen        WAIT for both recipient-only key policies to admit the
+#                       widened set. That is a reviewed Terraform apply in
+#                       tools/aws-secrets by Joseph (the key administrator);
+#                       this workflow has no KMS write and never will.
+#   5. widen-runtime    aws_eif_admission widen-runtime (Fargate pins).
+#   6. fleet            per region, Paris then Dublin: candidate template (CANDIDATE_TEMPLATE_ONLY=1), a diff
+#                       gate against the serving template, one standalone
+#                       candidate verified over SSM (exact instance, exact CI
+#                       PCR0, strict bootstrap, plus a negative control), then
+#                       an instance refresh with AWS automatic rollback, then
+#                       a census verifying every member individually. A
+#                       failed census rolls the region back to its recorded
+#                       template; the candidate is always terminated.
+#   7. narrow           capture-plane-measurements --repin-aws-monitor narrows
+#                       the record and runtime pins -> trust PR, signed, public;
+#                       release-aws-enclave.sh --verify-only.
+#   8. finalize-cloud   release the lease; any failure leaves it blocked for a
+#                       verified recovery (infra-apply recover in quill-router).
+#
+# Trust-record changes go through a PR merged by this workflow on green
+# (tools/gateway_trust_pr.py), with the same TRUST_PUSH_TOKEN the GCP release
+# workflow uses to push its records directly; the PR adds main's checks.
+#
+# KMS narrowing to the single new measurement is the second Terraform apply by
+# the key administrator; the run summary names it. Until it happens the next
+# release refuses (aws_kms_admission.check_keys requires exact equality).
+
+name: Roll out AWS gateway (attested Nitro fleet)
+
+on:
+  workflow_dispatch:
+    inputs:
+      release_sha:
+        description: "Full 40-hex QCP main commit whose EIF publish-aws-eif.yml already published"
+        required: true
+        type: string
+      bundle_version:
+        description: "Expected strict attested bootstrap bundle version on every host"
+        required: true
+        default: "2"
+        type: string
+      template_diff_sha256:
+        description: "Only after reviewing a failed run's template diff: its printed sha256"
+        required: false
+        default: ""
+        type: string
+      kms_wait_minutes:
+        description: "How long to wait for the reviewed KMS widen apply (max 230)"
+        required: true
+        default: "230"
+        type: string
+
+concurrency:
+  group: rollout-aws-gateway
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+env:
+  RELEASE_SHA: ${{ inputs.release_sha }}
+  AWS_ROLLOUT_ROLE_ARN: arn:aws:iam::330422590279:role/trustedrouter-github-gateway-rollout
+  # Session long enough for the longest single AWS step (a region's refresh).
+  AWS_ROLLOUT_SESSION_SECONDS: "14400"
+  STRICT_BOOTSTRAP_SOURCE: c1863c2c154b3aadfc3b1ee4b7be0675e29756f8
+
+jobs:
+  preflight:
+    if: github.ref == 'refs/heads/main' && github.repository == 'Lore-Hex/quill-cloud-proxy'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: read
+      actions: read
+      id-token: write
+    outputs:
+      pcr0: ${{ steps.release.outputs.pcr0 }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: The release is a full commit on main, after the strict cutover, with green CI
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          [[ "$RELEASE_SHA" =~ ^[0-9a-f]{40}$ ]] || { echo "::error::release_sha must be a full commit id"; exit 1; }
+          git merge-base --is-ancestor "$RELEASE_SHA" origin/main
+          git merge-base --is-ancestor "$STRICT_BOOTSTRAP_SOURCE" "$RELEASE_SHA"
+          gh run list --repo "$GITHUB_REPOSITORY" --workflow ci.yml --branch main --event push \
+            --commit "$RELEASE_SHA" --limit 1 --json status,conclusion,headSha > "$RUNNER_TEMP/ci.json"
+          python3 -c 'import json,sys; r=json.load(open(sys.argv[1])); sys.exit(0 if len(r)==1 and r[0]=={"status":"completed","conclusion":"success","headSha":sys.argv[2]} else "main CI has not passed for this release")' \
+            "$RUNNER_TEMP/ci.json" "$RELEASE_SHA"
+      - uses: Lore-Hex/quill-cloud-proxy/.github/actions/aws-credentials@582cbdee7b7023cfeb915b62a7f635aa1e4662b1 # main 2026-11-13
+        with:
+          role-to-assume: ${{ env.AWS_ROLLOUT_ROLE_ARN }}
+          aws-region: eu-west-1
+      - uses: Lore-Hex/quill-cloud-proxy/.github/actions/cosign-install@582cbdee7b7023cfeb915b62a7f635aa1e4662b1 # main 2026-11-13
+        with:
+          cosign-release: v2.6.5
+      - name: Authenticate the published EIF manifest
+        id: release
+        run: |
+          set -euo pipefail
+          python3 tools/aws_gateway_rollout.py fetch-release --source "$RELEASE_SHA" --out "$RUNNER_TEMP/release"
+          echo "pcr0=$(jq -r .pcr0 "$RUNNER_TEMP/release/release.json")" >> "$GITHUB_OUTPUT"
+      - name: Both fleets are healthy on one numbered template each
+        run: |
+          set -euo pipefail
+          for region in eu-west-3 eu-west-1; do
+            python3 tools/aws_gateway_rollout.py serving --region "$region" --out "$RUNNER_TEMP/serving-$region.json"
+          done
+          {
+            echo "## AWS gateway rollout preflight"
+            echo "release \`$RELEASE_SHA\`, CI PCR0 \`$(jq -r .pcr0 "$RUNNER_TEMP/release/release.json")\`"
+            for region in eu-west-3 eu-west-1; do
+              jq -r '"- \(.region): template \(.version), \(.desired) hosts, EIF \(.source[0:12]), parent \(.parent_digest[0:19])"' "$RUNNER_TEMP/serving-$region.json"
+            done
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  admit-cloud:
+    needs: preflight
+    runs-on: ubuntu-latest
+    # Same bound as deploy-enclave-gcp.yml: the coordinator's 4 h admission
+    # wait plus one whole attempt.
+    timeout-minutes: 260
+    permissions:
+      contents: read
+      id-token: write
+    outputs:
+      operation: ${{ steps.admit.outputs.TR_DEPLOY_MUTEX_OPERATION }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: Lore-Hex/quill-cloud-proxy/.github/actions/gcp-auth@582cbdee7b7023cfeb915b62a7f635aa1e4662b1 # main 2026-11-13
+        with:
+          workload_identity_provider: projects/44325983244/locations/global/workloadIdentityPools/github-actions/providers/github
+          service_account: tr-deploy@quill-cloud-proxy.iam.gserviceaccount.com
+      - uses: Lore-Hex/quill-cloud-proxy/.github/actions/setup-gcloud@582cbdee7b7023cfeb915b62a7f635aa1e4662b1 # main 2026-11-13
+      - name: Reserve AWS across both repositories
+        id: admit
+        env:
+          GH_TOKEN: ${{ secrets.TRUST_PUSH_TOKEN }}
+          TR_DEPLOY_MUTEX_OWNER: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          TR_DEPLOY_MUTEX_TTL_SECONDS: "43200"
+          TR_DEPLOY_WAIT_SECONDS: "14400"
+        run: |
+          set -euo pipefail
+          fence="$(python3 tools/cloud-rollout.py acquire --cloud aws)"
+          printf '%s\n' "$fence" >> "$GITHUB_OUTPUT"
+
+  stage-admission:
+    needs: [preflight, admit-cloud]
+    runs-on: ubuntu-latest
+    timeout-minutes: 150
+    permissions:
+      contents: read
+      id-token: write
+    env:
+      TR_DEPLOY_MUTEX_OPERATION: ${{ needs.admit-cloud.outputs.operation }}
+      TR_DEPLOY_MUTEX_CLOUD: aws
+      GH_TOKEN: ${{ secrets.TRUST_PUSH_TOKEN }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: main
+          fetch-depth: 0
+          token: ${{ secrets.TRUST_PUSH_TOKEN }}
+      - uses: Lore-Hex/quill-cloud-proxy/.github/actions/gcp-auth@582cbdee7b7023cfeb915b62a7f635aa1e4662b1 # main 2026-11-13
+        with:
+          workload_identity_provider: projects/44325983244/locations/global/workloadIdentityPools/github-actions/providers/github
+          service_account: tr-deploy@quill-cloud-proxy.iam.gserviceaccount.com
+      - uses: Lore-Hex/quill-cloud-proxy/.github/actions/setup-gcloud@582cbdee7b7023cfeb915b62a7f635aa1e4662b1 # main 2026-11-13
+      - uses: Lore-Hex/quill-cloud-proxy/.github/actions/aws-credentials@582cbdee7b7023cfeb915b62a7f635aa1e4662b1 # main 2026-11-13
+        with:
+          role-to-assume: ${{ env.AWS_ROLLOUT_ROLE_ARN }}
+          aws-region: eu-west-1
+      - uses: Lore-Hex/quill-cloud-proxy/.github/actions/cosign-install@582cbdee7b7023cfeb915b62a7f635aa1e4662b1 # main 2026-11-13
+        with:
+          cosign-release: v2.6.5
+      - name: Verify the reservation before writing
+        run: python3 tools/cloud-rollout.py assert --cloud aws
+      - name: Stage the CI-authenticated candidate (or confirm it is already staged)
+        id: stage
+        run: |
+          set -euo pipefail
+          python3 tools/aws_gateway_rollout.py fetch-release --source "$RELEASE_SHA" --out "$RUNNER_TEMP/release"
+          staged="$(jq -r '.candidate_eif.source_commit // ""' trust-page/trust/aws-release.json)"
+          if [ "$staged" = "$RELEASE_SHA" ]; then
+            python3 -m tools.aws_eif_admission verify-record
+            echo "candidate already staged on main"
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          python3 -m tools.aws_eif_admission prepare \
+            --manifest "$RUNNER_TEMP/release/manifest.json" \
+            --signature "$RUNNER_TEMP/release/manifest.json.bundle" \
+            --expected-source "$RELEASE_SHA" --write > /dev/null
+          echo "changed=true" >> "$GITHUB_OUTPUT"
+      - name: Land the admission through a PR, merged on green
+        if: steps.stage.outputs.changed == 'true'
+        id: pr
+        run: |
+          set -euo pipefail
+          cat > "$RUNNER_TEMP/body.md" <<EOF
+          Stage the CI-published AWS EIF from \`$RELEASE_SHA\` (PCR0 \`${{ needs.preflight.outputs.pcr0 }}\`) as an unobserved candidate admission. Old measurements stay accepted; \`source_commit\` does not advance.
+
+          Opened and merged on green by [rollout-aws-gateway run ${GITHUB_RUN_ID}](${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}) under its AWS reservation. publish-trust-aws.yml re-verifies the CI signature before signing.
+          EOF
+          merge="$(python3 tools/gateway_trust_pr.py open-and-merge --plane aws \
+            --branch "bot/aws-trust-admit-${RELEASE_SHA:0:12}-${GITHUB_RUN_ID}" \
+            --title "[bot] admit AWS EIF candidate ${RELEASE_SHA:0:12}" --body-file "$RUNNER_TEMP/body.md")"
+          echo "merge=$merge" >> "$GITHUB_OUTPUT"
+          python3 tools/gateway_trust_pr.py wait-signed --plane aws --merge-sha "$merge"
+      - name: Wait for signed public publication
+        run: |
+          set -euo pipefail
+          git fetch --quiet origin main
+          git checkout --quiet origin/main -- trust-page/trust/aws-release.json
+          python3 tools/gateway_trust_pr.py wait-public --plane aws --record trust-page/trust/aws-release.json
+
+  kms-widen:
+    needs: [preflight, admit-cloud, stage-admission]
+    runs-on: ubuntu-latest
+    timeout-minutes: 240
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: main
+          persist-credentials: false
+      - uses: Lore-Hex/quill-cloud-proxy/.github/actions/aws-credentials@582cbdee7b7023cfeb915b62a7f635aa1e4662b1 # main 2026-11-13
+        with:
+          role-to-assume: ${{ env.AWS_ROLLOUT_ROLE_ARN }}
+          aws-region: eu-west-1
+          role-duration-seconds: ${{ env.AWS_ROLLOUT_SESSION_SECONDS }}
+      - name: Wait for both recipient-only key policies to admit the widened set
+        env:
+          KMS_WAIT_MINUTES: ${{ inputs.kms_wait_minutes }}
+        run: |
+          set -euo pipefail
+          [[ "$KMS_WAIT_MINUTES" =~ ^[0-9]+$ ]] && [ "$KMS_WAIT_MINUTES" -le 230 ] || { echo "::error::kms_wait_minutes must be 0-230"; exit 1; }
+          accepted="$(jq -r '.accepted_pcr0s | join(",")' trust-page/trust/aws-release.json)"
+          {
+            echo "## KMS admission"
+            echo "Both regional recipient-only keys must admit exactly: \`$accepted\`."
+            echo "Key administrator, from a clean checkout of main under this run's AWS reservation:"
+            echo '```'
+            echo "terraform -chdir=tools/aws-secrets plan -var=provision_signer=true -var=provision_eif_storage=true \\"
+            echo "  -var=provision_attested_keys=true -var='accepted_pcr0=$(jq -c '.accepted_pcr0s' trust-page/trust/aws-release.json)' -out=widen.tfplan"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+          python3 tools/aws_gateway_rollout.py wait-kms --accepted "$accepted" --timeout "$(( KMS_WAIT_MINUTES * 60 ))"
+
+  widen-runtime:
+    needs: [admit-cloud, kms-widen]
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    permissions:
+      contents: read
+      id-token: write
+    env:
+      TR_DEPLOY_MUTEX_OPERATION: ${{ needs.admit-cloud.outputs.operation }}
+      TR_DEPLOY_MUTEX_CLOUD: aws
+      GH_TOKEN: ${{ secrets.TRUST_PUSH_TOKEN }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: main
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: Lore-Hex/quill-cloud-proxy/.github/actions/setup-uv@582cbdee7b7023cfeb915b62a7f635aa1e4662b1 # main 2026-11-13
+      - name: Install locked attestation dependencies in isolation
+        run: |
+          set -euo pipefail
+          uv venv "$RUNNER_TEMP/trust-validation"
+          uv export --locked --script tools/verify-attestation.py --output-file "$RUNNER_TEMP/attestation-requirements.txt" >/dev/null
+          uv pip install --python "$RUNNER_TEMP/trust-validation/bin/python" --require-hashes -r "$RUNNER_TEMP/attestation-requirements.txt"
+          echo "$RUNNER_TEMP/trust-validation/bin" >> "$GITHUB_PATH"
+      - uses: Lore-Hex/quill-cloud-proxy/.github/actions/gcp-auth@582cbdee7b7023cfeb915b62a7f635aa1e4662b1 # main 2026-11-13
+        with:
+          workload_identity_provider: projects/44325983244/locations/global/workloadIdentityPools/github-actions/providers/github
+          service_account: tr-deploy@quill-cloud-proxy.iam.gserviceaccount.com
+      - uses: Lore-Hex/quill-cloud-proxy/.github/actions/setup-gcloud@582cbdee7b7023cfeb915b62a7f635aa1e4662b1 # main 2026-11-13
+      - uses: Lore-Hex/quill-cloud-proxy/.github/actions/aws-credentials@582cbdee7b7023cfeb915b62a7f635aa1e4662b1 # main 2026-11-13
+        with:
+          role-to-assume: ${{ env.AWS_ROLLOUT_ROLE_ARN }}
+          aws-region: eu-west-1
+      - uses: Lore-Hex/quill-cloud-proxy/.github/actions/cosign-install@582cbdee7b7023cfeb915b62a7f635aa1e4662b1 # main 2026-11-13
+        with:
+          cosign-release: v2.6.5
+      - name: Widen both Fargate pin sets, one region at a time
+        run: python3 -m tools.aws_eif_admission widen-runtime
+
+  # One job, both regions in order: a failure in Paris ends the job before
+  # Dublin is touched. A failed Dublin leaves Paris on the new, admitted
+  # measurement (both stay accepted) for the operator's recovery decision.
+  fleet:
+    needs: [preflight, admit-cloud, widen-runtime]
+    runs-on: ubuntu-latest
+    # Two regions of about 80 minutes each (15-minute candidate boot and
+    # verification, the refresh's 300 s warmup + 2 x 900 s checkpoints + 300 s
+    # bake, a census), plus a rollback refresh, inside GitHub's 360.
+    timeout-minutes: 350
+    permissions:
+      contents: read
+      id-token: write
+    env:
+      TR_DEPLOY_MUTEX_OPERATION: ${{ needs.admit-cloud.outputs.operation }}
+      TR_DEPLOY_MUTEX_CLOUD: aws
+      GH_TOKEN: ${{ secrets.TRUST_PUSH_TOKEN }}
+      BUNDLE_VERSION: ${{ inputs.bundle_version }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: main
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: Lore-Hex/quill-cloud-proxy/.github/actions/setup-uv@582cbdee7b7023cfeb915b62a7f635aa1e4662b1 # main 2026-11-13
+      - name: Install locked attestation dependencies in isolation
+        run: |
+          set -euo pipefail
+          uv venv "$RUNNER_TEMP/trust-validation"
+          uv export --locked --script tools/verify-attestation.py --output-file "$RUNNER_TEMP/attestation-requirements.txt" >/dev/null
+          uv pip install --python "$RUNNER_TEMP/trust-validation/bin/python" --require-hashes -r "$RUNNER_TEMP/attestation-requirements.txt"
+          echo "$RUNNER_TEMP/trust-validation/bin" >> "$GITHUB_PATH"
+      - uses: Lore-Hex/quill-cloud-proxy/.github/actions/gcp-auth@582cbdee7b7023cfeb915b62a7f635aa1e4662b1 # main 2026-11-13
+        with:
+          workload_identity_provider: projects/44325983244/locations/global/workloadIdentityPools/github-actions/providers/github
+          service_account: tr-deploy@quill-cloud-proxy.iam.gserviceaccount.com
+      - uses: Lore-Hex/quill-cloud-proxy/.github/actions/setup-gcloud@582cbdee7b7023cfeb915b62a7f635aa1e4662b1 # main 2026-11-13
+      - uses: Lore-Hex/quill-cloud-proxy/.github/actions/aws-credentials@582cbdee7b7023cfeb915b62a7f635aa1e4662b1 # main 2026-11-13
+        with:
+          role-to-assume: ${{ env.AWS_ROLLOUT_ROLE_ARN }}
+          aws-region: eu-west-1
+          role-duration-seconds: ${{ env.AWS_ROLLOUT_SESSION_SECONDS }}
+      - uses: Lore-Hex/quill-cloud-proxy/.github/actions/cosign-install@582cbdee7b7023cfeb915b62a7f635aa1e4662b1 # main 2026-11-13
+        with:
+          cosign-release: v2.6.5
+      - name: Tools, reservation and the authenticated release
+        run: |
+          set -euo pipefail
+          [[ "$BUNDLE_VERSION" =~ ^[1-9][0-9]{0,5}$ ]] || { echo "::error::bundle_version must be a positive integer"; exit 1; }
+          session-manager-plugin --version
+          python3 tools/cloud-rollout.py assert --cloud aws
+          python3 tools/aws_gateway_rollout.py fetch-release --source "$RELEASE_SHA" --out "$RUNNER_TEMP/release"
+          echo "## Regional rollout" >> "$GITHUB_STEP_SUMMARY"
+      # ---------------- Paris (eu-west-3) ----------------
+      - name: "Paris: record the serving fleet (rollback target)"
+        run: python3 tools/aws_gateway_rollout.py serving --region eu-west-3 --out "$RUNNER_TEMP/serving-eu-west-3.json"
+      - name: "Paris: generate the numbered candidate template only"
+        run: |
+          set -euo pipefail
+          AWS_REGION=eu-west-3 \
+          AWS_EIF_MANIFEST="$RUNNER_TEMP/release/manifest.json" \
+          AWS_EIF_SIGNATURE="$RUNNER_TEMP/release/manifest.json.bundle" \
+          AWS_EIF_SOURCE_COMMIT="$RELEASE_SHA" \
+          AWS_PARENT_IMAGE_DIGEST="$(jq -r .parent_digest "$RUNNER_TEMP/serving-eu-west-3.json")" \
+          AWS_PARENT_PUMP_IMAGE_DIGEST="$(jq -r .pump_digest "$RUNNER_TEMP/serving-eu-west-3.json")" \
+          CANDIDATE_TEMPLATE_ONLY=1 \
+            bash tools/deploy-aws-nitro.sh --apply --phase compute 2>&1 | tee "$RUNNER_TEMP/compute-eu-west-3.log"
+          version="$(python3 tools/aws_gateway_rollout.py candidate-version --region eu-west-3 \
+            --serving "$RUNNER_TEMP/serving-eu-west-3.json" --log "$RUNNER_TEMP/compute-eu-west-3.log")"
+          echo "CANDIDATE_VERSION_PARIS=$version" >> "$GITHUB_ENV"
+      - name: "Paris: the candidate changes only the EIF identity (or a reviewed diff)"
+        env:
+          ACCEPT_DIFF: ${{ inputs.template_diff_sha256 }}
+        run: |
+          set -euo pipefail
+          python3 tools/aws_gateway_rollout.py compare-template --region eu-west-3 \
+            --serving "$RUNNER_TEMP/serving-eu-west-3.json" --release "$RUNNER_TEMP/release/release.json" \
+            --version "$CANDIDATE_VERSION_PARIS" --accept-diff-sha256 "$ACCEPT_DIFF" | tee "$RUNNER_TEMP/diff-eu-west-3.txt"
+      - name: "Paris: launch one standalone candidate outside the ASG"
+        run: |
+          set -euo pipefail
+          instance="$(python3 tools/aws_gateway_rollout.py launch-candidate --region eu-west-3 \
+            --serving "$RUNNER_TEMP/serving-eu-west-3.json" --version "$CANDIDATE_VERSION_PARIS" \
+            --source "$RELEASE_SHA" --run-id "$GITHUB_RUN_ID")"
+          echo "CANDIDATE_INSTANCE_PARIS=$instance" >> "$GITHUB_ENV"
+      - name: "Paris: verify the candidate over SSM, with a negative control"
+        run: |
+          set -euo pipefail
+          python3 tools/aws_gateway_rollout.py verify-instance --region eu-west-3 --instance "$CANDIDATE_INSTANCE_PARIS" \
+            --release "$RUNNER_TEMP/release/release.json" --manifest "$RUNNER_TEMP/release/manifest.json" \
+            --signature "$RUNNER_TEMP/release/manifest.json.bundle" --bundle-version "$BUNDLE_VERSION" --negative-control
+      - name: "Paris: terminate the candidate"
+        if: always()
+        run: python3 tools/aws_gateway_rollout.py terminate-candidate --region eu-west-3 --source "$RELEASE_SHA" --run-id "$GITHUB_RUN_ID"
+      - name: "Paris: refresh the ASG to the numbered candidate template"
+        id: refresh_paris
+        run: |
+          set -euo pipefail
+          python3 tools/aws_gateway_rollout.py refresh --region eu-west-3 \
+            --serving "$RUNNER_TEMP/serving-eu-west-3.json" --version "$CANDIDATE_VERSION_PARIS"
+      - name: "Paris: census, every member verified individually"
+        id: census_paris
+        run: |
+          set -euo pipefail
+          python3 tools/aws_gateway_rollout.py census --region eu-west-3 --version "$CANDIDATE_VERSION_PARIS" \
+            --release "$RUNNER_TEMP/release/release.json" --manifest "$RUNNER_TEMP/release/manifest.json" \
+            --signature "$RUNNER_TEMP/release/manifest.json.bundle" --bundle-version "$BUNDLE_VERSION"
+          echo "- eu-west-3: template $CANDIDATE_VERSION_PARIS, every member verified" >> "$GITHUB_STEP_SUMMARY"
+      - name: "Paris: roll back to the recorded template after a failed census"
+        if: ${{ failure() && steps.refresh_paris.outcome == 'success' && steps.census_paris.outcome == 'failure' }}
+        run: python3 tools/aws_gateway_rollout.py rollback --region eu-west-3 --serving "$RUNNER_TEMP/serving-eu-west-3.json"
+      # ---------------- Dublin (eu-west-1) ----------------
+      - name: "Dublin: record the serving fleet (rollback target)"
+        run: python3 tools/aws_gateway_rollout.py serving --region eu-west-1 --out "$RUNNER_TEMP/serving-eu-west-1.json"
+      - name: "Dublin: generate the numbered candidate template only"
+        run: |
+          set -euo pipefail
+          AWS_REGION=eu-west-1 \
+          AWS_EIF_MANIFEST="$RUNNER_TEMP/release/manifest.json" \
+          AWS_EIF_SIGNATURE="$RUNNER_TEMP/release/manifest.json.bundle" \
+          AWS_EIF_SOURCE_COMMIT="$RELEASE_SHA" \
+          AWS_PARENT_IMAGE_DIGEST="$(jq -r .parent_digest "$RUNNER_TEMP/serving-eu-west-1.json")" \
+          AWS_PARENT_PUMP_IMAGE_DIGEST="$(jq -r .pump_digest "$RUNNER_TEMP/serving-eu-west-1.json")" \
+          CANDIDATE_TEMPLATE_ONLY=1 \
+            bash tools/deploy-aws-nitro.sh --apply --phase compute 2>&1 | tee "$RUNNER_TEMP/compute-eu-west-1.log"
+          version="$(python3 tools/aws_gateway_rollout.py candidate-version --region eu-west-1 \
+            --serving "$RUNNER_TEMP/serving-eu-west-1.json" --log "$RUNNER_TEMP/compute-eu-west-1.log")"
+          echo "CANDIDATE_VERSION_DUBLIN=$version" >> "$GITHUB_ENV"
+      - name: "Dublin: the candidate changes only the EIF identity (or a reviewed diff)"
+        env:
+          ACCEPT_DIFF: ${{ inputs.template_diff_sha256 }}
+        run: |
+          set -euo pipefail
+          python3 tools/aws_gateway_rollout.py compare-template --region eu-west-1 \
+            --serving "$RUNNER_TEMP/serving-eu-west-1.json" --release "$RUNNER_TEMP/release/release.json" \
+            --version "$CANDIDATE_VERSION_DUBLIN" --accept-diff-sha256 "$ACCEPT_DIFF" | tee "$RUNNER_TEMP/diff-eu-west-1.txt"
+      - name: "Dublin: launch one standalone candidate outside the ASG"
+        run: |
+          set -euo pipefail
+          instance="$(python3 tools/aws_gateway_rollout.py launch-candidate --region eu-west-1 \
+            --serving "$RUNNER_TEMP/serving-eu-west-1.json" --version "$CANDIDATE_VERSION_DUBLIN" \
+            --source "$RELEASE_SHA" --run-id "$GITHUB_RUN_ID")"
+          echo "CANDIDATE_INSTANCE_DUBLIN=$instance" >> "$GITHUB_ENV"
+      - name: "Dublin: verify the candidate over SSM, with a negative control"
+        run: |
+          set -euo pipefail
+          python3 tools/aws_gateway_rollout.py verify-instance --region eu-west-1 --instance "$CANDIDATE_INSTANCE_DUBLIN" \
+            --release "$RUNNER_TEMP/release/release.json" --manifest "$RUNNER_TEMP/release/manifest.json" \
+            --signature "$RUNNER_TEMP/release/manifest.json.bundle" --bundle-version "$BUNDLE_VERSION" --negative-control
+      - name: "Dublin: terminate the candidate"
+        if: always()
+        run: python3 tools/aws_gateway_rollout.py terminate-candidate --region eu-west-1 --source "$RELEASE_SHA" --run-id "$GITHUB_RUN_ID"
+      - name: "Dublin: refresh the ASG to the numbered candidate template"
+        id: refresh_dublin
+        run: |
+          set -euo pipefail
+          python3 tools/aws_gateway_rollout.py refresh --region eu-west-1 \
+            --serving "$RUNNER_TEMP/serving-eu-west-1.json" --version "$CANDIDATE_VERSION_DUBLIN"
+      - name: "Dublin: census, every member verified individually"
+        id: census_dublin
+        run: |
+          set -euo pipefail
+          python3 tools/aws_gateway_rollout.py census --region eu-west-1 --version "$CANDIDATE_VERSION_DUBLIN" \
+            --release "$RUNNER_TEMP/release/release.json" --manifest "$RUNNER_TEMP/release/manifest.json" \
+            --signature "$RUNNER_TEMP/release/manifest.json.bundle" --bundle-version "$BUNDLE_VERSION"
+          echo "- eu-west-1: template $CANDIDATE_VERSION_DUBLIN, every member verified" >> "$GITHUB_STEP_SUMMARY"
+      - name: "Dublin: roll back to the recorded template after a failed census"
+        if: ${{ failure() && steps.refresh_dublin.outcome == 'success' && steps.census_dublin.outcome == 'failure' }}
+        run: python3 tools/aws_gateway_rollout.py rollback --region eu-west-1 --serving "$RUNNER_TEMP/serving-eu-west-1.json"
+
+  narrow:
+    needs: [preflight, admit-cloud, fleet]
+    runs-on: ubuntu-latest
+    timeout-minutes: 150
+    permissions:
+      contents: read
+      id-token: write
+    env:
+      TR_DEPLOY_MUTEX_OPERATION: ${{ needs.admit-cloud.outputs.operation }}
+      TR_DEPLOY_MUTEX_CLOUD: aws
+      GH_TOKEN: ${{ secrets.TRUST_PUSH_TOKEN }}
+      PCR0: ${{ needs.preflight.outputs.pcr0 }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: main
+          fetch-depth: 0
+          token: ${{ secrets.TRUST_PUSH_TOKEN }}
+      - uses: Lore-Hex/quill-cloud-proxy/.github/actions/setup-uv@582cbdee7b7023cfeb915b62a7f635aa1e4662b1 # main 2026-11-13
+      - name: Install locked attestation dependencies in isolation
+        run: |
+          set -euo pipefail
+          uv venv "$RUNNER_TEMP/trust-validation"
+          uv export --locked --script tools/verify-attestation.py --output-file "$RUNNER_TEMP/attestation-requirements.txt" >/dev/null
+          uv pip install --python "$RUNNER_TEMP/trust-validation/bin/python" --require-hashes -r "$RUNNER_TEMP/attestation-requirements.txt"
+          echo "$RUNNER_TEMP/trust-validation/bin" >> "$GITHUB_PATH"
+      - uses: Lore-Hex/quill-cloud-proxy/.github/actions/gcp-auth@582cbdee7b7023cfeb915b62a7f635aa1e4662b1 # main 2026-11-13
+        with:
+          workload_identity_provider: projects/44325983244/locations/global/workloadIdentityPools/github-actions/providers/github
+          service_account: tr-deploy@quill-cloud-proxy.iam.gserviceaccount.com
+      - uses: Lore-Hex/quill-cloud-proxy/.github/actions/setup-gcloud@582cbdee7b7023cfeb915b62a7f635aa1e4662b1 # main 2026-11-13
+      - uses: Lore-Hex/quill-cloud-proxy/.github/actions/aws-credentials@582cbdee7b7023cfeb915b62a7f635aa1e4662b1 # main 2026-11-13
+        with:
+          role-to-assume: ${{ env.AWS_ROLLOUT_ROLE_ARN }}
+          aws-region: eu-west-1
+          role-duration-seconds: ${{ env.AWS_ROLLOUT_SESSION_SECONDS }}
+      - uses: Lore-Hex/quill-cloud-proxy/.github/actions/cosign-install@582cbdee7b7023cfeb915b62a7f635aa1e4662b1 # main 2026-11-13
+        with:
+          cosign-release: v2.6.5
+      - name: Verify the reservation before narrowing
+        run: python3 tools/cloud-rollout.py assert --cloud aws
+      - name: Capture the verified fleet measurement and narrow runtime pins
+        run: |
+          set -euo pipefail
+          session-manager-plugin --version
+          python3 tools/aws_gateway_rollout.py capture-narrow --region eu-west-1 \
+            --source "$RELEASE_SHA" --expected-pcr0 "$PCR0"
+      - name: Land the narrowed record through a PR, merged on green
+        run: |
+          set -euo pipefail
+          test "$(jq -r '.accepted_pcr0s | join(",")' trust-page/trust/aws-release.json)" = "$PCR0"
+          test "$(jq -r '.source_commit' trust-page/trust/aws-release.json)" = "$RELEASE_SHA"
+          test "$(jq -r '.candidate_eif // "absent"' trust-page/trust/aws-release.json)" = absent
+          cat > "$RUNNER_TEMP/body.md" <<EOF
+          Narrow the AWS record to the verified fleet measurement \`$PCR0\` from \`$RELEASE_SHA\`: both regions refreshed and every serving host individually verified (exact instance, CI PCR0, strict bootstrap). Runtime pins were narrowed in the same step.
+
+          Opened and merged on green by [rollout-aws-gateway run ${GITHUB_RUN_ID}](${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}).
+          EOF
+          merge="$(python3 tools/gateway_trust_pr.py open-and-merge --plane aws \
+            --branch "bot/aws-trust-narrow-${RELEASE_SHA:0:12}-${GITHUB_RUN_ID}" \
+            --title "[bot] narrow AWS record to ${RELEASE_SHA:0:12}" --body-file "$RUNNER_TEMP/body.md")"
+          python3 tools/gateway_trust_pr.py wait-signed --plane aws --merge-sha "$merge"
+          git fetch --quiet origin main
+          git checkout --quiet origin/main -- trust-page/trust/aws-release.json trust-page/trust/accepted-pcr0s-aws.txt
+          python3 tools/gateway_trust_pr.py wait-public --plane aws --record trust-page/trust/aws-release.json
+      - name: Final verification (published set, runtime pins, live endpoint)
+        run: |
+          set -euo pipefail
+          bash tools/release-aws-enclave.sh --verify-only
+          python3 tools/verify-attestation.py --api-host api-aws.trustedrouter.com --attested-cert-only --expected-pcr0 "$PCR0"
+          {
+            echo "## AWS gateway rolled to \`$RELEASE_SHA\`"
+            echo "PCR0 \`$PCR0\` in eu-west-3 and eu-west-1; record and runtime pins narrowed."
+            echo ""
+            echo "**Key administrator:** narrow both recipient-only key policies to \`[\"$PCR0\"]\` (tools/aws-secrets, accepted_pcr0). The next release refuses until they match."
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  finalize-cloud:
+    needs: [admit-cloud, stage-admission, kms-widen, widen-runtime, fleet, narrow]
+    if: ${{ always() && needs.admit-cloud.result == 'success' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: Lore-Hex/quill-cloud-proxy/.github/actions/gcp-auth@582cbdee7b7023cfeb915b62a7f635aa1e4662b1 # main 2026-11-13
+        with:
+          workload_identity_provider: projects/44325983244/locations/global/workloadIdentityPools/github-actions/providers/github
+          service_account: tr-deploy@quill-cloud-proxy.iam.gserviceaccount.com
+      - uses: Lore-Hex/quill-cloud-proxy/.github/actions/setup-gcloud@582cbdee7b7023cfeb915b62a7f635aa1e4662b1 # main 2026-11-13
+      - name: Release only after every region and the narrowed record verified
+        env:
+          GH_TOKEN: ${{ secrets.TRUST_PUSH_TOKEN }}
+          TR_DEPLOY_MUTEX_OPERATION: ${{ needs.admit-cloud.outputs.operation }}
+          RESULTS: ${{ toJSON(needs) }}
+        run: |
+          set -euo pipefail
+          export TR_DEPLOY_OUTCOME=failure
+          if jq -e 'all(.[]; .result == "success")' <<< "$RESULTS" >/dev/null; then
+            TR_DEPLOY_OUTCOME=success
+          fi
+          python3 tools/cloud-rollout.py release --cloud aws
+          if [ "$TR_DEPLOY_OUTCOME" != success ]; then
+            echo '::error::AWS reservation retained pending verified recovery.'
+            exit 1
+          fi
