@@ -1196,6 +1196,37 @@ class Wiring(unittest.TestCase):
         ci = (ROOT / ".github/workflows/ci.yml").read_text()
         self.assertIn("python3 tools/test_gate_hold.py", ci)
 
+    def test_required_ci_waits_for_every_rollout_contract_and_rejects_each_failure(self) -> None:
+        ci = yaml.safe_load((ROOT / ".github/workflows/ci.yml").read_text())
+        steps = ci["jobs"]["trust-page-validation"]["steps"]
+        step = next(s for s in steps if s.get("id") == "rollout-contracts")
+        self.assertFalse(step.get("continue-on-error", False))
+        self.assertNotIn("if", step)
+        suites = ["tools/test_gate_hold.py", "tools/test_secondary_wave.py", "tools/test_deploy_azure_aci.py"]
+        # Execute the real workflow block, replacing only the suite bodies.
+        # The background suite must finish and its failure must reach CI.
+        stub = '''
+python3() {
+  if [[ "$1" == tools/test_gate_hold.py ]]; then
+    for _ in {1..100}; do [[ -e "$RUNNER_TEMP/wave-started" ]] && break; sleep 0.02; done
+    [[ -e "$RUNNER_TEMP/wave-started" ]] || return 2
+  elif [[ "$1" == tools/test_secondary_wave.py ]]; then
+    touch "$RUNNER_TEMP/wave-started"
+  fi
+  echo "$1" >> "$RUNNER_TEMP/ran"
+  [[ "$1" != "$FAIL" ]]
+}
+'''
+        for fail in ["", *suites]:
+            with self.subTest(fail=fail), tempfile.TemporaryDirectory() as tmp:
+                result = subprocess.run(
+                    [TEST_BASH, "-eo", "pipefail", "-c", stub + step["run"]],
+                    env={**os.environ, "RUNNER_TEMP": tmp, "FAIL": fail},
+                    capture_output=True, text=True, timeout=10,
+                )
+                self.assertEqual(result.returncode == 0, not fail, result.stderr)
+                self.assertCountEqual((Path(tmp) / "ran").read_text().splitlines(), suites)
+
 
 # One region, run for real ---------------------------------------------------------
 

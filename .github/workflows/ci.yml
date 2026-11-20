@@ -239,10 +239,29 @@ jobs:
           uv pip install --python "$RUNNER_TEMP/trust-validation/bin/python" 'PyYAML==6.0.3'
           echo "$RUNNER_TEMP/trust-validation/bin" >> "$GITHUB_PATH"
           echo "PYTHONNOUSERSITE=1" >> "$GITHUB_ENV"
+      - name: Test rollout hold, secondary wave and Azure ACI contracts
+        id: rollout-contracts
+        shell: bash
+        run: |
+          # These isolated harnesses use temporary state and stub cloud CLIs.
+          # Overlap real wall-clock waits, not production gates or deadlines.
+          failed=0
+          python3 tools/test_gate_hold.py > "$RUNNER_TEMP/gate-hold.log" 2>&1 &
+          hold_pid=$!
+          echo "::group::Secondary wave"
+          python3 tools/test_secondary_wave.py || failed=1
+          echo "::endgroup::"
+          echo "::group::Azure ACI"
+          python3 tools/test_deploy_azure_aci.py || failed=1
+          echo "::endgroup::"
+          wait "$hold_pid" || failed=1
+          echo "::group::Gate hold"
+          cat "$RUNNER_TEMP/gate-hold.log"
+          echo "::endgroup::"
+          exit "$failed"
       - name: Test deploy gate helpers
         run: |
           python3 tools/test_synthetic_gate_status.py
-          python3 tools/test_gate_hold.py
           python3 tools/test_provider_probe_status.py
           python3 tools/test_watchdog.py
           python3 tools/test_verify_attestation.py
@@ -262,7 +281,6 @@ jobs:
           python3 tools/test_rollout_safety.py
           python3 tools/test_prune_gcp_instance_templates.py
           python3 tools/test_cloud_rollout.py
-          python3 tools/test_secondary_wave.py
           python3 tools/test_superseded_rollout.py
           python3 tools/test_gcp_enclave_inventory.py
           python3 tools/test_verify_gcp_runtime_secret_access.py
@@ -292,19 +310,8 @@ jobs:
           python3 tools/test_relieve_mig_stockout.py
           python3 tools/test_ensure_trustedrouter_control_host_cert.py
           python3 -m unittest discover -s tools -p 'test_maple*.py'
-      # Separate step: this one is ~2 minutes where the others are seconds, so
-      # a failure here should be legible as "the Azure deploy script broke"
-      # rather than hiding at the bottom of a list. It stubs az, docker and the
-      # resolver onto PATH, shadows every other cloud CLI (gcloud, curl, ...)
-      # with a stub that records and refuses, and points CLOUDSDK_CONFIG and
-      # AZURE_CONFIG_DIR at throwaway directories and the AWS credential files
-      # at /dev/null — so it touches no network even on a runner that
-      # authenticated earlier in the job.
-      # TestTheHarnessCannotReachARealCloudCLI is what keeps that true.
       - name: Verify the attestation dependency lock
         run: uv lock --check --script tools/verify-attestation.py
-      - name: Test the Azure ACI deploy script
-        run: python3 tools/test_deploy_azure_aci.py
       - name: Assert trust page contains no <script> tags
         run: |
           if grep -qi '<script' trust-page/index.html; then
