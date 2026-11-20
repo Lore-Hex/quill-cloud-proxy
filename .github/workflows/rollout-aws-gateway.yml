@@ -165,6 +165,7 @@ jobs:
   stage-admission:
     needs: [preflight, admit-cloud]
     runs-on: ubuntu-latest
+    # PR (75) + signer (25) + public (30) waits, plus setup.
     timeout-minutes: 150
     permissions:
       contents: read
@@ -236,6 +237,8 @@ jobs:
     needs: [preflight, admit-cloud, stage-admission]
     runs-on: ubuntu-latest
     timeout-minutes: 240
+    env:
+      TR_DEPLOY_MUTEX_OPERATION: ${{ needs.admit-cloud.outputs.operation }}
     permissions:
       contents: read
       id-token: write
@@ -259,7 +262,7 @@ jobs:
           {
             echo "## KMS admission"
             echo "Both regional recipient-only keys must admit exactly: \`$accepted\`."
-            echo "Key administrator, from a clean checkout of main under this run's AWS reservation:"
+            echo "Key administrator, from a clean checkout of main, asserting this run's AWS reservation (operation \`$TR_DEPLOY_MUTEX_OPERATION\`):"
             echo '```'
             echo "terraform -chdir=tools/aws-secrets plan -var=provision_signer=true -var=provision_eif_storage=true \\"
             echo "  -var=provision_attested_keys=true -var='accepted_pcr0=$(jq -c '.accepted_pcr0s' trust-page/trust/aws-release.json)' -out=widen.tfplan"
@@ -361,6 +364,12 @@ jobs:
           python3 tools/aws_gateway_rollout.py fetch-release --source "$RELEASE_SHA" --out "$RUNNER_TEMP/release"
           echo "## Regional rollout" >> "$GITHUB_STEP_SUMMARY"
       # ---------------- Paris (eu-west-3) ----------------
+      - name: "Paris: fresh AWS session"
+        uses: Lore-Hex/quill-cloud-proxy/.github/actions/aws-credentials@582cbdee7b7023cfeb915b62a7f635aa1e4662b1 # main 2026-11-13
+        with:
+          role-to-assume: ${{ env.AWS_ROLLOUT_ROLE_ARN }}
+          aws-region: eu-west-1
+          role-duration-seconds: ${{ env.AWS_ROLLOUT_SESSION_SECONDS }}
       - name: "Paris: record the serving fleet (rollback target)"
         run: python3 tools/aws_gateway_rollout.py serving --region eu-west-3 --out "$RUNNER_TEMP/serving-eu-west-3.json"
       - name: "Paris: generate the numbered candidate template only"
@@ -415,10 +424,23 @@ jobs:
             --release "$RUNNER_TEMP/release/release.json" --manifest "$RUNNER_TEMP/release/manifest.json" \
             --signature "$RUNNER_TEMP/release/manifest.json.bundle" --bundle-version "$BUNDLE_VERSION"
           echo "- eu-west-3: template $CANDIDATE_VERSION_PARIS, every member verified" >> "$GITHUB_STEP_SUMMARY"
-      - name: "Paris: roll back to the recorded template after a failed census"
-        if: ${{ failure() && steps.refresh_paris.outcome == 'success' && steps.census_paris.outcome == 'failure' }}
+      - name: "Paris: fresh AWS session for rollback"
+        if: ${{ failure() && (steps.refresh_paris.outcome == 'failure' || steps.census_paris.outcome == 'failure') }}
+        uses: Lore-Hex/quill-cloud-proxy/.github/actions/aws-credentials@582cbdee7b7023cfeb915b62a7f635aa1e4662b1 # main 2026-11-13
+        with:
+          role-to-assume: ${{ env.AWS_ROLLOUT_ROLE_ARN }}
+          aws-region: eu-west-1
+          role-duration-seconds: ${{ env.AWS_ROLLOUT_SESSION_SECONDS }}
+      - name: "Paris: roll back to the recorded template after a failed refresh or census"
+        if: ${{ failure() && (steps.refresh_paris.outcome == 'failure' || steps.census_paris.outcome == 'failure') }}
         run: python3 tools/aws_gateway_rollout.py rollback --region eu-west-3 --serving "$RUNNER_TEMP/serving-eu-west-3.json"
       # ---------------- Dublin (eu-west-1) ----------------
+      - name: "Dublin: fresh AWS session"
+        uses: Lore-Hex/quill-cloud-proxy/.github/actions/aws-credentials@582cbdee7b7023cfeb915b62a7f635aa1e4662b1 # main 2026-11-13
+        with:
+          role-to-assume: ${{ env.AWS_ROLLOUT_ROLE_ARN }}
+          aws-region: eu-west-1
+          role-duration-seconds: ${{ env.AWS_ROLLOUT_SESSION_SECONDS }}
       - name: "Dublin: record the serving fleet (rollback target)"
         run: python3 tools/aws_gateway_rollout.py serving --region eu-west-1 --out "$RUNNER_TEMP/serving-eu-west-1.json"
       - name: "Dublin: generate the numbered candidate template only"
@@ -473,14 +495,22 @@ jobs:
             --release "$RUNNER_TEMP/release/release.json" --manifest "$RUNNER_TEMP/release/manifest.json" \
             --signature "$RUNNER_TEMP/release/manifest.json.bundle" --bundle-version "$BUNDLE_VERSION"
           echo "- eu-west-1: template $CANDIDATE_VERSION_DUBLIN, every member verified" >> "$GITHUB_STEP_SUMMARY"
-      - name: "Dublin: roll back to the recorded template after a failed census"
-        if: ${{ failure() && steps.refresh_dublin.outcome == 'success' && steps.census_dublin.outcome == 'failure' }}
+      - name: "Dublin: fresh AWS session for rollback"
+        if: ${{ failure() && (steps.refresh_dublin.outcome == 'failure' || steps.census_dublin.outcome == 'failure') }}
+        uses: Lore-Hex/quill-cloud-proxy/.github/actions/aws-credentials@582cbdee7b7023cfeb915b62a7f635aa1e4662b1 # main 2026-11-13
+        with:
+          role-to-assume: ${{ env.AWS_ROLLOUT_ROLE_ARN }}
+          aws-region: eu-west-1
+          role-duration-seconds: ${{ env.AWS_ROLLOUT_SESSION_SECONDS }}
+      - name: "Dublin: roll back to the recorded template after a failed refresh or census"
+        if: ${{ failure() && (steps.refresh_dublin.outcome == 'failure' || steps.census_dublin.outcome == 'failure') }}
         run: python3 tools/aws_gateway_rollout.py rollback --region eu-west-1 --serving "$RUNNER_TEMP/serving-eu-west-1.json"
 
   narrow:
     needs: [preflight, admit-cloud, fleet]
     runs-on: ubuntu-latest
-    timeout-minutes: 150
+    # Capture and repin (40) + PR (75) + signer (25) + public (30), plus setup.
+    timeout-minutes: 200
     permissions:
       contents: read
       id-token: write

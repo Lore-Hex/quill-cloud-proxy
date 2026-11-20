@@ -31,11 +31,18 @@ candidate template, refuses any template change beyond the EIF identity unless
 re-dispatched with the reviewed diff's `template_diff_sha256`, verifies a
 standalone candidate over SSM (exact instance, CI PCR0, strict bootstrap and a
 wrong-PCR0 negative control), refreshes the ASG with automatic rollback and
-verifies every member. A failed census rolls that region back to its recorded
+verifies every member. A failed refresh or census rolls that region back to its recorded
 template; candidates are always terminated. Finally it narrows the record and
 runtime pins through a second PR and verifies the public record. Any failure
 leaves the reservation blocked for a verified recovery. The KMS narrow to the
 single new measurement remains the key administrator's second apply.
+
+A failed run, including one stopped by the template diff gate, leaves the AWS
+lease blocked. Before re-dispatching (for example with the reviewed
+`template_diff_sha256`), confirm nothing was promoted, then recover the lease
+with quill-router's `infra-apply.yml` (`operation=recover cloud=aws
+operation_id=<the run's operation> confirmation=APPLY`). The admission and KMS
+steps are idempotent: a staged candidate and already-widened keys pass through.
 
 The workflow's identity is `trustedrouter-github-gateway-rollout`
 (quill-router `infra/aws_gateway_rollout_role.tf`). The manual procedure

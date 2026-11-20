@@ -168,6 +168,13 @@ class AzureHelperTests(unittest.TestCase):
 
 
 class TrustPrTests(unittest.TestCase):
+    def test_porcelain_parsing_keeps_the_first_character(self):
+        raw = " M trust-page/trust/aws-release.json\0?? trust-page/trust/eif/a/b/manifest.json\0"
+        self.assertEqual(trust_pr.parse_porcelain_z(raw), ["trust-page/trust/aws-release.json",
+                                                           "trust-page/trust/eif/a/b/manifest.json"])
+        with self.assertRaises(SystemExit):
+            trust_pr.parse_porcelain_z("R  new\0old\0")
+
     def test_a_plane_pr_changes_only_that_planes_trust_files(self):
         trust_pr.require_only_plane_changes("aws", ["trust-page/trust/aws-release.json",
                                                     "trust-page/trust/eif/x/y/manifest.json"])
@@ -180,12 +187,16 @@ class TrustPrTests(unittest.TestCase):
             trust_pr.require_only_plane_changes("azure", [])
 
     def test_checks_verdict(self):
-        done = {"__typename": "CheckRun", "status": "COMPLETED", "conclusion": "SUCCESS"}
+        required = [{"__typename": "CheckRun", "name": n, "status": "COMPLETED", "conclusion": "SUCCESS"}
+                    for n in trust_pr.REQUIRED_CHECKS]
+        done = {"__typename": "CheckRun", "name": "other", "status": "COMPLETED", "conclusion": "SUCCESS"}
+        self.assertEqual(trust_pr.checks_verdict([done]), "pending", "required contexts missing")
+        done_all = required + [done]
         running = {"__typename": "CheckRun", "status": "IN_PROGRESS", "conclusion": ""}
         failed = {"__typename": "CheckRun", "status": "COMPLETED", "conclusion": "FAILURE"}
         self.assertEqual(trust_pr.checks_verdict([]), "pending")
-        self.assertEqual(trust_pr.checks_verdict([done]), "success")
-        self.assertEqual(trust_pr.checks_verdict([done, running]), "pending")
+        self.assertEqual(trust_pr.checks_verdict(done_all), "success")
+        self.assertEqual(trust_pr.checks_verdict(done_all + [running]), "pending")
         self.assertEqual(trust_pr.checks_verdict([running, failed]), "failure")
 
 
@@ -247,7 +258,7 @@ class WorkflowGuardTests(unittest.TestCase):
                 "record the serving fleet", "generate the numbered candidate template",
                 "the candidate changes only", "launch one standalone candidate",
                 "verify the candidate over SSM", "terminate the candidate",
-                "refresh the ASG", "census", "roll back")]
+                "refresh the ASG", "census", "fresh AWS session for rollback", "roll back")]
             self.assertEqual(order, sorted(order), region)
             self.assertGreater(order[0], last, "Paris completes before Dublin starts")
             last = order[-1]
@@ -266,24 +277,24 @@ class WorkflowGuardTests(unittest.TestCase):
         workflow = self.load(AZURE_WF)
         self.common(workflow, "azure")
         jobs = workflow["jobs"]
-        for name in ("preflight", "regions"):
+        for name in ("preflight", "dubai", "sydney"):
             self.assertEqual(jobs[name]["environment"], "azure-gateway-rollout")
-        names = steps_of(jobs["regions"])
-        last = -1
+        self.assertIn("dubai", jobs["sydney"]["needs"], "Sydney waits for Dubai")
         for region in ("Dubai", "Sydney"):
+            names = steps_of(jobs[region.lower()])
             order = [index_of(names, f"{region}: {step}") for step in (
                 "drain its Traffic Manager endpoint", "build, bind (widen), deploy and verify",
-                "restore the previous key release policy", "publish its measurement",
+                "restore the previous key release policy", "read the publication gate", "publish its measurement",
                 "narrow the key release policy", "re-enable its endpoint")]
             self.assertEqual(order, sorted(order), region)
-            self.assertGreater(order[0], last, "Dubai completes before Sydney starts")
-            last = order[-1]
+            restore = next(s for s in jobs[region.lower()]["steps"] if s.get("name", "").startswith(f"{region}: restore"))
+            self.assertEqual(restore["if"], f"${{{{ failure() && steps.deploy_{region.lower()}.outcome == 'failure' }}}}")
         text = AZURE_WF.read_text()
         self.assertNotIn("--apply all", text)
         self.assertIn("--apply preflight build template policy bind deploy verify", text)
         self.assertIn("env -u GOOGLE_APPLICATION_CREDENTIALS", text)
-        dubai_publish = next(s for s in jobs["regions"]["steps"] if s.get("name", "").startswith("Dubai: publish"))
-        sydney_publish = next(s for s in jobs["regions"]["steps"] if s.get("name", "").startswith("Sydney: publish"))
+        dubai_publish = next(s for s in jobs["dubai"]["steps"] if s.get("name", "").startswith("Dubai: publish"))
+        sydney_publish = next(s for s in jobs["sydney"]["steps"] if s.get("name", "").startswith("Sydney: publish"))
         self.assertIn("--keep-accepted", dubai_publish["run"])
         self.assertNotIn("--keep-accepted", sydney_publish["run"])
 

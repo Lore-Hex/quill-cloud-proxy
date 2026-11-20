@@ -33,7 +33,7 @@ on:
         required: true
         type: string
       bundle_version:
-        description: "Sealed Key Vault bundle version to pin (default: the version both regions publish)"
+        description: "Optional: must equal the release commit's tools/azure-bundle.manifest bundle-version"
         required: false
         default: ""
         type: string
@@ -87,9 +87,14 @@ jobs:
           REQUESTED: ${{ inputs.bundle_version }}
         run: |
           set -euo pipefail
-          published="$(jq -r '[.regions[].bundle_version] | unique | if length == 1 then .[0] else "" end' trust-page/trust/azure-release.json)"
-          version="${REQUESTED:-$published}"
-          [[ "$version" =~ ^[0-9a-f]{32}$ ]] || { echo "::error::no single published bundle version; pass bundle_version"; exit 1; }
+          # deploy-azure-aci.sh requires the pin to equal the release commit's
+          # checked-in manifest; check it now, before any region is drained.
+          version="$(git show "$RELEASE_SHA:tools/azure-bundle.manifest" | sed -n 's/^# bundle-version: \([0-9a-f][0-9a-f]*\)$/\1/p')"
+          [[ "$version" =~ ^[0-9a-f]{32}$ ]] && [ "$(printf '%s\n' "$version" | wc -l)" -eq 1 ] \
+            || { echo "::error::the release's tools/azure-bundle.manifest has no single bundle-version"; exit 1; }
+          if [ -n "$REQUESTED" ] && [ "$REQUESTED" != "$version" ]; then
+            echo "::error::bundle_version $REQUESTED differs from the release manifest's $version"; exit 1
+          fi
           echo "version=$version" >> "$GITHUB_OUTPUT"
       - uses: Lore-Hex/quill-cloud-proxy/.github/actions/setup-uv@582cbdee7b7023cfeb915b62a7f635aa1e4662b1 # main 2026-11-13
       - name: Install locked attestation dependencies in isolation
@@ -140,14 +145,13 @@ jobs:
           fence="$(python3 tools/cloud-rollout.py acquire --cloud azure)"
           printf '%s\n' "$fence" >> "$GITHUB_OUTPUT"
 
-  # One job, both regions in order, so Sydney cannot start unless Dubai ended
-  # re-enabled and verified.
-  regions:
+  # Dubai first; Sydney starts only after Dubai is re-enabled and verified.
+  dubai:
     needs: [preflight, admit-cloud]
     runs-on: ubuntu-latest
-    # Per region: drain 6, deploy about 40, trust PR and publication up to
-    # 60, narrow and enable 15. Two regions inside GitHub's 360.
-    timeout-minutes: 350
+    # Drain 6, deploy about 45, trust PR 75 + signer 25 + public 30, narrow,
+    # audit and enable 15.
+    timeout-minutes: 240
     environment: azure-gateway-rollout
     permissions:
       contents: read
@@ -219,10 +223,6 @@ jobs:
             echo "::error::Dubai deploy or verification failed (exit $rc); endpoint stays drained"
             exit 1
           fi
-          python3 ../trust/tools/azure_gateway_rollout.py publication-args --region dubai \
-            --log "$RUNNER_TEMP/deploy-dubai.log" > "$RUNNER_TEMP/publication-dubai.env"
-          echo "AZURE_REGION_ARG_DUBAI=$(sed -n 's/^azure_region=//p' "$RUNNER_TEMP/publication-dubai.env")" >> "$GITHUB_ENV"
-          echo "HOSTDATA_DUBAI=$(sed -n 's/^hostdata=//p' "$RUNNER_TEMP/publication-dubai.env")" >> "$GITHUB_ENV"
       - name: "Dubai: restore the previous key release policy after a failed deploy"
         if: ${{ failure() && steps.deploy_dubai.outcome == 'failure' }}
         working-directory: src
@@ -237,6 +237,14 @@ jobs:
               QUILL_AZURE_BUNDLE_VERSION="$BUNDLE_VERSION" ./tools/deploy-azure-aci.sh --apply rollback
           fi
           echo "::error::Dubai left drained for operator recovery (runbook §3.4)."
+      - name: "Dubai: read the publication gate"
+        working-directory: trust
+        run: |
+          set -euo pipefail
+          python3 tools/azure_gateway_rollout.py publication-args --region dubai \
+            --log "$RUNNER_TEMP/deploy-dubai.log" > "$RUNNER_TEMP/publication-dubai.env"
+          echo "AZURE_REGION_ARG_DUBAI=$(sed -n 's/^azure_region=//p' "$RUNNER_TEMP/publication-dubai.env")" >> "$GITHUB_ENV"
+          echo "HOSTDATA_DUBAI=$(sed -n 's/^hostdata=//p' "$RUNNER_TEMP/publication-dubai.env")" >> "$GITHUB_ENV"
       - name: "Dubai: publish its measurement through a PR, merged on green"
         working-directory: trust
         run: |
@@ -279,6 +287,56 @@ jobs:
           bash tools/azure-oidc-login.sh
           python3 tools/azure_gateway_rollout.py enable --region dubai
           echo "- Dubai: hostdata \`$HOSTDATA_DUBAI\` published, key narrowed, endpoint re-enabled" >> "$GITHUB_STEP_SUMMARY"
+
+  sydney:
+    needs: [preflight, admit-cloud, dubai]
+    runs-on: ubuntu-latest
+    # Drain 6, deploy about 45, trust PR 75 + signer 25 + public 30, narrow,
+    # audit and enable 15.
+    timeout-minutes: 240
+    environment: azure-gateway-rollout
+    permissions:
+      contents: read
+      id-token: write
+    env:
+      TR_DEPLOY_MUTEX_OPERATION: ${{ needs.admit-cloud.outputs.operation }}
+      TR_DEPLOY_MUTEX_CLOUD: azure
+      GH_TOKEN: ${{ secrets.TRUST_PUSH_TOKEN }}
+      BUNDLE_VERSION: ${{ needs.preflight.outputs.bundle_version }}
+    steps:
+      # The measured build comes from the release commit; trust records from
+      # main. Two subdirectories keep both trees clean of the GCP credential
+      # file the auth action writes into the workspace root.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ inputs.release_sha }}
+          path: src
+          persist-credentials: false
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: main
+          path: trust
+          fetch-depth: 0
+          token: ${{ secrets.TRUST_PUSH_TOKEN }}
+      - uses: Lore-Hex/quill-cloud-proxy/.github/actions/setup-uv@582cbdee7b7023cfeb915b62a7f635aa1e4662b1 # main 2026-11-13
+      - name: Install locked attestation dependencies in isolation
+        working-directory: trust
+        run: |
+          set -euo pipefail
+          uv venv "$RUNNER_TEMP/trust-validation"
+          uv export --locked --script tools/verify-attestation.py --output-file "$RUNNER_TEMP/attestation-requirements.txt" >/dev/null
+          uv pip install --python "$RUNNER_TEMP/trust-validation/bin/python" --require-hashes -r "$RUNNER_TEMP/attestation-requirements.txt"
+          echo "$RUNNER_TEMP/trust-validation/bin" >> "$GITHUB_PATH"
+      - uses: Lore-Hex/quill-cloud-proxy/.github/actions/gcp-auth@582cbdee7b7023cfeb915b62a7f635aa1e4662b1 # main 2026-11-13
+        with:
+          workload_identity_provider: projects/44325983244/locations/global/workloadIdentityPools/github-actions/providers/github
+          service_account: tr-deploy@quill-cloud-proxy.iam.gserviceaccount.com
+      - uses: Lore-Hex/quill-cloud-proxy/.github/actions/setup-gcloud@582cbdee7b7023cfeb915b62a7f635aa1e4662b1 # main 2026-11-13
+      - uses: Lore-Hex/quill-cloud-proxy/.github/actions/cosign-install@582cbdee7b7023cfeb915b62a7f635aa1e4662b1 # main 2026-11-13
+        with:
+          cosign-release: v2.6.5
+      - name: The checked-out release is exactly the requested commit
+        run: test "$(git -C src rev-parse HEAD)" = "$RELEASE_SHA"
       # ---------------- Sydney (sydney) ----------------
       - name: "Sydney: drain its Traffic Manager endpoint after verifying the peer"
         id: drain_sydney
@@ -307,10 +365,6 @@ jobs:
             echo "::error::Sydney deploy or verification failed (exit $rc); endpoint stays drained"
             exit 1
           fi
-          python3 ../trust/tools/azure_gateway_rollout.py publication-args --region sydney \
-            --log "$RUNNER_TEMP/deploy-sydney.log" > "$RUNNER_TEMP/publication-sydney.env"
-          echo "AZURE_REGION_ARG_SYDNEY=$(sed -n 's/^azure_region=//p' "$RUNNER_TEMP/publication-sydney.env")" >> "$GITHUB_ENV"
-          echo "HOSTDATA_SYDNEY=$(sed -n 's/^hostdata=//p' "$RUNNER_TEMP/publication-sydney.env")" >> "$GITHUB_ENV"
       - name: "Sydney: restore the previous key release policy after a failed deploy"
         if: ${{ failure() && steps.deploy_sydney.outcome == 'failure' }}
         working-directory: src
@@ -325,6 +379,14 @@ jobs:
               QUILL_AZURE_BUNDLE_VERSION="$BUNDLE_VERSION" ./tools/deploy-azure-aci.sh --apply rollback
           fi
           echo "::error::Sydney left drained for operator recovery (runbook §3.4)."
+      - name: "Sydney: read the publication gate"
+        working-directory: trust
+        run: |
+          set -euo pipefail
+          python3 tools/azure_gateway_rollout.py publication-args --region sydney \
+            --log "$RUNNER_TEMP/deploy-sydney.log" > "$RUNNER_TEMP/publication-sydney.env"
+          echo "AZURE_REGION_ARG_SYDNEY=$(sed -n 's/^azure_region=//p' "$RUNNER_TEMP/publication-sydney.env")" >> "$GITHUB_ENV"
+          echo "HOSTDATA_SYDNEY=$(sed -n 's/^hostdata=//p' "$RUNNER_TEMP/publication-sydney.env")" >> "$GITHUB_ENV"
       - name: "Sydney: publish its measurement through a PR, merged on green"
         working-directory: trust
         run: |
@@ -370,7 +432,7 @@ jobs:
           echo "- Sydney: hostdata \`$HOSTDATA_SYDNEY\` published, key narrowed, endpoint re-enabled" >> "$GITHUB_STEP_SUMMARY"
 
   finalize-cloud:
-    needs: [admit-cloud, regions]
+    needs: [admit-cloud, dubai, sydney]
     if: ${{ always() && needs.admit-cloud.result == 'success' }}
     runs-on: ubuntu-latest
     timeout-minutes: 10

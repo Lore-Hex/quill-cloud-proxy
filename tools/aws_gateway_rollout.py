@@ -78,6 +78,10 @@ class AwsError(RuntimeError):
     pass
 
 
+class ForwardError(RuntimeError):
+    """A transient SSM forward failure; verification retries it."""
+
+
 def aws(region: str, *args: str, timeout: int = 120) -> Any:
     try:
         result = subprocess.run(
@@ -343,12 +347,12 @@ def ssm_forward(region: str, instance: str) -> Iterator[int]:
         deadline = time.monotonic() + 60
         while time.monotonic() < deadline:
             if process.poll() is not None:
-                raise SystemExit(f"{region}: SSM session to {instance} ended")
+                raise ForwardError(f"{region}: SSM session to {instance} ended")
             with contextlib.suppress(OSError), socket.create_connection(("127.0.0.1", port), timeout=2):
                 break
             time.sleep(1)
         else:
-            raise SystemExit(f"{region}: SSM forward to {instance} never opened")
+            raise ForwardError(f"{region}: SSM forward to {instance} never opened")
         yield port
     finally:
         process.terminate()
@@ -391,7 +395,7 @@ def probe_instance(region: str, instance: str, args: argparse.Namespace) -> None
                     print(f"{region}: negative control failed as required (exit {control.returncode})")
             print(f"{region}: {instance} verified: exact instance, CI PCR0 {release['pcr0']}, strict bootstrap")
             return
-        except (subprocess.CalledProcessError, subprocess.TimeoutExpired) as exc:
+        except (subprocess.CalledProcessError, subprocess.TimeoutExpired, ForwardError, AwsError) as exc:
             last = type(exc).__name__
             time.sleep(30)
     raise SystemExit(f"{region}: {instance} did not verify within {args.boot_timeout}s ({last})")
@@ -401,6 +405,12 @@ def cmd_verify_instance(args: argparse.Namespace) -> None:
     region = require_region(args.region)
     if not INSTANCE.fullmatch(args.instance):
         raise SystemExit("invalid instance id")
+    # Isolation before any probe: a candidate must not be a serving target.
+    current = group(region)
+    registered = {t.get("Target", {}).get("Id") for t in targets(region, current)}
+    members = {m["InstanceId"] for m in current["Instances"]}
+    if args.negative_control and (args.instance in registered or args.instance in members):
+        raise SystemExit(f"{region}: candidate {args.instance} is in the serving ASG or target group")
     wait_ssm_online(region, args.instance, args.boot_timeout)
     probe_instance(region, args.instance, args)
 
@@ -439,9 +449,33 @@ def cmd_refresh(args: argparse.Namespace) -> None:
                          f"{serving['version']} when it can")
 
 
+ACTIVE_REFRESH = {"Pending", "InProgress", "Cancelling", "RollbackInProgress", "Baking"}
+
+
+def cancel_active_refresh(region: str, timeout: int) -> None:
+    """Stop a refresh still promoting the candidate (e.g. one that outlived
+    the wait) and let it settle before the rollback refresh starts."""
+    deadline = time.monotonic() + timeout
+    cancelled = False
+    while True:
+        refreshes = aws(region, "autoscaling", "describe-instance-refreshes", "--auto-scaling-group-name", ASG,
+                        "--max-records", "5")["InstanceRefreshes"]
+        active = [r for r in refreshes if r["Status"] in ACTIVE_REFRESH]
+        if not active:
+            return
+        if not cancelled and any(r["Status"] in {"Pending", "InProgress", "Baking"} for r in active):
+            aws(region, "autoscaling", "cancel-instance-refresh", "--auto-scaling-group-name", ASG)
+            cancelled = True
+            print(f"{region}: cancelled the active refresh before rolling back")
+        if time.monotonic() > deadline:
+            raise SystemExit(f"{region}: a refresh is still active; operator recovery required")
+        time.sleep(30)
+
+
 def cmd_rollback(args: argparse.Namespace) -> None:
     region = require_region(args.region)
     serving = json.loads(Path(args.serving).read_text())
+    cancel_active_refresh(region, 1800)
     current = group(region)
     if str(current["LaunchTemplate"]["Version"]) == serving["version"] and not census_problems(
             current, targets(region, current), serving["version"]):
@@ -560,7 +594,7 @@ def main() -> None:
         p.add_argument("--serving", required=True)
         if name == "refresh":
             p.add_argument("--version", required=True)
-        p.add_argument("--timeout", type=int, default=7200)
+        p.add_argument("--timeout", type=int, default=3600)
     p = region_cmd("terminate-candidate")
     p.add_argument("--source", required=True)
     p.add_argument("--run-id", required=True)

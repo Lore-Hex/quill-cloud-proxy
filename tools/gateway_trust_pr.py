@@ -55,15 +55,34 @@ SIGNER = {"aws": "publish-trust-aws.yml", "azure": "publish-trust-azure.yml"}
 BRANCH = re.compile(r"bot/(aws|azure)-trust-[a-z0-9-]{1,80}")
 
 
+REQUIRED_CHECKS = ("parent", "trust-page-validation")
+
+
 def run(*args: str, capture: bool = True, check: bool = True) -> str:
+    # Uncaptured commands print to stderr: stdout carries only the merge SHA.
     result = subprocess.run(args, check=check, text=True, timeout=300,
-                            stdout=subprocess.PIPE if capture else None)
+                            stdout=subprocess.PIPE if capture else sys.stderr)
     return (result.stdout or "").strip() if capture else ""
 
 
+def parse_porcelain_z(raw: str) -> list[str]:
+    """Paths from `git status --porcelain=v1 -z` (no renames expected)."""
+    paths = []
+    for entry in raw.split("\0"):
+        if not entry:
+            continue
+        if len(entry) < 4 or entry[2] != " ":
+            raise SystemExit(f"unexpected git status entry {entry!r}")
+        if entry[0] in "RC":
+            raise SystemExit("refusing: a rename or copy is not a trust-record change")
+        paths.append(entry[3:])
+    return sorted(paths)
+
+
 def changed_paths() -> list[str]:
-    out = run("git", "status", "--porcelain", "--untracked-files=all")
-    return sorted(line[3:] for line in out.splitlines() if line.strip())
+    raw = subprocess.run(["git", "status", "--porcelain=v1", "-z", "--untracked-files=all"],
+                         check=True, capture_output=True, text=True, timeout=60).stdout
+    return parse_porcelain_z(raw)
 
 
 def allowed(plane: str, path: str) -> bool:
@@ -84,10 +103,15 @@ def pr_state(number: int) -> dict:
 
 
 def checks_verdict(rollup: list[dict]) -> str:
-    """'pending', 'success' or 'failure' over every check on the head commit."""
+    """'pending', 'success' or 'failure' over every check on the head commit.
+
+    Success also requires main's required contexts to be present and green:
+    the merging token can bypass branch protection, so an all-green rollup
+    that CI has not populated yet must not read as success."""
     if not rollup:
         return "pending"
-    verdict = "success"
+    names = {check.get("name") or check.get("context") for check in rollup}
+    verdict = "success" if all(name in names for name in REQUIRED_CHECKS) else "pending"
     for check in rollup:
         status = (check.get("status") or "").upper()
         conclusion = (check.get("conclusion") or check.get("state") or "").upper()
@@ -136,28 +160,40 @@ def open_and_merge(plane: str, branch: str, title: str, body: str, timeout: int)
                 "-f", f"expected_head_sha={state['headRefOid']}", check=False)
         elif merge_state == "DIRTY":
             raise SystemExit(f"PR #{number} conflicts with main; refusing to resolve automatically")
-        elif verdict == "success" and merge_state in {"CLEAN", "HAS_HOOKS", "UNSTABLE"}:
+        elif verdict == "success" and merge_state == "CLEAN":
             run("gh", "pr", "merge", str(number), "--repo", REPO, "--squash", "--delete-branch",
                 "--match-head-commit", state["headRefOid"], check=False)
         time.sleep(30)
     raise SystemExit(f"PR #{number} did not merge within {timeout}s")
 
 
+def contains(descendant: str, ancestor: str) -> bool:
+    subprocess.run(["git", "fetch", "--quiet", "origin", "main"], check=False, timeout=120)
+    return subprocess.run(["git", "merge-base", "--is-ancestor", ancestor, descendant],
+                          check=False, capture_output=True, timeout=30).returncode == 0
+
+
 def wait_signed(plane: str, merge_sha: str, timeout: int) -> None:
-    """Wait for the signer to succeed on the merge commit (or a descendant)."""
+    """Wait for the signer to succeed on the merge commit or a descendant.
+
+    The signers share a concurrency group, so a run for the merge commit can be
+    cancelled in favour of a newer push; a later successful run that signed a
+    tree containing the merge is equally good. A failed run on the merge
+    commit itself is fatal."""
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
         runs = json.loads(run("gh", "run", "list", "--repo", REPO, "--workflow", SIGNER[plane],
-                              "--branch", "main", "--limit", "20", "--json",
+                              "--branch", "main", "--limit", "30", "--json",
                               "databaseId,headSha,status,conclusion"))
         for item in runs:
-            if item["headSha"] != merge_sha:
+            if item["status"] != "completed":
                 continue
-            if item["status"] == "completed":
-                if item["conclusion"] == "success":
-                    print(f"{SIGNER[plane]} run {item['databaseId']} signed {merge_sha}")
-                    return
-                raise SystemExit(f"{SIGNER[plane]} run {item['databaseId']} concluded {item['conclusion']}")
+            if item["headSha"] == merge_sha and item["conclusion"] == "failure":
+                raise SystemExit(f"{SIGNER[plane]} run {item['databaseId']} failed on {merge_sha}")
+            if item["conclusion"] == "success" and (item["headSha"] == merge_sha or contains(item["headSha"], merge_sha)):
+                print(f"{SIGNER[plane]} run {item['databaseId']} signed {item['headSha']} (contains {merge_sha})",
+                      file=sys.stderr)
+                return
         time.sleep(20)
     raise SystemExit(f"{SIGNER[plane]} did not sign {merge_sha} within {timeout}s")
 
@@ -209,15 +245,15 @@ def main() -> None:
     pr.add_argument("--branch", required=True)
     pr.add_argument("--title", required=True)
     pr.add_argument("--body-file", type=Path, required=True)
-    pr.add_argument("--timeout", type=int, default=5400)
+    pr.add_argument("--timeout", type=int, default=4500)
     signed = sub.add_parser("wait-signed")
     signed.add_argument("--plane", choices=sorted(PLANE_PATHS), required=True)
     signed.add_argument("--merge-sha", required=True)
-    signed.add_argument("--timeout", type=int, default=1800)
+    signed.add_argument("--timeout", type=int, default=1500)
     public = sub.add_parser("wait-public")
     public.add_argument("--plane", choices=sorted(PLANE_PATHS), required=True)
     public.add_argument("--record", type=Path, required=True)
-    public.add_argument("--timeout", type=int, default=2700)
+    public.add_argument("--timeout", type=int, default=1800)
     args = parser.parse_args()
     if args.command == "wait-public":
         wait_public(args.plane, args.record, args.timeout)
