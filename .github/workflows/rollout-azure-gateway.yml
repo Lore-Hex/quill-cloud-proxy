@@ -1,0 +1,466 @@
+# Roll the Azure confidential-container gateway (api-azure.trustedrouter.com,
+# api-azure-syd.trustedrouter.com) to one QCP main commit, region at a time:
+# UAE North (Dubai), then Australia East (Sydney). This is
+# docs/runbooks/azure-enclave.md §3.4-§3.6, unattended. Per region:
+#
+#   drain     verify the PEER serves the shared hostname with its own,
+#             independently derived HOST_DATA; disable this region's Traffic
+#             Manager endpoint; wait out both TTLs; confirm the shared name no
+#             longer resolves here (tools/azure_gateway_rollout.py).
+#   deploy    tools/deploy-azure-aci.sh --apply preflight build template policy
+#             bind deploy verify, from a checkout of the release commit. bind
+#             WIDENS the key release policy to {old, new}; verify compares a
+#             live attestation with what the key requires, then stops at the
+#             publication gate because the hostdata is not yet published.
+#   publish   capture-plane-measurements --plane azure for that region -> a
+#             trust PR merged on green, signed by publish-trust-azure.yml,
+#             and byte-identical on the public page.
+#   narrow    deploy-azure-aci.sh --apply narrow, then a read-only audit.
+#   enable    re-enable the endpoint; verify both regions over the shared name.
+#
+# A failed deploy restores the previous key release policy and leaves the
+# region drained; any failure leaves the azure lease blocked for a verified
+# recovery. The peer is never drained while a region is being replaced, and
+# Sydney is not touched unless Dubai completed.
+
+name: Roll out Azure gateway (attested confidential containers)
+
+on:
+  workflow_dispatch:
+    inputs:
+      release_sha:
+        description: "Full 40-hex QCP main commit to build and deploy"
+        required: true
+        type: string
+      bundle_version:
+        description: "Optional: must equal the release commit's tools/azure-bundle.manifest bundle-version"
+        required: false
+        default: ""
+        type: string
+
+concurrency:
+  group: rollout-azure-gateway
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+env:
+  RELEASE_SHA: ${{ inputs.release_sha }}
+  AZURE_CLIENT_ID: ${{ vars.AZURE_GATEWAY_ROLLOUT_CLIENT_ID }}
+  AZURE_TENANT_ID: 2abe2fae-5c28-491d-af5a-6255b33e534e
+  AZURE_SUBSCRIPTION_ID: 2fc83893-ca6c-48e4-b090-8860fba33d33
+
+jobs:
+  preflight:
+    if: github.ref == 'refs/heads/main' && github.repository == 'Lore-Hex/quill-cloud-proxy'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    # The Azure identity trusts only jobs in this environment (main only).
+    environment: azure-gateway-rollout
+    permissions:
+      contents: read
+      actions: read
+      id-token: write
+    outputs:
+      bundle_version: ${{ steps.bundle.outputs.version }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: The release is a full commit on main with green CI
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          [ -n "$AZURE_CLIENT_ID" ] || { echo "::error::repository variable AZURE_GATEWAY_ROLLOUT_CLIENT_ID is not set (tools/azure-gateway-rollout-identity)"; exit 1; }
+          [[ "$RELEASE_SHA" =~ ^[0-9a-f]{40}$ ]] || { echo "::error::release_sha must be a full commit id"; exit 1; }
+          git merge-base --is-ancestor "$RELEASE_SHA" origin/main
+          gh run list --repo "$GITHUB_REPOSITORY" --workflow ci.yml --branch main --event push \
+            --commit "$RELEASE_SHA" --limit 1 --json status,conclusion,headSha > "$RUNNER_TEMP/ci.json"
+          python3 -c 'import json,sys; r=json.load(open(sys.argv[1])); sys.exit(0 if len(r)==1 and r[0]=={"status":"completed","conclusion":"success","headSha":sys.argv[2]} else "main CI has not passed for this release")' \
+            "$RUNNER_TEMP/ci.json" "$RELEASE_SHA"
+      - name: Pin one sealed bundle version
+        id: bundle
+        env:
+          REQUESTED: ${{ inputs.bundle_version }}
+        run: |
+          set -euo pipefail
+          # deploy-azure-aci.sh requires the pin to equal the release commit's
+          # checked-in manifest; check it now, before any region is drained.
+          version="$(git show "$RELEASE_SHA:tools/azure-bundle.manifest" | sed -n 's/^# bundle-version: \([0-9a-f][0-9a-f]*\)$/\1/p')"
+          [[ "$version" =~ ^[0-9a-f]{32}$ ]] && [ "$(printf '%s\n' "$version" | wc -l)" -eq 1 ] \
+            || { echo "::error::the release's tools/azure-bundle.manifest has no single bundle-version"; exit 1; }
+          if [ -n "$REQUESTED" ] && [ "$REQUESTED" != "$version" ]; then
+            echo "::error::bundle_version $REQUESTED differs from the release manifest's $version"; exit 1
+          fi
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+      - uses: Lore-Hex/quill-cloud-proxy/.github/actions/setup-uv@582cbdee7b7023cfeb915b62a7f635aa1e4662b1 # main 2026-11-13
+      - name: Install locked attestation dependencies in isolation
+        run: |
+          set -euo pipefail
+          uv venv "$RUNNER_TEMP/trust-validation"
+          uv export --locked --script tools/verify-attestation.py --output-file "$RUNNER_TEMP/attestation-requirements.txt" >/dev/null
+          uv pip install --python "$RUNNER_TEMP/trust-validation/bin/python" --require-hashes -r "$RUNNER_TEMP/attestation-requirements.txt"
+          echo "$RUNNER_TEMP/trust-validation/bin" >> "$GITHUB_PATH"
+      - name: Both regions attest over the shared hostname and both endpoints are Online
+        run: |
+          set -euo pipefail
+          bash tools/azure-oidc-login.sh
+          python3 tools/azure_gateway_rollout.py peer-check --region sydney
+          python3 tools/azure_gateway_rollout.py peer-check --region dubai
+          {
+            echo "## Azure gateway rollout preflight"
+            echo "release \`$RELEASE_SHA\`, bundle \`${{ steps.bundle.outputs.version }}\`; both regions attest and are Online."
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  admit-cloud:
+    needs: preflight
+    runs-on: ubuntu-latest
+    timeout-minutes: 260
+    permissions:
+      contents: read
+      id-token: write
+    outputs:
+      operation: ${{ steps.admit.outputs.TR_DEPLOY_MUTEX_OPERATION }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: Lore-Hex/quill-cloud-proxy/.github/actions/gcp-auth@582cbdee7b7023cfeb915b62a7f635aa1e4662b1 # main 2026-11-13
+        with:
+          workload_identity_provider: projects/44325983244/locations/global/workloadIdentityPools/github-actions/providers/github
+          service_account: tr-deploy@quill-cloud-proxy.iam.gserviceaccount.com
+      - uses: Lore-Hex/quill-cloud-proxy/.github/actions/setup-gcloud@582cbdee7b7023cfeb915b62a7f635aa1e4662b1 # main 2026-11-13
+      - name: Reserve Azure across both repositories
+        id: admit
+        env:
+          GH_TOKEN: ${{ secrets.TRUST_PUSH_TOKEN }}
+          TR_DEPLOY_MUTEX_OWNER: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          TR_DEPLOY_MUTEX_TTL_SECONDS: "43200"
+          TR_DEPLOY_WAIT_SECONDS: "14400"
+        run: |
+          set -euo pipefail
+          fence="$(python3 tools/cloud-rollout.py acquire --cloud azure)"
+          printf '%s\n' "$fence" >> "$GITHUB_OUTPUT"
+
+  # Dubai first; Sydney starts only after Dubai is re-enabled and verified.
+  dubai:
+    needs: [preflight, admit-cloud]
+    runs-on: ubuntu-latest
+    # Drain 6, deploy about 45, trust PR 75 + signer 25 + public 30, narrow,
+    # audit and enable 15.
+    timeout-minutes: 240
+    environment: azure-gateway-rollout
+    permissions:
+      contents: read
+      id-token: write
+    env:
+      TR_DEPLOY_MUTEX_OPERATION: ${{ needs.admit-cloud.outputs.operation }}
+      TR_DEPLOY_MUTEX_CLOUD: azure
+      GH_TOKEN: ${{ secrets.TRUST_PUSH_TOKEN }}
+      BUNDLE_VERSION: ${{ needs.preflight.outputs.bundle_version }}
+    steps:
+      # The measured build comes from the release commit; trust records from
+      # main. Two subdirectories keep both trees clean of the GCP credential
+      # file the auth action writes into the workspace root.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ inputs.release_sha }}
+          path: src
+          persist-credentials: false
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: main
+          path: trust
+          fetch-depth: 0
+          token: ${{ secrets.TRUST_PUSH_TOKEN }}
+      - uses: Lore-Hex/quill-cloud-proxy/.github/actions/setup-uv@582cbdee7b7023cfeb915b62a7f635aa1e4662b1 # main 2026-11-13
+      - name: Install locked attestation dependencies in isolation
+        working-directory: trust
+        run: |
+          set -euo pipefail
+          uv venv "$RUNNER_TEMP/trust-validation"
+          uv export --locked --script tools/verify-attestation.py --output-file "$RUNNER_TEMP/attestation-requirements.txt" >/dev/null
+          uv pip install --python "$RUNNER_TEMP/trust-validation/bin/python" --require-hashes -r "$RUNNER_TEMP/attestation-requirements.txt"
+          echo "$RUNNER_TEMP/trust-validation/bin" >> "$GITHUB_PATH"
+      - uses: Lore-Hex/quill-cloud-proxy/.github/actions/gcp-auth@582cbdee7b7023cfeb915b62a7f635aa1e4662b1 # main 2026-11-13
+        with:
+          workload_identity_provider: projects/44325983244/locations/global/workloadIdentityPools/github-actions/providers/github
+          service_account: tr-deploy@quill-cloud-proxy.iam.gserviceaccount.com
+      - uses: Lore-Hex/quill-cloud-proxy/.github/actions/setup-gcloud@582cbdee7b7023cfeb915b62a7f635aa1e4662b1 # main 2026-11-13
+      - uses: Lore-Hex/quill-cloud-proxy/.github/actions/cosign-install@582cbdee7b7023cfeb915b62a7f635aa1e4662b1 # main 2026-11-13
+        with:
+          cosign-release: v2.6.5
+      - name: The checked-out release is exactly the requested commit
+        run: test "$(git -C src rev-parse HEAD)" = "$RELEASE_SHA"
+      # ---------------- Dubai (dubai) ----------------
+      - name: "Dubai: drain its Traffic Manager endpoint after verifying the peer"
+        id: drain_dubai
+        working-directory: trust
+        run: |
+          set -euo pipefail
+          bash tools/azure-oidc-login.sh
+          python3 tools/cloud-rollout.py assert --cloud azure
+          python3 tools/azure_gateway_rollout.py drain --region dubai
+      - name: "Dubai: build, bind (widen), deploy and verify"
+        id: deploy_dubai
+        working-directory: src
+        run: |
+          set -euo pipefail
+          bash ../trust/tools/azure-oidc-login.sh
+          set -a
+          eval "$(python3 ../trust/tools/azure_gateway_rollout.py env --region dubai)"
+          set +a
+          rc=0
+          env -u GOOGLE_APPLICATION_CREDENTIALS WORKDIR="$RUNNER_TEMP/aci-dubai" \
+            QUILL_AZURE_BUNDLE_VERSION="$BUNDLE_VERSION" TR_CONTROL_PLANE_BASE_URL=https://trustedrouter.com \
+            ./tools/deploy-azure-aci.sh --apply preflight build template policy bind deploy verify \
+            > "$RUNNER_TEMP/deploy-dubai.log" 2>&1 || rc=$?
+          cat "$RUNNER_TEMP/deploy-dubai.log"
+          if [ "$rc" -ne 0 ] && ! grep -q 'MEASUREMENT NOT PUBLISHED' "$RUNNER_TEMP/deploy-dubai.log"; then
+            echo "::error::Dubai deploy or verification failed (exit $rc); endpoint stays drained"
+            exit 1
+          fi
+      - name: "Dubai: restore the previous key release policy after a failed deploy"
+        if: ${{ failure() && steps.deploy_dubai.outcome == 'failure' }}
+        working-directory: src
+        run: |
+          set -euo pipefail
+          bash ../trust/tools/azure-oidc-login.sh
+          set -a
+          eval "$(python3 ../trust/tools/azure_gateway_rollout.py env --region dubai)"
+          set +a
+          if [ -f "$RUNNER_TEMP/aci-dubai/previous-hostdata.txt" ]; then
+            env -u GOOGLE_APPLICATION_CREDENTIALS WORKDIR="$RUNNER_TEMP/aci-dubai" \
+              QUILL_AZURE_BUNDLE_VERSION="$BUNDLE_VERSION" ./tools/deploy-azure-aci.sh --apply rollback
+          fi
+          echo "::error::Dubai left drained for operator recovery (runbook §3.4)."
+      - name: "Dubai: read the publication gate"
+        working-directory: trust
+        run: |
+          set -euo pipefail
+          python3 tools/azure_gateway_rollout.py publication-args --region dubai \
+            --log "$RUNNER_TEMP/deploy-dubai.log" > "$RUNNER_TEMP/publication-dubai.env"
+          echo "AZURE_REGION_ARG_DUBAI=$(sed -n 's/^azure_region=//p' "$RUNNER_TEMP/publication-dubai.env")" >> "$GITHUB_ENV"
+          echo "HOSTDATA_DUBAI=$(sed -n 's/^hostdata=//p' "$RUNNER_TEMP/publication-dubai.env")" >> "$GITHUB_ENV"
+      - name: "Dubai: publish its measurement through a PR, merged on green"
+        working-directory: trust
+        run: |
+          set -euo pipefail
+          git fetch --quiet origin main
+          git checkout --quiet --detach origin/main
+          oldest="$(python3 tools/azure_gateway_rollout.py oldest-build --region dubai --record trust-page/trust/azure-release.json)"
+          python3 tools/capture-plane-measurements.py --plane azure --write --keep-accepted \
+            --source-commit "$oldest" --azure-region "$AZURE_REGION_ARG_DUBAI"
+          cat > "$RUNNER_TEMP/body-dubai.md" <<EOF
+          Publish the verified Azure Dubai measurement \`$HOSTDATA_DUBAI\` (\`$AZURE_REGION_ARG_DUBAI\`) from \`$RELEASE_SHA\`. The region attested over its own origin and its key release policy is still widened; it is narrowed only after this record is public.
+
+          Opened and merged on green by [rollout-azure-gateway run ${GITHUB_RUN_ID}](${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}) under its Azure reservation.
+          EOF
+          merge="$(python3 tools/gateway_trust_pr.py open-and-merge --plane azure \
+            --branch "bot/azure-trust-dubai-${RELEASE_SHA:0:12}-${GITHUB_RUN_ID}" \
+            --title "[bot] publish Azure Dubai measurement ${RELEASE_SHA:0:12}" --body-file "$RUNNER_TEMP/body-dubai.md")"
+          python3 tools/gateway_trust_pr.py wait-signed --plane azure --merge-sha "$merge"
+          git fetch --quiet origin main
+          git checkout --quiet --detach origin/main
+          python3 tools/gateway_trust_pr.py wait-public --plane azure --record trust-page/trust/azure-release.json
+          grep -q "$HOSTDATA_DUBAI" trust-page/trust/accepted-hostdata-azure.txt
+      - name: "Dubai: narrow the key release policy and audit the live region"
+        working-directory: src
+        run: |
+          set -euo pipefail
+          bash ../trust/tools/azure-oidc-login.sh
+          python3 ../trust/tools/cloud-rollout.py assert --cloud azure
+          set -a
+          eval "$(python3 ../trust/tools/azure_gateway_rollout.py env --region dubai)"
+          set +a
+          env -u GOOGLE_APPLICATION_CREDENTIALS WORKDIR="$RUNNER_TEMP/aci-dubai" \
+            QUILL_AZURE_BUNDLE_VERSION="$BUNDLE_VERSION" ./tools/deploy-azure-aci.sh --apply narrow
+          env -u GOOGLE_APPLICATION_CREDENTIALS WORKDIR="$RUNNER_TEMP/aci-dubai" \
+            QUILL_AZURE_BUNDLE_VERSION="$BUNDLE_VERSION" ./tools/deploy-azure-aci.sh audit
+      - name: "Dubai: re-enable its endpoint and verify both regions over the shared name"
+        working-directory: trust
+        run: |
+          set -euo pipefail
+          bash tools/azure-oidc-login.sh
+          python3 tools/azure_gateway_rollout.py enable --region dubai
+          echo "- Dubai: hostdata \`$HOSTDATA_DUBAI\` published, key narrowed, endpoint re-enabled" >> "$GITHUB_STEP_SUMMARY"
+
+  sydney:
+    needs: [preflight, admit-cloud, dubai]
+    runs-on: ubuntu-latest
+    # Drain 6, deploy about 45, trust PR 75 + signer 25 + public 30, narrow,
+    # audit and enable 15.
+    timeout-minutes: 240
+    environment: azure-gateway-rollout
+    permissions:
+      contents: read
+      id-token: write
+    env:
+      TR_DEPLOY_MUTEX_OPERATION: ${{ needs.admit-cloud.outputs.operation }}
+      TR_DEPLOY_MUTEX_CLOUD: azure
+      GH_TOKEN: ${{ secrets.TRUST_PUSH_TOKEN }}
+      BUNDLE_VERSION: ${{ needs.preflight.outputs.bundle_version }}
+    steps:
+      # The measured build comes from the release commit; trust records from
+      # main. Two subdirectories keep both trees clean of the GCP credential
+      # file the auth action writes into the workspace root.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ inputs.release_sha }}
+          path: src
+          persist-credentials: false
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: main
+          path: trust
+          fetch-depth: 0
+          token: ${{ secrets.TRUST_PUSH_TOKEN }}
+      - uses: Lore-Hex/quill-cloud-proxy/.github/actions/setup-uv@582cbdee7b7023cfeb915b62a7f635aa1e4662b1 # main 2026-11-13
+      - name: Install locked attestation dependencies in isolation
+        working-directory: trust
+        run: |
+          set -euo pipefail
+          uv venv "$RUNNER_TEMP/trust-validation"
+          uv export --locked --script tools/verify-attestation.py --output-file "$RUNNER_TEMP/attestation-requirements.txt" >/dev/null
+          uv pip install --python "$RUNNER_TEMP/trust-validation/bin/python" --require-hashes -r "$RUNNER_TEMP/attestation-requirements.txt"
+          echo "$RUNNER_TEMP/trust-validation/bin" >> "$GITHUB_PATH"
+      - uses: Lore-Hex/quill-cloud-proxy/.github/actions/gcp-auth@582cbdee7b7023cfeb915b62a7f635aa1e4662b1 # main 2026-11-13
+        with:
+          workload_identity_provider: projects/44325983244/locations/global/workloadIdentityPools/github-actions/providers/github
+          service_account: tr-deploy@quill-cloud-proxy.iam.gserviceaccount.com
+      - uses: Lore-Hex/quill-cloud-proxy/.github/actions/setup-gcloud@582cbdee7b7023cfeb915b62a7f635aa1e4662b1 # main 2026-11-13
+      - uses: Lore-Hex/quill-cloud-proxy/.github/actions/cosign-install@582cbdee7b7023cfeb915b62a7f635aa1e4662b1 # main 2026-11-13
+        with:
+          cosign-release: v2.6.5
+      - name: The checked-out release is exactly the requested commit
+        run: test "$(git -C src rev-parse HEAD)" = "$RELEASE_SHA"
+      # ---------------- Sydney (sydney) ----------------
+      - name: "Sydney: drain its Traffic Manager endpoint after verifying the peer"
+        id: drain_sydney
+        working-directory: trust
+        run: |
+          set -euo pipefail
+          bash tools/azure-oidc-login.sh
+          python3 tools/cloud-rollout.py assert --cloud azure
+          python3 tools/azure_gateway_rollout.py drain --region sydney
+      - name: "Sydney: build, bind (widen), deploy and verify"
+        id: deploy_sydney
+        working-directory: src
+        run: |
+          set -euo pipefail
+          bash ../trust/tools/azure-oidc-login.sh
+          set -a
+          eval "$(python3 ../trust/tools/azure_gateway_rollout.py env --region sydney)"
+          set +a
+          rc=0
+          env -u GOOGLE_APPLICATION_CREDENTIALS WORKDIR="$RUNNER_TEMP/aci-sydney" \
+            QUILL_AZURE_BUNDLE_VERSION="$BUNDLE_VERSION" TR_CONTROL_PLANE_BASE_URL=https://trustedrouter.com \
+            ./tools/deploy-azure-aci.sh --apply preflight build template policy bind deploy verify \
+            > "$RUNNER_TEMP/deploy-sydney.log" 2>&1 || rc=$?
+          cat "$RUNNER_TEMP/deploy-sydney.log"
+          if [ "$rc" -ne 0 ] && ! grep -q 'MEASUREMENT NOT PUBLISHED' "$RUNNER_TEMP/deploy-sydney.log"; then
+            echo "::error::Sydney deploy or verification failed (exit $rc); endpoint stays drained"
+            exit 1
+          fi
+      - name: "Sydney: restore the previous key release policy after a failed deploy"
+        if: ${{ failure() && steps.deploy_sydney.outcome == 'failure' }}
+        working-directory: src
+        run: |
+          set -euo pipefail
+          bash ../trust/tools/azure-oidc-login.sh
+          set -a
+          eval "$(python3 ../trust/tools/azure_gateway_rollout.py env --region sydney)"
+          set +a
+          if [ -f "$RUNNER_TEMP/aci-sydney/previous-hostdata.txt" ]; then
+            env -u GOOGLE_APPLICATION_CREDENTIALS WORKDIR="$RUNNER_TEMP/aci-sydney" \
+              QUILL_AZURE_BUNDLE_VERSION="$BUNDLE_VERSION" ./tools/deploy-azure-aci.sh --apply rollback
+          fi
+          echo "::error::Sydney left drained for operator recovery (runbook §3.4)."
+      - name: "Sydney: read the publication gate"
+        working-directory: trust
+        run: |
+          set -euo pipefail
+          python3 tools/azure_gateway_rollout.py publication-args --region sydney \
+            --log "$RUNNER_TEMP/deploy-sydney.log" > "$RUNNER_TEMP/publication-sydney.env"
+          echo "AZURE_REGION_ARG_SYDNEY=$(sed -n 's/^azure_region=//p' "$RUNNER_TEMP/publication-sydney.env")" >> "$GITHUB_ENV"
+          echo "HOSTDATA_SYDNEY=$(sed -n 's/^hostdata=//p' "$RUNNER_TEMP/publication-sydney.env")" >> "$GITHUB_ENV"
+      - name: "Sydney: publish its measurement through a PR, merged on green"
+        working-directory: trust
+        run: |
+          set -euo pipefail
+          git fetch --quiet origin main
+          git checkout --quiet --detach origin/main
+          # Both regions now run this release: drop the old measurements and
+          # advance source_commit to it (runbook §3.6).
+          python3 tools/capture-plane-measurements.py --plane azure --write \
+            --source-commit "$RELEASE_SHA" --azure-region "$AZURE_REGION_ARG_SYDNEY"
+          cat > "$RUNNER_TEMP/body-sydney.md" <<EOF
+          Publish the verified Azure Sydney measurement \`$HOSTDATA_SYDNEY\` (\`$AZURE_REGION_ARG_SYDNEY\`) from \`$RELEASE_SHA\`. The region attested over its own origin and its key release policy is still widened; it is narrowed only after this record is public.
+
+          Opened and merged on green by [rollout-azure-gateway run ${GITHUB_RUN_ID}](${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}) under its Azure reservation.
+          EOF
+          merge="$(python3 tools/gateway_trust_pr.py open-and-merge --plane azure \
+            --branch "bot/azure-trust-sydney-${RELEASE_SHA:0:12}-${GITHUB_RUN_ID}" \
+            --title "[bot] publish Azure Sydney measurement ${RELEASE_SHA:0:12}" --body-file "$RUNNER_TEMP/body-sydney.md")"
+          python3 tools/gateway_trust_pr.py wait-signed --plane azure --merge-sha "$merge"
+          git fetch --quiet origin main
+          git checkout --quiet --detach origin/main
+          python3 tools/gateway_trust_pr.py wait-public --plane azure --record trust-page/trust/azure-release.json
+          grep -q "$HOSTDATA_SYDNEY" trust-page/trust/accepted-hostdata-azure.txt
+      - name: "Sydney: narrow the key release policy and audit the live region"
+        working-directory: src
+        run: |
+          set -euo pipefail
+          bash ../trust/tools/azure-oidc-login.sh
+          python3 ../trust/tools/cloud-rollout.py assert --cloud azure
+          set -a
+          eval "$(python3 ../trust/tools/azure_gateway_rollout.py env --region sydney)"
+          set +a
+          env -u GOOGLE_APPLICATION_CREDENTIALS WORKDIR="$RUNNER_TEMP/aci-sydney" \
+            QUILL_AZURE_BUNDLE_VERSION="$BUNDLE_VERSION" ./tools/deploy-azure-aci.sh --apply narrow
+          env -u GOOGLE_APPLICATION_CREDENTIALS WORKDIR="$RUNNER_TEMP/aci-sydney" \
+            QUILL_AZURE_BUNDLE_VERSION="$BUNDLE_VERSION" ./tools/deploy-azure-aci.sh audit
+      - name: "Sydney: re-enable its endpoint and verify both regions over the shared name"
+        working-directory: trust
+        run: |
+          set -euo pipefail
+          bash tools/azure-oidc-login.sh
+          python3 tools/azure_gateway_rollout.py enable --region sydney
+          echo "- Sydney: hostdata \`$HOSTDATA_SYDNEY\` published, key narrowed, endpoint re-enabled" >> "$GITHUB_STEP_SUMMARY"
+
+  finalize-cloud:
+    needs: [admit-cloud, dubai, sydney]
+    if: ${{ always() && needs.admit-cloud.result == 'success' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: Lore-Hex/quill-cloud-proxy/.github/actions/gcp-auth@582cbdee7b7023cfeb915b62a7f635aa1e4662b1 # main 2026-11-13
+        with:
+          workload_identity_provider: projects/44325983244/locations/global/workloadIdentityPools/github-actions/providers/github
+          service_account: tr-deploy@quill-cloud-proxy.iam.gserviceaccount.com
+      - uses: Lore-Hex/quill-cloud-proxy/.github/actions/setup-gcloud@582cbdee7b7023cfeb915b62a7f635aa1e4662b1 # main 2026-11-13
+      - name: Release only after both regions verified and re-enabled
+        env:
+          GH_TOKEN: ${{ secrets.TRUST_PUSH_TOKEN }}
+          TR_DEPLOY_MUTEX_OPERATION: ${{ needs.admit-cloud.outputs.operation }}
+          RESULTS: ${{ toJSON(needs) }}
+        run: |
+          set -euo pipefail
+          export TR_DEPLOY_OUTCOME=failure
+          if jq -e 'all(.[]; .result == "success")' <<< "$RESULTS" >/dev/null; then
+            TR_DEPLOY_OUTCOME=success
+          fi
+          python3 tools/cloud-rollout.py release --cloud azure
+          if [ "$TR_DEPLOY_OUTCOME" != success ]; then
+            echo '::error::Azure reservation retained pending verified recovery.'
+            exit 1
+          fi
