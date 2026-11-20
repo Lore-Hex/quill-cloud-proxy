@@ -64,7 +64,13 @@ func TestOutputConfigEffortReachesClaudeTransports(t *testing.T) {
 							if err := json.NewDecoder(r.Body).Decode(&wire); err != nil {
 								t.Fatal(err)
 							}
-							if !reflect.DeepEqual(wire["output_config"], map[string]any{"effort": effort}) || !reflect.DeepEqual(wire["thinking"], map[string]any{"type": "adaptive"}) {
+							// A native Messages body is forwarded as written. A chat
+							// request asks for the thinking text back.
+							thinking := map[string]any{"type": "adaptive"}
+							if !native {
+								thinking["display"] = "summarized"
+							}
+							if !reflect.DeepEqual(wire["output_config"], map[string]any{"effort": effort}) || !reflect.DeepEqual(wire["thinking"], thinking) {
 								t.Fatalf("lost native effort: %#v", wire)
 							}
 							if wire["reasoning"] != nil || wire["reasoning_effort"] != nil || wire["max_tokens"] != float64(4096) {

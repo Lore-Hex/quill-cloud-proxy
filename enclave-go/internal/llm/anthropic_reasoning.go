@@ -254,7 +254,7 @@ func claudeAdaptiveReasoningBody(model string, class claudeReasoningClass, ask c
 		}
 		return body
 	}
-	result.Thinking = map[string]any{"type": "adaptive"}
+	result.Thinking = claudeAdaptiveThinking(class, req)
 	result.AnthropicMaxTokens = 0
 	if anthropicThinkingDefaultCapApplies(req, body) {
 		result.AnthropicMaxTokens = AnthropicThinkingDefaultMaxTokens
@@ -262,6 +262,21 @@ func claudeAdaptiveReasoningBody(model string, class claudeReasoningClass, ask c
 	result.Temperature = nil
 	result.TopP = nil
 	return &result
+}
+
+// claudeAdaptiveThinking is the adaptive thinking a chat reasoning request
+// sends. Every full-class model defaults to display "omitted", which returns
+// thinking blocks with empty text, so a chat client asking for reasoning got
+// none back. The full class is asked for the summarized thinking the 4.6
+// models return by default, unless the caller excluded reasoning from the
+// response. Display changes what is returned, not what is thought or billed.
+// The 4.6 models are sent the object as before.
+func claudeAdaptiveThinking(class claudeReasoningClass, req *qtypes.OpenAIChatRequest) map[string]any {
+	thinking := map[string]any{"type": "adaptive"}
+	if class == claudeFull && !req.ExcludeReasoning {
+		thinking["display"] = "summarized"
+	}
+	return thinking
 }
 
 // claudeAllowanceTooSmallToThink is true for a funded allowance that cannot
