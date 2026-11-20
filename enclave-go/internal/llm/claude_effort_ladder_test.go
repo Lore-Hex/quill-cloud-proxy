@@ -134,10 +134,10 @@ func TestUnlistedClaudeModelIsInTheFullClass(t *testing.T) {
 		if got, claude := claudeReasoningClassOf(id); !claude || got != claudeFull {
 			t.Errorf("%s: class %q (claude=%t), want %q", id, got, claude, claudeFull)
 		}
-		if got := claudeWire(t, id, `"reasoning_effort":"high"`); got != `{"max_tokens":32000,"output_config":{"effort":"high"},"thinking":{"type":"adaptive"}}` {
+		if got := claudeWire(t, id, `"reasoning_effort":"high"`); got != `{"max_tokens":32000,"output_config":{"effort":"high"},"thinking":{"display":"summarized","type":"adaptive"}}` {
 			t.Errorf("%s effort: got %s", id, got)
 		}
-		if got := claudeWire(t, id, `"reasoning":{"enabled":true}`); got != `{"max_tokens":32000,"thinking":{"type":"adaptive"}}` {
+		if got := claudeWire(t, id, `"reasoning":{"enabled":true}`); got != `{"max_tokens":32000,"thinking":{"display":"summarized","type":"adaptive"}}` {
 			t.Errorf("%s On alone: got %s", id, got)
 		}
 	}
@@ -211,12 +211,17 @@ func TestNonClaudeModelOnTheAnthropicWireIsSentAsBuilt(t *testing.T) {
 func TestClaudeEffortLadderPerClass(t *testing.T) {
 	const (
 		adaptive = `"thinking":{"type":"adaptive"}`
+		shown    = `"thinking":{"display":"summarized","type":"adaptive"}`
 		budget1k = `{"max_tokens":4096,"thinking":{"budget_tokens":1024,"type":"enabled"}}`
 		budget4k = `{"max_tokens":8192,"thinking":{"budget_tokens":4096,"type":"enabled"}}`
 		budget8k = `{"max_tokens":12288,"thinking":{"budget_tokens":8192,"type":"enabled"}}`
 		none     = `{"max_tokens":4096}`
 	)
 	effortAt := func(effort string) string {
+		return `{"max_tokens":32000,"output_config":{"effort":"` + effort + `"},` + shown + `}`
+	}
+	// The 4.6 models already return summarized thinking and are sent no display.
+	v46At := func(effort string) string {
 		return `{"max_tokens":32000,"output_config":{"effort":"` + effort + `"},` + adaptive + `}`
 	}
 	opus45 := func(effort, thinking string) string {
@@ -234,8 +239,8 @@ func TestClaudeEffortLadderPerClass(t *testing.T) {
 			"xhigh": effortAt("xhigh"), "max": effortAt("max"), "ultra": effortAt("ultra"),
 		}},
 		{claudeV46IDs, map[string]string{
-			"minimal": effortAt("low"), "low": effortAt("low"), "medium": effortAt("medium"), "high": effortAt("high"),
-			"xhigh": effortAt("high"), "max": effortAt("max"), "ultra": effortAt("ultra"),
+			"minimal": v46At("low"), "low": v46At("low"), "medium": v46At("medium"), "high": v46At("high"),
+			"xhigh": v46At("high"), "max": v46At("max"), "ultra": v46At("ultra"),
 		}},
 		{claudeOpus45IDs, map[string]string{
 			"minimal": opus45("low", ""), "low": opus45("low", budget1k), "medium": opus45("medium", budget4k), "high": opus45("high", budget8k),
@@ -406,7 +411,7 @@ func TestClaudeBareStringReasoningIsAnEffort(t *testing.T) {
 			t.Fatal("the shared projection wrote no budget for a string effort: this check proves nothing")
 		}
 		native := anthropicChatReasoningBody(id, req, body)
-		if thinking, _ := native.Thinking.(map[string]any); len(thinking) != 1 || thinking["type"] != "adaptive" {
+		if thinking, _ := native.Thinking.(map[string]any); len(thinking) != 2 || thinking["type"] != "adaptive" || thinking["display"] != "summarized" {
 			t.Errorf("%s string high: thinking=%v", id, native.Thinking)
 		}
 	}
@@ -552,7 +557,7 @@ func TestClaudeSonnet55OffIsBetweenTools(t *testing.T) {
 			t.Errorf("%s Off with a limit: got %s", id, got)
 		}
 		// On and an effort are not Off.
-		if got := claudeWire(t, id, `"reasoning_effort":"high"`); got != `{"max_tokens":32000,"output_config":{"effort":"high"},"thinking":{"type":"adaptive"}}` {
+		if got := claudeWire(t, id, `"reasoning_effort":"high"`); got != `{"max_tokens":32000,"output_config":{"effort":"high"},"thinking":{"display":"summarized","type":"adaptive"}}` {
 			t.Errorf("%s effort: got %s", id, got)
 		}
 	}
@@ -704,7 +709,7 @@ func TestClaudeOnAlonePerClass(t *testing.T) {
 		ids  []string
 		want string
 	}{
-		{claudeFullIDs, `{"max_tokens":32000,"thinking":{"type":"adaptive"}}`},
+		{claudeFullIDs, `{"max_tokens":32000,"thinking":{"display":"summarized","type":"adaptive"}}`},
 		{claudeV46IDs, budget},
 		{claudeOpus45IDs, budget},
 		{claudeBudgetIDs, budget},
@@ -720,15 +725,15 @@ func TestClaudeOnAlonePerClass(t *testing.T) {
 	const explicit = `{"max_tokens":4096,"thinking":{"budget_tokens":2048,"type":"enabled"}}`
 	for _, id := range claudeFullIDs {
 		for _, tc := range []struct{ name, fields, want string }{
-			{"a caller cap is sent as set", `"reasoning":{"enabled":true},"max_tokens":512`, `{"max_tokens":512,"thinking":{"type":"adaptive"}}`},
-			{"top_p is not sent, top_k is", `"reasoning":{"enabled":true},"temperature":0.2,"top_k":40,"top_p":0.5`, `{"max_tokens":32000,"thinking":{"type":"adaptive"},"top_k":40}`},
-			{"a forced tool choice is sent", `"reasoning":true,"tool_choice":"required",` + claudeTestTools, `{"max_tokens":32000,"thinking":{"type":"adaptive"},"tool_choice":{"type":"any"}}`},
+			{"a caller cap is sent as set", `"reasoning":{"enabled":true},"max_tokens":512`, `{"max_tokens":512,"thinking":{"display":"summarized","type":"adaptive"}}`},
+			{"top_p is not sent, top_k is", `"reasoning":{"enabled":true},"temperature":0.2,"top_k":40,"top_p":0.5`, `{"max_tokens":32000,"thinking":{"display":"summarized","type":"adaptive"},"top_k":40}`},
+			{"a forced tool choice is sent", `"reasoning":true,"tool_choice":"required",` + claudeTestTools, `{"max_tokens":32000,"thinking":{"display":"summarized","type":"adaptive"},"tool_choice":{"type":"any"}}`},
 			// A budget the caller named is left for the provider to refuse.
 			{"explicit budget", `"reasoning":{"max_tokens":2048}`, explicit},
 			{"On with an explicit budget", `"reasoning":{"enabled":true,"max_tokens":2048}`, explicit},
 			{"On with budget_tokens", `"reasoning":{"enabled":true,"budget_tokens":2048}`, explicit},
 			{"On with thinking_budget", `"reasoning":{"type":"enabled","thinking_budget":2048}`, explicit},
-			{"On beside an effort", `"reasoning":{"enabled":true},"reasoning_effort":"high"`, `{"max_tokens":32000,"output_config":{"effort":"high"},"thinking":{"type":"adaptive"}}`},
+			{"On beside an effort", `"reasoning":{"enabled":true},"reasoning_effort":"high"`, `{"max_tokens":32000,"output_config":{"effort":"high"},"thinking":{"display":"summarized","type":"adaptive"}}`},
 			{"nothing asked", ``, `{"max_tokens":32000}`},
 		} {
 			if got := claudeWire(t, id, tc.fields, "top_p", "top_k", "tool_choice"); got != tc.want {
@@ -751,7 +756,7 @@ func TestClaudeOnAlonePerClass(t *testing.T) {
 		if native.Temperature != nil || native.TopP != nil || native.TopK == nil || *native.TopK != 40 || native.OutputConfig != nil {
 			t.Errorf("%s On alone: temperature=%v top_p=%v top_k=%v output_config=%v", id, native.Temperature, native.TopP, native.TopK, native.OutputConfig)
 		}
-		if got := claudeControls(t, bedrock.BuildRequestShape(native), "thinking", "output_config", "max_tokens", "temperature", "top_p", "top_k"); got != `{"max_tokens":32000,"thinking":{"type":"adaptive"},"top_k":40}` {
+		if got := claudeControls(t, bedrock.BuildRequestShape(native), "thinking", "output_config", "max_tokens", "temperature", "top_p", "top_k"); got != `{"max_tokens":32000,"thinking":{"display":"summarized","type":"adaptive"},"top_k":40}` {
 			t.Errorf("%s On alone on the Bedrock wire: got %s", id, got)
 		}
 	}
@@ -770,7 +775,7 @@ func TestClaudeOnAlonePerClass(t *testing.T) {
 					}
 					continue
 				}
-				if thinking, _ := native.Thinking.(map[string]any); len(thinking) != 1 || thinking["type"] != "adaptive" {
+				if thinking, _ := native.Thinking.(map[string]any); len(thinking) != 2 || thinking["type"] != "adaptive" || thinking["display"] != "summarized" {
 					t.Errorf("%s funded total=%d %v: thinking=%v", model, total, hint, native.Thinking)
 				}
 			}
@@ -948,7 +953,7 @@ func TestClaudeHaiku55AndMythos5NeverGetBudgetThinkingFromAnEffort(t *testing.T)
 				native := anthropicChatReasoningBody(id, req, body)
 				thinking, _ := native.Thinking.(map[string]any)
 				config, _ := native.OutputConfig.(map[string]any)
-				if len(thinking) != 1 || thinking["type"] != "adaptive" || config["effort"] == nil {
+				if len(thinking) != 2 || thinking["type"] != "adaptive" || thinking["display"] != "summarized" || config["effort"] == nil {
 					t.Errorf("%s %s: thinking=%v output_config=%v", id, fields, native.Thinking, native.OutputConfig)
 				}
 			}

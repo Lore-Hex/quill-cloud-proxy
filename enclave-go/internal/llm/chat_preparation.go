@@ -117,6 +117,11 @@ func PrepareChatRequest(provider, upstreamModel string, req *qtypes.OpenAIChatRe
 			return PreparedChatRequest{}, err
 		}
 		path = "/responses"
+	} else if normalizeDirectProvider(provider) == "openai" {
+		if err := applyOpenAIChatReasoning(upstreamID, req, &reqBody); err != nil {
+			return PreparedChatRequest{}, err
+		}
+		payload = reqBody
 	}
 	bodyBytes, err := json.Marshal(payload)
 	if err != nil {

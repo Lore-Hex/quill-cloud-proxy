@@ -117,28 +117,32 @@ func (m *stageDMeter) heartbeatUsage() trustedrouter.HeartbeatUsage {
 type stageDController struct {
 	mu sync.Mutex
 
-	ctx                 context.Context
-	gateway             *trustedrouter.Client
-	auth                *trustedrouter.Authorization
-	cancel              context.CancelFunc
-	closeProvider       func(error)
-	config              stageDConfig
-	started             time.Time
-	now                 func() time.Time
-	endpointID          string
-	meter               stageDMeter
-	seq                 int64
-	lastAccepted        time.Time
-	lastOutput          int
-	capMicro            int64
-	price               trustedrouter.CandidatePrice
-	hasPrice            bool
-	heartbeatLostReason trustedrouter.HeartbeatRejectionReason
-	heartbeatLost       bool
-	sliceInFlight       bool
-	stopOnce            sync.Once
-	stopCh              chan struct{}
-	background          sync.WaitGroup
+	ctx           context.Context
+	gateway       *trustedrouter.Client
+	auth          *trustedrouter.Authorization
+	cancel        context.CancelFunc
+	closeProvider func(error)
+	config        stageDConfig
+	started       time.Time
+	now           func() time.Time
+	endpointID    string
+	meter         stageDMeter
+	// authorizedPromptTokens is the prompt estimate the authorization priced
+	// (EstimateInputTokens, the control plane's stage_d_prompt_tokens). The
+	// meter's promptTokens starts there and rises to the provider's count.
+	authorizedPromptTokens int
+	seq                    int64
+	lastAccepted           time.Time
+	lastOutput             int
+	capMicro               int64
+	price                  trustedrouter.CandidatePrice
+	hasPrice               bool
+	heartbeatLostReason    trustedrouter.HeartbeatRejectionReason
+	heartbeatLost          bool
+	sliceInFlight          bool
+	stopOnce               sync.Once
+	stopCh                 chan struct{}
+	background             sync.WaitGroup
 }
 
 func newStageDController(
@@ -156,7 +160,8 @@ func newStageDController(
 	return &stageDController{
 		ctx: ctx, gateway: gateway, auth: auth, cancel: cancel, closeProvider: closeProvider, config: config,
 		started: started, now: time.Now, endpointID: endpointID, meter: stageDMeter{promptTokens: promptTokens},
-		capMicro: auth.CapMicro, price: price, hasPrice: ok,
+		authorizedPromptTokens: promptTokens,
+		capMicro:               auth.CapMicro, price: price, hasPrice: ok,
 		stopCh: make(chan struct{}),
 	}
 }
@@ -230,7 +235,7 @@ func (c *stageDController) beforeSlice(delta adapter.StreamDelta) error {
 		if c.closeProvider != nil {
 			c.closeProvider(termination)
 		}
-		fmt.Fprintf(os.Stderr, "enclave.stage_d_cap_reached auth_id=%q output_tokens=%d cap_micro=%d\n", c.auth.AuthorizationID, c.meter.outputTokens(), c.capMicro)
+		fmt.Fprintf(os.Stderr, "enclave.stage_d_cap_reached auth_id=%q output_tokens=%d cap_micro=%d prompt_tokens=%d authorized_prompt_tokens=%d prompt_overrun_micro=%d\n", c.auth.AuthorizationID, c.meter.outputTokens(), c.capMicro, c.meter.promptTokens, c.authorizedPromptTokens, c.promptOverrunMicroLocked())
 		return termination
 	}
 	// Keep the cadence goroutine from beginning a heartbeat between this
@@ -348,7 +353,33 @@ func (c *stageDController) wouldExceedCapLocked(text string) bool {
 		tierPrompt = c.meter.priceTierInputTokens
 	}
 	rates := c.price.RatesForPrompt(tierPrompt)
-	return stageDUsageMicro(c.price, rates, prospective.promptTokens, prospective.outputTokens(), prospective.cacheReadTokens, prospective.cacheCreationTokens) > c.capMicro
+	running := stageDUsageMicro(c.price, rates, prospective.promptTokens, prospective.outputTokens(), prospective.cacheReadTokens, prospective.cacheCreationTokens)
+	return running > c.capMicro+c.promptOverrunMicroLocked()
+}
+
+// promptOverrunMicroLocked is what the delivered prompt costs above the
+// authorized prompt estimate on the selected endpoint:
+// max(0, price(delivered prompt) - price(estimate)). The cap prices the
+// estimate plus the output budget, and the estimate is chars/4 over the
+// messages: it misses tool definitions, the provider's tool-use system
+// prompt and tokenizers finer than four characters a token. Without this
+// allowance a prompt above its estimate spent the output budget before the
+// first token, and the stream was cut empty with finish_reason "length"
+// (2026-11-19 report: a 9 KB tool on Anthropic). The provider has already
+// taken the prompt; cutting the stream recovers none of it, so the cap bounds
+// the output. The control plane's heartbeat applies the same allowance
+// (quill-router storage_gcp_stage_d.stage_d_ceiling_microdollars).
+func (c *stageDController) promptOverrunMicroLocked() int64 {
+	if !c.hasPrice || c.authorizedPromptTokens <= 0 {
+		return 0
+	}
+	tierPrompt := c.meter.promptTokens
+	if c.meter.priceTierInputTokens > 0 {
+		tierPrompt = c.meter.priceTierInputTokens
+	}
+	delivered := stageDUsageMicro(c.price, c.price.RatesForPrompt(tierPrompt), c.meter.promptTokens, 0, c.meter.cacheReadTokens, c.meter.cacheCreationTokens)
+	authorized := stageDUsageMicro(c.price, c.price.RatesForPrompt(c.authorizedPromptTokens), c.authorizedPromptTokens, 0, 0, 0)
+	return max(delivered-authorized, 0)
 }
 
 func stageDUsageMicro(price trustedrouter.CandidatePrice, rates trustedrouter.PriceRates, input, output, cached, cacheCreation int) int64 {

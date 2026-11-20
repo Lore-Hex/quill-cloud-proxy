@@ -5966,6 +5966,43 @@ func TestGenericSynthRequiresExplicitPanelConfig(t *testing.T) {
 	}
 }
 
+func TestGenericFusionPrimitiveConfigErrorNamesRequestedModel(t *testing.T) {
+	cases := []struct {
+		model   string
+		context string
+		want    string
+		notWant string
+	}{
+		{trustedRouterSynthModel, trustedRouterSynthTool, "trustedrouter/synth requires an explicit preset or analysis_models", ""},
+		{trustedRouterSynthCodeModel, trustedRouterSynthTool, "trustedrouter/synth-code requires an explicit preset or analysis_models", ""},
+		{trustedRouterSelectorModel, trustedRouterSelectorTool, "trustedrouter/selector requires selector_models, an explicit preset, or analysis_models", "trustedrouter/synth"},
+	}
+	for _, tc := range cases {
+		req := &types.OpenAIChatRequest{Model: tc.model}
+		config, _, err := fusionConfigForRequest(req)
+		if err != nil {
+			t.Fatalf("%s: fusionConfigForRequest: %v", tc.model, err)
+		}
+		config.Mode = fusionModeForRequest(req.Model, config.Mode)
+		err = validateGenericFusionConfig(config, req.Model)
+		var adapterErr *adapter.AdapterError
+		if !asAdapterErr(err, &adapterErr) || adapterErr.Status != 400 || adapterErr.Context != tc.context {
+			t.Fatalf("%s: error = %#v, want 400 %s", tc.model, err, tc.context)
+		}
+		if !strings.HasPrefix(adapterErr.Message, tc.want) {
+			t.Fatalf("%s: message = %q, want prefix %q", tc.model, adapterErr.Message, tc.want)
+		}
+		if tc.notWant != "" && strings.Contains(adapterErr.Message, tc.notWant) {
+			t.Fatalf("%s: message = %q names %q", tc.model, adapterErr.Message, tc.notWant)
+		}
+	}
+	// Selector with its own models configured is accepted.
+	selector := fusionConfig{Mode: fusionModeSelector, SelectorModels: []string{"minimax/minimax-m3"}}
+	if err := validateGenericFusionConfig(selector, trustedRouterSelectorModel); err != nil {
+		t.Fatalf("configured selector rejected: %v", err)
+	}
+}
+
 func TestGenericSynthAcceptsDirectSDKToolConfig(t *testing.T) {
 	req := &types.OpenAIChatRequest{
 		Model: trustedRouterSynthModel,

@@ -179,6 +179,46 @@ func frozenPrepareChatRequest(provider, upstreamID string, req *qtypes.OpenAICha
 			return PreparedChatRequest{}, err
 		}
 		path = "/responses"
+	} else if normalizeDirectProvider(provider) == "openai" {
+		// Not in 4a4f0695: OpenAI chat completions refuses a thinking field
+		// and a reasoning object as unknown parameters, so neither is sent.
+		// The switch becomes reasoning_effort: On alone is medium, Off is
+		// none where the model documents it and nothing on a model that
+		// does not reason; any other Off, and a token budget, is a route 400.
+		reqBody.Thinking, reqBody.Reasoning = nil, nil
+		if req != nil {
+			model := strings.TrimPrefix(strings.ToLower(upstreamID), "openai/")
+			values, _ := req.Reasoning.(map[string]any)
+			enabled, switched := values["enabled"].(bool)
+			bare, isBool := req.Reasoning.(bool)
+			mode, _ := values["type"].(string)
+			effort := strings.ToLower(strings.TrimSpace(req.ReasoningEffort))
+			if effort == "" {
+				effort, _ = values["effort"].(string)
+				effort = strings.ToLower(strings.TrimSpace(effort))
+			}
+			off := (switched && !enabled) || (isBool && !bare) || mode == "disabled" || effort == "none" || effort == "off" || effort == "disable" || effort == "disabled"
+			on := (switched && enabled) || (isBool && bare) || mode == "enabled" || mode == "adaptive"
+			budget := values["max_tokens"] != nil || values["budget_tokens"] != nil || values["thinking_budget"] != nil
+			routeErr := func(message string) (PreparedChatRequest, error) {
+				return PreparedChatRequest{}, &upstreamHTTPError{status: http.StatusBadRequest, body: "OpenAI chat route: " + message}
+			}
+			switch {
+			case off && (strings.HasPrefix(model, "gpt-4") || strings.HasPrefix(model, "gpt-3.5") || strings.HasPrefix(model, "chat-latest")):
+				reqBody.ReasoningEffort = ""
+			case off && (model == "gpt-5.5" || model == "gpt-5.1" || model == "gpt-5.2" || strings.HasPrefix(model, "gpt-5.4") || strings.HasPrefix(model, "gpt-6-luna") || strings.HasPrefix(model, "gpt-6-sol")):
+				reqBody.ReasoningEffort = "none"
+			case off:
+				return routeErr("this model cannot turn reasoning off")
+			case budget:
+				return routeErr("this model takes a reasoning effort, not a thinking token budget")
+			case effort != "":
+				reqBody.ReasoningEffort = effort
+			case on:
+				reqBody.ReasoningEffort = "medium"
+			}
+		}
+		payload = reqBody
 	}
 	bodyBytes, err := json.Marshal(payload)
 	if err != nil {
