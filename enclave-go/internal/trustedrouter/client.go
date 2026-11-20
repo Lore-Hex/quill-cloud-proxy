@@ -1006,7 +1006,9 @@ func (c *Client) AuthorizeWithRoute(ctx context.Context, bearer string, req *qty
 	decoded.pinControlPlaneEndpoint(controlPlaneEndpoint)
 	decoded.cacheAffinityKey, decoded.cacheAffinityExplicit = cacheAffinity(lookupHash, req, routeType)
 	decoded.RouteType = routeType
-	c.bindAsyncAuthorization(decoded, req, routeType)
+	if asyncCohort(routeType) {
+		c.bindAsyncAuthorization(decoded, req, routeType)
+	}
 	startupStart := c.recordStartupAdmissionStart(decoded, routeType)
 	c.retainShadowAuthorization(decoded, req, routeType)
 	startupStart.record(decoded.shadowSettlement != nil)
@@ -1088,6 +1090,15 @@ func (c *Client) AuthorizeEmbeddingsWithRoute(
 	inputTokens int,
 	routeType string,
 ) (*Authorization, error) {
+	return c.authorizeEmbeddingsWithRoute(ctx, bearer, req, inputTokens, routeType, true)
+}
+
+// AuthorizeEmbeddingsWithRouteSync keeps hosted requests with images synchronous.
+func (c *Client) AuthorizeEmbeddingsWithRouteSync(ctx context.Context, bearer string, req *qtypes.EmbeddingRequest, inputTokens int, routeType string) (*Authorization, error) {
+	return c.authorizeEmbeddingsWithRoute(ctx, bearer, req, inputTokens, routeType, false)
+}
+
+func (c *Client) authorizeEmbeddingsWithRoute(ctx context.Context, bearer string, req *qtypes.EmbeddingRequest, inputTokens int, routeType string, allowAsync bool) (*Authorization, error) {
 	if err := rejectRetiredModels(req.Model, nil); err != nil {
 		return nil, err
 	}
@@ -1153,6 +1164,10 @@ func (c *Client) AuthorizeEmbeddingsWithRoute(
 	})
 	estimate.EstimatedInputTokens = int64(inputTokens)
 	estimate.MaxTokens = &maxTokens
+	negotiate := allowAsync && routeType == "decide" && !c.asyncShadow && c.asyncNegotiate && len(c.asyncTicketKeys) > 0
+	if negotiate {
+		ctx = context.WithValue(ctx, asyncModeKey{}, "async-v1")
+	}
 	decoded, controlPlaneEndpoint, err := c.authorizeAtDecodeSeam(ctx, lookupHash, body, estimate)
 	if err != nil {
 		c.afterCredentialCheck(ctx, lookupHash, err)
@@ -1161,6 +1176,9 @@ func (c *Client) AuthorizeEmbeddingsWithRoute(
 	c.afterCredentialCheck(ctx, lookupHash, nil)
 	decoded.pinControlPlaneEndpoint(controlPlaneEndpoint)
 	decoded.RouteType = routeType
+	if negotiate {
+		c.bindAsyncAuthorization(decoded, &qtypes.OpenAIChatRequest{}, routeType)
+	}
 	startupStart := c.recordStartupAdmissionStart(decoded, routeType)
 	c.retainShadowAuthorization(decoded, &qtypes.OpenAIChatRequest{}, routeType)
 	startupStart.record(decoded.shadowSettlement != nil)

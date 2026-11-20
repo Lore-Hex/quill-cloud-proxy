@@ -237,10 +237,11 @@ type decideUsage struct {
 }
 
 type decideResponse struct {
-	Model         string                   `json:"model"`
-	Answers       map[string]decide.Answer `json:"answers"`
-	Usage         decideUsage              `json:"usage"`
-	TrustedRouter map[string]any           `json:"trustedrouter"`
+	Model                   string                           `json:"model"`
+	Answers                 map[string]decide.Answer         `json:"answers"`
+	Usage                   decideUsage                      `json:"usage"`
+	TrustedRouter           map[string]any                   `json:"trustedrouter"`
+	TrustedRouterSettlement *trustedrouter.PendingSettlement `json:"trusted_router_settlement,omitempty"`
 }
 
 // isDecidePath reports whether path is the decide route. Its name is
@@ -426,7 +427,11 @@ func serveHostedDecide(
 			AppCategories: attribution.AppCategories,
 		}
 		var err error
-		authorization, err = trGateway.AuthorizeEmbeddingsWithRoute(ctx, bearer, authReq, inputTokens, decideRouteType)
+		authorize := trGateway.AuthorizeEmbeddingsWithRoute
+		if len(req.Images) > 0 {
+			authorize = trGateway.AuthorizeEmbeddingsWithRouteSync
+		}
+		authorization, err = authorize(ctx, bearer, authReq, inputTokens, decideRouteType)
 		if err != nil {
 			writeDecideFailure(conn, statusFromControlPlaneError(err), messageFromControlPlaneError(err, "gateway authorization failed"), err, false)
 			return
@@ -752,6 +757,12 @@ func writeDecideResponse(ctx context.Context, conn io.Writer, resp decideRespons
 		routing.Served.Model = resp.Model
 	}
 	resp.TrustedRouter = decideTrustedRouterRouting(authorization, settlement, routing)
+	// A pending settle adds this one member, which carries the locally
+	// evaluated cost. Every other member, usage included, is what a
+	// synchronous answer has.
+	if settlement != nil {
+		resp.TrustedRouterSettlement = settlement.TrustedRouterSettlement
+	}
 	out, err := json.Marshal(resp)
 	if err == nil {
 		out, err = annotateBatchSettlementOnlyUsage(ctx, out, settlement, authorization)
