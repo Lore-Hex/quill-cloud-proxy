@@ -292,6 +292,7 @@ func main() {
 		"privatemode": boot.ProviderAPIKeys["privatemode"],
 	}, llm.TinfoilAttestedHTTPClient).WithPrivatemodeAttestation(llm.PrivatemodeAttestedHTTPClient)
 	trGateway := trustedrouter.NewFromBootstrap(boot)
+	trGateway.EnableOpenAISafetyIdentifiers()
 	if configurationErr := trGateway.ProductionConfigurationError(); configurationErr != nil {
 		fmt.Fprintf(os.Stderr, "enclave.control_plane_configuration_rejected err=%q\n", configurationErr.Error())
 		os.Exit(1)

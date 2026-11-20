@@ -130,6 +130,16 @@ func (c *Client) PrepareSpendLeaseAdmission(
 		admission.Release()
 		return nil, nil
 	}
+	// A lease obtained on a non-OpenAI route may not carry the owner
+	// digest. Resolve it synchronously before starting an OpenAI attempt.
+	if c.openAISafety && local.OpenAISafetyIdentifier == "" {
+		for _, route := range local.RouteCandidates {
+			if route.Provider == "openai" {
+				admission.Release()
+				return nil, nil
+			}
+		}
+	}
 	authorizeBody := chatAuthorizeBody(c, lookupHash, idempotencyKey, minted, req, routeType)
 	if requestLogID := requestLogIDFromContext(ctx); requestLogID != "" {
 		authorizeBody["gateway_request_id"] = requestLogID
@@ -185,7 +195,8 @@ func localAuthorization(admission *spendlease.Admission, request spendlease.Esti
 	first := candidates[0]
 	return &Authorization{
 		WorkspaceID: claims.WorkspaceID, APIKeyHash: claims.KeyHash,
-		Model: first.Model, UpstreamModel: first.UpstreamModel, EndpointID: first.EndpointID,
+		OpenAISafetyIdentifier: admission.Lease.OpenAISafetyIdentifier,
+		Model:                  first.Model, UpstreamModel: first.UpstreamModel, EndpointID: first.EndpointID,
 		Provider: first.Provider, ProviderName: first.ProviderName, UsageType: first.UsageType,
 		Region: request.Region, GatewayRegion: request.Region, RequestedModel: request.Model,
 		LimitUsageType: "Credits", WaferZDRRequired: first.WaferZDRRequired,

@@ -89,14 +89,15 @@ type Request struct {
 }
 
 type ResolvedRequest struct {
-	Request     Request
-	Spec        ModelSpec
-	N           int
-	Resolution  string
-	AspectRatio string
-	Quality     string
-	Background  string
-	Format      string
+	OpenAISafetyIdentifier string `json:"-"`
+	Request                Request
+	Spec                   ModelSpec
+	N                      int
+	Resolution             string
+	AspectRatio            string
+	Quality                string
+	Background             string
+	Format                 string
 }
 
 type RequestError struct {

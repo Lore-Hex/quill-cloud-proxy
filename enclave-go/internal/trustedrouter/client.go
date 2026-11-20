@@ -103,6 +103,7 @@ func ClientContextFromContext(ctx context.Context) *qtypes.ClientContext {
 }
 
 type Client struct {
+	openAISafety    bool
 	asyncShadow     bool
 	asyncNegotiate  bool
 	asyncTicketKeys map[string]asyncTicketKey
@@ -296,6 +297,10 @@ func (c *Client) Enabled() bool {
 	}
 	return c.configurationError != nil || (len(c.baseURLs) > 0 && c.internalToken != "")
 }
+
+// EnableOpenAISafetyIdentifiers declares support on internal authorization
+// requests. Configure once at gateway startup, before serving traffic.
+func (c *Client) EnableOpenAISafetyIdentifiers() { c.openAISafety = true }
 
 // ConfigurationError reports a fail-closed control-plane configuration error.
 // Callers that own process startup should treat it as fatal so health checks
@@ -627,6 +632,7 @@ type Authorization struct {
 	InvocationNonce                       string                             `json:"invocation_nonce"`
 	WorkspaceID                           string                             `json:"workspace_id"`
 	APIKeyHash                            string                             `json:"api_key_hash"`
+	OpenAISafetyIdentifier                string                             `json:"openai_safety_identifier,omitempty"`
 	Model                                 string                             `json:"model"`
 	UpstreamModel                         string                             `json:"upstream_model"`
 	EndpointID                            string                             `json:"endpoint_id"`
@@ -1595,6 +1601,9 @@ func (c *Client) postToControlPlaneWithBootAuth(
 		}
 		req.Header.Set("Content-Type", "application/json")
 		req.Header.Set(internalTokenHeader, c.internalToken)
+		if c.openAISafety && path == "/internal/gateway/authorize" {
+			req.Header.Set("X-TR-OpenAI-Safety", "v1")
+		}
 		if c.asyncShadow && path == "/internal/gateway/authorize" {
 			req.Header.Set(shadowPolicyHeader, shadowPolicyV2)
 		}

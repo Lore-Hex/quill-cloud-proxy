@@ -79,11 +79,12 @@ type NativeRoute struct {
 // encrypted before persistence and is interpreted only by the attested
 // gateway authorizer that created it.
 type NativeAuthorization struct {
-	Handle              json.RawMessage `json:"handle"`
-	Routes              []NativeRoute   `json:"routes"`
-	NativeBatchEligible bool            `json:"native_batch_eligible"`
-	CustomModel         bool            `json:"custom_model,omitempty"`
-	ManagedPathOnly     bool            `json:"managed_path_only,omitempty"`
+	OpenAISafetyIdentifier string          `json:"openai_safety_identifier,omitempty"`
+	Handle                 json.RawMessage `json:"handle"`
+	Routes                 []NativeRoute   `json:"routes"`
+	NativeBatchEligible    bool            `json:"native_batch_eligible"`
+	CustomModel            bool            `json:"custom_model,omitempty"`
+	ManagedPathOnly        bool            `json:"managed_path_only,omitempty"`
 }
 
 type NativeUsage struct {
@@ -123,9 +124,10 @@ type NativeAuthorizer interface {
 }
 
 type NativeProviderRequest struct {
-	Index    int
-	CustomID string
-	Body     json.RawMessage
+	OpenAISafetyIdentifier string
+	Index                  int
+	CustomID               string
+	Body                   json.RawMessage
 }
 
 type NativeProviderJob struct {
@@ -173,21 +175,22 @@ type NativeProvider interface {
 }
 
 type nativeState struct {
-	Version           int               `json:"version"`
-	Stage             string            `json:"stage"`
-	Token             string            `json:"token"`
-	Provider          string            `json:"provider,omitempty"`
-	EndpointID        string            `json:"endpoint_id,omitempty"`
-	Model             string            `json:"model,omitempty"`
-	UpstreamModel     string            `json:"upstream_model,omitempty"`
-	SubmitAttempts    int               `json:"submit_attempts,omitempty"`
-	SubmitUncertain   bool              `json:"submit_uncertain,omitempty"`
-	SubmitUncertainAt int64             `json:"submit_uncertain_at,omitempty"`
-	RecoveryNotFound  int               `json:"recovery_not_found,omitempty"`
-	RetryAttempts     int               `json:"retry_attempts,omitempty"`
-	NextPollAt        int64             `json:"next_poll_at,omitempty"`
-	ResultsHarvested  bool              `json:"results_harvested,omitempty"`
-	Submission        NativeProviderJob `json:"submission"`
+	OpenAISafetyIdentifier string            `json:"openai_safety_identifier,omitempty"`
+	Version                int               `json:"version"`
+	Stage                  string            `json:"stage"`
+	Token                  string            `json:"token"`
+	Provider               string            `json:"provider,omitempty"`
+	EndpointID             string            `json:"endpoint_id,omitempty"`
+	Model                  string            `json:"model,omitempty"`
+	UpstreamModel          string            `json:"upstream_model,omitempty"`
+	SubmitAttempts         int               `json:"submit_attempts,omitempty"`
+	SubmitUncertain        bool              `json:"submit_uncertain,omitempty"`
+	SubmitUncertainAt      int64             `json:"submit_uncertain_at,omitempty"`
+	RecoveryNotFound       int               `json:"recovery_not_found,omitempty"`
+	RetryAttempts          int               `json:"retry_attempts,omitempty"`
+	NextPollAt             int64             `json:"next_poll_at,omitempty"`
+	ResultsHarvested       bool              `json:"results_harvested,omitempty"`
+	Submission             NativeProviderJob `json:"submission"`
 }
 
 func (state nativeState) valid() bool {

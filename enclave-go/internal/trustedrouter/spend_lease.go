@@ -362,6 +362,7 @@ func (c *Client) authorizeAtDecodeSeamWithAdmission(
 	if c.spendLease != nil && c.shadow == nil && decoded.Data.SpendLease != nil {
 		var leaseErr error
 		if c.spendLease.state.LocalAdmissionEnabled() {
+			decoded.Data.SpendLease.OpenAISafetyIdentifier = decoded.Data.OpenAISafetyIdentifier
 			leaseErr = c.spendLease.state.HandleAdmissionResponse(lookupHash, decoded.Data.APIKeyHash, decoded.Data.WorkspaceID, decoded.Data.SpendLease, c.spendLease.now())
 		} else {
 			leaseErr = c.spendLease.state.HandleResponse(lookupHash, decoded.Data.WorkspaceID, decoded.Data.SpendLease, c.spendLease.now())
