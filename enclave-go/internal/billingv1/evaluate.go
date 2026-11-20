@@ -30,7 +30,7 @@ func RequireEligible(c Eligibility) error {
 	if c.Authority != "local" {
 		return failure("settlement_authority")
 	}
-	if c.RouteType != "chat.completions" && c.RouteType != "responses" {
+	if c.RouteType != "chat.completions" && c.RouteType != "responses" && (c.RouteType != "decide" || c.Streamed) {
 		return failure("unsupported_route")
 	}
 	if c.ServiceTier != nil && *c.ServiceTier != "default" {

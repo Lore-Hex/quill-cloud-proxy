@@ -117,7 +117,7 @@ type TerminalEnvelope struct {
 	Usage            NormalizedUsage `json:"usage"`
 	ChargeMicro      int64           `json:"charge_micro"`
 	TerminalKind     string          `json:"terminal_kind" literal:"settle|refund"`
-	RouteType        string          `json:"route_type" literal:"chat.completions|responses"`
+	RouteType        string          `json:"route_type" literal:"chat.completions|responses|decide"`
 	Streamed         bool            `json:"streamed"`
 }
 
