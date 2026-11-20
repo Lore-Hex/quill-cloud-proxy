@@ -24,35 +24,6 @@ jobs:
         working-directory: enclave-go/rampart
         run: npm audit --omit=dev --audit-level=high
 
-  aws-secret-policy:
-    runs-on: ubuntu-latest
-    timeout-minutes: 10
-    permissions:
-      contents: read
-    env:
-      AWS_CONFIG_FILE: /dev/null
-      AWS_SHARED_CREDENTIALS_FILE: /dev/null
-      AWS_EC2_METADATA_DISABLED: "true"
-      TF_IN_AUTOMATION: "true"
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - name: Install checksum-pinned Terraform (no third-party action)
-        working-directory: ${{ runner.temp }}
-        run: |
-          curl --fail --silent --show-error --retry 3 --max-time 120 \
-            -o terraform.zip https://releases.hashicorp.com/terraform/1.14.9/terraform_1.14.9_linux_amd64.zip
-          echo '2e5cffc20a0b48a67a76268723bd5a10b8666f69b2aa4f04906e206726bedd63  terraform.zip' | sha256sum --check --strict
-          mkdir terraform-bin
-          unzip -q terraform.zip -d terraform-bin
-          echo "$RUNNER_TEMP/terraform-bin" >> "$GITHUB_PATH"
-      - name: Validate import and signer policies with mocked AWS
-        working-directory: tools/aws-secrets
-        run: |
-          terraform fmt -check -recursive
-          terraform init -backend=false -input=false -lockfile=readonly
-          terraform validate -no-color
-          terraform test -no-color
-
   maple-pilot:
     runs-on: ubuntu-latest
     timeout-minutes: 15
@@ -207,25 +178,43 @@ jobs:
 
   trust-page-validation:
     # This is a required branch-protection check; policy regressions must block it.
-    needs: aws-secret-policy
-    if: ${{ always() }}
     # Catches accidental script tags / external font fetches / etc. on
     # the static trust page before publish.
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
     env:
       TR_REQUIRE_CRYPTO: "1"
     steps:
-      - name: Require AWS policy checks to pass
-        if: ${{ needs.aws-secret-policy.result != 'success' }}
-        run: |
-          echo "AWS policy checks did not pass; refusing trust validation." >&2
-          exit 1
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           # Provenance validation resolves the exact commit that built each
           # published enclave. A shallow checkout makes older release commits
           # appear invalid even when they are ancestors of main.
           fetch-depth: 0
+      - name: Validate import and signer policies with mocked AWS
+        working-directory: tools/aws-secrets
+        timeout-minutes: 10
+        env:
+          AWS_CONFIG_FILE: /dev/null
+          AWS_SHARED_CREDENTIALS_FILE: /dev/null
+          AWS_EC2_METADATA_DISABLED: "true"
+          TF_IN_AUTOMATION: "true"
+        run: |
+          (
+            cd "$RUNNER_TEMP"
+            curl --fail --silent --show-error --retry 3 --max-time 120 \
+              -o terraform.zip https://releases.hashicorp.com/terraform/1.14.9/terraform_1.14.9_linux_amd64.zip
+            echo '2e5cffc20a0b48a67a76268723bd5a10b8666f69b2aa4f04906e206726bedd63  terraform.zip' | sha256sum --check --strict
+            mkdir terraform-bin
+            unzip -q terraform.zip -d terraform-bin
+          )
+          export PATH="$RUNNER_TEMP/terraform-bin:$PATH"
+          export TF_DATA_DIR="$RUNNER_TEMP/aws-secret-policy-data"
+          terraform fmt -check -recursive
+          terraform init -backend=false -input=false -lockfile=readonly
+          terraform validate -no-color
+          terraform test -no-color
       - uses: Lore-Hex/quill-cloud-proxy/.github/actions/setup-uv@582cbdee7b7023cfeb915b62a7f635aa1e4662b1 # main 2026-11-13
         with:
           version: "0.13.4"
