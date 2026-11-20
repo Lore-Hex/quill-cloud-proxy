@@ -415,7 +415,8 @@ jobs:
         run: |
           set -euo pipefail
           python3 tools/aws_gateway_rollout.py refresh --region eu-west-3 \
-            --serving "$RUNNER_TEMP/serving-eu-west-3.json" --version "$CANDIDATE_VERSION_PARIS"
+            --serving "$RUNNER_TEMP/serving-eu-west-3.json" --version "$CANDIDATE_VERSION_PARIS" \
+            --record "$RUNNER_TEMP/refresh-eu-west-3.id"
       - name: "Paris: census, every member verified individually"
         id: census_paris
         run: |
@@ -433,7 +434,7 @@ jobs:
           role-duration-seconds: ${{ env.AWS_ROLLOUT_SESSION_SECONDS }}
       - name: "Paris: roll back to the recorded template after a failed refresh or census"
         if: ${{ failure() && (steps.refresh_paris.outcome == 'failure' || steps.census_paris.outcome == 'failure') }}
-        run: python3 tools/aws_gateway_rollout.py rollback --region eu-west-3 --serving "$RUNNER_TEMP/serving-eu-west-3.json"
+        run: python3 tools/aws_gateway_rollout.py rollback --region eu-west-3 --serving "$RUNNER_TEMP/serving-eu-west-3.json" --record "$RUNNER_TEMP/refresh-eu-west-3.id"
       # ---------------- Dublin (eu-west-1) ----------------
       - name: "Dublin: fresh AWS session"
         uses: Lore-Hex/quill-cloud-proxy/.github/actions/aws-credentials@582cbdee7b7023cfeb915b62a7f635aa1e4662b1 # main 2026-11-13
@@ -486,7 +487,8 @@ jobs:
         run: |
           set -euo pipefail
           python3 tools/aws_gateway_rollout.py refresh --region eu-west-1 \
-            --serving "$RUNNER_TEMP/serving-eu-west-1.json" --version "$CANDIDATE_VERSION_DUBLIN"
+            --serving "$RUNNER_TEMP/serving-eu-west-1.json" --version "$CANDIDATE_VERSION_DUBLIN" \
+            --record "$RUNNER_TEMP/refresh-eu-west-1.id"
       - name: "Dublin: census, every member verified individually"
         id: census_dublin
         run: |
@@ -504,7 +506,7 @@ jobs:
           role-duration-seconds: ${{ env.AWS_ROLLOUT_SESSION_SECONDS }}
       - name: "Dublin: roll back to the recorded template after a failed refresh or census"
         if: ${{ failure() && (steps.refresh_dublin.outcome == 'failure' || steps.census_dublin.outcome == 'failure') }}
-        run: python3 tools/aws_gateway_rollout.py rollback --region eu-west-1 --serving "$RUNNER_TEMP/serving-eu-west-1.json"
+        run: python3 tools/aws_gateway_rollout.py rollback --region eu-west-1 --serving "$RUNNER_TEMP/serving-eu-west-1.json" --record "$RUNNER_TEMP/refresh-eu-west-1.id"
 
   narrow:
     needs: [preflight, admit-cloud, fleet]

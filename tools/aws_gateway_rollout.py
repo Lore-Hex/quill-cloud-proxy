@@ -443,6 +443,8 @@ def cmd_refresh(args: argparse.Namespace) -> None:
     region = require_region(args.region)
     serving = json.loads(Path(args.serving).read_text())
     refresh_id = start_refresh(region, serving["launch_template_id"], args.version)
+    # Recorded before waiting: the rollback may cancel only this refresh.
+    Path(args.record).write_text(refresh_id + "\n")
     status = wait_refresh(region, refresh_id, args.timeout)
     if status != "Successful":
         raise SystemExit(f"{region}: refresh ended {status}; AWS automatic rollback restores template "
@@ -452,9 +454,10 @@ def cmd_refresh(args: argparse.Namespace) -> None:
 ACTIVE_REFRESH = {"Pending", "InProgress", "Cancelling", "RollbackInProgress", "Baking"}
 
 
-def cancel_active_refresh(region: str, timeout: int) -> None:
-    """Stop a refresh still promoting the candidate (e.g. one that outlived
-    the wait) and let it settle before the rollback refresh starts."""
+def cancel_active_refresh(region: str, own_refresh: str, timeout: int) -> None:
+    """Stop THIS run's refresh if it is still promoting the candidate (one
+    that outlived the wait) and let it settle before the rollback refresh.
+    Any other active refresh is not ours to touch: refuse instead."""
     deadline = time.monotonic() + timeout
     cancelled = False
     while True:
@@ -463,6 +466,9 @@ def cancel_active_refresh(region: str, timeout: int) -> None:
         active = [r for r in refreshes if r["Status"] in ACTIVE_REFRESH]
         if not active:
             return
+        foreign = [r["InstanceRefreshId"] for r in active if r["InstanceRefreshId"] != own_refresh]
+        if foreign:
+            raise SystemExit(f"{region}: refresh {foreign} was not started by this run; not touching it")
         if not cancelled and any(r["Status"] in {"Pending", "InProgress", "Baking"} for r in active):
             aws(region, "autoscaling", "cancel-instance-refresh", "--auto-scaling-group-name", ASG)
             cancelled = True
@@ -475,7 +481,12 @@ def cancel_active_refresh(region: str, timeout: int) -> None:
 def cmd_rollback(args: argparse.Namespace) -> None:
     region = require_region(args.region)
     serving = json.loads(Path(args.serving).read_text())
-    cancel_active_refresh(region, 1800)
+    record = Path(args.record)
+    if not record.is_file():
+        # This run never started a refresh: nothing of ours to undo.
+        print(f"{region}: no refresh was started by this run; nothing to roll back")
+        return
+    cancel_active_refresh(region, record.read_text().strip(), 1800)
     current = group(region)
     if str(current["LaunchTemplate"]["Version"]) == serving["version"] and not census_problems(
             current, targets(region, current), serving["version"]):
@@ -594,7 +605,10 @@ def main() -> None:
         p.add_argument("--serving", required=True)
         if name == "refresh":
             p.add_argument("--version", required=True)
-        p.add_argument("--timeout", type=int, default=3600)
+        p.add_argument("--record", required=True, help="file holding the refresh id this run started")
+        # The 2026-11-17 refreshes took about 36 minutes; leave headroom so a
+        # slow but healthy refresh is not cancelled and rolled back.
+        p.add_argument("--timeout", type=int, default=5400)
     p = region_cmd("terminate-candidate")
     p.add_argument("--source", required=True)
     p.add_argument("--run-id", required=True)
