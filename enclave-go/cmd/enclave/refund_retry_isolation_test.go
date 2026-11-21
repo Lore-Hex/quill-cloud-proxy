@@ -17,19 +17,19 @@ import (
 	"github.com/Lore-Hex/quill-cloud-proxy/enclave-go/internal/trustedrouter"
 )
 
-// A settle retry is a charge waiting to be delivered. A refund retry is a
-// hold waiting to be released, and a hold releases itself by expiring. So a
-// refund that could not be delivered must never cost a queued settle its
+// A settle retry is a charge waiting to be delivered. A refund that fails
+// leaves a hold to expire, which costs the caller some held credit for a while
+// and nobody a charge. So a failed refund must never cost a queued settle its
 // place.
 //
-// This is the failure it guards against, end to end: the retry queue is full
-// of settles, a request then fails at its provider, and the control plane
-// refuses its refund. Queuing that refund for retry used to evict the oldest
-// settle, and with no outbox attached that charge was gone.
-//
-// The test uses only what the queue has always exposed, so it runs unchanged
-// against the code from before refunds had a queue of their own, and fails
-// there.
+// The exits this change routes through refundHold make that hold trivially:
+// their refund is one attempt and is never queued. This test keeps it that
+// way, end to end: the retry queue is full of settles, a request then fails at
+// its provider, the control plane refuses its refund, and every queued settle
+// is still there and is delivered. If a later change starts queuing these
+// refunds for retry, the queue evicts its oldest job when full, whatever its
+// kind, and this test fails with a settle missing. Retrying refunds needs the
+// settles protected first.
 func TestFailedRefundNeverCostsAQueuedSettleItsPlace(t *testing.T) {
 	const queuedCharges = 3
 	t.Setenv("QUILL_SETTLEMENT_RETRY_QUEUE_SIZE", fmt.Sprint(queuedCharges))
@@ -103,6 +103,9 @@ func TestFailedRefundNeverCostsAQueuedSettleItsPlace(t *testing.T) {
 	if refused != 1 {
 		t.Fatalf("refund attempts = %d, want the one the control plane refused", refused)
 	}
+	if len(queue.jobs) != queuedCharges {
+		t.Fatalf("queued jobs = %d after the failed refund, want the %d settles untouched", len(queue.jobs), queuedCharges)
+	}
 
 	// Deliver whatever the queue still holds.
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
@@ -117,5 +120,8 @@ func TestFailedRefundNeverCostsAQueuedSettleItsPlace(t *testing.T) {
 	sort.Strings(settled)
 	if fmt.Sprint(settled) != fmt.Sprint(want) {
 		t.Fatalf("settles delivered = %v, want every queued charge %v: the failed refund cost a settle its place", settled, want)
+	}
+	if refundsRefused != 1 {
+		t.Fatalf("refund attempts = %d after the queue drained, want 1: the failed refund was retried", refundsRefused)
 	}
 }

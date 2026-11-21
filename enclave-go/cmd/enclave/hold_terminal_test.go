@@ -125,7 +125,7 @@ func (l *holdLedger) wantCalls(t *testing.T, authorizes, settles, refunds int) {
 // drains, and returns it.
 func isolateSettlementRetries(t *testing.T) *settlementRetryQueue {
 	t.Helper()
-	queue := &settlementRetryQueue{jobs: make(chan settlementRetryJob, 8), refunds: make(chan settlementRetryJob, 8), maxAttempts: 1}
+	queue := &settlementRetryQueue{jobs: make(chan settlementRetryJob, 8), maxAttempts: 1}
 	original := settlementRetries
 	settlementRetries = queue
 	t.Cleanup(func() { settlementRetries = original })
@@ -450,43 +450,48 @@ func TestRefundUnclosedHoldNeverAddsARefundToAClosedHold(t *testing.T) {
 	})
 }
 
-// A refund that cannot be delivered is handed to the settlement retry queue,
-// which sends the same refund again, instead of being dropped.
-func TestRefundThatFailsIsQueuedForRetry(t *testing.T) {
+// A refund sent through refundHold is one attempt, as the discarded Refund
+// calls it replaces were. When the control plane refuses it, the failure is
+// counted and logged by request and authorization, and nothing is queued: a
+// refund from these exits never enters the settlement retry queue.
+func TestRefundThatFailsIsLoggedAndCountedAndNeverQueued(t *testing.T) {
 	queue := isolateSettlementRetries(t)
 	ledger := &holdLedger{refundStatus: 503}
 	gateway := ledger.gateway(t)
 	var out bytes.Buffer
 	backend := &rejectedEmbeddingLLM{err: errors.New("provider failed")}
 	ctx := trustedrouter.WithRequestLogID(context.Background(), holdTestRequestLogID)
-	serveEmbeddings(ctx, &out, backend, []byte(`{"model":"openai/text-embedding-3-large","input":"hi"}`), gateway, true, "test-key", nil, "idem-retry", requestAttributionHeaders{}, holdTestRequestLogID)
+	failuresBefore := refundHoldFailures.Load()
+	stderr := captureStderr(t, func() {
+		serveEmbeddings(ctx, &out, backend, []byte(`{"model":"openai/text-embedding-3-large","input":"hi"}`), gateway, true, "test-key", nil, "idem-refund", requestAttributionHeaders{}, holdTestRequestLogID)
+	})
 	if !strings.HasPrefix(out.String(), "HTTP/1.1 502 ") {
 		t.Fatalf("response: %s", out.String())
 	}
-	// One refund was attempted and failed; the handler's exit guard adds none.
+	// One refund was attempted and refused; the handler's exit guard adds none.
 	ledger.wantCalls(t, 1, 0, 1)
-	if len(queue.refunds) != 1 || len(queue.jobs) != 0 {
-		t.Fatalf("queued refunds = %d, queued settles = %d, want the failed refund in the refund queue", len(queue.refunds), len(queue.jobs))
+	if len(queue.jobs) != 0 {
+		t.Fatalf("queued retries = %d, want none: a refund from this exit is never queued", len(queue.jobs))
 	}
-	job := <-queue.refunds
-	if job.kind != "refund" || job.frozen == nil {
-		t.Fatalf("queued job is not a frozen refund: kind=%q frozen=%v", job.kind, job.frozen)
+	if got := refundHoldFailures.Load() - failuresBefore; got != 1 {
+		t.Fatalf("refund failures counted = %d, want 1", got)
 	}
-
-	// The control plane recovers; the queued retry delivers the same refund.
-	ledger.mu.Lock()
-	ledger.refundStatus = 0
-	ledger.mu.Unlock()
-	queue.process(context.Background(), job)
-	ledger.wantCalls(t, 1, 0, 2)
-	first, retried := ledger.refunds[0], ledger.refunds[1]
-	for _, field := range []string{"authorization_id", "error_status", "error_type", "gateway_request_id"} {
-		if first[field] == nil || first[field] != retried[field] {
-			t.Fatalf("retried refund %s = %v, first attempt sent %v", field, retried[field], first[field])
+	var line string
+	for _, candidate := range strings.Split(stderr, "\n") {
+		if strings.HasPrefix(candidate, "enclave.refund_failed ") {
+			line = candidate
 		}
 	}
-	if len(queue.jobs)+len(queue.refunds) != 0 {
-		t.Fatalf("queued retries after success = %d, want 0", len(queue.jobs)+len(queue.refunds))
+	for _, want := range []string{`request_log_id="` + holdTestRequestLogID + `"`, `auth_id="auth_1"`, `error_type="provider_error"`, `error_class="control_plane_503"`} {
+		if !strings.Contains(line, want) {
+			t.Fatalf("failure log %q does not carry %s", line, want)
+		}
+	}
+	// By request and authorization, never by customer.
+	for _, private := range []string{"ws_1", "key_1", "test-key"} {
+		if strings.Contains(line, private) {
+			t.Fatalf("failure log names a customer identifier %q: %s", private, line)
+		}
 	}
 }
 

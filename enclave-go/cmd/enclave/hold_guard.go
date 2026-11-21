@@ -4,24 +4,37 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"sync/atomic"
 	"time"
 
 	"github.com/Lore-Hex/quill-cloud-proxy/enclave-go/internal/trustedrouter"
 )
 
-// refundHold refunds auth and, when the refund cannot be delivered, hands the
-// same refund to the retry queue. A refund is a single attempt with its own
-// deadline; a call site that discards its error leaves the hold to the control
-// plane's expiry sweep whenever that one attempt fails. The request's audit id
-// is read from ctx.
+// refundHoldFailures counts refunds sent through refundHold that the control
+// plane did not accept.
+var refundHoldFailures atomic.Int64
+
+// refundHold sends one refund for auth: a single attempt with the client's own
+// deadline, exactly what the `_ = trGateway.Refund(...)` calls it replaces
+// did. The one difference is that a failure is no longer silent: it is
+// counted and logged, by request and authorization and never by customer.
 //
-// The retry is best effort and never at a settle's expense: refund retries
-// wait in a bounded queue of their own, are sent only when no settle is
-// waiting, and are dropped, with a log line, when that queue is full
-// (settlementRetryQueue). A dropped refund retry leaves the hold to expire,
-// which is what every failed refund did before.
-func refundHold(ctx context.Context, gateway *trustedrouter.Client, auth *trustedrouter.Authorization, status int, reason string, elapsedSeconds float64, metadata map[string]any) *trustedrouter.SettleResult {
-	return refundFailedStream(ctx, gateway, auth, trustedrouter.RequestLogIDFromContext(ctx), status, reason, elapsedSeconds, metadata)
+// It does not retry and it queues nothing. A refund that fails leaves the hold
+// to the control plane's expiry sweep, as it always has. Retrying refunds
+// safely means they can never cost a settle its place in the retry queue, the
+// worker's time at shutdown, or its room in the outbox, and that is a change
+// of its own. The paths that already queued a failed refund for retry
+// (refundFailedStream on the chat and responses stream, and the Polyphemus
+// fallback) are untouched and do not come through here.
+func refundHold(ctx context.Context, gateway *trustedrouter.Client, auth *trustedrouter.Authorization, status int, reason string, elapsedSeconds float64, metadata map[string]any) {
+	if gateway == nil || !gateway.Enabled() || auth == nil {
+		return
+	}
+	if err := gateway.Refund(ctx, auth, status, reason, elapsedSeconds, metadata); err != nil {
+		fmt.Fprintf(os.Stderr,
+			"enclave.refund_failed request_log_id=%q auth_id=%q error_type=%q error_class=%q failures=%d\n",
+			trustedrouter.RequestLogIDFromContext(ctx), authorizationID(auth), reason, controlPlaneErrorClass(err), refundHoldFailures.Add(1))
+	}
 }
 
 // refundUnclosedHold is a handler's last word on the hold it placed. A handler

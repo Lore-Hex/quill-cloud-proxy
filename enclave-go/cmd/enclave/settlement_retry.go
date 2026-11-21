@@ -16,7 +16,6 @@ import (
 
 const (
 	defaultSettlementRetryQueueSize = 1024
-	defaultRefundRetryQueueSize     = 256
 	defaultSettlementRetryAttempts  = 6
 	defaultSettlementRetryBaseDelay = 500 * time.Millisecond
 	defaultSettlementRetryMaxDelay  = 15 * time.Second
@@ -74,23 +73,10 @@ type settlementRetryJob struct {
 	frozenSet bool
 }
 
-// settlementRetryQueue retries settles and refunds the request path could not
-// deliver. The two are kept apart.
-//
-// jobs holds settle retries only. A settle that is lost is a charge that is
-// lost, so nothing but another settle may ever take a place there.
-//
-// refunds holds refund retries, in a bounded queue of their own. A refund that
-// is lost leaves a hold to expire, which is how every failed refund ended
-// before refunds were retried at all, so a refund is dropped rather than
-// allowed to cost a settle anything: it never enters jobs, never evicts from
-// it, and the worker starts one only when no settle is waiting (run). A nil
-// refunds keeps no refund retries.
 type settlementRetryQueue struct {
 	startOnce   sync.Once
 	idleChecks  chan chan bool
 	jobs        chan settlementRetryJob
-	refunds     chan settlementRetryJob
 	maxAttempts int
 	baseDelay   time.Duration
 	maxDelay    time.Duration
@@ -101,11 +87,6 @@ type settlementRetryQueue struct {
 	// ended. They wait on timers, not in jobs, so they never delay the
 	// retries queued behind them.
 	deferred atomic.Int64
-	// deferredRefunds is the same count for held refund retries. They are
-	// counted apart so that held refunds never use up the settles' allowance.
-	deferredRefunds atomic.Int64
-	// refundsDropped counts refund retries this queue did not keep.
-	refundsDropped atomic.Int64
 	// release is closed by ReleaseDeferred at shutdown; held retries then
 	// enqueue at once instead of waiting out their hold.
 	releaseMu sync.Mutex
@@ -155,14 +136,7 @@ func (q *settlementRetryQueue) park(job settlementRetryJob, reason string) {
 	if kind == "" {
 		kind = settleoutbox.KindSettle
 	}
-	entry := settleoutbox.Entry{Terminal: *job.frozen, Reason: reason, Attempts: job.attempt}
-	var accepted bool
-	if kind == settleoutbox.KindRefund {
-		// Only in spare room: a parked refund must not cost a settle its place.
-		accepted = outbox.OfferSpare(entry)
-	} else {
-		accepted = outbox.Offer(entry)
-	}
+	accepted := outbox.Offer(settleoutbox.Entry{Terminal: *job.frozen, Reason: reason, Attempts: job.attempt})
 	fmt.Fprintf(os.Stderr,
 		"enclave.settle_outbox_parked request_log_id=%q request_id=%q auth_id=%q kind=%q reason=%q attempts=%d accepted=%t\n",
 		job.requestLogID, job.usage.RequestID, authorizationID(job.authorization), kind, reason, job.attempt, accepted)
@@ -182,13 +156,8 @@ func newSettlementRetryQueueFromEnv() *settlementRetryQueue {
 	if maxDelay < baseDelay {
 		maxDelay = baseDelay
 	}
-	var refunds chan settlementRetryJob
-	if refundSize := envInt("QUILL_REFUND_RETRY_QUEUE_SIZE", defaultRefundRetryQueueSize); refundSize > 0 {
-		refunds = make(chan settlementRetryJob, refundSize)
-	}
 	return &settlementRetryQueue{
 		jobs:           make(chan settlementRetryJob, size),
-		refunds:        refunds,
 		maxAttempts:    maxAttempts,
 		baseDelay:      baseDelay,
 		maxDelay:       maxDelay,
@@ -244,7 +213,7 @@ func (q *settlementRetryQueue) Flush(ctx context.Context) {
 	}
 	q.ReleaseDeferred()
 	if err := q.WaitForIdle(ctx); err != nil {
-		fmt.Fprintf(os.Stderr, "enclave.shutdown_settlement_pending queued=%d queued_refunds=%d err=%q\n", len(q.jobs), len(q.refunds), err.Error())
+		fmt.Fprintf(os.Stderr, "enclave.shutdown_settlement_pending queued=%d err=%q\n", len(q.jobs), err.Error())
 		// The process is about to exit with these still queued. Park what
 		// is in the queue; the worker may post one of them meanwhile, which
 		// is a duplicate the router keeps the first writer of.
@@ -255,19 +224,13 @@ func (q *settlementRetryQueue) Flush(ctx context.Context) {
 				continue
 			default:
 			}
-			select {
-			case job := <-q.refunds:
-				q.park(job, "shutdown")
-				continue
-			default:
-			}
 			if parked > 0 {
 				fmt.Fprintf(os.Stderr, "enclave.shutdown_settlement_parked count=%d\n", parked)
 			}
 			break
 		}
 	}
-	if deferred := q.deferred.Load() + q.deferredRefunds.Load(); deferred > 0 {
+	if deferred := q.deferred.Load(); deferred > 0 {
 		// Released held retries that still had not reached the queue.
 		fmt.Fprintf(os.Stderr, "enclave.shutdown_settlement_deferred count=%d\n", deferred)
 	}
@@ -297,9 +260,6 @@ func (q *settlementRetryQueue) Enqueue(job settlementRetryJob) bool {
 	}
 	if q.deferUntilDue(job) {
 		return true
-	}
-	if job.kind == "refund" {
-		return q.enqueueRefund(job)
 	}
 	select {
 	case q.jobs <- job:
@@ -358,42 +318,6 @@ func (q *settlementRetryQueue) Enqueue(job settlementRetryJob) bool {
 	}
 }
 
-// enqueueRefund admits a refund retry to the refund queue when it has room.
-// A refund never evicts: not a settle, which it must never cost anything, and
-// not an older refund, which is no less owed than this one. One the queue
-// cannot take is counted, logged, and offered to the outbox, which keeps it
-// only in spare room (park). If nothing keeps it the hold expires at the
-// control plane, as it did before refunds were retried.
-func (q *settlementRetryQueue) enqueueRefund(job settlementRetryJob) bool {
-	select {
-	case q.refunds <- job:
-		fmt.Fprintf(os.Stderr,
-			"enclave.settlement_retry_enqueue request_log_id=%q request_id=%q auth_id=%q attempt=%d kind=%q queued=%d capacity=%d\n",
-			job.requestLogID,
-			job.usage.RequestID,
-			authorizationID(job.authorization),
-			job.attempt,
-			"refund",
-			len(q.refunds),
-			cap(q.refunds),
-		)
-		return true
-	default:
-	}
-	fmt.Fprintf(os.Stderr,
-		"enclave.refund_retry_drop request_log_id=%q auth_id=%q reason=%q attempt=%d queued=%d capacity=%d dropped=%d\n",
-		job.requestLogID,
-		authorizationID(job.authorization),
-		"refund_queue_full",
-		job.attempt,
-		len(q.refunds),
-		cap(q.refunds),
-		q.refundsDropped.Add(1),
-	)
-	q.park(job, "refund_queue_full")
-	return false
-}
-
 // releaseSignal returns the channel ReleaseDeferred closes, and whether it
 // already has.
 func (q *settlementRetryQueue) releaseSignal() (<-chan struct{}, bool) {
@@ -438,19 +362,14 @@ func (q *settlementRetryQueue) deferUntilDue(job settlementRetryJob) bool {
 	if released {
 		return false
 	}
-	// Held refunds have their own allowance, the size of their own queue.
-	held, allowance := &q.deferred, cap(q.jobs)
-	if job.kind == "refund" {
-		held, allowance = &q.deferredRefunds, cap(q.refunds)
-	}
-	if held.Add(1) > int64(allowance) {
-		held.Add(-1)
+	if q.deferred.Add(1) > int64(cap(q.jobs)) {
+		q.deferred.Add(-1)
 		fmt.Fprintf(os.Stderr,
 			"enclave.settlement_retry_defer_full request_log_id=%q request_id=%q auth_id=%q capacity=%d\n",
 			job.requestLogID,
 			job.usage.RequestID,
 			authorizationID(job.authorization),
-			allowance,
+			cap(q.jobs),
 		)
 		return false
 	}
@@ -465,7 +384,7 @@ func (q *settlementRetryQueue) deferUntilDue(job settlementRetryJob) bool {
 	go func() {
 		// Decrement only after Enqueue, so WaitForIdle cannot report idle
 		// while a released job is between the hold and the queue.
-		defer held.Add(-1)
+		defer q.deferred.Add(-1)
 		timer := time.NewTimer(wait)
 		defer timer.Stop()
 		select {
@@ -478,11 +397,6 @@ func (q *settlementRetryQueue) deferUntilDue(job settlementRetryJob) bool {
 	return true
 }
 
-// run is the one worker for both queues. Settles come first: a refund retry
-// is started only when no settle is waiting, and it backs off on a timer, not
-// here (process). However many refunds are queued, a settle therefore waits
-// for at most the one refund call already under way, which has its own
-// deadline.
 func (q *settlementRetryQueue) run(ctx context.Context) {
 	for {
 		select {
@@ -490,24 +404,11 @@ func (q *settlementRetryQueue) run(ctx context.Context) {
 			return
 		case job := <-q.jobs:
 			q.process(ctx, job)
-		case job := <-q.refunds:
-			// select picks at random when both queues are ready. Send every
-			// settle that is waiting before this refund.
-			for waiting := true; waiting; {
-				select {
-				case settle := <-q.jobs:
-					q.process(ctx, settle)
-				default:
-					waiting = false
-				}
-			}
-			q.process(ctx, job)
 		case check := <-q.idleChecks:
 			// deferred first: a held job is pushed before its counter drops, so a
-			// zero count means every released job is already in its queue, which
+			// zero count means every released job is already in q.jobs, which
 			// only this goroutine drains. The reverse order can miss one in flight.
-			check <- q.deferred.Load() == 0 && q.deferredRefunds.Load() == 0 &&
-				len(q.jobs) == 0 && len(q.refunds) == 0
+			check <- q.deferred.Load() == 0 && len(q.jobs) == 0
 		}
 	}
 }
@@ -518,11 +419,6 @@ func (q *settlementRetryQueue) process(ctx context.Context, job settlementRetryJ
 		job.attempt = 1
 	}
 	delay := q.delay(job.attempt)
-	if job.kind == "refund" {
-		// A refund waited out its backoff on a timer before it was queued
-		// (see the retry below), so the worker is never held for it.
-		delay = 0
-	}
 	if delay > 0 {
 		timer := time.NewTimer(delay)
 		select {
@@ -590,11 +486,6 @@ func (q *settlementRetryQueue) process(ctx context.Context, job settlementRetryJ
 		return
 	}
 	job.attempt++
-	if job.kind == "refund" {
-		// Back off on a timer instead of in the worker: a settle queued
-		// meanwhile then waits for at most one refund call, never a backoff.
-		job.notBefore = time.Now().Add(q.delay(job.attempt))
-	}
 	_ = q.Enqueue(job)
 }
 

@@ -286,27 +286,6 @@ func (w *Writer) Offer(entry Entry) bool {
 	return false
 }
 
-// OfferSpare is Offer for an entry that must not cost a later one its place:
-// it is queued only while the queue is less than half full, and refused, with
-// a log line, otherwise. Refunds are offered this way. A refund the outbox
-// does not keep leaves a hold to expire; a settle it does not keep loses a
-// charge, so half of the queue is only ever given to settles. The check and
-// the send are not one step: offers racing each other can overshoot the half
-// by as many entries as there are concurrent callers.
-func (w *Writer) OfferSpare(entry Entry) bool {
-	if w == nil {
-		return false
-	}
-	if len(w.queue) >= cap(w.queue)/2 {
-		w.pendingMu.Lock()
-		w.dropped++
-		w.pendingMu.Unlock()
-		w.logf("settle_outbox.drop auth_id=%q kind=%q reason=%q no_spare_room=true", authorizationID(entry.Terminal.Body), kindOf(entry.Terminal.Path), entry.Reason)
-		return false
-	}
-	return w.Offer(entry)
-}
-
 // Flush waits until every offered entry has been written or given up on, or
 // until ctx ends. Call it at shutdown after the retry queue has drained.
 func (w *Writer) Flush(ctx context.Context) error {

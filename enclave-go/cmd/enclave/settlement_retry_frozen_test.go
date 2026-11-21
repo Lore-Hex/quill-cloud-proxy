@@ -254,18 +254,13 @@ func TestSettlementRetrySendsGoldenFrozenBytes(t *testing.T) {
 	for _, tc := range frozenRetryCases() {
 		t.Run(tc.name, func(t *testing.T) {
 			gateway, captured := frozenRetryGateway(t, nil)
-			q := &settlementRetryQueue{jobs: make(chan settlementRetryJob, 2), refunds: make(chan settlementRetryJob, 2), maxAttempts: 1}
+			q := &settlementRetryQueue{jobs: make(chan settlementRetryJob, 2), maxAttempts: 1}
 			job := tc.job()
 			job.trGateway = gateway
 			if !q.Enqueue(job) {
 				t.Fatal("retry was not accepted")
 			}
-			// A refund retry waits in the refund queue, a settle in jobs.
-			var queued settlementRetryJob
-			select {
-			case queued = <-q.jobs:
-			case queued = <-q.refunds:
-			}
+			queued := <-q.jobs
 			if queued.frozenErr != nil || queued.frozen == nil {
 				t.Fatalf("job was not frozen: err=%v", queued.frozenErr)
 			}
