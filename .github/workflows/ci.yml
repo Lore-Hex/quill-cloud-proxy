@@ -29,6 +29,7 @@ jobs:
     timeout-minutes: 15
     permissions:
       contents: read
+      actions: read
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: Install pinned Rust toolchain
@@ -40,9 +41,24 @@ jobs:
           cargo +1.94.1 fmt --check -p trustedrouter-maple-pilot
           cargo +1.94.1 clippy --locked --all-targets -- -D warnings
           cargo +1.94.1 test --locked --workspace --lib --bins
+      - name: Check for an identical successful protected-main build
+        id: maple-image
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          python3 -m unittest tools.test_ci_static_maple
+          python3 tools/ci_static_maple.py prepare
       - name: Build static encrypted helper for the measured image
-        working-directory: enclave-go
-        run: docker build --platform linux/amd64 --target maple -f Dockerfile.enclave.gcp.multi .
+        if: steps.maple-image.outputs.verified_run == ''
+        run: python3 tools/ci_static_maple.py build
+      - name: Record fresh static build for later runs
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main' && steps.maple-image.outputs.verified_run == ''
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: ${{ steps.maple-image.outputs.receipt }}
+          path: ${{ runner.temp }}/maple-image.sha256
+          if-no-files-found: error
+          retention-days: 1
 
   privatemode-client:
     runs-on: ubuntu-latest
