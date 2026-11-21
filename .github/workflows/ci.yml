@@ -149,37 +149,18 @@ jobs:
       - name: Check reachable Go vulnerabilities (${{ matrix.tags }})
         run: go run golang.org/x/vuln/cmd/govulncheck@v1.9.0 -tags '${{ matrix.tags }}' ./...
 
-  attest-sidecar:
-    runs-on: ubuntu-latest
-    defaults:
-      run:
-        working-directory: enclave-go/sidecar
-    strategy:
-      matrix:
-        tags:
-          - "cloud_aws"
-          - "cloud_gcp"
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
-        with:
-          go-version: "1.26.11"
-      - name: Build (${{ matrix.tags }})
-        run: go build -tags '${{ matrix.tags }}' ./...
-      - name: Vet (${{ matrix.tags }})
-        run: go vet -tags '${{ matrix.tags }}' ./...
-      - name: Test (${{ matrix.tags }})
-        run: go test -race -tags '${{ matrix.tags }}' ./...
-      - name: Check reachable Go vulnerabilities (${{ matrix.tags }})
-        run: go run golang.org/x/vuln/cmd/govulncheck@v1.9.0 -tags '${{ matrix.tags }}' ./...
-
   parent:
+    # These short host-side suites share one runner, leaving two slots free
+    # for the slower enclave builds. Keep the protected check name unchanged.
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
     defaults:
       run:
         working-directory: parent
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        id: host-checkout
       - uses: Lore-Hex/quill-cloud-proxy/.github/actions/setup-uv@582cbdee7b7023cfeb915b62a7f635aa1e4662b1 # main 2026-11-13
       - name: Sync
         run: uv sync --frozen
@@ -191,6 +172,28 @@ jobs:
         run: uv run mypy --strict --python-version 3.11 src tests
       - name: Test
         run: uv run pytest -v
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        id: sidecar-go
+        if: ${{ !cancelled() && steps.host-checkout.outcome == 'success' }}
+        with:
+          go-version: "1.26.11"
+          cache-dependency-path: enclave-go/sidecar/go.sum
+      - name: Build, vet, race-test and scan AWS attestation sidecar
+        if: &sidecar-ready ${{ !cancelled() && steps.sidecar-go.outcome == 'success' }}
+        working-directory: enclave-go/sidecar
+        env:
+          CLOUD_TAG: cloud_aws
+        run: &sidecar-checks |
+          go build -tags "$CLOUD_TAG" ./...
+          go vet -tags "$CLOUD_TAG" ./...
+          go test -count=1 -race -tags "$CLOUD_TAG" ./...
+          go run golang.org/x/vuln/cmd/govulncheck@v1.9.0 -tags "$CLOUD_TAG" ./...
+      - name: Build, vet, race-test and scan GCP attestation sidecar
+        if: *sidecar-ready
+        working-directory: enclave-go/sidecar
+        env:
+          CLOUD_TAG: cloud_gcp
+        run: *sidecar-checks
 
   trust-page-validation:
     # This is a required branch-protection check; policy regressions must block it.
