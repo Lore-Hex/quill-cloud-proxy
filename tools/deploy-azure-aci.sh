@@ -621,9 +621,14 @@ if api_hosts[0] == "api-azure-syd.trustedrouter.com" and "api-azure.trustedroute
 # either a coordinate or the NAME of a bundle entry. The values live in the
 # encrypted bundle and reach the enclave only under attestation.
 # TR_ASYNC_SETTLE_TICKET_PUBLIC_KEYS: JSON {"kid":"issuer~base64url_key"}; empty disables negotiation.
+# Azure negotiates async settlement as the GCP regions do (2026-11-21): its
+# billing authority is the same router, which signs the tickets this keyring
+# verifies. Shadow and negotiation exclude each other, so shadow is off. The
+# way back is these two pins as they were (shadow on, negotiate off) and a
+# new measured deployment.
 env = {
-    "TR_ASYNC_SETTLE_SHADOW": "on",
-    "TR_ASYNC_SETTLE_NEGOTIATE": "off",
+    "TR_ASYNC_SETTLE_SHADOW": "off",
+    "TR_ASYNC_SETTLE_NEGOTIATE": "on",
     "TR_ASYNC_SETTLE_TICKET_PUBLIC_KEYS": '{"tr-async-settle-2026-10a":"https://api.trustedrouter.com~7zJCBn9dfwXC1cTBqLYY0rGzvuESaM-JxHBQ66oRzzQ"}',
     # --- Azure boot path (bootstrap_azure.go) -----------------------------
     "QUILL_AZURE_MAA_ENDPOINT":  os.environ["MAA_ENDPOINT"],
