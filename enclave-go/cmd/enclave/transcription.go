@@ -97,10 +97,12 @@ func serveTranscription(ctx context.Context, conn io.Writer, raw []byte, gateway
 		writeOpenAIError(conn, 409, "Transcription responses are not retained; this idempotency key was already used", "invalid_request_error", "transcription_not_replayable", "")
 		return
 	}
+	// An exit that neither settled nor refunded the hold is refunded on the way out.
+	defer refundUnclosedHold(ctx, gateway, auth, "audio.transcriptions", started, nil)
 	refund := func(status int, reason string) {
 		refundCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 15*time.Second)
 		defer cancel()
-		_ = gateway.Refund(refundCtx, auth, status, reason, time.Since(started).Seconds(), nil)
+		refundHold(refundCtx, gateway, auth, status, reason, time.Since(started).Seconds(), nil)
 	}
 	spec := transcription.Models[req.Model]
 	if auth.Model != req.Model || auth.Provider != spec.Provider || auth.UpstreamModel != spec.Upstream || auth.UsageType != "Credits" || (!spec.TokenBilled() && auth.AdditionalCostReservationMicrodollars <= 0) || (spec.TokenBilled() && (auth.AdditionalCostReservationMicrodollars != 0 || auth.EstimatedCostMicrodollars <= 0)) {

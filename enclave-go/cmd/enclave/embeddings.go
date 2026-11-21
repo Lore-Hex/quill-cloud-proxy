@@ -90,6 +90,10 @@ func serveEmbeddings(
 	var authorization *trustedrouter.Authorization
 	var invokeOptions []llm.InvokeOptions
 	var settlement *trustedrouter.SettleResult
+	// An exit that neither settled nor refunded the hold is refunded on the way out.
+	defer func() {
+		refundUnclosedHold(ctx, trGateway, authorization, "embeddings", requestStarted, nil)
+	}()
 	if trEnabled {
 		var err error
 		authorization, err = trGateway.AuthorizeEmbeddings(ctx, bearer, &req, inputTokens)
@@ -99,7 +103,7 @@ func serveEmbeddings(
 		}
 		invokeOptions, err = invokeOptionsForAuthorization(ctx, secretCache, authorization)
 		if err != nil {
-			_ = trGateway.Refund(ctx, authorization, 502, "byok_secret_error", time.Since(requestStarted).Seconds(), nil)
+			refundHold(ctx, trGateway, authorization, 502, "byok_secret_error", time.Since(requestStarted).Seconds(), nil)
 			writeError(conn, 502, "BYOK provider key unavailable")
 			return
 		}
@@ -113,7 +117,7 @@ func serveEmbeddings(
 	embedder, ok := br.(llm.EmbeddingClient)
 	if !ok {
 		if trEnabled {
-			_ = trGateway.Refund(ctx, authorization, 501, "embeddings_unsupported", time.Since(requestStarted).Seconds(), nil)
+			refundHold(ctx, trGateway, authorization, 501, "embeddings_unsupported", time.Since(requestStarted).Seconds(), nil)
 		}
 		writeError(conn, 501, "embeddings not supported by this gateway build")
 		return
@@ -135,7 +139,7 @@ func serveEmbeddings(
 			refundStatus = status
 		}
 		if trEnabled {
-			_ = trGateway.Refund(ctx, authorization, refundStatus, "provider_error", time.Since(requestStarted).Seconds(), nil)
+			refundHold(ctx, trGateway, authorization, refundStatus, "provider_error", time.Since(requestStarted).Seconds(), nil)
 		}
 		var inputLimit *llm.EmbeddingInputLimitError
 		if errors.As(err, &inputLimit) {

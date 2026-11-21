@@ -60,10 +60,12 @@ func serveWebFetch(ctx context.Context, conn io.Writer, raw []byte, gateway *tru
 		writeOpenAIError(conn, 409, "This Fetch idempotency key was already used; fetched content is not retained", "invalid_request_error", "fetch_not_replayable", "")
 		return
 	}
+	// An exit that neither settled nor refunded the hold is refunded on the way out.
+	defer refundUnclosedHold(ctx, gateway, authorization, webfetch.RouteType, started, nil)
 	refund := func(status int, reason string) {
 		refundCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 15*time.Second)
 		defer cancel()
-		_ = gateway.Refund(refundCtx, authorization, status, reason, time.Since(started).Seconds(), nil)
+		refundHold(refundCtx, gateway, authorization, status, reason, time.Since(started).Seconds(), nil)
 	}
 	if authorization.Model != webfetch.ModelID || authorization.Provider != "deepseek" || authorization.UpstreamModel != "fetch" || authorization.UsageType != "Credits" || authorization.EstimatedCostMicrodollars <= 0 || authorization.AdditionalCostReservationMicrodollars != 0 {
 		refund(502, "fetch_catalog_mismatch")

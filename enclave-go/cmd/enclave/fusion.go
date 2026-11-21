@@ -2129,7 +2129,7 @@ func refundFusionCallAfter(ctx context.Context, trGateway *trustedrouter.Client,
 	if trGateway == nil || !trGateway.Enabled() {
 		return
 	}
-	_ = trGateway.Refund(ctx, authz, status, reason, elapsedSeconds, metadata)
+	refundHold(ctx, trGateway, authz, status, reason, elapsedSeconds, metadata)
 }
 
 // settlementAttemptedError marks a failure that happened AFTER the provider
@@ -2659,6 +2659,9 @@ func serveFusionFinalStreamingAttempt(
 		req.Model = streamModel
 	}
 	if err := writeResponseHead(conn, 200, "text/event-stream"); err != nil {
+		// The client went away before the head was written: nothing was
+		// delivered, so close the hold instead of leaving it to expire.
+		refundFusionCallAfter(ctx, trGateway, authorization, 499, "client_write_failed", time.Since(requestStarted).Seconds(), req.Metadata)
 		_ = pr.Close()
 		return true, err
 	}
