@@ -116,6 +116,30 @@ func TestServeOneModelsOnlyAllowsAnonymousGet(t *testing.T) {
 	}
 }
 
+func TestVideoDiscoveryIsPublicButGenerationIsNot(t *testing.T) {
+	const data = `{"data":[{"id":"google/veo-3.1","supported_durations":[4,6,8],"pricing":{"currency":"USD","routes":{}}}]}`
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/v1/videos/models" || r.Header.Get("Authorization") != "" || r.Header.Get("X-TrustedRouter-Internal-Token") != "" {
+			t.Errorf("unexpected public relay: %s", r.URL.Path)
+		}
+		_, _ = io.WriteString(w, data)
+	}))
+	defer server.Close()
+	gateway := trustedrouter.New(server.URL, "internal", server.Client())
+	conn := newScriptedConn("GET /v1/videos/models HTTP/1.1\r\nHost: api.trustedrouter.com\r\n\r\n", nil)
+	serveOne(context.Background(), conn, nil, nil, nil, nil, gateway, nil)
+	if body := httpBody(t, conn.writes.String()); body != data {
+		t.Fatalf("lost discovery or prices: %s", body)
+	}
+	for _, path := range []string{"/v1/videos", "/v1/videos/models"} {
+		conn = newScriptedConn("POST "+path+" HTTP/1.1\r\nHost: api.trustedrouter.com\r\nContent-Length: 2\r\n\r\n{}", nil)
+		serveOne(context.Background(), conn, nil, nil, nil, nil, gateway, nil)
+		if !strings.Contains(conn.writes.String(), "401 Unauthorized") {
+			t.Fatalf("unauthenticated POST %s was not rejected", path)
+		}
+	}
+}
+
 func TestServeOnePublicModelsHidesControlPlaneFailureBody(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		http.Error(w, "private upstream detail", http.StatusInternalServerError)

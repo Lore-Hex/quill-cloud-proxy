@@ -44,6 +44,9 @@ func maybeServePublicModels(
 	case routePath == "/v1/images/models":
 		label = "image model"
 		fetch = gateway.PublicImageModels
+	case routePath == "/v1/videos/models":
+		label = "video model"
+		fetch = gateway.PublicVideoModels
 	case strings.HasPrefix(routePath, "/v1/images/models/"):
 		modelID, ok := publicEndpointsModelID(routePath, "/v1/images/models/")
 		if !ok {
@@ -236,7 +239,7 @@ func writePublicError(w io.Writer, status int, message string) {
 // isPublicCORSRoute lists the anonymous GET routes that answer browsers.
 func isPublicCORSRoute(routePath string) bool {
 	switch routePath {
-	case "/attestation", "/v1/models", "/v1/images/models":
+	case "/attestation", "/v1/models", "/v1/images/models", "/v1/videos/models":
 		return true
 	}
 	_, image := publicEndpointsModelID(routePath, "/v1/images/models/")

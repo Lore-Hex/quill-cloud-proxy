@@ -132,20 +132,8 @@ func maybeServeVideoRoute(
 		return true
 	}
 	if routePath == "/v1/videos/models" {
-		if method != http.MethodGet {
-			writeOpenAIError(conn, 404, "route not found", "invalid_request_error", "not_found", "")
-			return true
-		}
-		if err := trGateway.ValidateKey(ctx, bearer, "videos.models"); err != nil {
-			writeErrorWithSourceHeaders(conn, statusFromControlPlaneError(err), messageFromControlPlaneError(err, "gateway authorization failed"), "router", retryHeadersFromControlPlaneError(err))
-			return true
-		}
-		out, err := video.ModelsJSON(videoGateway.providers)
-		if err != nil {
-			writeOpenAIError(conn, 500, "could not serialize video models", "server_error", "internal_error", "")
-			return true
-		}
-		writeJSONResponse(conn, 200, out)
+		// GET is handled before authentication by maybeServePublicModels.
+		writeOpenAIError(conn, 404, "route not found", "invalid_request_error", "not_found", "")
 		return true
 	}
 	if routePath == "/v1/videos" {

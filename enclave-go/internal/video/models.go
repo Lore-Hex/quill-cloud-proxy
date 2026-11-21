@@ -588,7 +588,7 @@ func validateDuration(model Model, duration int) error {
 				return nil
 			}
 		}
-		return fmt.Errorf("duration is not supported by this model")
+		return fmt.Errorf("duration is not supported by this model; supported durations in seconds: %v", model.AllowedDurations)
 	}
 	minimum := model.MinimumDuration
 	maximum := model.MaximumDuration
@@ -606,14 +606,14 @@ func validateDuration(model Model, duration int) error {
 
 func validateResolutionAndAspect(model Model, resolution, aspect string) error {
 	if len(model.AllowedResolutions) > 0 && !containsFold(model.AllowedResolutions, resolution) {
-		return fmt.Errorf("resolution is not supported by this model")
+		return fmt.Errorf("resolution is not supported by this model; supported resolutions: %s", strings.Join(model.AllowedResolutions, ", "))
 	}
 	validAspects := []string{"1:1", "2:3", "3:2", "3:4", "4:3", "9:16", "16:9", "21:9"}
-	if !containsFold(validAspects, aspect) {
-		return fmt.Errorf("aspect_ratio is not supported")
+	if len(model.AllowedAspectRatios) > 0 {
+		validAspects = model.AllowedAspectRatios
 	}
-	if len(model.AllowedAspectRatios) > 0 && !containsFold(model.AllowedAspectRatios, aspect) {
-		return fmt.Errorf("aspect_ratio is not supported by this model")
+	if !containsFold(validAspects, aspect) {
+		return fmt.Errorf("aspect_ratio is not supported by this model; supported aspect ratios: %s", strings.Join(validAspects, ", "))
 	}
 	return nil
 }
