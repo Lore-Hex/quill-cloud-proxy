@@ -93,6 +93,11 @@ gcloud logging read 'logName=~"confidential-space-launcher" AND textPayload:"enc
 `request_id` matches the TR control plane's authorization id, so you
 can join with TR's gateway logs for end-to-end traces.
 
+Video jobs log `enclave.video_queue_attempt` (one line per paid queue call)
+instead; its `upstream` field carries the provider status and, for xAI, an
+allowlisted error code and request field names. See
+[video-generation.md](../video-generation.md#video-queue-attempt-log).
+
 No prompt or response content is ever logged — only metadata.
 
 ## Step 2b — Cross-reference Cloud Logging at the workload

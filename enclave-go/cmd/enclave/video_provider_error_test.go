@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/Lore-Hex/quill-cloud-proxy/enclave-go/internal/video"
 )
@@ -50,5 +51,36 @@ func TestOpenAIErrorStaysRouterSourced(t *testing.T) {
 	failure := videoHTTPBody(t, out.String())["error"].(map[string]any)
 	if failure["source"] != "router" || failure["param"] != "provider" {
 		t.Fatalf("error = %#v", failure)
+	}
+}
+
+// The daily grok video canary failed with xAI HTTP 400 and the gateway logged
+// nothing about why. Each queue attempt now logs one line whose upstream field
+// is the status plus allowlisted symbols only.
+func TestLogVideoQueueAttemptCarriesOnlySanitizedUpstream(t *testing.T) {
+	route := authorizedVideoRoute{Provider: "grok", EndpointID: "x-ai/grok-imagine-video@grok"}
+	cases := []struct {
+		name string
+		err  error
+		want string
+	}{
+		{"ok", nil, `outcome=ok total_ms=12 err="" upstream=""`},
+		{"classified_rejection", fmt.Errorf("queue: %w", &video.HTTPError{Provider: "grok", Status: 400, Code: "invalid_argument", Fields: []string{"duration"}}), `outcome=fail total_ms=12 err="upstream_http" upstream="http=400;code=invalid_argument;field=duration"`},
+		{"unclassified_rejection", &video.HTTPError{Provider: "grok", Status: 400}, `err="upstream_http" upstream="http=400"`},
+		{"local_error_text_dropped", errors.New("SECRET-PROMPT-ZZ9 private detail"), `err="local_error" upstream=""`},
+		{"input_error_text_dropped", &video.InputError{Message: "SECRET-PROMPT-ZZ9 asset"}, `err="input_error" upstream=""`},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			var out bytes.Buffer
+			logVideoQueueAttempt(&out, "rlog_0123456789abcdef0123456789abcdef", "x-ai/grok-imagine-video", route, tc.err, 12*time.Millisecond)
+			line := out.String()
+			if !strings.HasPrefix(line, `enclave.video_queue_attempt request_log_id="rlog_0123456789abcdef0123456789abcdef" model="x-ai/grok-imagine-video" provider="grok" endpoint="x-ai/grok-imagine-video@grok" `) || !strings.Contains(line, tc.want) {
+				t.Fatalf("line = %q, want it to contain %q", line, tc.want)
+			}
+			if strings.Contains(line, "SECRET") || strings.Count(line, "\n") != 1 {
+				t.Fatalf("line leaked text or is not one line: %q", line)
+			}
+		})
 	}
 }

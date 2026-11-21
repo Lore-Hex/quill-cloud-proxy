@@ -92,3 +92,48 @@ Router #1555 must recover the original authorization despite that change and the
 added resolution, while preserving the request fingerprint, idempotency key,
 and caller provider policy. The enclave contract test checks original-job replay
 with no new hold, prepare, or dispatch; router tests own legacy fingerprint migration.
+
+# Video queue attempt log
+
+Every paid queue call (`provider.QueueResolved`, one per authorized route
+tried) writes one line to the enclave's stderr:
+
+```
+enclave.video_queue_attempt request_log_id="rlog_..." model="x-ai/grok-imagine-video"
+  provider="grok" endpoint="..." outcome=ok|fail total_ms=812
+  err="upstream_http|input_error|timeout|local_error|" upstream="http=400;code=invalid_argument;field=duration"
+```
+
+`request_log_id` is the same `rlog_` ID the control plane records for
+authorize, prepare and refund, so a canary failure joins to its gateway logs.
+`err` is one of our fixed labels, never error text.
+
+`upstream` is set only when the provider returned an HTTP status
+(`video.HTTPError.Diagnostic`):
+
+- `http=<status>` for every provider.
+- `;code=<label>` for xAI (`grok`) queue rejections when the error body's
+  `code` (or nested `error.code`/`error.type`) is a known symbol. xAI's HTTP
+  errors are `{"code": "<gRPC status description>", "error": "<message>"}`, so
+  `"Client specified an invalid argument"` becomes `invalid_argument`; the
+  documented job codes (`invalid_argument`, `permission_denied`,
+  `failed_precondition`, `service_unavailable`, `internal_error`) pass as-is.
+  The full map is `xaiErrorCodes` in `internal/video/xai_error.go`. Unknown
+  codes and bare status numbers are dropped.
+- `;field=<a>+<b>` lists the names of xAI video request fields (`duration`,
+  `resolution`, `aspect_ratio`, `prompt`, `image`, `reference_images`, and the
+  rest of `xaiVideoFields`) that appear in the error's `param` or as words in
+  its message, sorted and de-duplicated. A field can be an incidental mention
+  (for example `image` inside an echoed data URL); no other word is kept.
+
+Only the first 16 KiB of an error body is read, and it is parsed only to pick
+those symbols. The prompt, image data, provider message and body are never
+logged, stored, or relayed to the caller; the caller's error stays
+`video_provider_error`.
+
+To find the next grok canary failure:
+
+```bash
+gcloud logging read 'textPayload:"enclave.video_queue_attempt" AND textPayload:"provider=\"grok\"" AND textPayload:"outcome=fail"' \
+  --project=quill-cloud-proxy --limit=20 --format='value(textPayload)'
+```

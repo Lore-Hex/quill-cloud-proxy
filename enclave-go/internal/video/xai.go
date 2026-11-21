@@ -86,7 +86,7 @@ func (c *XAIClient) QueueResolved(ctx context.Context, request *ResolvedRequest)
 		return nil, err
 	}
 	defer resp.Body.Close()
-	if err := requireProviderSuccess(c.ID(), resp); err != nil {
+	if err := requireXAISuccess(c.ID(), resp); err != nil {
 		return nil, err
 	}
 	var body struct {
