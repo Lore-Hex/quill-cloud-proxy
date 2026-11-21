@@ -367,6 +367,41 @@ func TestOfferDropsWhenTheQueueIsFull(t *testing.T) {
 	}
 }
 
+// A refund is kept only while the queue is under half full, so half of it is
+// only ever given to settles: a parked refund cannot cost a settle its place.
+func TestOfferSpareKeepsHalfTheQueueForSettles(t *testing.T) {
+	t.Parallel()
+	writer := NewWriter(newMemoryStore(), nil, nil)
+	writer.queue = make(chan Entry, 4)
+	refund := Entry{Terminal: trustedrouter.FrozenTerminal{Path: "/internal/gateway/refund", Body: []byte(awkwardBody), BaseURL: "https://trustedrouter.com"}}
+	settle := Entry{Terminal: settleTerminal(awkwardBody)}
+	// Not started, so nothing drains. Under half full a refund is kept.
+	for i := 0; i < 2; i++ {
+		if !writer.OfferSpare(refund) {
+			t.Fatalf("refund %d was refused while the queue was under half full", i+1)
+		}
+	}
+	// Half full: refunds are refused, and the other half takes settles.
+	if writer.OfferSpare(refund) {
+		t.Fatal("a refund was kept in the half of the queue held for settles")
+	}
+	for i := 0; i < 2; i++ {
+		if !writer.Offer(settle) {
+			t.Fatalf("settle %d was refused although the refunds left it room", i+1)
+		}
+	}
+	if writer.Offer(settle) {
+		t.Fatal("a settle was accepted by a full queue")
+	}
+	if writer.Pending() != 4 || writer.dropped != 2 {
+		t.Fatalf("pending = %d dropped = %d, want 4 kept, one refund and one settle dropped", writer.Pending(), writer.dropped)
+	}
+	var missing *Writer
+	if missing.OfferSpare(refund) {
+		t.Fatal("nil writer accepted an entry")
+	}
+}
+
 func TestNilWriterIsInert(t *testing.T) {
 	t.Parallel()
 	var writer *Writer

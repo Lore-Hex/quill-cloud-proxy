@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -167,5 +169,72 @@ func TestSpendLeaseReserveReturnsATrackedHoldAndThePlanIsNotOne(t *testing.T) {
 	}
 	if !reserved.HoldUnclosed() {
 		t.Fatal("the reserved authorization is not an unclosed hold")
+	}
+}
+
+// The exit refund is claimed, not just checked: however many callers ask at
+// once, one gets it. This is what makes "at most one exit refund per
+// authorization" true by construction. Run it under the race detector.
+func TestExitRefundClaimGoesToExactlyOneCaller(t *testing.T) {
+	client := holdTestClient(t, 0, 0)
+	authorization := holdTestAuthorize(t, client)
+	const callers = 64
+	var claims atomic.Int32
+	var ready, done sync.WaitGroup
+	start := make(chan struct{})
+	for range callers {
+		ready.Add(1)
+		done.Add(1)
+		go func() {
+			defer done.Done()
+			ready.Done()
+			<-start
+			if authorization.ClaimUnclosedHold() {
+				claims.Add(1)
+			}
+		}()
+	}
+	ready.Wait()
+	close(start)
+	done.Wait()
+	if got := claims.Load(); got != 1 {
+		t.Fatalf("claims = %d, want exactly one", got)
+	}
+	if authorization.HoldUnclosed() || authorization.ClaimUnclosedHold() {
+		t.Fatal("the hold can still be claimed after it was claimed")
+	}
+
+	// Nothing to claim once any terminal was attempted, or for an
+	// authorization no authorize call returned.
+	settled := holdTestAuthorize(t, client)
+	if _, err := client.Settle(context.Background(), settled, Usage{RequestID: "req_1", InputTokens: 1, OutputTokens: 1}); err != nil {
+		t.Fatalf("settle: %v", err)
+	}
+	var missing *Authorization
+	for name, other := range map[string]*Authorization{"settled": settled, "untracked": {AuthorizationID: "auth_stored"}, "nil": missing} {
+		if other.ClaimUnclosedHold() {
+			t.Fatalf("a %s authorization was claimed for an exit refund", name)
+		}
+	}
+}
+
+// A replayed authorization is the caller's own exactly when an authorize call
+// on this client returned it: the decode boundary refuses another
+// invocation's. One built or stored elsewhere is never treated as the
+// caller's, replayed or not.
+func TestOwnReplayIsAReplayedAuthorizationThisClientReturned(t *testing.T) {
+	client := holdTestClient(t, 0, 0)
+	fresh := holdTestAuthorize(t, client)
+	if fresh.OwnReplay() {
+		t.Fatal("an authorization that was not replayed reads as an own replay")
+	}
+	fresh.IdempotentReplay = true
+	if !fresh.OwnReplay() {
+		t.Fatal("a replayed authorization this client returned does not read as the caller's own")
+	}
+	stored := &Authorization{AuthorizationID: "auth_stored", IdempotentReplay: true}
+	var missing *Authorization
+	if stored.OwnReplay() || missing.OwnReplay() {
+		t.Fatal("an authorization no authorize call returned reads as the caller's own replay")
 	}
 }

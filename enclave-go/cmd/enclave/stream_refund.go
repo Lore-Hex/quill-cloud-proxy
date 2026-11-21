@@ -9,8 +9,9 @@ import (
 )
 
 // A failed response must leave a terminal billing decision, even when the
-// immediate refund is unavailable. The existing outbox preserves the exact
-// refund for recovery; the control plane still chooses the first terminal winner.
+// immediate refund is unavailable. The retry queue keeps the exact refund for
+// recovery while it has room for refunds, and the outbox after it while it has
+// room to spare; the control plane still chooses the first terminal winner.
 func refundFailedStream(ctx context.Context, gateway *trustedrouter.Client, auth *trustedrouter.Authorization, requestLogID string, status int, reason string, elapsed float64, metadata map[string]any) *trustedrouter.SettleResult {
 	if gateway == nil || !gateway.Enabled() || auth == nil {
 		return nil

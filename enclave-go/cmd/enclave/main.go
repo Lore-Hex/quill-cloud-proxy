@@ -1407,6 +1407,16 @@ func serveOneRequest(
 	// translated is answered here and no credit is ever held for it. This used to
 	// be found out after the authorize, and that exit sent no refund: each retry
 	// of the same malformed request stranded another hold until expiry.
+	//
+	// The order of errors changes with it: a request that is both malformed and
+	// from a caller the control plane would refuse (unknown key, no credit, over
+	// a limit) now gets this 400 instead of the 401, 402 or 429, as a request
+	// with invalid JSON or an unknown parameter always has.
+	//
+	// It covers the plain chat and responses path only. Polyphemus selection and
+	// the orchestration handlers above run first, authorize their own calls and
+	// translate after: a request like this one costs them an authorize and a
+	// refund per call, never a stranded hold.
 	if _, err := adapter.ToAnthropic(&req, "claude-opus-4-7"); err != nil {
 		var aerr *adapter.AdapterError
 		if asAdapterErr(err, &aerr) {

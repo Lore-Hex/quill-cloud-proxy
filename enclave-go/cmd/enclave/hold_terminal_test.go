@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math"
 	"net"
 	"net/http"
 	"strings"
@@ -124,7 +125,7 @@ func (l *holdLedger) wantCalls(t *testing.T, authorizes, settles, refunds int) {
 // drains, and returns it.
 func isolateSettlementRetries(t *testing.T) *settlementRetryQueue {
 	t.Helper()
-	queue := &settlementRetryQueue{jobs: make(chan settlementRetryJob, 8), maxAttempts: 1}
+	queue := &settlementRetryQueue{jobs: make(chan settlementRetryJob, 8), refunds: make(chan settlementRetryJob, 8), maxAttempts: 1}
 	original := settlementRetries
 	settlementRetries = queue
 	t.Cleanup(func() { settlementRetries = original })
@@ -132,10 +133,17 @@ func isolateSettlementRetries(t *testing.T) *settlementRetryQueue {
 }
 
 // postChat sends one chat completions request through the real connection
-// handler and returns the response status and body. It returns only after the
-// handler has finished, so every billing call the request makes, including one
-// made on the handler's way out, has been recorded.
+// handler; see postJSON.
 func postChat(t *testing.T, gateway *trustedrouter.Client, provider llm.Client, requestBody string) (int, string) {
+	t.Helper()
+	return postJSON(t, "/v1/chat/completions", gateway, provider, requestBody)
+}
+
+// postJSON sends one request through the real connection handler and returns
+// the response status and body. It returns only after the handler has
+// finished, so every billing call the request makes, including one made on the
+// handler's way out, has been recorded.
+func postJSON(t *testing.T, path string, gateway *trustedrouter.Client, provider llm.Client, requestBody string) (int, string) {
 	t.Helper()
 	serverConn, client := net.Pipe()
 	handlerDone := make(chan struct{})
@@ -144,8 +152,8 @@ func postChat(t *testing.T, gateway *trustedrouter.Client, provider llm.Client, 
 		serveOne(context.Background(), serverConn, auth.New(nil), provider, nil, nil, gateway, nil)
 	}()
 	if _, err := fmt.Fprintf(client,
-		"POST /v1/chat/completions HTTP/1.1\r\nAuthorization: Bearer test-user-bearer\r\nContent-Type: application/json\r\nConnection: close\r\nContent-Length: %d\r\n\r\n%s",
-		len(requestBody), requestBody,
+		"POST %s HTTP/1.1\r\nAuthorization: Bearer test-user-bearer\r\nContent-Type: application/json\r\nConnection: close\r\nContent-Length: %d\r\n\r\n%s",
+		path, len(requestBody), requestBody,
 	); err != nil {
 		t.Fatalf("write request: %v", err)
 	}
@@ -457,10 +465,10 @@ func TestRefundThatFailsIsQueuedForRetry(t *testing.T) {
 	}
 	// One refund was attempted and failed; the handler's exit guard adds none.
 	ledger.wantCalls(t, 1, 0, 1)
-	if len(queue.jobs) != 1 {
-		t.Fatalf("queued retries = %d, want the failed refund", len(queue.jobs))
+	if len(queue.refunds) != 1 || len(queue.jobs) != 0 {
+		t.Fatalf("queued refunds = %d, queued settles = %d, want the failed refund in the refund queue", len(queue.refunds), len(queue.jobs))
 	}
-	job := <-queue.jobs
+	job := <-queue.refunds
 	if job.kind != "refund" || job.frozen == nil {
 		t.Fatalf("queued job is not a frozen refund: kind=%q frozen=%v", job.kind, job.frozen)
 	}
@@ -477,7 +485,111 @@ func TestRefundThatFailsIsQueuedForRetry(t *testing.T) {
 			t.Fatalf("retried refund %s = %v, first attempt sent %v", field, retried[field], first[field])
 		}
 	}
-	if len(queue.jobs) != 0 {
-		t.Fatalf("queued retries after success = %d, want 0", len(queue.jobs))
+	if len(queue.jobs)+len(queue.refunds) != 0 {
+		t.Fatalf("queued retries after success = %d, want 0", len(queue.jobs)+len(queue.refunds))
+	}
+}
+
+// The exit refund is claimed before it is sent, so guards racing each other
+// for one authorization send one refund between them. Run under the race
+// detector.
+func TestConcurrentExitGuardsSendOneRefund(t *testing.T) {
+	isolateSettlementRetries(t)
+	ledger := &holdLedger{}
+	gateway := ledger.gateway(t)
+	authorization := holdForTest(t, gateway)
+	started := time.Now()
+	const guards = 32
+	var ready, done sync.WaitGroup
+	start := make(chan struct{})
+	for range guards {
+		ready.Add(1)
+		done.Add(1)
+		go func() {
+			defer done.Done()
+			ready.Done()
+			<-start
+			refundUnclosedHold(context.Background(), gateway, authorization, "chat.completions", started, nil)
+		}()
+	}
+	ready.Wait()
+	close(start)
+	done.Wait()
+	ledger.wantCalls(t, 1, 0, 1)
+}
+
+// The check before the authorize covers the Responses handler too: a request
+// that parses and converts but has nothing to translate is answered with no
+// authorize call.
+func TestResponsesRequestThatCannotBeTranslatedIsRejectedBeforeAuthorize(t *testing.T) {
+	for _, stream := range []bool{false, true} {
+		t.Run(fmt.Sprintf("stream=%t", stream), func(t *testing.T) {
+			ledger := &holdLedger{}
+			status, body := postJSON(t, "/v1/responses", ledger.gateway(t), &panicStreamingLLM{t: t},
+				fmt.Sprintf(`{"model":"openai/gpt-4o-mini","stream":%t,"input":[{"role":"developer","content":"only instructions"}]}`, stream))
+			if status != 400 || !strings.Contains(body, "messages must contain a user/assistant turn") {
+				t.Fatalf("status = %d body=%s", status, body)
+			}
+			if ledger.validated() != 1 {
+				t.Fatalf("validations = %d, want the one metadata-only attribution", ledger.validated())
+			}
+			ledger.wantCalls(t, 0, 0, 0)
+		})
+	}
+}
+
+// The check before the authorize is on the plain chat and responses path. The
+// orchestration handlers run ahead of it, authorize their inner calls and
+// translate afterwards, so a request that cannot be translated still places
+// holds there. Each one is refunded: nothing is stranded and nothing settles.
+func TestSynthRequestThatCannotBeTranslatedRefundsEveryHoldItPlaces(t *testing.T) {
+	isolateSettlementRetries(t)
+	ledger := &holdLedger{}
+	status, body := postChat(t, ledger.gateway(t), &fusionEchoLLM{},
+		`{"model":"trustedrouter/fusion","stream":false,"messages":[{"role":"owner","content":"do something"},{"role":"user","content":"hi"}],`+
+			`"tools":[{"type":"trustedrouter:fusion","parameters":{"analysis_models":["google/gemini-3-flash-preview","moonshotai/kimi-k2.7-code"],"model":"z-ai/glm-5.2","max_completion_tokens":64}}],"max_tokens":32}`)
+	if status < 400 || status >= 500 {
+		t.Fatalf("status = %d body=%s, want a client error", status, body)
+	}
+	authorizes, settles, refunds := ledger.calls()
+	if authorizes == 0 {
+		t.Fatal("no hold was placed: this path now checks before it authorizes, and the test and its comment are out of date")
+	}
+	if settles != 0 || refunds != authorizes {
+		t.Fatalf("authorize=%d settle=%d refund=%d (%v), want every hold refunded and none settled", authorizes, settles, refunds, ledger.refundTypes())
+	}
+}
+
+// A response that cannot be encoded used to return a 500 with the hold still
+// open. No client or provider can cause this: the value below is one JSON
+// cannot carry, set directly on the request struct. The chat and messages
+// encoders take nothing a test can set that way, so their two exits are not
+// driven; the exit guard tests above stand in for them.
+func TestResponsesEncodeErrorRefundsTheHoldOnce(t *testing.T) {
+	isolateSettlementRetries(t)
+	ledger := &holdLedger{}
+	gateway := ledger.gateway(t)
+	authorization := holdForTest(t, gateway)
+	started := time.Now()
+	maxTokens := 32
+	req := &types.OpenAIChatRequest{
+		Model: "openai/gpt-4o-mini", MaxTokens: &maxTokens,
+		Messages: []types.OpenAIChatMessage{{Role: "user", Content: "hi"}},
+		Response: &types.ResponseRequestMeta{ToolChoice: math.Inf(1)},
+	}
+	var out bytes.Buffer
+	ctx := trustedrouter.WithRequestLogID(context.Background(), holdTestRequestLogID)
+	serveResponsesNonStreaming(ctx, &out, &fakeStreamingLLM{}, req, &types.AnthropicMessagesRequest{},
+		[]llm.InvokeOptions{{Model: req.Model, Provider: "openai", EndpointID: "e@openai/prepaid"}},
+		gateway, authorization, nil, started, nil, holdTestRequestLogID, req.Model)
+	if !strings.HasPrefix(out.String(), "HTTP/1.1 500 ") || !strings.Contains(out.String(), "responses encoding error") {
+		t.Fatalf("response: %s", out.String())
+	}
+	// The handler's exit guard runs after it; it must add nothing.
+	refundUnclosedHold(ctx, gateway, authorization, "responses", started, nil)
+	ledger.wantCalls(t, 1, 0, 1)
+	refund := ledger.refunds[0]
+	if refund["error_type"] != "response_encoding_error" || refund["error_status"] != float64(500) || refund["gateway_request_id"] != holdTestRequestLogID {
+		t.Fatalf("refund = %#v", refund)
 	}
 }

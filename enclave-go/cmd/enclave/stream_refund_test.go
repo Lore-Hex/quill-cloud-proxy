@@ -20,7 +20,7 @@ func TestPreHeaderFailureRefundIsCorrelatedAndRecoverable(t *testing.T) {
 		t.Run(map[bool]string{false: "accepted", true: "queued"}[refundFails], func(t *testing.T) {
 			t.Setenv("QUILL_USAGE_HEARTBEAT", "on")
 			t.Setenv("QUILL_TERMINATE_AT_CAP", "off")
-			q := &settlementRetryQueue{jobs: make(chan settlementRetryJob, 4)}
+			q := &settlementRetryQueue{jobs: make(chan settlementRetryJob, 4), refunds: make(chan settlementRetryJob, 4)}
 			original := settlementRetries
 			settlementRetries = q
 			t.Cleanup(func() { settlementRetries = original })
@@ -63,14 +63,14 @@ func TestPreHeaderFailureRefundIsCorrelatedAndRecoverable(t *testing.T) {
 			}
 			if refundFails {
 				select {
-				case job := <-q.jobs:
+				case job := <-q.refunds:
 					if job.kind != "refund" || job.requestLogID != trace || job.frozen == nil || job.frozenErr != nil {
 						t.Fatalf("invalid durable refund: kind=%s freeze_error=%v", job.kind, job.frozenErr)
 					}
 				default:
 					t.Fatal("failed refund not queued")
 				}
-			} else if len(q.jobs) != 0 {
+			} else if len(q.jobs)+len(q.refunds) != 0 {
 				t.Fatal("accepted refund retried")
 			}
 		})

@@ -93,7 +93,10 @@ func serveTranscription(ctx context.Context, conn io.Writer, raw []byte, gateway
 		writeGatewayAuthorizationError(conn, err)
 		return
 	}
-	if auth.IdempotentReplay {
+	if auth.IdempotentReplay && !auth.OwnReplay() {
+		// Never transcribe again or refund for another request's
+		// authorization. This request's own authorize handed back to its own
+		// retry is served below: nothing has run for it yet.
 		writeOpenAIError(conn, 409, "Transcription responses are not retained; this idempotency key was already used", "invalid_request_error", "transcription_not_replayable", "")
 		return
 	}

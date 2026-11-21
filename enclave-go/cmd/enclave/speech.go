@@ -70,9 +70,11 @@ func serveSpeech(ctx context.Context, conn io.Writer, raw []byte, gateway *trust
 		writeGatewayAuthorizationError(conn, err)
 		return
 	}
-	if authorization.IdempotentReplay {
+	if authorization.IdempotentReplay && !authorization.OwnReplay() {
 		// Audio is never stored. Do not regenerate (or refund another active
 		// request) when replaying an authorization whose response was lost.
+		// This request's own authorize handed back to its own retry is not
+		// that case: nothing has run for it, and it is served below.
 		writeOpenAIError(conn, 409, "This speech idempotency key was already used; audio responses are not retained", "invalid_request_error", "speech_not_replayable", "")
 		return
 	}

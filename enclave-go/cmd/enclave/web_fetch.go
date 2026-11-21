@@ -56,7 +56,10 @@ func serveWebFetch(ctx context.Context, conn io.Writer, raw []byte, gateway *tru
 		writeGatewayAuthorizationError(conn, err)
 		return
 	}
-	if authorization.IdempotentReplay {
+	if authorization.IdempotentReplay && !authorization.OwnReplay() {
+		// Never fetch again or refund for another request's authorization.
+		// This request's own authorize handed back to its own retry is served
+		// below: nothing has run for it yet.
 		writeOpenAIError(conn, 409, "This Fetch idempotency key was already used; fetched content is not retained", "invalid_request_error", "fetch_not_replayable", "")
 		return
 	}
