@@ -140,21 +140,27 @@ class RolloutSafetyTests(unittest.TestCase):
         self.assertIn("not evidence that", out)
 
     def test_async_settlement_rollout_pins_and_keyring_allowlist(self) -> None:
-        # Step 8 enables negotiation only for the four GCP pilot-serving regions,
-        # after router gates are verified. AWS/Azure keep their pre-pilot pins;
-        # the shared public verification material remains unchanged.
+        # Step 8 enabled negotiation for the four GCP pilot-serving regions,
+        # after router gates were verified. AWS and Azure settle against the
+        # same router and negotiate too since 2026-11-21. Every plane pins
+        # shadow off with negotiation on, because shadow suppresses
+        # negotiation. The shared public verification material is unchanged.
         keyring = ASYNC_SETTLE_KEYRING
         aws = (ROOT / "enclave-go/Dockerfile.enclave").read_text()
-        self.assertIn("ENV TR_ASYNC_SETTLE_NEGOTIATE=off", aws)
-        self.assertIn("ENV TR_ASYNC_SETTLE_SHADOW=on", aws)
+        self.assertIn("ENV TR_ASYNC_SETTLE_NEGOTIATE=on\n", aws)
+        self.assertIn("ENV TR_ASYNC_SETTLE_SHADOW=off\n", aws)
+        self.assertNotIn("TR_ASYNC_SETTLE_NEGOTIATE=off", aws)
+        self.assertNotIn("TR_ASYNC_SETTLE_SHADOW=on", aws)
         self.assertIn("ENV TR_ASYNC_SETTLE_TICKET_PUBLIC_KEYS='" + keyring + "'\n", aws)
         gcp = (ROOT / "tools/deploy-gcp-mig.sh").read_text()
         self.assertIn("tee-env-TR_ASYNC_SETTLE_NEGOTIATE=on|tee-env-TR_ASYNC_SETTLE_TICKET_PUBLIC_KEYS="
                       + keyring.replace('"', '\\"') + "|", gcp)
         self.assertIn("tee-env-TR_ASYNC_SETTLE_SHADOW=off|", gcp)
         azure = (ROOT / "tools/deploy-azure-aci.sh").read_text()
-        self.assertIn('"TR_ASYNC_SETTLE_SHADOW": "on"', azure)
-        self.assertIn('"TR_ASYNC_SETTLE_NEGOTIATE": "off"', azure)
+        self.assertIn('"TR_ASYNC_SETTLE_SHADOW": "off"', azure)
+        self.assertIn('"TR_ASYNC_SETTLE_NEGOTIATE": "on"', azure)
+        self.assertNotIn('"TR_ASYNC_SETTLE_SHADOW": "on"', azure)
+        self.assertNotIn('"TR_ASYNC_SETTLE_NEGOTIATE": "off"', azure)
         self.assertIn('"TR_ASYNC_SETTLE_TICKET_PUBLIC_KEYS": ' + repr(keyring) + ",", azure)
         for source in (aws, gcp, azure):
             self.assertEqual(source.count("tr-async-settle-2026-10a"), 1)
