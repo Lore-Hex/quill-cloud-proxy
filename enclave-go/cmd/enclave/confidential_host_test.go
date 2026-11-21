@@ -22,6 +22,36 @@ type confidentialSNIConn struct {
 	sni string
 }
 
+func TestTrustedHostsNeverAcceptLowerFloor(t *testing.T) {
+	for _, domain := range []string{"trustedrouter.com", "quillrouter.com", "allyrouter.com", "uptimerouter.com", "nytokenexchange.com"} {
+		host := "api.trusted." + domain
+		for _, pair := range [][2]string{{host, "api.confidential." + domain}, {"api." + domain, host}, {"api.confidential." + domain, host}} {
+			for _, floor := range []string{"", "any", "no_store", "zdr", "e2e", "confidential"} {
+				body := fmt.Sprintf(`{"provider":{"min_privacy":%q,"allow_fallbacks":true}}`, floor)
+				raw := fmt.Sprintf("POST /v1/chat/completions HTTP/1.1\r\nHost: %s\r\nContent-Length: %d\r\n\r\n%s", pair[0], len(body), body)
+				conn := &confidentialSNIConn{newScriptedConn(raw, nil), pair[1]}
+				serveOne(context.Background(), conn, auth.New(nil), nil, nil, nil, nil, nil)
+				if !strings.Contains(conn.writes.String(), `"code":"trusted_privacy_required"`) {
+					t.Fatalf("host=%s SNI=%s floor=%q: %s", pair[0], pair[1], floor, conn.writes.String())
+				}
+			}
+		}
+	}
+	ctx := trustedrouter.WithTrustedOnly(context.Background())
+	body := []byte(`{"provider":{"min_privacy":"trusted"}}`)
+	for _, path := range []string{"/v1/chat/completions", "/v1/messages", "/v1/responses"} {
+		if err := validatePrivacyHostRequest(ctx, "POST", path, body, trustedrouter.New("https://control.invalid", "internal", nil)); err != nil {
+			t.Fatal(err)
+		}
+		if err := validatePrivacyHostRequest(ctx, "POST", path, body, nil); err == nil || err.StatusCode != 503 {
+			t.Fatal("unavailable authorizer accepted", path)
+		}
+	}
+	if err := validatePrivacyHostRequest(ctx, "POST", "/v1/audio/transcriptions", body, nil); err == nil || err.Type != "trusted_route_unsupported" {
+		t.Fatal("unsupported operation accepted")
+	}
+}
+
 func (c *confidentialSNIConn) ConnectionState() tls.ConnectionState {
 	return tls.ConnectionState{ServerName: c.sni}
 }

@@ -62,9 +62,9 @@ func (c *Client) PrepareSpendLeaseAdmission(
 	// even if a future local routing snapshot supports more provider options.
 	if ConfidentialOnly(ctx) {
 		if req == nil {
-			return nil, ValidateConfidentialRouting(nil)
+			return nil, ValidateHostRouting(ctx, nil)
 		}
-		if err := ValidateConfidentialRouting(req.Provider); err != nil {
+		if err := ValidateHostRouting(ctx, req.Provider); err != nil {
 			return nil, err
 		}
 		return nil, nil

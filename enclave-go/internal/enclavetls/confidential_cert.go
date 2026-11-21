@@ -29,7 +29,7 @@ func confidentialCertificateGetter(names []string, cache autocert.Cache, next fu
 	certificates := make(map[string]entry)
 	return func(hello *tls.ClientHelloInfo) (*tls.Certificate, error) {
 		name := strings.ToLower(strings.TrimSuffix(hello.ServerName, "."))
-		if !apihosts.Confidential(name) && name != "api.nytokenexchange.com" {
+		if !apihosts.Confidential(name) && !apihosts.Trusted(name) && name != "api.nytokenexchange.com" {
 			return next(hello)
 		}
 		if !allowed[name] {

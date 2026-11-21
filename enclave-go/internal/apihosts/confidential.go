@@ -17,9 +17,17 @@ func hostname(authority string) string {
 
 // Confidential checks an HTTP authority or TLS server name, never forwarding headers.
 func Confidential(authority string) bool {
+	return tierHost(authority, "confidential")
+}
+
+func Trusted(authority string) bool {
+	return tierHost(authority, "trusted")
+}
+
+func tierHost(authority, tier string) bool {
 	host := hostname(authority)
 	for _, domain := range publicDomains {
-		if host == "api.confidential."+domain {
+		if host == "api."+tier+"."+domain {
 			return true
 		}
 	}
@@ -36,8 +44,10 @@ func ChallengeRecord(name, managedZone string) string {
 		return "_acme-challenge.api-nytokenexchange.trustedrouter.com"
 	}
 	for _, domain := range publicDomains[1:] {
-		if hostname(name) == "api.confidential."+domain {
-			return "_acme-challenge.api-confidential-" + strings.TrimSuffix(domain, ".com") + ".trustedrouter.com"
+		for _, tier := range []string{"confidential", "trusted"} {
+			if hostname(name) == "api."+tier+"."+domain {
+				return "_acme-challenge.api-" + tier + "-" + strings.TrimSuffix(domain, ".com") + ".trustedrouter.com"
+			}
 		}
 	}
 	return ""
@@ -52,9 +62,11 @@ func WithConfidentialAliases(configured string) string {
 		seen[hostname(strings.TrimSpace(name))] = true
 	}
 	for _, domain := range publicDomains {
-		alias := "api.confidential." + domain
-		if seen["api."+domain] && !seen[alias] {
-			names = append(names, alias)
+		for _, tier := range []string{"confidential", "trusted"} {
+			alias := "api." + tier + "." + domain
+			if seen["api."+domain] && !seen[alias] {
+				names = append(names, alias)
+			}
 		}
 	}
 	return strings.Join(names, ",")

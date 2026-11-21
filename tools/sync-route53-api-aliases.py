@@ -25,6 +25,8 @@ PROJECT = "quill-cloud-proxy"
 SOURCE_ZONE = "trustedrouter-com"
 SOURCE_RECORD = "api.trustedrouter.com."
 CONFIDENTIAL_SOURCE_RECORD = "api.confidential.trustedrouter.com."
+TRUSTED_SOURCE_RECORD = "api.trusted.trustedrouter.com."
+POLICY_SOURCES = {CONFIDENTIAL_SOURCE_RECORD, TRUSTED_SOURCE_RECORD}
 TTL = 60
 MIN_HEALTHY = 2
 
@@ -40,6 +42,8 @@ ALIASES = (
     AliasRecord("Z00893363GIOMU7Z8647K", "api.confidential.uptimerouter.com.", CONFIDENTIAL_SOURCE_RECORD),
     AliasRecord("Z09662142UE0IQL51B13V", "api.allyrouter.com."),
     AliasRecord("Z00893363GIOMU7Z8647K", "api.uptimerouter.com."),
+    AliasRecord("Z09662142UE0IQL51B13V", "api.trusted.allyrouter.com.", TRUSTED_SOURCE_RECORD),
+    AliasRecord("Z00893363GIOMU7Z8647K", "api.trusted.uptimerouter.com.", TRUSTED_SOURCE_RECORD),
 )
 
 
@@ -115,8 +119,8 @@ def source_ips(record: str = SOURCE_RECORD) -> list[str]:
             # Copy the complete attested membership, not one GEO location.
             # Independent Route53 backups intentionally remain flat A records.
             values = record_ips(row)
-            return normalized_ipv4(values, minimum=0 if record == CONFIDENTIAL_SOURCE_RECORD else MIN_HEALTHY)
-    if record == CONFIDENTIAL_SOURCE_RECORD:
+            return normalized_ipv4(values, minimum=0 if record in POLICY_SOURCES else MIN_HEALTHY)
+    if record in POLICY_SOURCES:
         return []
     raise ValueError(f"canonical A record {record} was not found")
 
@@ -180,7 +184,7 @@ def apply_alias(alias: AliasRecord, ips: list[str]) -> str:
     if ips:
         batch = change_batch(alias, ips)
     else:
-        if alias.source != CONFIDENTIAL_SOURCE_RECORD:
+        if alias.source not in POLICY_SOURCES:
             raise ValueError("refusing to delete ordinary API alias")
         current = current_alias_record(alias)
         if current is None:
@@ -219,19 +223,22 @@ def parse_args() -> argparse.Namespace:
 
 def provision_confidential_challenge_delegations(*, apply: bool) -> None:
     for alias in ALIASES:
-        if alias.source != CONFIDENTIAL_SOURCE_RECORD:
+        if alias.source not in POLICY_SOURCES:
             continue
-        owner = alias.name.removeprefix("api.confidential.").removesuffix(".com.")
+        tier = "trusted" if alias.source == TRUSTED_SOURCE_RECORD else "confidential"
+        owner = alias.name.removeprefix(f"api.{tier}.").removesuffix(".com.")
         name = "_acme-challenge." + alias.name
-        target = f"_acme-challenge.api-confidential-{owner}.trustedrouter.com."
+        target = f"_acme-challenge.api-{tier}-{owner}.trustedrouter.com."
         current = current_alias_record(AliasRecord(alias.zone_id, name), "CNAME")
         if current and current.get("ResourceRecords") == [{"Value": target}]:
             continue
+        if current and tier == "trusted":
+            raise ValueError(f"refusing to overwrite unrelated challenge delegation: {name}")
         if apply:
             run_json([
                 "aws", "route53", "change-resource-record-sets", "--hosted-zone-id", alias.zone_id,
                 "--change-batch", json.dumps({"Comment": "Enclave DNS-01 certificate delegation",
-                    "Changes": [{"Action": "UPSERT", "ResourceRecordSet": {
+                    "Changes": [{"Action": "CREATE" if tier == "trusted" else "UPSERT", "ResourceRecordSet": {
                         "Name": name, "Type": "CNAME", "TTL": TTL,
                         "ResourceRecords": [{"Value": target}],
                     }}]}), "--output", "json",

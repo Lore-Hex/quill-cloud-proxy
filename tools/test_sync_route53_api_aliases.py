@@ -35,21 +35,24 @@ class Route53AliasSyncTests(unittest.TestCase):
             mock.patch.object(SYNC, "run_json", return_value={}) as run,
         ):
             SYNC.provision_confidential_challenge_delegations(apply=True)
-        self.assertEqual(run.call_count, 2)
+        self.assertEqual(run.call_count, 4)
         for call in run.call_args_list:
             command = call.args[0]
             batch = json.loads(command[command.index("--change-batch") + 1])
             record = batch["Changes"][0]["ResourceRecordSet"]
             self.assertEqual(record["Type"], "CNAME")
             owner = record["Name"].split(".")[3]
-            self.assertEqual(record["Name"], f"_acme-challenge.api.confidential.{owner}.com.")
-            self.assertEqual(record["ResourceRecords"], [{"Value": f"_acme-challenge.api-confidential-{owner}.trustedrouter.com."}])
+            tier = record["Name"].split(".")[2]
+            self.assertIn(tier, {"confidential", "trusted"})
+            self.assertEqual(record["Name"], f"_acme-challenge.api.{tier}.{owner}.com.")
+            self.assertEqual(record["ResourceRecords"], [{"Value": f"_acme-challenge.api-{tier}-{owner}.trustedrouter.com."}])
 
     def test_certificate_delegations_are_idempotent(self) -> None:
         def current(alias, record_type):
             self.assertEqual(record_type, "CNAME")
             owner = alias.name.split(".")[3]
-            return {"ResourceRecords": [{"Value": f"_acme-challenge.api-confidential-{owner}.trustedrouter.com."}]}
+            tier = alias.name.split(".")[2]
+            return {"ResourceRecords": [{"Value": f"_acme-challenge.api-{tier}-{owner}.trustedrouter.com."}]}
         with (
             mock.patch.object(SYNC, "current_alias_record", side_effect=current),
             mock.patch.object(SYNC, "run_json") as run,
@@ -62,11 +65,14 @@ class Route53AliasSyncTests(unittest.TestCase):
         self.assertEqual(
             names,
             {"api.allyrouter.com.", "api.uptimerouter.com.",
+             "api.trusted.allyrouter.com.", "api.trusted.uptimerouter.com.",
              "api.confidential.allyrouter.com.", "api.confidential.uptimerouter.com."},
         )
 
     def test_confidential_aliases_use_only_policy_qualified_source(self) -> None:
         for alias in SYNC.ALIASES:
+            if ".trusted." in alias.name:
+                self.assertEqual(alias.source, "api.trusted.trustedrouter.com.")
             if ".confidential." in alias.name:
                 self.assertEqual(alias.source, "api.confidential.trustedrouter.com.")
         with mock.patch.object(SYNC, "run_json", return_value=[]):

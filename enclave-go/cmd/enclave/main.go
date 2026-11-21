@@ -855,11 +855,18 @@ func serveOneRequest(
 	statsConn.SetBrowserCORS(isBearerCORSRoute(routePath))
 	// Reuse only identical requests that previously passed validation and reached
 	// authorize. The credential guard wins, with ordinary audit logs on rejection.
-	confidential := apihosts.Confidential(attribution.Host) || apihosts.Confidential(enclavetls.SelectedServerName(conn))
+	sni := enclavetls.SelectedServerName(conn)
+	switch {
+	case apihosts.Trusted(attribution.Host) || apihosts.Trusted(sni):
+		ctx = trustedrouter.WithTrustedOnly(ctx)
+	case apihosts.Confidential(attribution.Host) || apihosts.Confidential(sni):
+		ctx = trustedrouter.WithConfidentialOnly(ctx)
+	}
+	confidential := trustedrouter.ConfidentialOnly(ctx)
 	var credentialErr error
 	credentialChecked := false
 	if trGateway.Enabled() && bearer != "" && billingBackoffRoute(method, routePath) &&
-		(!confidential || validateConfidentialHostRequest(method, routePath, body, trGateway) == nil) {
+		(!confidential || validatePrivacyHostRequest(ctx, method, routePath, body, trGateway) == nil) {
 		credentialErr = trGateway.CheckCredential(ctx, bearer)
 		credentialChecked = true
 		if credentialErr == nil {
@@ -917,9 +924,8 @@ func serveOneRequest(
 	if maybeServeBearerPreflight(conn, method, routePath) {
 		return
 	}
-	if apihosts.Confidential(attribution.Host) || apihosts.Confidential(enclavetls.SelectedServerName(conn)) {
-		ctx = trustedrouter.WithConfidentialOnly(ctx)
-		if err := validateConfidentialHostRequest(method, routePath, body, trGateway); err != nil {
+	if confidential {
+		if err := validatePrivacyHostRequest(ctx, method, routePath, body, trGateway); err != nil {
 			writeConfidentialHostError(conn, routePath, err)
 			return
 		}

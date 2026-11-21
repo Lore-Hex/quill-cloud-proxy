@@ -30,6 +30,9 @@ def setUpModule() -> None:
         return real_run(command, *args, **kwargs)
 
     for patch in (mock.patch.object(reconciler, "CANONICAL_GEO", False),
+                  # The new independent DNS phase is exercised in test_trusted_api_dns.
+                  mock.patch.object(reconciler, "provision_trusted_delegations"),
+                  mock.patch.object(reconciler, "reconcile_trusted"),
                   mock.patch.object(reconciler, "NYTE_API_ALIASES_ENABLED", False),
                   mock.patch.object(subprocess, "run", side_effect=offline_run),
                   mock.patch.object(socket.socket, "connect", side_effect=AssertionError("unmocked network"))):

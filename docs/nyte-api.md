@@ -64,3 +64,30 @@ include the confidential privacy field for the confidential origin. Confirm
 missing/weaker privacy is rejected without contacting a provider.
 
 Public request documentation: https://trustedrouter.com/docs#nyte-api
+
+## Trusted-only gateway names
+
+The stronger host policy is selected by `api.trusted.` on each of
+`trustedrouter.com`, `quillrouter.com`, `allyrouter.com`, `uptimerouter.com`
+and `nytokenexchange.com`. Publication is gated separately from ordinary and
+Confidential DNS; the presence of this source change is not a rollout record.
+Use the usual inference key, balance, prices and limits. The supported writes
+are chat completions, Messages and Responses, with an explicit
+`"provider":{"min_privacy":"trusted"}`. Omitted or lower floors and other
+writes fail closed. Reads such as `/attestation` and `/v1/models` are discovery,
+not a claim that every listed model is available at this floor.
+
+Trusted requires the control plane's endpoint-specific verified compute,
+provider E2EE, ZDR and curated operator checks on the primary and fallback
+routes. Either the HTTP or TLS hostname can require Trusted; the stricter one
+wins. Subcalls must retain that floor. The gateway checks every authorized
+operator before dispatch, including Maple's single managed workload.
+
+Bootstrap uses the existing restricted certificate role with a separate
+five-record condition: `python3 tools/nyte_acme_iam.py --trusted-api --account ACCOUNT`
+previews it; `--apply` requires explicit operator authorization. Private keys
+stay inside the enclave. The canonical Trusted membership requires each IP to
+present all five public certificates, match signed GCP trust, bind its TLS
+session and reject a Confidential-only request with fallbacks enabled before
+authentication. The Route53 mirrors use only that Trusted membership. Never
+point these names at ordinary or Confidential DNS during bootstrap or rollback.

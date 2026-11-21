@@ -17,6 +17,11 @@ RECORDS = (
     "_acme-challenge.api-nytokenexchange.trustedrouter.com.",
     "_acme-challenge.api-confidential-nytokenexchange.trustedrouter.com.",
 )
+TRUSTED_RECORDS = (
+    "_acme-challenge.api.trusted.trustedrouter.com.",
+    *(f"_acme-challenge.api-trusted-{brand}.trustedrouter.com."
+      for brand in ("quillrouter", "allyrouter", "uptimerouter", "nytokenexchange")),
+)
 PERMISSIONS = {
     "dns.changes.create",
     "dns.resourceRecordSets.create",
@@ -24,26 +29,27 @@ PERMISSIONS = {
 }
 
 
-def required_binding() -> dict:
+def required_binding(*, trusted_api: bool = False) -> dict:
     records = " || ".join(
-        f"resource.name.endsWith('/rrsets/{record}/TXT')" for record in RECORDS
+        f"resource.name.endsWith('/rrsets/{record}/TXT')" for record in (TRUSTED_RECORDS if trusted_api else RECORDS)
     )
     return {
         "role": ROLE,
         "members": [MEMBER],
         "condition": {
-            "title": "nyte-acme-txt-only",
-            "description": "Only the two NYTE gateway certificate validation TXT records",
+            "title": "trusted-api-acme-txt-only" if trusted_api else "nyte-acme-txt-only",
+            "description": ("Only the five Trusted API certificate validation TXT records" if trusted_api
+                            else "Only the two NYTE gateway certificate validation TXT records"),
             "expression": "(resource.type == 'dns.googleapis.com/Change') || "
             "(resource.type == 'dns.googleapis.com/ResourceRecordSet' && (" + records + "))",
         },
     }
 
 
-def updated_policy(current: dict) -> tuple[dict, bool]:
+def updated_policy(current: dict, *, trusted_api: bool = False) -> tuple[dict, bool]:
     if not current.get("etag"):
         raise ValueError("Refusing an IAM update without the current etag")
-    desired = required_binding()
+    desired = required_binding(trusted_api=trusted_api)
     for existing in current.get("bindings", []):
         if existing == desired:
             return copy.deepcopy(current), False
@@ -58,6 +64,7 @@ def updated_policy(current: dict) -> tuple[dict, bool]:
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--account", required=True, help="Separately authenticated deploy identity")
+    parser.add_argument("--trusted-api", action="store_true", help="Select only the five Trusted API TXT records instead of the NYTE grant")
     parser.add_argument("--apply", action="store_true", help="Apply only after explicit IAM approval")
     args = parser.parse_args(argv)
     if args.account.startswith("tr-ops-local@"):
@@ -75,11 +82,12 @@ def main(argv: list[str] | None = None) -> int:
     if role.get("deleted") or set(role.get("includedPermissions", [])) != PERMISSIONS:
         raise ValueError("Certificate role must contain exactly the three approved DNS permissions")
     current = run("dns", "managed-zones", "get-iam-policy", ZONE)
-    policy, changed = updated_policy(current)
+    binding = required_binding(trusted_api=args.trusted_api)
+    policy, changed = updated_policy(current, trusted_api=args.trusted_api)
     if not changed:
-        print("NYTE certificate TXT grant already matches; no change")
+        print("Certificate TXT grant already matches; no change")
         return 0
-    print(json.dumps({"zone": ZONE, "add_binding": required_binding()}, indent=2))
+    print(json.dumps({"zone": ZONE, "add_binding": binding}, indent=2))
     if not args.apply:
         print("Dry run only. Explicit IAM approval is required before --apply.")
         return 0
@@ -88,9 +96,9 @@ def main(argv: list[str] | None = None) -> int:
         path = Path(directory) / "policy.json"
         path.write_text(json.dumps(policy))
         applied = run("dns", "managed-zones", "set-iam-policy", ZONE, "--policy-file", str(path), "--quiet")
-    if required_binding() not in applied.get("bindings", []):
-        raise RuntimeError("IAM response did not confirm the exact NYTE binding")
-    print("Applied the two-record grant; certificates and attestation still need verification")
+    if binding not in applied.get("bindings", []):
+        raise RuntimeError("IAM response did not confirm the exact certificate TXT binding")
+    print("Applied the scoped TXT grant; certificates and attestation still need verification")
     return 0
 
 

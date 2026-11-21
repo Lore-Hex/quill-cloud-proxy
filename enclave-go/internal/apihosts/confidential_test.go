@@ -23,7 +23,7 @@ func TestConfidentialHosts(t *testing.T) {
 func TestWithConfidentialAliases(t *testing.T) {
 	configured := "api.trustedrouter.com,api.quillrouter.com,api.allyrouter.com,api.uptimerouter.com,api-us-central1.quillrouter.com"
 	got := WithConfidentialAliases(configured)
-	if !strings.HasPrefix(got, configured+",") || len(strings.Split(got, ",")) != 9 {
+	if !strings.HasPrefix(got, configured+",") || len(strings.Split(got, ",")) != 13 {
 		t.Fatalf("unexpected certificate names: %s", got)
 	}
 	if WithConfidentialAliases(got) != got {
@@ -55,7 +55,7 @@ func TestChallengeDelegations(t *testing.T) {
 func TestNyteAPIAliases(t *testing.T) {
 	configured := "api.trustedrouter.com,api.nytokenexchange.com"
 	got := WithConfidentialAliases(configured)
-	if got != configured+",api.confidential.trustedrouter.com,api.confidential.nytokenexchange.com" {
+	if got != configured+",api.confidential.trustedrouter.com,api.trusted.trustedrouter.com,api.confidential.nytokenexchange.com,api.trusted.nytokenexchange.com" {
 		t.Fatalf("NYTE certificate aliases: %s", got)
 	}
 	if Confidential("api.nytokenexchange.com") || Confidential("api.confidential.nytokenexchange.com.evil") {
@@ -66,5 +66,24 @@ func TestNyteAPIAliases(t *testing.T) {
 	}
 	if ChallengeRecord("api.nytokenexchange.com", "other-zone") != "" {
 		t.Fatal("NYTE challenge escaped the configured zone")
+	}
+}
+
+func TestTrustedAliases(t *testing.T) {
+	for _, domain := range publicDomains {
+		host := "api.trusted." + domain
+		if !Trusted(strings.ToUpper(host)+".:443") || Trusted(host+".example") || Trusted("api."+domain) || Confidential(host) {
+			t.Fatal(domain)
+		}
+		if !strings.Contains(WithConfidentialAliases("api."+domain), ","+host) {
+			t.Fatal("missing certificate:", host)
+		}
+		want := ""
+		if domain != "trustedrouter.com" {
+			want = "_acme-challenge.api-trusted-" + strings.TrimSuffix(domain, ".com") + ".trustedrouter.com"
+		}
+		if ChallengeRecord(host, "trustedrouter-com") != want || ChallengeRecord(host, "other") != "" {
+			t.Fatal("incorrect ACME delegation for", host)
+		}
 	}
 }

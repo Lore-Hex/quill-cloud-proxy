@@ -1010,7 +1010,7 @@ func (c *Client) AuthorizeWithRoute(ctx context.Context, bearer string, req *qty
 		return nil, err
 	}
 	if ConfidentialOnly(ctx) {
-		if err := ValidateConfidentialRouting(req.Provider); err != nil {
+		if err := ValidateHostRouting(ctx, req.Provider); err != nil {
 			return nil, err
 		}
 	}
@@ -1135,7 +1135,7 @@ func (c *Client) authorizeEmbeddingsWithRoute(ctx context.Context, bearer string
 		return nil, err
 	}
 	if ConfidentialOnly(ctx) {
-		if err := ValidateConfidentialRouting(req.Provider); err != nil {
+		if err := ValidateHostRouting(ctx, req.Provider); err != nil {
 			return nil, err
 		}
 	}
