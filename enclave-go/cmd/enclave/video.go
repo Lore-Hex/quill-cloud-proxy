@@ -12,6 +12,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"os"
 	"slices"
 	"strings"
 	"time"
@@ -539,8 +540,10 @@ func (s *videoService) queueVideoJob(
 		for _, auth := range shadowAuth {
 			auth.RecordShadowInvocation(route.EndpointID, route.Provider)
 		}
+		started := time.Now()
 		queued, err := provider.QueueResolved(queueCtx, &routed)
 		cancel()
+		logVideoQueueAttempt(os.Stderr, trustedrouter.RequestLogIDFromContext(ctx), request.Model.ID, route, err, time.Since(started))
 		if err == nil {
 			return route, queued, nil
 		}
@@ -553,6 +556,32 @@ func (s *videoService) queueVideoJob(
 		lastErr = fmt.Errorf("no authorized video provider is configured")
 	}
 	return authorizedVideoRoute{}, nil, lastErr
+}
+
+// logVideoQueueAttempt writes one enclave.video_queue_attempt line per paid
+// queue call. upstream carries only the provider status and allowlisted
+// symbols (video.HTTPError.Diagnostic): never the prompt, images, provider
+// message, or body.
+func logVideoQueueAttempt(w io.Writer, requestLogID, model string, route authorizedVideoRoute, err error, elapsed time.Duration) {
+	outcome, errStr, upstream := "ok", "", ""
+	if err != nil {
+		outcome, errStr = "fail", "local_error"
+		var inputErr *video.InputError
+		var httpErr *video.HTTPError
+		switch {
+		case errors.As(err, &inputErr):
+			errStr = "input_error"
+		case errors.As(err, &httpErr):
+			errStr = "upstream_http"
+			upstream = httpErr.Diagnostic()
+		case errors.Is(err, context.DeadlineExceeded):
+			errStr = "timeout"
+		}
+	}
+	fmt.Fprintf(w,
+		"enclave.video_queue_attempt request_log_id=%q model=%q provider=%q endpoint=%q outcome=%s total_ms=%d err=%q upstream=%q\n",
+		requestLogID, model, route.Provider, route.EndpointID, outcome, elapsed.Milliseconds(), errStr, upstream,
+	)
 }
 
 func (s *videoService) serveStatus(ctx context.Context, conn io.Writer, bearer, jobID string) {

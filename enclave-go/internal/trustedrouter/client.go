@@ -70,6 +70,11 @@ func WithRequestLogID(ctx context.Context, requestLogID string) context.Context 
 	return context.WithValue(ctx, requestLogIDContextKey{}, requestLogID)
 }
 
+// RequestLogIDFromContext returns the request's well-formed audit-log ID, or "".
+func RequestLogIDFromContext(ctx context.Context) string {
+	return requestLogIDFromContext(ctx)
+}
+
 func requestLogIDFromContext(ctx context.Context) string {
 	requestLogID, _ := ctx.Value(requestLogIDContextKey{}).(string)
 	if !requestLogIDPattern.MatchString(requestLogID) {

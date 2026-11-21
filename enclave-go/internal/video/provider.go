@@ -6,6 +6,7 @@ import (
 	"io"
 	"net/http"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -222,6 +223,26 @@ type HTTPError struct {
 	Provider  string
 	Status    int
 	Retryable bool
+	// Code and Fields are sanitized, allowlisted symbols parsed from the
+	// provider's error body (currently xAI only). They are never provider text.
+	Code   string
+	Fields []string
+}
+
+// Diagnostic renders the status and allowlisted symbols for logs:
+// "http=400[;code=invalid_argument][;field=duration+resolution]".
+func (e *HTTPError) Diagnostic() string {
+	if e == nil || e.Status < 400 || e.Status > 599 {
+		return ""
+	}
+	result := "http=" + strconv.Itoa(e.Status)
+	if e.Code != "" {
+		result += ";code=" + e.Code
+	}
+	if len(e.Fields) > 0 {
+		result += ";field=" + strings.Join(e.Fields, "+")
+	}
+	return result
 }
 
 // InputError marks a caller-controlled asset failure. It must never be
