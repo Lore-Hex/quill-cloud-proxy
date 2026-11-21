@@ -296,7 +296,10 @@ func boolPointer(value bool) *bool { return &value }
 
 func TestVideoErrorsListAcceptedValues(t *testing.T) {
 	model := models["google/veo-3.1"]
-	for _, tc := range []struct{ err error; want string }{
+	for _, tc := range []struct {
+		err  error
+		want string
+	}{
 		{validateDuration(model, 7), "[4 6 8]"},
 		{validateResolutionAndAspect(model, "100p", "16:9"), "720p"},
 		{validateResolutionAndAspect(model, "720p", "1:8"), "9:16"},
