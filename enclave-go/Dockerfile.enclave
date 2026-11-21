@@ -98,8 +98,13 @@ FROM scratch
 COPY --from=rampart /rootfs/ /
 COPY --from=maple /out/maple-transport /maple-transport
 COPY --from=maple /src/MAPLE-LICENSE /licenses/maple-MIT.txt
-ENV TR_ASYNC_SETTLE_SHADOW=on
-ENV TR_ASYNC_SETTLE_NEGOTIATE=off
+# AWS negotiates async settlement as the GCP regions do (2026-11-21). Its
+# billing authority is the same router (https://trustedrouter.com), which
+# signs the tickets this keyring verifies and accepts the handoff. Shadow and
+# negotiation exclude each other, so shadow is off. The way back is these two
+# pins as they were (shadow on, negotiate off) in a new measured image.
+ENV TR_ASYNC_SETTLE_SHADOW=off
+ENV TR_ASYNC_SETTLE_NEGOTIATE=on
 # TR_ASYNC_SETTLE_TICKET_PUBLIC_KEYS: JSON {"kid":"issuer~base64url_key"}; empty disables negotiation.
 ENV TR_ASYNC_SETTLE_TICKET_PUBLIC_KEYS='{"tr-async-settle-2026-10a":"https://api.trustedrouter.com~7zJCBn9dfwXC1cTBqLYY0rGzvuESaM-JxHBQ66oRzzQ"}'
 COPY --from=privatemode /out/privatemode-proxy /privatemode-proxy
