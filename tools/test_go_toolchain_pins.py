@@ -49,6 +49,20 @@ class GoToolchainPinsTest(unittest.TestCase):
         self.assertEqual(found.count("ci.yml"), 2)
         self.assertEqual(found.count("deploy-enclave-gcp.yml"), 1)
 
+    def test_required_host_job_runs_the_full_suite_for_each_sidecar(self):
+        jobs = yaml.safe_load((ROOT / ".github/workflows/ci.yml").read_text())["jobs"]
+        steps = [s for s in jobs["parent"]["steps"] if s.get("working-directory") == "enclave-go/sidecar"]
+        self.assertCountEqual([s["env"]["CLOUD_TAG"] for s in steps], ["cloud_aws", "cloud_gcp"])
+        for step in steps:
+            self.assertEqual(step["if"], "${{ !cancelled() && steps.sidecar-go.outcome == 'success' }}")
+            self.assertFalse(step.get("continue-on-error", False))
+            self.assertEqual(step["run"].splitlines(), [
+                'go build -tags "$CLOUD_TAG" ./...',
+                'go vet -tags "$CLOUD_TAG" ./...',
+                'go test -count=1 -race -tags "$CLOUD_TAG" ./...',
+                'go run golang.org/x/vuln/cmd/govulncheck@v1.9.0 -tags "$CLOUD_TAG" ./...',
+            ])
+
 
 if __name__ == "__main__":
     unittest.main()
