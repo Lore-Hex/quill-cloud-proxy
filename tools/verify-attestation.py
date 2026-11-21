@@ -1190,7 +1190,7 @@ def fetch_attestation_same_tls_socket(
             exporter,
             nonce_hex,
             "first",
-            require_exporter=require_exporter,
+            require_exporter=require_exporter or confidential_host in TRUSTED_API_HOSTS,
         )
         if confidential_host:
             # A deployment may attest correctly but predate hostname privacy
@@ -1201,7 +1201,7 @@ def fetch_attestation_same_tls_socket(
             probe_status, _probe_headers, probe_body = _read_http_response(
                 conn, raw, "confidential policy probe", deadline=deadline,
             )
-            verify_confidential_policy_response(probe_status, probe_body)
+            verify_confidential_policy_response(probe_status, probe_body, confidential_host)
             # The intentional error can close the connection. Its attestation
             # still binds to the response on this socket; use a separate normal
             # invocation for repeated exporter/pinning stress verification.
@@ -1260,12 +1260,14 @@ CONFIDENTIAL_API_HOSTS = frozenset(
     f"api.confidential.{domain}"
     for domain in ("trustedrouter.com", "quillrouter.com", "allyrouter.com", "uptimerouter.com", "nytokenexchange.com")
 )
+TRUSTED_API_HOSTS = frozenset(name.replace("api.confidential.", "api.trusted.", 1) for name in CONFIDENTIAL_API_HOSTS)
 
 
 def confidential_policy_probe(host: str) -> bytes:
-    if host not in CONFIDENTIAL_API_HOSTS:
+    if host not in CONFIDENTIAL_API_HOSTS | TRUSTED_API_HOSTS:
         raise ValueError("unknown confidential API hostname")
-    body = b'{"provider":{"min_privacy":"any"}}'
+    body = (b'{"provider":{"min_privacy":"confidential","allow_fallbacks":true}}'
+            if host in TRUSTED_API_HOSTS else b'{"provider":{"min_privacy":"any"}}')
     return (
         f"POST /v1/chat/completions HTTP/1.1\r\nHost: {host}\r\n"
         f"Content-Type: application/json\r\nContent-Length: {len(body)}\r\n"
@@ -1273,12 +1275,13 @@ def confidential_policy_probe(host: str) -> bytes:
     ).encode("ascii") + body
 
 
-def verify_confidential_policy_response(status: str, body: bytes) -> None:
+def verify_confidential_policy_response(status: str, body: bytes, host: str = "") -> None:
     try:
         code = json.loads(body)["error"]["code"]
     except (ValueError, KeyError, TypeError):
         code = None
-    if " 400 " not in status or code != "confidential_privacy_required":
+    expected = "trusted_privacy_required" if host in TRUSTED_API_HOSTS else "confidential_privacy_required"
+    if " 400 " not in status or code != expected:
         sys.exit("[FAIL] enclave does not enforce the confidential hostname privacy requirement")
 
 
@@ -2812,7 +2815,7 @@ def build_parser() -> argparse.ArgumentParser:
         default=True,
         help="liveness/identity mode for DNS reconciliation: require digest, cert, fresh nonce, and dbgstat checks, but make the TLS exporter optional and skip the same-socket pin follow-up",
     )
-    parser.add_argument("--require-confidential-host", choices=sorted(CONFIDENTIAL_API_HOSTS),
+    parser.add_argument("--require-confidential-host", "--require-privacy-host", choices=sorted(CONFIDENTIAL_API_HOSTS | TRUSTED_API_HOSTS),
                         help="DNS liveness mode only: require a pre-auth privacy rejection on the same attested socket")
     parser.add_argument(
         "--attested-cert-only",
@@ -2840,6 +2843,8 @@ def build_parser() -> argparse.ArgumentParser:
 def main() -> int:
     args = build_parser().parse_args()
     require_exporter = args.require_exporter_binding
+    if args.require_confidential_host in TRUSTED_API_HOSTS and (args.require_confidential_host != args.api_host or not args.ca_trust or not args.expect_digest or args.allow_debug):
+        sys.exit("[FAIL] Trusted publication requires matching SNI, public TLS, production mode and an approved GCP digest")
 
     if args.require_confidential_host and (require_exporter or args.blob or args.binding_stress or args.verify_receipt):
         sys.exit("[FAIL] --require-confidential-host requires live --no-require-exporter-binding mode")
@@ -2976,7 +2981,7 @@ def main() -> int:
                     nonce_hex=nonce_hex,
                     allow_debug=args.allow_debug,
                     device_blob_sha=args.device_blob_sha,
-                    require_exporter=require_exporter,
+                    require_exporter=require_exporter or args.require_confidential_host in TRUSTED_API_HOSTS,
                 )
                 if require_exporter:
                     verify_gcp_jwt(

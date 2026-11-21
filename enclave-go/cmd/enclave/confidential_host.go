@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"io"
 	"strings"
@@ -10,6 +11,10 @@ import (
 )
 
 func validateConfidentialHostRequest(method, path string, body []byte, gateway *trustedrouter.Client) *trustedrouter.ControlPlaneError {
+	return validatePrivacyHostRequest(trustedrouter.WithConfidentialOnly(context.Background()), method, path, body, gateway)
+}
+
+func validatePrivacyHostRequest(ctx context.Context, method, path string, body []byte, gateway *trustedrouter.Client) *trustedrouter.ControlPlaneError {
 	if method == "GET" {
 		switch path {
 		case "/health", "/attestation", "/receipt-attestation", "/receipt-key", "/v1/models", "/v1/key":
@@ -21,6 +26,9 @@ func validateConfidentialHostRequest(method, path string, body []byte, gateway *
 	}
 	// Explicit allowlist: new APIs must prove their privacy plumbing before
 	// accepting prompts on the confidential origin (including files/batches).
+	if trustedrouter.TrustedOnly(ctx) && (method != "POST" || (path != "/v1/chat/completions" && path != "/v1/messages" && path != "/v1/responses")) {
+		return &trustedrouter.ControlPlaneError{StatusCode: 400, Type: "trusted_route_unsupported", Message: "This operation is not available on the Trusted-only hostname."}
+	}
 	if method == "POST" && path == "/v1/audio/transcriptions" {
 		// Multipart routing settings are parsed inside the transcription handler.
 		// AuthorizeWithRoute enforces the context's confidential floor before egress.
@@ -38,7 +46,7 @@ func validateConfidentialHostRequest(method, path string, body []byte, gateway *
 	if err := json.Unmarshal(body, &request); err != nil {
 		return &trustedrouter.ControlPlaneError{StatusCode: 400, Type: "invalid_request_error", Message: "Invalid JSON request or provider settings."}
 	}
-	if err := trustedrouter.ValidateConfidentialRouting(request.Provider); err != nil {
+	if err := trustedrouter.ValidateHostRouting(ctx, request.Provider); err != nil {
 		return err
 	}
 	if gateway == nil || !gateway.Enabled() {

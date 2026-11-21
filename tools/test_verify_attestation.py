@@ -655,6 +655,18 @@ class GCPLivenessModeTests(VerifierTestCase):
 
 
 class ConfidentialPolicyProbeTests(VerifierTestCase):
+    def test_trusted_requires_distinct_rejection_even_with_fallbacks_enabled(self):
+        for host in VERIFIER.TRUSTED_API_HOSTS:
+            probe = VERIFIER.confidential_policy_probe(host)
+            self.assertIn(f"Host: {host}\r\n".encode(), probe)
+            self.assertIn(b'"min_privacy":"confidential"', probe)
+            self.assertIn(b'"allow_fallbacks":true', probe)
+            VERIFIER.verify_confidential_policy_response(
+                "HTTP/1.1 400 Bad Request", b'{"error":{"code":"trusted_privacy_required"}}', host)
+            for status, code in (("400", "confidential_privacy_required"), ("401", "trusted_privacy_required"), ("200", "trusted_privacy_required")):
+                with self.assertRaises(SystemExit):
+                    VERIFIER.verify_confidential_policy_response(f"HTTP/1.1 {status} response", json.dumps({"error":{"code":code}}).encode(), host)
+
     def test_probe_has_no_auth_or_prompt_and_checks_host(self) -> None:
         for host in VERIFIER.CONFIDENTIAL_API_HOSTS:
             request = VERIFIER.confidential_policy_probe(host)

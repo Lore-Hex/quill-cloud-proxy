@@ -1196,23 +1196,29 @@ CONFIDENTIAL_HOSTS = tuple(
 NYTE_API_ZONE = "exchange-nytokenexchange-com"
 NYTE_API_HOSTS = ("api.nytokenexchange.com", "api.confidential.nytokenexchange.com")
 NYTE_API_ALIASES_ENABLED = os.environ.get("QUILL_NYTE_API_ALIASES_ENABLED", "1") == "1"
+TRUSTED_HOSTS = tuple(host.replace(".confidential.", ".trusted.") for host in (*CONFIDENTIAL_HOSTS, NYTE_API_HOSTS[1]))
+TRUSTED_GCP_ZONES = (("trustedrouter-com", TRUSTED_HOSTS[0]), ("quillrouter-com", TRUSTED_HOSTS[1]), (NYTE_API_ZONE, TRUSTED_HOSTS[-1]))
 
 
 def provision_nyte_challenge_delegation(*, apply: bool) -> None:
     if not NYTE_API_ALIASES_ENABLED or API_HOST not in {"api.trustedrouter.com", "api.quillrouter.com"}:
         return
-    for host in NYTE_API_HOSTS:
+    provision_challenge_delegations([(NYTE_API_ZONE, host) for host in NYTE_API_HOSTS], apply=apply)
+
+
+def provision_challenge_delegations(zone_hosts, *, apply: bool) -> None:
+    for zone, host in zone_hosts:
         record = f"_acme-challenge.{host}."
         target = f"_acme-challenge.{host.removesuffix('.com').replace('.', '-')}.trustedrouter.com."
-        current = current_dns_record(NYTE_API_ZONE, record, "CNAME")
+        current = current_dns_record(zone, record, "CNAME")
         if current and current.get("rrdatas") == [target]:
             continue
         if current:
             raise RuntimeError(f"refusing to overwrite unrelated certificate delegation: {record}")
-        log(f"reconcile: NYTE certificate delegation {record} -> {target}")
+        log(f"reconcile: certificate delegation {record} -> {target}")
         if apply:
             subprocess.run(
-                ["gcloud", "dns", "record-sets", "create", record, "--zone", NYTE_API_ZONE,
+                ["gcloud", "dns", "record-sets", "create", record, "--zone", zone,
                  "--project", PROJECT, "--type", "CNAME", "--ttl", str(TTL), "--rrdatas", target],
                 check=True, capture_output=True, text=True, timeout=GCLOUD_TIMEOUT_SECONDS,
             )
@@ -1276,7 +1282,7 @@ def provision_confidential_challenge_delegation(*, apply: bool) -> None:
         )
 
 
-def reconcile_confidential(healthy: list[dict], digest: str, *, apply: bool) -> None:
+def reconcile_confidential(healthy: list[dict], digest: str, *, apply: bool, trusted_only: bool = False) -> None:
     """Never mirror old attested binaries that lack confidential-host enforcement.
 
     Rollout drains also apply here. Unlike the general liveness records, an
@@ -1285,13 +1291,15 @@ def reconcile_confidential(healthy: list[dict], digest: str, *, apply: bool) -> 
     """
     if API_HOST not in {"api.trustedrouter.com", "api.quillrouter.com"}:
         return
-    host = CONFIDENTIAL_HOSTS[0]
+    hosts = TRUSTED_HOSTS if trusted_only else CONFIDENTIAL_HOSTS
+    zones = TRUSTED_GCP_ZONES if trusted_only else (("trustedrouter-com", hosts[0]), ("quillrouter-com", hosts[1]))
+    tier = "trusted" if trusted_only else "confidential"
 
     def check_instance(ip: str) -> list[tuple[str, bool]]:
         # One launcher serializes issuance for every SNI on this gateway.
         # Keep fresh, independent proofs without flooding its bounded queue.
         return [(ip, attest(ip, digest, api_host=name, confidential_host=name))
-                for name in CONFIDENTIAL_HOSTS]
+                for name in hosts]
 
     with concurrent.futures.ThreadPoolExecutor(max_workers=12) as executor:
         eligible = [result for results in executor.map(
@@ -1299,15 +1307,13 @@ def reconcile_confidential(healthy: list[dict], digest: str, *, apply: bool) -> 
         ) for result in results]
     failed = {ip for ip, ok in eligible if not ok}
     ips = sorted({ip for ip, ok in eligible if ok} - failed)
-    log(f"reconcile: confidential readiness qualified={len(ips)}/{len(healthy)}")
-    for zone, record in (
-        ("trustedrouter-com", host + "."),
-        ("quillrouter-com", "api.confidential.quillrouter.com."),
-    ):
+    log(f"reconcile: {tier} readiness qualified={len(ips)}/{len(healthy)}")
+    for zone, name in zones:
+        record = name + "."
         if ips:
-            reconcile_dns_record(zone, record, ips, apply=apply, label="confidential-only")
+            reconcile_dns_record(zone, record, ips, apply=apply, label=f"{tier}-only")
         elif current_dns_ips(zone, record):
-            log(f"reconcile: confidential-only {record} has no qualified instances; removing A record")
+            log(f"reconcile: {tier}-only {record} has no qualified instances; removing A record")
             if apply:
                 _check_pinned_drains()
                 subprocess.run(
@@ -1316,7 +1322,20 @@ def reconcile_confidential(healthy: list[dict], digest: str, *, apply: bool) -> 
                     check=True, capture_output=True, text=True, timeout=GCLOUD_TIMEOUT_SECONDS,
                 )
     if not ips:
-        log("reconcile: ERROR: no policy-qualified confidential gateway; confidential DNS remains fail-closed")
+        log(f"reconcile: ERROR: no policy-qualified {tier} gateway; {tier} DNS remains fail-closed")
+
+
+def reconcile_trusted(healthy: list[dict], signed_digests: list[str], *, apply: bool) -> None:
+    if API_HOST not in {"api.trustedrouter.com", "api.quillrouter.com"}:
+        return
+    if not signed_digests:
+        raise RuntimeError("no approved gateway digest available for Trusted API verification")
+    reconcile_confidential(healthy, ",".join(signed_digests), apply=apply, trusted_only=True)
+
+
+def provision_trusted_delegations(*, apply: bool) -> None:
+    if API_HOST in {"api.trustedrouter.com", "api.quillrouter.com"}:
+        provision_challenge_delegations(TRUSTED_GCP_ZONES[1:], apply=apply)
 
 
 def regional_host(region: str) -> str:
@@ -1529,6 +1548,11 @@ def _main_unlocked() -> int:
     except (OSError, RuntimeError, ValueError, subprocess.SubprocessError) as exc:
         confidential_failed = True
         log(f"reconcile: confidential certificate delegation failed: {exc}")
+    try:
+        provision_trusted_delegations(apply=args.apply)
+    except (OSError, RuntimeError, ValueError, subprocess.SubprocessError) as exc:
+        confidential_failed = True
+        log(f"reconcile: Trusted certificate delegation failed: {exc}")
     trusted = trust_digests()
     fleet = discover_instances()
     if not fleet:
@@ -1593,6 +1617,12 @@ def _main_unlocked() -> int:
             except (OSError, RuntimeError, ValueError, subprocess.SubprocessError) as exc:
                 confidential_failed = True
                 log(f"reconcile: confidential membership update failed: {exc}")
+
+            try:
+                reconcile_trusted(canonical_healthy, trusted, apply=args.apply)
+            except (OSError, RuntimeError, ValueError, subprocess.SubprocessError) as exc:
+                confidential_failed = True
+                log(f"reconcile: Trusted membership update failed: {exc}")
 
             if not healthy_ips or (not CANONICAL_GEO and len(healthy_ips) < MIN_HEALTHY):
                 sys.exit(f"[FAIL] only {len(healthy_ips)} healthy (< MIN_HEALTHY={MIN_HEALTHY}); "
