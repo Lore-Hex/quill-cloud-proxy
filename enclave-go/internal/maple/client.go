@@ -93,6 +93,28 @@ var adapterFailures = map[string]error{
 	"error_body_too_large":  ErrUpstreamErrorUnreadable,
 }
 
+// errorCodes are the Maple error codes an error status line may carry: the
+// `error.code` values OpenSecret uses to say why it refused a request. They
+// must equal maple-transport's ERROR_CODES (a test checks).
+var errorCodes = map[string]bool{
+	"usage_limit_reached":            true,
+	"free_tier_token_limit_exceeded": true,
+	"model_not_available_on_plan":    true,
+	"internal_account_required":      true,
+	"rate_limit_exceeded":            true,
+	"unsupported_value":              true,
+	"context_length_exceeded":        true,
+}
+
+// ErrorCode returns code when it is one of Maple's known error codes, and ""
+// otherwise, so only a fixed vocabulary leaves this package.
+func ErrorCode(code string) string {
+	if errorCodes[code] {
+		return code
+	}
+	return ""
+}
+
 // StartFailure returns the fixed start failure err is, or wraps, and nil for
 // anything else. Callers get the package's own value, never err itself, so no
 // text added around it can travel further.
@@ -182,6 +204,7 @@ func start(ctx context.Context, key, scope string, body []byte, launch processSt
 	var header struct {
 		Status int    `json:"status"`
 		Error  string `json:"error"`
+		Code   string `json:"code"`
 	}
 	parsed := err == nil && len(statusLine) <= 64 && json.Unmarshal(statusLine, &header) == nil
 	if !parsed || (header.Status != 200 && (header.Status < 400 || header.Status > 599)) {
@@ -201,7 +224,9 @@ func start(ctx context.Context, key, scope string, body []byte, launch processSt
 			_ = wait()
 			return 0, nil, err
 		}
-		return header.Status, io.NopCloser(strings.NewReader("")), nil
+		// The body of an error status is Maple's error code when the helper
+		// relayed one this package knows, and empty otherwise.
+		return header.Status, io.NopCloser(strings.NewReader(ErrorCode(header.Code))), nil
 	}
 	r, w := io.Pipe()
 	done := make(chan struct{})

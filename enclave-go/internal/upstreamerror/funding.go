@@ -38,6 +38,8 @@ var fundingCodes = map[string]bool{
 	"insufficient_quota":         true,
 	"payment_required":           true,
 	"prepaid_credit_exhausted":   true,
+	// Maple: billing refused API admission (credits or usage allowance spent).
+	"usage_limit_reached": true,
 }
 
 // FundingExhausted reports whether a provider failure says the account that

@@ -315,3 +315,49 @@ func TestAdapterFailureLineBecomesAFixedError(t *testing.T) {
 		})
 	}
 }
+
+// TestErrorStatusCarriesOnlyKnownCodes: an error status line's code reaches
+// the caller as the body only when it is one of Maple's known error codes, and
+// the known codes are exactly maple-transport's ERROR_CODES.
+func TestErrorStatusCarriesOnlyKnownCodes(t *testing.T) {
+	source, err := os.ReadFile("../../maple-transport/src/bin/maple-transport.rs")
+	if err != nil {
+		t.Fatalf("read the helper source: %v", err)
+	}
+	text := string(source)
+	begin := strings.Index(text, "const ERROR_CODES: &[&str] = &[")
+	if begin < 0 {
+		t.Fatal("helper source has no ERROR_CODES")
+	}
+	end := strings.Index(text[begin:], "];")
+	var helperCodes []string
+	for _, match := range regexp.MustCompile(`"([a-z_]+)"`).FindAllStringSubmatch(text[begin:begin+end], -1) {
+		helperCodes = append(helperCodes, match[1])
+	}
+	if len(helperCodes) != len(errorCodes) || len(helperCodes) < 4 {
+		t.Fatalf("helper has %d codes, errorCodes %d", len(helperCodes), len(errorCodes))
+	}
+	for _, code := range helperCodes {
+		if ErrorCode(code) != code {
+			t.Errorf("helper code %q is not accepted", code)
+		}
+	}
+	for _, tc := range []struct{ line, body string }{
+		{"{\"status\":403,\"code\":\"usage_limit_reached\"}\n", "usage_limit_reached"},
+		{"{\"status\":403,\"code\":\"model_not_available_on_plan\"}\n", "model_not_available_on_plan"},
+		{"{\"status\":403,\"code\":\"secret prompt text\"}\n", ""},
+		{"{\"status\":403}\n", ""},
+	} {
+		status, body, err := start(t.Context(), "synthetic-key", "scope", testBody(), func(context.Context, []byte, uint32) (process, error) {
+			return process{stdout: io.NopCloser(strings.NewReader(tc.line)), wait: func() error { return nil }}, nil
+		})
+		if err != nil || status != 403 {
+			t.Fatalf("%q: status=%d err=%v", tc.line, status, err)
+		}
+		got, _ := io.ReadAll(body)
+		_ = body.Close()
+		if string(got) != tc.body {
+			t.Errorf("%q: body %q, want %q", tc.line, got, tc.body)
+		}
+	}
+}

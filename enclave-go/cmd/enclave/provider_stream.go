@@ -265,12 +265,16 @@ func invokeProviderStream(
 			}
 			outcome := "ok"
 			errStr := ""
+			upstreamStr := ""
 			if err != nil {
 				outcome = "fail"
 				errStr = errorClass(err)
+				// The provider's status and allowlisted code/param symbols
+				// (upstreamerror.Diagnostic): never its message or body.
+				upstreamStr = upstreamerror.Diagnostic(err)
 			}
 			fmt.Fprintf(os.Stderr,
-				"enclave.invoke_attempt request_log_id=%q request_id=%q attempt=%d/%d try=%d model=%q provider=%q endpoint=%q outcome=%s ttfb_ms=%d total_ms=%d bytes=%d err=%q\n",
+				"enclave.invoke_attempt request_log_id=%q request_id=%q attempt=%d/%d try=%d model=%q provider=%q endpoint=%q outcome=%s ttfb_ms=%d total_ms=%d bytes=%d err=%q upstream=%q\n",
 				requestLogID,
 				requestID,
 				i+1, len(options), tryN,
@@ -280,6 +284,7 @@ func invokeProviderStream(
 				attemptDuration.Milliseconds(),
 				candidateWriter.BytesWritten(),
 				errStr,
+				upstreamStr,
 			)
 			// Retry the same provider on a transient pre-output failure only when
 			// explicitly allowed. Orchestration calls disable this so 429/5xx moves
