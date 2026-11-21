@@ -132,6 +132,9 @@ type Client struct {
 	imageModelsMu      sync.Mutex
 	imageModelsBody    []byte
 	imageModelsFetched time.Time
+	videoModelsMu      sync.Mutex
+	videoModelsBody    []byte
+	videoModelsFetched time.Time
 	// Anonymous per-model endpoint manifests, keyed by validated model ID.
 	modelEndpointsMu    sync.Mutex
 	modelEndpoints      map[string]publicCatalogEntry
@@ -376,6 +379,17 @@ func (c *Client) PublicImageModels(ctx context.Context) ([]byte, error) {
 	defer c.imageModelsMu.Unlock()
 	return cachedPublicCatalog(&c.imageModelsBody, &c.imageModelsFetched, "enclave.image_models_stale_fallback", func() ([]byte, error) {
 		return c.fetchPublicCatalog(ctx, "/v1/images/models", "/images/models", validPublicCatalogList)
+	})
+}
+
+func (c *Client) PublicVideoModels(ctx context.Context) ([]byte, error) {
+	if err := c.publicCatalogConfigured(); err != nil {
+		return nil, err
+	}
+	c.videoModelsMu.Lock()
+	defer c.videoModelsMu.Unlock()
+	return cachedPublicCatalog(&c.videoModelsBody, &c.videoModelsFetched, "enclave.video_models_stale_fallback", func() ([]byte, error) {
+		return c.fetchPublicCatalog(ctx, "/v1/videos/models", "/videos/models", validPublicCatalogList)
 	})
 }
 
