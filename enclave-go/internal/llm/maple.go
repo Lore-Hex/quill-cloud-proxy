@@ -2,6 +2,7 @@ package llm
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"io"
 	"net/http"
@@ -69,11 +70,32 @@ func invokeMapleWith(ctx context.Context, key string, req *qtypes.OpenAIChatRequ
 		if status < 400 || status > 599 {
 			return errors.New("llm/maple: invalid encrypted response status")
 		}
-		return &upstreamHTTPError{status: status, body: "Maple encrypted upstream request failed"}
+		return mapleUpstreamError(status, response)
 	}
 	upstreamerror.Open(out)
 	if err := translateOpenAIStreamToAnthropicForProvider(response, out, "maple"); err != nil {
 		return errors.New("llm/maple: encrypted response incomplete or invalid")
 	}
 	return nil
+}
+
+const mapleUpstreamFailedMessage = "Maple encrypted upstream request failed"
+
+// mapleUpstreamError is Maple's error status with its error code when the
+// helper relayed a known one (internal/maple allowlists it), so a refusal such
+// as a 403 usage_limit_reached is told apart from a 403
+// model_not_available_on_plan in logs and route health. The message stays the
+// fixed one callers have always seen.
+func mapleUpstreamError(status int, response io.Reader) error {
+	var buf [64]byte
+	n, _ := io.ReadFull(response, buf[:])
+	code := maple.ErrorCode(string(buf[:n]))
+	if code == "" {
+		return &upstreamHTTPError{status: status, body: mapleUpstreamFailedMessage}
+	}
+	body, _ := json.Marshal(map[string]any{"error": map[string]string{
+		"message": mapleUpstreamFailedMessage,
+		"code":    code,
+	}})
+	return &upstreamHTTPError{status: status, body: string(body)}
 }

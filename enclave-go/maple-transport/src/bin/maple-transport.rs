@@ -26,11 +26,49 @@ type Result<T> = std::result::Result<T, &'static str>;
 static STATUS_WRITTEN: AtomicBool = AtomicBool::new(false);
 
 fn write_status(out: &mut impl Write, status: u16) -> Result<()> {
+    write_error_status(out, status, None)
+}
+
+/// A status line, with Maple's error code when it is one of ERROR_CODES. The
+/// code is always a string from that table, never text from the response.
+fn write_error_status(out: &mut impl Write, status: u16, code: Option<&'static str>) -> Result<()> {
     // Set first: once any status byte may be out, no reason line may follow.
     STATUS_WRITTEN.store(true, Ordering::SeqCst);
-    writeln!(out, "{{\"status\":{status}}}")
-        .and_then(|_| out.flush())
-        .map_err(|_| "consumer_closed")
+    match code {
+        Some(code) => writeln!(out, "{{\"status\":{status},\"code\":\"{code}\"}}"),
+        None => writeln!(out, "{{\"status\":{status}}}"),
+    }
+    .and_then(|_| out.flush())
+    .map_err(|_| "consumer_closed")
+}
+
+/// The error codes OpenSecret puts in an error response's `error.code` that
+/// say why Maple refused the request (services/opensecret/src/main.rs,
+/// `openai_error_code`). Its 403s are all account-side refusals that the
+/// status alone cannot tell apart: billing denied API admission
+/// (usage_limit_reached), the plan is free while Chat Completions is paid-only
+/// (model_not_available_on_plan), and the rest. The parent's maple package
+/// accepts exactly these keys; a Go test reads this list from this file.
+const ERROR_CODES: &[&str] = &[
+    "usage_limit_reached",
+    "free_tier_token_limit_exceeded",
+    "model_not_available_on_plan",
+    "internal_account_required",
+    "rate_limit_exceeded",
+    "unsupported_value",
+    "context_length_exceeded",
+];
+
+/// The ERROR_CODES entry an error body names, if any. Only the matching table
+/// entry leaves this function; the body's own text never does.
+fn error_code(body: &[u8]) -> Option<&'static str> {
+    let value: Value = serde_json::from_slice(body).ok()?;
+    let code = value
+        .get("error")
+        .and_then(|error| error.get("code"))
+        .or_else(|| value.get("code"))
+        .and_then(Value::as_str)?;
+    ERROR_CODES.iter().copied().find(|known| *known == code)
 }
 
 /// The line the parent reads when the helper fails before any status. REASON
@@ -140,19 +178,19 @@ async fn run(input: Input, out: &mut impl Write) -> Result<()> {
     let mut body = response.into_body();
     if status != 200 {
         // Do not expose provider error bodies or trust a partial error response.
-        let mut count = 0usize;
+        // Only an allowlisted error code (error_code) is relayed.
+        let mut error_body = Zeroizing::new(Vec::new());
         while let Some(chunk) = timeout(Duration::from_secs(30), body.next())
             .await
             .map_err(|_| "error_body_timeout")?
         {
-            count = count
-                .checked_add(chunk.map_err(|_| "encrypted_body_failed")?.len())
-                .ok_or("error_body_too_large")?;
-            if count > 64 * 1024 {
+            let chunk = chunk.map_err(|_| "encrypted_body_failed")?;
+            if error_body.len() + chunk.len() > 64 * 1024 {
                 return Err("error_body_too_large");
             }
+            error_body.extend_from_slice(&chunk);
         }
-        write_status(out, status)?;
+        write_error_status(out, status, error_code(&error_body))?;
         return Ok(());
     }
     write_status(out, 200)?;
@@ -317,6 +355,38 @@ mod tests {
             let parsed: Value = serde_json::from_str(&line).unwrap();
             assert_eq!(parsed, json!({ "error": reason }));
         }
+    }
+
+    #[test]
+    fn error_status_relays_only_allowlisted_codes() {
+        assert_eq!(
+            error_code(br#"{"status":403,"message":"Usage limit reached","error":{"message":"Usage limit reached","code":"usage_limit_reached"}}"#),
+            Some("usage_limit_reached")
+        );
+        assert_eq!(
+            error_code(br#"{"code":"model_not_available_on_plan"}"#),
+            Some("model_not_available_on_plan")
+        );
+        for body in [
+            &br#"{"error":{"code":"prompt says secret"}}"#[..],
+            br#"{"error":{"code":7}}"#,
+            br#"{"error":"usage_limit_reached"}"#,
+            b"not json usage_limit_reached",
+            b"",
+        ] {
+            assert_eq!(error_code(body), None);
+        }
+        for code in ERROR_CODES {
+            let mut out = Vec::new();
+            write_error_status(&mut out, 403, Some(code)).unwrap();
+            // The parent reads at most 64 bytes, newline included.
+            assert!(out.len() <= 64, "{code}");
+            let parsed: Value = serde_json::from_slice(&out).unwrap();
+            assert_eq!(parsed, json!({"status": 403, "code": code}));
+        }
+        let mut out = Vec::new();
+        write_error_status(&mut out, 403, None).unwrap();
+        assert_eq!(out, b"{\"status\":403}\n");
     }
 
     #[test]

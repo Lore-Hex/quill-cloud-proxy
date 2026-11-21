@@ -78,6 +78,20 @@ What changes and what does not:
   which includes the history being unreachable (GitHub down or rate-limited;
   always on AWS). Check the history fetch before suspecting an unsigned
   rotation.
+- Logs: when Maple answers with an error status, `enclave.invoke_attempt`
+  carries `upstream="http=<status>[;code=<code>][;funding]"`. The helper
+  drains Maple's error body and relays only an allowlisted OpenSecret error
+  code (`ERROR_CODES` in `maple-transport.rs`, `errorCodes` in
+  `internal/maple`), never the body. Every account-side refusal from Maple is
+  a 403, so the code is what tells them apart: `usage_limit_reached` (Maple's
+  billing refused API admission: credits or usage allowance spent; also
+  tagged `funding`, which puts Maple's prepaid routes behind others until a
+  request succeeds), `model_not_available_on_plan` (the account's plan reads
+  as free, and Chat Completions is paid-only since Maple #1437),
+  `free_tier_token_limit_exceeded`, `internal_account_required`. An expired
+  or wrong key is a 401, and an unknown model a 404. The 2026-11-20 16:46Z
+  outage (403 on every request for about nine hours, after about 290M prompt
+  tokens that day) predates this label, so its code is unknown.
 - Qualification: `trustedrouter-maple-pilot attest-serving` checks the serving
   policy live. `attest-history` admits the live enclave only through a signed
   history entry, because its static pin is deliberately impossible. Neither

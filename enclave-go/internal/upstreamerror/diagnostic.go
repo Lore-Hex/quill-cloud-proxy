@@ -26,7 +26,10 @@ func Diagnostic(err error) string {
 			"insufficient_quota", "prepaid_credit_exhausted", "overloaded_error",
 			"ValidationException", "AccessDeniedException", "ResourceNotFoundException",
 			"ThrottlingException", "ServiceQuotaExceededException", "ModelTimeoutException",
-			"ModelNotReadyException", "ServiceUnavailableException", "InternalServerException":
+			"ModelNotReadyException", "ServiceUnavailableException", "InternalServerException",
+			// Maple (OpenSecret) account-side refusals, all HTTP 403.
+			"usage_limit_reached", "model_not_available_on_plan",
+			"free_tier_token_limit_exceeded", "internal_account_required":
 			result += ";code=" + code
 		}
 	}

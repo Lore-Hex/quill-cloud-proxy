@@ -12,6 +12,7 @@ import (
 
 	"github.com/Lore-Hex/quill-cloud-proxy/enclave-go/internal/maple"
 	qtypes "github.com/Lore-Hex/quill-cloud-proxy/enclave-go/internal/types"
+	"github.com/Lore-Hex/quill-cloud-proxy/enclave-go/internal/upstreamerror"
 )
 
 const mapleTestStream = "data: {\"choices\":[{\"delta\":{\"content\":\"PONG\"},\"finish_reason\":\"stop\"}],\"usage\":{\"prompt_tokens\":100,\"completion_tokens\":4,\"total_tokens\":104,\"prompt_tokens_details\":{\"cached_tokens\":80}}}\n\ndata: [DONE]\n\n"
@@ -124,6 +125,35 @@ func TestMapleStartFailuresKeepTheirFixedReason(t *testing.T) {
 	for _, other := range []error{context.Canceled, errors.New("maple: front enclave attestation rejected")} {
 		if err := invoke(other); err == nil || err.Error() != generic || maple.StartFailure(err) != nil {
 			t.Errorf("start error %v became %v", other, err)
+		}
+	}
+}
+
+// TestMapleErrorStatusKeepsOnlyItsKnownCode: Maple's 403s differ only by
+// error code. The code (when internal/maple allowlisted it) reaches the
+// diagnostic that logs and route health read; the message stays fixed.
+func TestMapleErrorStatusKeepsOnlyItsKnownCode(t *testing.T) {
+	for _, tc := range []struct {
+		body, diagnostic string
+	}{
+		{"usage_limit_reached", "http=403;code=usage_limit_reached;funding"},
+		{"model_not_available_on_plan", "http=403;code=model_not_available_on_plan"},
+		{"", "http=403"},
+		{"private upstream text", "http=403"},
+	} {
+		err := invokeMapleWith(t.Context(), "key", &qtypes.OpenAIChatRequest{}, &qtypes.AnthropicMessagesRequest{}, io.Discard,
+			InvokeOptions{Provider: "maple", UpstreamModel: maple.Model},
+			func(context.Context, string, string, []byte) (int, io.ReadCloser, error) {
+				return 403, io.NopCloser(strings.NewReader(tc.body)), nil
+			})
+		if got := upstreamerror.Diagnostic(err); got != tc.diagnostic {
+			t.Errorf("body %q: diagnostic %q, want %q", tc.body, got, tc.diagnostic)
+		}
+		if detail := upstreamerror.Parse(err); detail.Status != 403 || detail.Message != mapleUpstreamFailedMessage {
+			t.Errorf("body %q: detail %+v", tc.body, detail)
+		}
+		if strings.Contains(err.Error(), "private") {
+			t.Errorf("unallowlisted text leaked: %v", err)
 		}
 	}
 }
