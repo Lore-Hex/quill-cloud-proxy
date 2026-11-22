@@ -289,7 +289,19 @@ func (c *Client) snapshotSyncSettlement(ctx context.Context, endpoint int, raw [
 func (c *Client) snapshotSyncAttempt(ctx context.Context, endpoint int, raw []byte, hash string, charge int64, auth *Authorization) (*SettleResult, bool, error) {
 	resp, _, err := c.postToControlPlane(ctx, "/internal/gateway/settle", raw, endpoint)
 	if err != nil {
-		return nil, ctx.Err() == nil, errors.New("network")
+		// Classify by this settle's own context, not by the transport error: an
+		// inner dial timeout also satisfies errors.Is(err,
+		// context.DeadlineExceeded), but it ended before the request was sent.
+		// When the context ended first, the router may still be applying the
+		// request this attempt stopped waiting for. That stays a soft failure
+		// (no legacy fallback while the original may still be running), and
+		// keeps context.DeadlineExceeded or context.Canceled visible to
+		// errors.Is, so the caller's retry queue holds its first retry until
+		// the original has ended (abandonedSettleRetryDelay in cmd/enclave).
+		if ctxErr := ctx.Err(); ctxErr != nil {
+			return nil, false, fmt.Errorf("network: %w", ctxErr)
+		}
+		return nil, true, errors.New("network")
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode >= 500 {
