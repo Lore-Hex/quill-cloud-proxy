@@ -834,6 +834,7 @@ systemctl enable --now nitro-enclaves-allocator.service
 cat > /etc/nitro_enclaves/vsock-proxy.yaml <<'YAML'
 allowlist:
   - {address: api.context.dev,               port: 443}
+  - {address: api.parallel.ai,               port: 443}
   # LLM provider direct-API endpoints (port assignments match
   # http_client_aws.go::awsProviderTunnels)
   - {address: api.anthropic.com,             port: 443}
@@ -930,6 +931,7 @@ allowlist:
   - {address: api.hixtube.com,                  port: 443}
   - {address: inference.muna.ai,                  port: 443}
   - {address: inference.negbeta.com,              port: 443}
+  - {address: app.trynito.ai,              port: 443}
   - {address: api.abliteration.ai,                port: 443}
   - {address: inference.coralbricks.ai,        port: 443}
   - {address: ctf.armet.ai,                    port: 443}
@@ -1035,6 +1037,7 @@ systemctl daemon-reload
 # Adding a provider = 1 line here + 1 line in awsProviderTunnels.
 write_vsock_unit 8003 api.anthropic.com
 write_vsock_unit 8138 api.context.dev
+write_vsock_unit 8139 api.parallel.ai
 write_vsock_unit 8004 api.openai.com
 write_vsock_unit 8005 api.cerebras.ai
 write_vsock_unit 8006 api.deepseek.com
@@ -1102,6 +1105,7 @@ write_vsock_unit 8108 llm.eu.greenference.com
 write_vsock_unit 8117 api.hixtube.com
 write_vsock_unit 8130 inference.muna.ai
 write_vsock_unit 8137 inference.negbeta.com
+write_vsock_unit 8140 app.trynito.ai
 write_vsock_unit 8131 api.abliteration.ai
 write_vsock_unit 8115 inference.coralbricks.ai
 write_vsock_unit 8113 ctf.armet.ai

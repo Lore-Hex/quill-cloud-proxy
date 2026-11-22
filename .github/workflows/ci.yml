@@ -298,7 +298,7 @@ jobs:
           python3 -m unittest tools.test_aws_eif_manifest
           python3 -m unittest tools.test_publish_aws_eif
           python3 -m unittest tools.test_aws_eif_compute
-          python3 -m unittest tools.test_aws_sealed_bundle tools.test_seal_aws_bootstrap
+          python3 -m unittest tools.test_aws_sealed_bundle tools.test_seal_aws_bootstrap tools.test_check_nito_binding
           python3 -m unittest tools.test_aws_bootstrap_payload
           python3 -m unittest tools.test_aws_bundle_replication
           python3 -m unittest tools.test_aws_eif_admission

@@ -49,6 +49,7 @@ import (
 // CID is always 3 — the well-known parent CID for Nitro Enclaves.
 var awsProviderTunnels = []vsockhttp.Tunnel{
 	{Host: "api.context.dev", CID: 3, Port: 8138},
+	{Host: "api.parallel.ai", CID: 3, Port: 8139},
 	{Host: "api.hixtube.com", CID: 3, Port: 8117},
 	// LLM provider direct-API endpoints (mirrors the byok.go
 	// directBaseURL switch + tinfoil_attest.go fixed host).
@@ -116,6 +117,7 @@ var awsProviderTunnels = []vsockhttp.Tunnel{
 	{Host: "llm.eu.greenference.com", CID: 3, Port: 8108},
 	{Host: "inference.muna.ai", CID: 3, Port: 8130},
 	{Host: "inference.negbeta.com", CID: 3, Port: 8137},
+	{Host: "app.trynito.ai", CID: 3, Port: 8140},
 	{Host: "api.abliteration.ai", CID: 3, Port: 8131},
 	{Host: "inference.coralbricks.ai", CID: 3, Port: 8115},
 	{Host: "ctf.armet.ai", CID: 3, Port: 8113},

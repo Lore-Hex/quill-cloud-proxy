@@ -17,61 +17,91 @@ import (
 )
 
 func TestContextWebSearchEndToEnd(t *testing.T) {
+	testHostedSearchEndToEnd(t, "context.dev", &enclaveContextSearchClient, []int{1, 2}, websearch.ContextCreditMicrodollars, 12000)
+}
+
+func TestParallelWebSearchEndToEnd(t *testing.T) {
+	testHostedSearchEndToEnd(t, "parallel", &enclaveParallelSearchClient, []int{1}, websearch.ParallelBasicMicrodollars, 5000)
+}
+
+func TestParallelUnconfiguredDoesNotFallBack(t *testing.T) {
+	oldExa, oldParallel := enclaveWebSearchClient, enclaveParallelSearchClient
+	t.Cleanup(func() { enclaveWebSearchClient, enclaveParallelSearchClient = oldExa, oldParallel })
+	enclaveWebSearchClient, enclaveParallelSearchClient = &fakeResponsesWebSearcher{}, nil
+	if selectedWebSearchClient(&types.ResponseWebSearchConfig{Engine: "parallel"}) != nil {
+		t.Fatal("unconfigured Parallel selected another engine")
+	}
+	for _, model := range []string{"trustedrouter/zdr", "trustedrouter/confidential", "trustedrouter/e2e", "trustedrouter/eu"} {
+		req := webSearchTestRequest()
+		req.Response.WebSearch.Engine = "parallel"
+		req.Model = model
+		if validateResponsesWebSearchPrivacy(req) == nil {
+			t.Fatalf("accepted %s", model)
+		}
+	}
+}
+
+func testHostedSearchEndToEnd(t *testing.T, engine string, slot *websearch.Client, units []int, unitPrice, reserve int) {
+	t.Helper()
 	for _, route := range []string{"responses", "chat/completions"} {
-		for _, tc := range []struct {
-			stream  bool
-			credits int
-		}{{false, 1}, {true, 1}, {false, 2}, {true, 2}} {
-			stream := tc.stream
-			charge := tc.credits * websearch.ContextCreditMicrodollars
-			t.Run(fmt.Sprintf("%s/stream=%t/credits=%d", route, stream, tc.credits), func(t *testing.T) {
-				previousExa, previousContext := enclaveWebSearchClient, enclaveContextSearchClient
-				enclaveWebSearchClient = nil
-				searcher := &fakeResponsesWebSearcher{results: []websearch.Result{{CostMicrodollars: charge, Sources: []websearch.Source{{Title: "Release", URL: "https://example.com/release", Snippet: "Evidence"}}}}}
-				enclaveContextSearchClient = searcher
-				t.Cleanup(func() { enclaveWebSearchClient, enclaveContextSearchClient = previousExa, previousContext })
-				gateway, recorder, closeGateway := newFusionGatewayRecorder(t)
-				defer closeGateway()
-				server, client := net.Pipe()
-				defer client.Close()
-				go serveOne(context.Background(), server, auth.New(nil), webSearchScriptedLLM{}, nil, nil, gateway, nil)
-				input := `"input":"What changed?","store":false`
-				if route == "chat/completions" {
-					input = `"messages":[{"role":"user","content":"What changed?"}],"stream_options":{"include_usage":true}`
-				}
-				request := fmt.Sprintf(`{"model":"test/model",%s,"tools":[{"type":"web_search","engine":"context.dev"}],"tool_choice":"required","max_tool_calls":1,"stream":%t}`, input, stream)
-				if _, err := fmt.Fprintf(client, "POST /v1/%s HTTP/1.1\r\nAuthorization: Bearer test-key\r\nContent-Type: application/json\r\nContent-Length: %d\r\n\r\n%s", route, len(request), request); err != nil {
-					t.Fatal(err)
-				}
-				response, err := http.ReadResponse(bufio.NewReader(client), nil)
-				if err != nil {
-					t.Fatal(err)
-				}
-				defer response.Body.Close()
-				body, _ := io.ReadAll(response.Body)
-				if response.StatusCode != 200 {
-					t.Fatalf("status=%d body=%s", response.StatusCode, body)
-				}
-				for _, expected := range []string{`"web_search_engine":"context.dev"`, `"web_search_credit_microdollars":6000`, fmt.Sprintf(`"web_search_credits":%d`, tc.credits), fmt.Sprintf(`"web_search_cost_microdollars":%d`, charge), `"conservative_credit_tariff"`, "https://example.com/release"} {
-					if !bytes.Contains(body, []byte(expected)) {
-						t.Fatalf("missing %s: %s", expected, body)
+		for _, quantity := range units {
+			for _, stream := range []bool{false, true} {
+				charge := quantity * unitPrice
+				t.Run(fmt.Sprintf("%s/stream=%t/units=%d", route, stream, quantity), func(t *testing.T) {
+					previousExa, previous := enclaveWebSearchClient, *slot
+					enclaveWebSearchClient = nil
+					searcher := &fakeResponsesWebSearcher{results: []websearch.Result{{CostMicrodollars: charge, Sources: []websearch.Source{{Title: "Release", URL: "https://example.com/release", Snippet: "Evidence"}}}}}
+					*slot = searcher
+					t.Cleanup(func() { enclaveWebSearchClient, *slot = previousExa, previous })
+					gateway, recorder, closeGateway := newFusionGatewayRecorder(t)
+					defer closeGateway()
+					server, client := net.Pipe()
+					defer client.Close()
+					go serveOne(context.Background(), server, auth.New(nil), webSearchScriptedLLM{}, nil, nil, gateway, nil)
+					input := `"input":"What changed?","store":false`
+					if route == "chat/completions" {
+						input = `"messages":[{"role":"user","content":"What changed?"}],"stream_options":{"include_usage":true}`
 					}
-				}
-				if bytes.Contains(body, []byte(`"operator_web_search_cost_microdollars"`)) {
-					t.Fatal("estimated tariff labeled actual operator cost")
-				}
-				if len(searcher.queries) != 1 {
-					t.Fatal("incorrect search count")
-				}
-				recorder.mu.Lock()
-				defer recorder.mu.Unlock()
-				if len(recorder.authorize) != 2 || len(recorder.settle) != 2 || len(recorder.refund) != 0 {
-					t.Fatal("unexpected billing operations")
-				}
-				if recorder.authorize[0]["additional_cost_reservation_microdollars"] != float64(12000) || recorder.settle[0]["additional_cost_microdollars"] != float64(charge) {
-					t.Fatal("wrong context reserve/settle")
-				}
-			})
+					request := fmt.Sprintf(`{"model":"test/model",%s,"tools":[{"type":"web_search","engine":%q}],"tool_choice":"required","max_tool_calls":1,"stream":%t}`, input, engine, stream)
+					if _, err := fmt.Fprintf(client, "POST /v1/%s HTTP/1.1\r\nAuthorization: Bearer test-key\r\nContent-Type: application/json\r\nContent-Length: %d\r\n\r\n%s", route, len(request), request); err != nil {
+						t.Fatal(err)
+					}
+					response, err := http.ReadResponse(bufio.NewReader(client), nil)
+					if err != nil {
+						t.Fatal(err)
+					}
+					defer response.Body.Close()
+					body, _ := io.ReadAll(response.Body)
+					if response.StatusCode != 200 {
+						t.Fatalf("status=%d body=%s", response.StatusCode, body)
+					}
+					fields := []string{fmt.Sprintf(`"web_search_engine":%q`, engine), fmt.Sprintf(`"web_search_cost_microdollars":%d`, charge), "https://example.com/release"}
+					if engine == "context.dev" {
+						fields = append(fields, `"web_search_credit_microdollars":6000`, fmt.Sprintf(`"web_search_credits":%d`, quantity), `"conservative_credit_tariff"`)
+					} else {
+						fields = append(fields, `"published_basic_search_unit"`)
+					}
+					for _, expected := range fields {
+						if !bytes.Contains(body, []byte(expected)) {
+							t.Fatalf("missing %s: %s", expected, body)
+						}
+					}
+					if bytes.Contains(body, []byte(`"operator_web_search_cost_microdollars"`)) {
+						t.Fatal("estimated tariff labeled actual operator cost")
+					}
+					if len(searcher.queries) != 1 {
+						t.Fatal("incorrect search count")
+					}
+					recorder.mu.Lock()
+					defer recorder.mu.Unlock()
+					if len(recorder.authorize) != 2 || len(recorder.settle) != 2 || len(recorder.refund) != 0 {
+						t.Fatal("unexpected billing operations")
+					}
+					if recorder.authorize[0]["additional_cost_reservation_microdollars"] != float64(reserve) || recorder.settle[0]["additional_cost_microdollars"] != float64(charge) {
+						t.Fatal("wrong search reservation or settlement")
+					}
+				})
+			}
 		}
 	}
 }

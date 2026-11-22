@@ -134,6 +134,7 @@ var secretBindings = func() []secretBinding {
 		{[]string{"QUILL_DATABRICKS_HOST_SECRET"}, "databricks host", false, func(b *types.BootstrapData, v string) { b.DatabricksHost = v }},
 		{[]string{"QUILL_EXA_SECRET"}, "exa key", true, func(b *types.BootstrapData, v string) { b.ExaAPIKey = v }},
 		{[]string{"QUILL_CONTEXT_DEV_SECRET"}, "context.dev key", true, func(b *types.BootstrapData, v string) { b.ContextDevAPIKey = v }},
+		{[]string{"QUILL_PARALLEL_SECRET"}, "parallel search key", true, func(b *types.BootstrapData, v string) { b.ParallelAPIKey = v }},
 		{[]string{"QUILL_INCEPTRON_SECRET"}, "inceptron key", true, func(b *types.BootstrapData, v string) { b.InceptronAPIKey = v }},
 		{[]string{"QUILL_KLING_SECRET"}, "kling key", true, func(b *types.BootstrapData, v string) { b.KlingAPIKey = v }},
 		{[]string{"QUILL_LTX_SECRET"}, "ltx key", true, func(b *types.BootstrapData, v string) { b.LTXAPIKey = v }},

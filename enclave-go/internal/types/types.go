@@ -74,6 +74,7 @@ type BootstrapData struct {
 	AdvisorPrompt               string          `json:"advisor_prompt,omitempty"`
 	ExaAPIKey                   string          `json:"exa_api_key,omitempty"`
 	ContextDevAPIKey            string          `json:"context_dev_api_key,omitempty"`
+	ParallelAPIKey              string          `json:"parallel_api_key,omitempty"`
 
 	// Anthropic direct (only populated for the llm_anthropic build target).
 	// Same trust posture as the OpenRouter key — pulled from Secret Manager

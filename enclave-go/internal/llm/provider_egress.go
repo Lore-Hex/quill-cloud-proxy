@@ -55,7 +55,7 @@ var providerEgressHosts = func() map[string]struct{} {
 		"external.api.recraft.ai", "api.bfl.ai", "api.us.bfl.ai", "api.eu.bfl.ai",
 		"api.us1.bfl.ai", "api.eu1.bfl.ai", "api.eu2.bfl.ai",
 		"api.decart.ai", "api.ltx.io", "api.dev.runwayml.com", "api-singapore.klingai.com",
-		"queue.fal.run", "eastus2.tts.speech.microsoft.com", "api.exa.ai", "api.context.dev",
+		"queue.fal.run", "eastus2.tts.speech.microsoft.com", "api.exa.ai", "api.context.dev", "api.parallel.ai",
 		"ark-acg-ap-southeast-1.tos-ap-southeast-1.volces.com", // gitleaks:allow public BytePlus object-storage hostname
 	} {
 		hosts[host] = struct{}{}

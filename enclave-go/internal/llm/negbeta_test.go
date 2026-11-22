@@ -13,24 +13,29 @@ import (
 	qtypes "github.com/Lore-Hex/quill-cloud-proxy/enclave-go/internal/types"
 )
 
-func TestNegbetaPrepaidStreamingPreservesNativeModelsAndCachedUsage(t *testing.T) {
-	for _, model := range []string{"qwen/qwen3.8-27b", "deepseek/deepseek-v4.1-flash-1017"} {
+func TestPrepaidCatalogStreamingPreservesNativeModelsAndCachedUsage(t *testing.T) {
+	for _, tc := range []struct{ provider, model, native, origin string }{
+		{"negbeta", "qwen/qwen3.8-27b", "qwen/qwen3.8-27b", "https://inference.negbeta.com/v1"},
+		{"negbeta", "deepseek/deepseek-v4.1-flash-1017", "deepseek/deepseek-v4.1-flash-1017", "https://inference.negbeta.com/v1"},
+		{"nito", "openai/gpt-oss-120b", "openai/gpt-oss-120b:confidential", "https://app.trynito.ai/api/v1"},
+	} {
+		model := tc.model
 		t.Run(model, func(t *testing.T) {
-			clients := newBootstrapDirectClients(map[string]string{"negbeta": "operator-test-key"})
-			if clients["negbeta"] == nil {
-				t.Fatal("Negbeta prepaid client missing")
+			clients := newBootstrapDirectClients(map[string]string{tc.provider: "operator-test-key"})
+			if clients[tc.provider] == nil {
+				t.Fatal("prepaid client missing")
 			}
 			calls := 0
-			clients["negbeta"].httpc = &http.Client{Transport: byokRoundTripFunc(func(r *http.Request) (*http.Response, error) {
+			clients[tc.provider].httpc = &http.Client{Transport: byokRoundTripFunc(func(r *http.Request) (*http.Response, error) {
 				calls++
-				if r.URL.String() != "https://inference.negbeta.com/v1/chat/completions" || r.Header.Get("Authorization") != "Bearer operator-test-key" {
-					t.Fatal("incorrect Negbeta endpoint or credential")
+				if r.URL.String() != tc.origin+"/chat/completions" || r.Header.Get("Authorization") != "Bearer operator-test-key" {
+					t.Fatal("incorrect endpoint or credential")
 				}
 				var wire openAICompatibleRequest
 				if err := json.NewDecoder(r.Body).Decode(&wire); err != nil {
 					t.Fatal(err)
 				}
-				if wire.Model != model || !wire.Stream || wire.StreamOptions == nil || !wire.StreamOptions.IncludeUsage {
+				if wire.Model != tc.native || !wire.Stream || wire.StreamOptions == nil || !wire.StreamOptions.IncludeUsage {
 					t.Fatal("incorrect upstream model or streaming options")
 				}
 				stream := ": keep-alive\n\n" +
@@ -43,7 +48,7 @@ func TestNegbetaPrepaidStreamingPreservesNativeModelsAndCachedUsage(t *testing.T
 			multi := &multiClient{direct: clients}
 			err := multi.InvokeStreaming(t.Context(), &qtypes.OpenAIChatRequest{Model: model},
 				&qtypes.AnthropicMessagesRequest{MaxTokens: 64, Messages: []qtypes.AnthropicMessage{{Role: "user", Content: "PONG"}}},
-				&out, InvokeOptions{Provider: "negbeta", UpstreamModel: model})
+				&out, InvokeOptions{Provider: tc.provider, UpstreamModel: tc.native})
 			if err != nil || calls != 1 {
 				t.Fatalf("calls=%d error=%v", calls, err)
 			}
