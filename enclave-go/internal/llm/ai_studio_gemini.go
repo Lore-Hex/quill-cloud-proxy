@@ -98,7 +98,7 @@ func (c *aiStudioGeminiClient) InvokeStreaming(
 		if readErr != nil {
 			return fmt.Errorf("llm/google-ai-studio: read error body: %w", readErr)
 		}
-		return &upstreamHTTPError{status: resp.StatusCode, body: string(errBody)}
+		return &upstreamHTTPError{status: resp.StatusCode, body: string(errBody), requestID: providerRequestID(resp.Header)}
 	}
 	upstreamerror.Open(out)
 	return translateGeminiStreamToAnthropicMode(resp.Body, out, req.ImageGeneration)

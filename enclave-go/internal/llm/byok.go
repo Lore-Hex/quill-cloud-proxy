@@ -402,7 +402,7 @@ func invokeOpenAICompatibleStreamingWithClientOptions(
 		if readErr != nil {
 			return fmt.Errorf("llm/%s: read error body: %w", provider, readErr)
 		}
-		return &upstreamHTTPError{status: resp.StatusCode, body: string(errBody)}
+		return &upstreamHTTPError{status: resp.StatusCode, body: string(errBody), requestID: providerRequestID(resp.Header)}
 	}
 	if provider == "openai" {
 		openAISafetyEgress.observe(resp, bodyBytes, options.openAISafetyIdentifier, options.callerSafety)
@@ -887,7 +887,7 @@ func invokeAnthropicCompatibleStreamingWithClient(
 		if readErr != nil {
 			return fmt.Errorf("llm/%s: read anthropic error body: %w", provider, readErr)
 		}
-		return &upstreamHTTPError{status: resp.StatusCode, body: string(errBody)}
+		return &upstreamHTTPError{status: resp.StatusCode, body: string(errBody), requestID: providerRequestID(resp.Header)}
 	}
 	upstreamerror.Open(out)
 	return relayAnthropicStream(resp.Body, out)

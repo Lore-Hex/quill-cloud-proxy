@@ -17,6 +17,9 @@ import (
 type upstreamHTTPError struct {
 	status int
 	body   string
+	// requestID is the provider's own request ID header, kept so an operator
+	// can quote it to the provider. upstreamerror.RequestID bounds it.
+	requestID string
 }
 
 func (e *upstreamHTTPError) Error() string {
@@ -24,6 +27,19 @@ func (e *upstreamHTTPError) Error() string {
 }
 
 func (e *upstreamHTTPError) UpstreamResponse() (int, string) { return e.status, e.body }
+
+func (e *upstreamHTTPError) UpstreamRequestID() string { return e.requestID }
+
+// providerRequestID reads the provider's request ID from a failed response.
+// Only the ID is read; no other header is retained.
+func providerRequestID(header http.Header) string {
+	for _, name := range []string{"X-Request-Id", "Request-Id", "X-Amzn-Requestid"} {
+		if value := header.Get(name); value != "" {
+			return value
+		}
+	}
+	return ""
+}
 
 // HTTPStatusFromError returns the upstream HTTP status code carried by err when
 // it originated as a non-2xx upstream response, and ok=false otherwise (e.g.
