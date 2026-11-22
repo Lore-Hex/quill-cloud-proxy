@@ -12,6 +12,7 @@ import gzip
 import hashlib
 import importlib.util
 import json
+import re
 import sys
 import unittest
 from pathlib import Path
@@ -307,6 +308,16 @@ class WorkflowGuardTests(unittest.TestCase):
         self.assertNotIn("ref:refs/heads/main", identity.split("github_subject =", 1)[1].splitlines()[0])
         for broad in ('"Owner"', '"Contributor"', '"User Access Administrator"', "Microsoft.Authorization/roleAssignments/write"):
             self.assertNotIn(broad, identity)
+
+    def test_azure_role_text_has_no_angle_brackets(self):
+        # Azure refuses a role definition whose name or description holds
+        # "<" or ">" (RoleDefinitionCannotContainHtmlTags), and the refusal
+        # only shows at apply time, after the other resources exist.
+        identity = (ROOT / "tools/azure-gateway-rollout-identity/main.tf").read_text()
+        texts = re.findall(r'^\s*(?:name|description)\s*=\s*"([^"\n]*)"', identity, flags=re.M)
+        self.assertGreaterEqual(len(texts), 8, texts)
+        for text in texts:
+            self.assertNotRegex(text, "[<>]")
 
 
 if __name__ == "__main__":

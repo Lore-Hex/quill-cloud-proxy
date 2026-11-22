@@ -64,7 +64,7 @@ resource "azurerm_federated_identity_credential" "github" {
 resource "azurerm_role_definition" "enclave" {
   name        = "TR Gateway Rollout - Enclave Container Groups"
   scope       = local.subscription
-  description = "rollout-azure-gateway.yml: replace the quill-enclave-<region> confidential container group."
+  description = "rollout-azure-gateway.yml: replace the regional quill-enclave confidential container group."
   permissions {
     actions = [
       "Microsoft.ContainerInstance/containerGroups/read",
