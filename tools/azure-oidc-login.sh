@@ -1,12 +1,21 @@
 #!/usr/bin/env bash
 # Log the Azure CLI in with this job's GitHub OIDC token (audience
-# api://AzureADTokenExchange), then pre-fetch ARM and Key Vault access tokens.
+# api://AzureADTokenExchange), then pre-fetch ARM, Key Vault and container
+# registry access tokens.
 #
 # GitHub's ID token lives only minutes and az exchanges it lazily, per
 # resource: quill-router lost a deploy to exactly that (a first Key Vault call
 # after a long wait failed and looked like "secret not found"). Call this
 # before every step that talks to Azure; the access tokens it pre-fetches last
 # about an hour, longer than any single step here.
+#
+# The registry is its own resource. `az acr repository show` and `az acr login`
+# ask for a token for https://containerregistry.azure.net, not for ARM, and
+# they first run after the registry build, a quarter of an hour after login.
+# Without that token in the cache az reports AADSTS700024 (the assertion is
+# past its valid time), falls back to the registry's admin credentials, and
+# stops on registries/listCredentials/action, which the rollout identity does
+# not and should not hold.
 #
 # Needs AZURE_CLIENT_ID, AZURE_TENANT_ID, AZURE_SUBSCRIPTION_ID and the job's
 # id-token: write permission. Never run with xtrace.
@@ -33,8 +42,9 @@ az login --service-principal --username "$AZURE_CLIENT_ID" --tenant "$AZURE_TENA
   || fail "az login with the federated token failed"
 unset id_token
 az account set --subscription "$AZURE_SUBSCRIPTION_ID" || fail "cannot select the subscription"
-for resource in https://management.azure.com/ https://vault.azure.net; do
-  az account get-access-token --resource "$resource" --output none --only-show-errors \
+for resource in https://management.azure.com/ https://vault.azure.net https://containerregistry.azure.net; do
+  expires="$(az account get-access-token --resource "$resource" --query expiresOn --output tsv --only-show-errors)" \
     || fail "could not obtain an access token for $resource"
+  echo "access token for $resource cached until $expires"
 done
 echo "Azure CLI logged in as the gateway rollout identity"
