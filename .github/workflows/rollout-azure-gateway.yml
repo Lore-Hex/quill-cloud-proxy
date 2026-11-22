@@ -18,6 +18,11 @@
 #   narrow    deploy-azure-aci.sh --apply narrow, then a read-only audit.
 #   enable    re-enable the endpoint; verify both regions over the shared name.
 #
+# With rehearse=true none of that runs: one job builds, renders and measures
+# Dubai's release as the rollout identity and audits the key, with no
+# reservation and no drain. Use it before a rollout whose steps have not run
+# on a runner since they last changed.
+#
 # A failed deploy restores the previous key release policy and leaves the
 # region drained; any failure leaves the azure lease blocked for a verified
 # recovery. The peer is never drained while a region is being replaced, and
@@ -37,6 +42,11 @@ on:
         required: false
         default: ""
         type: string
+      rehearse:
+        description: "Rehearsal only: build, render and measure as the rollout identity and read the key; no reservation, no drain, no change to a region"
+        required: false
+        default: false
+        type: boolean
 
 concurrency:
   group: rollout-azure-gateway
@@ -105,6 +115,8 @@ jobs:
           uv pip install --python "$RUNNER_TEMP/trust-validation/bin/python" --require-hashes -r "$RUNNER_TEMP/attestation-requirements.txt"
           echo "$RUNNER_TEMP/trust-validation/bin" >> "$GITHUB_PATH"
       - name: Both regions attest over the shared hostname and both endpoints are Online
+        # A rehearsal replaces no region, so it may run while one is drained.
+        if: ${{ !inputs.rehearse }}
         run: |
           set -euo pipefail
           bash tools/azure-oidc-login.sh
@@ -115,8 +127,66 @@ jobs:
             echo "release \`$RELEASE_SHA\`, bundle \`${{ steps.bundle.outputs.version }}\`; both regions attest and are Online."
           } >> "$GITHUB_STEP_SUMMARY"
 
+  # The rollout's own steps up to the measured policy, and a read of the key,
+  # as the rollout identity on a runner: the registry build, the rendered
+  # template, the confidential-computing policy and the release policy audit.
+  # deploy-azure-aci.sh asks for the reservation only in its bind, deploy,
+  # narrow and rollback phases, and this job runs none of them. It holds no
+  # reservation, drains nothing, and leaves one new image tag in the registry.
+  rehearse:
+    needs: preflight
+    if: ${{ inputs.rehearse }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    environment: azure-gateway-rollout
+    permissions:
+      contents: read
+      id-token: write
+    env:
+      BUNDLE_VERSION: ${{ needs.preflight.outputs.bundle_version }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ inputs.release_sha }}
+          path: src
+          persist-credentials: false
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: main
+          path: trust
+          persist-credentials: false
+      - uses: Lore-Hex/quill-cloud-proxy/.github/actions/setup-uv@582cbdee7b7023cfeb915b62a7f635aa1e4662b1 # main 2026-11-13
+      - name: Install locked attestation dependencies in isolation
+        working-directory: trust
+        run: |
+          set -euo pipefail
+          uv venv "$RUNNER_TEMP/trust-validation"
+          uv export --locked --script tools/verify-attestation.py --output-file "$RUNNER_TEMP/attestation-requirements.txt" >/dev/null
+          uv pip install --python "$RUNNER_TEMP/trust-validation/bin/python" --require-hashes -r "$RUNNER_TEMP/attestation-requirements.txt"
+          echo "$RUNNER_TEMP/trust-validation/bin" >> "$GITHUB_PATH"
+      - uses: Lore-Hex/quill-cloud-proxy/.github/actions/cosign-install@582cbdee7b7023cfeb915b62a7f635aa1e4662b1 # main 2026-11-13
+        with:
+          cosign-release: v2.6.5
+      - name: The checked-out release is exactly the requested commit
+        run: test "$(git -C src rev-parse HEAD)" = "$RELEASE_SHA"
+      - name: "Rehearsal: Dubai's preflight, build, template and policy, then the key audit"
+        working-directory: src
+        run: |
+          set -euo pipefail
+          bash ../trust/tools/azure-oidc-login.sh
+          set -a
+          eval "$(python3 ../trust/tools/azure_gateway_rollout.py env --region dubai)"
+          set +a
+          WORKDIR="$RUNNER_TEMP/aci-rehearsal" QUILL_AZURE_BUNDLE_VERSION="$BUNDLE_VERSION" \
+            TR_CONTROL_PLANE_BASE_URL=https://trustedrouter.com \
+            bash ./tools/deploy-azure-aci.sh --apply preflight build template policy
+          WORKDIR="$RUNNER_TEMP/aci-rehearsal" QUILL_AZURE_BUNDLE_VERSION="$BUNDLE_VERSION" \
+            bash ./tools/deploy-azure-aci.sh audit
+          echo "## Azure gateway rollout rehearsal: release \`$RELEASE_SHA\` built, rendered, measured and audited; nothing reserved or replaced." >> "$GITHUB_STEP_SUMMARY"
+
   admit-cloud:
     needs: preflight
+    if: ${{ !inputs.rehearse }}
     runs-on: ubuntu-latest
     timeout-minutes: 260
     permissions:
@@ -216,7 +286,7 @@ jobs:
           rc=0
           env -u GOOGLE_APPLICATION_CREDENTIALS WORKDIR="$RUNNER_TEMP/aci-dubai" \
             QUILL_AZURE_BUNDLE_VERSION="$BUNDLE_VERSION" TR_CONTROL_PLANE_BASE_URL=https://trustedrouter.com \
-            ./tools/deploy-azure-aci.sh --apply preflight build template policy bind deploy verify \
+            bash ./tools/deploy-azure-aci.sh --apply preflight build template policy bind deploy verify \
             > "$RUNNER_TEMP/deploy-dubai.log" 2>&1 || rc=$?
           cat "$RUNNER_TEMP/deploy-dubai.log"
           if [ "$rc" -ne 0 ] && ! grep -q 'MEASUREMENT NOT PUBLISHED' "$RUNNER_TEMP/deploy-dubai.log"; then
@@ -234,7 +304,7 @@ jobs:
           set +a
           if [ -f "$RUNNER_TEMP/aci-dubai/previous-hostdata.txt" ]; then
             env -u GOOGLE_APPLICATION_CREDENTIALS WORKDIR="$RUNNER_TEMP/aci-dubai" \
-              QUILL_AZURE_BUNDLE_VERSION="$BUNDLE_VERSION" ./tools/deploy-azure-aci.sh --apply rollback
+              QUILL_AZURE_BUNDLE_VERSION="$BUNDLE_VERSION" bash ./tools/deploy-azure-aci.sh --apply rollback
           fi
           echo "::error::Dubai left drained for operator recovery (runbook §3.4)."
       - name: "Dubai: read the publication gate"
@@ -277,9 +347,9 @@ jobs:
           eval "$(python3 ../trust/tools/azure_gateway_rollout.py env --region dubai)"
           set +a
           env -u GOOGLE_APPLICATION_CREDENTIALS WORKDIR="$RUNNER_TEMP/aci-dubai" \
-            QUILL_AZURE_BUNDLE_VERSION="$BUNDLE_VERSION" ./tools/deploy-azure-aci.sh --apply narrow
+            QUILL_AZURE_BUNDLE_VERSION="$BUNDLE_VERSION" bash ./tools/deploy-azure-aci.sh --apply narrow
           env -u GOOGLE_APPLICATION_CREDENTIALS WORKDIR="$RUNNER_TEMP/aci-dubai" \
-            QUILL_AZURE_BUNDLE_VERSION="$BUNDLE_VERSION" ./tools/deploy-azure-aci.sh audit
+            QUILL_AZURE_BUNDLE_VERSION="$BUNDLE_VERSION" bash ./tools/deploy-azure-aci.sh audit
       - name: "Dubai: re-enable its endpoint and verify both regions over the shared name"
         working-directory: trust
         run: |
@@ -358,7 +428,7 @@ jobs:
           rc=0
           env -u GOOGLE_APPLICATION_CREDENTIALS WORKDIR="$RUNNER_TEMP/aci-sydney" \
             QUILL_AZURE_BUNDLE_VERSION="$BUNDLE_VERSION" TR_CONTROL_PLANE_BASE_URL=https://trustedrouter.com \
-            ./tools/deploy-azure-aci.sh --apply preflight build template policy bind deploy verify \
+            bash ./tools/deploy-azure-aci.sh --apply preflight build template policy bind deploy verify \
             > "$RUNNER_TEMP/deploy-sydney.log" 2>&1 || rc=$?
           cat "$RUNNER_TEMP/deploy-sydney.log"
           if [ "$rc" -ne 0 ] && ! grep -q 'MEASUREMENT NOT PUBLISHED' "$RUNNER_TEMP/deploy-sydney.log"; then
@@ -376,7 +446,7 @@ jobs:
           set +a
           if [ -f "$RUNNER_TEMP/aci-sydney/previous-hostdata.txt" ]; then
             env -u GOOGLE_APPLICATION_CREDENTIALS WORKDIR="$RUNNER_TEMP/aci-sydney" \
-              QUILL_AZURE_BUNDLE_VERSION="$BUNDLE_VERSION" ./tools/deploy-azure-aci.sh --apply rollback
+              QUILL_AZURE_BUNDLE_VERSION="$BUNDLE_VERSION" bash ./tools/deploy-azure-aci.sh --apply rollback
           fi
           echo "::error::Sydney left drained for operator recovery (runbook §3.4)."
       - name: "Sydney: read the publication gate"
@@ -420,9 +490,9 @@ jobs:
           eval "$(python3 ../trust/tools/azure_gateway_rollout.py env --region sydney)"
           set +a
           env -u GOOGLE_APPLICATION_CREDENTIALS WORKDIR="$RUNNER_TEMP/aci-sydney" \
-            QUILL_AZURE_BUNDLE_VERSION="$BUNDLE_VERSION" ./tools/deploy-azure-aci.sh --apply narrow
+            QUILL_AZURE_BUNDLE_VERSION="$BUNDLE_VERSION" bash ./tools/deploy-azure-aci.sh --apply narrow
           env -u GOOGLE_APPLICATION_CREDENTIALS WORKDIR="$RUNNER_TEMP/aci-sydney" \
-            QUILL_AZURE_BUNDLE_VERSION="$BUNDLE_VERSION" ./tools/deploy-azure-aci.sh audit
+            QUILL_AZURE_BUNDLE_VERSION="$BUNDLE_VERSION" bash ./tools/deploy-azure-aci.sh audit
       - name: "Sydney: re-enable its endpoint and verify both regions over the shared name"
         working-directory: trust
         run: |

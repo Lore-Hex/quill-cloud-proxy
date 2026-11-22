@@ -181,6 +181,14 @@ managed identity in `tools/azure-gateway-rollout-identity/` (GitHub environment
 gh workflow run rollout-azure-gateway.yml --repo Lore-Hex/quill-cloud-proxy --ref main -f release_sha=<full sha>
 ~~~
 
+A rehearsal first proves the steps that only a runner and the rollout identity
+can prove (the registry build, the confidential-computing policy generation and
+the key read) without a reservation or a drain. It leaves one unused image tag:
+
+~~~bash
+gh workflow run rollout-azure-gateway.yml --repo Lore-Hex/quill-cloud-proxy --ref main -f release_sha=<full sha> -f rehearse=true
+~~~
+
 The manual steps below remain the fallback and the specification.
 
 
