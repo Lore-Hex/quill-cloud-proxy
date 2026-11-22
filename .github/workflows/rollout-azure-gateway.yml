@@ -132,7 +132,9 @@ jobs:
   # template, the confidential-computing policy and the release policy audit.
   # deploy-azure-aci.sh asks for the reservation only in its bind, deploy,
   # narrow and rollback phases, and this job runs none of them. It holds no
-  # reservation, drains nothing, and leaves one new image tag in the registry.
+  # reservation, drains nothing, and leaves one new image tag and its build
+  # record in the registry. The audit also fails on an open bind window or an
+  # unauthorized running workload, whoever left them.
   rehearse:
     needs: preflight
     if: ${{ inputs.rehearse }}
