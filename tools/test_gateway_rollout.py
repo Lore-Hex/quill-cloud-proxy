@@ -12,8 +12,11 @@ import gzip
 import hashlib
 import importlib.util
 import json
+import os
 import re
+import subprocess
 import sys
+import tempfile
 import unittest
 from pathlib import Path
 
@@ -381,7 +384,7 @@ class WorkflowGuardTests(unittest.TestCase):
         login = (ROOT / "tools/azure-oidc-login.sh").read_text()
         loop = re.search(r"^for resource in ([^;\n]+); do\n((?:  .*\n)+)done$", login, flags=re.M)
         self.assertIsNotNone(loop)
-        self.assertEqual(loop.group(1).split(), ["https://management.azure.com/", "https://vault.azure.net",
+        self.assertEqual(loop.group(1).split(), ["https://management.core.windows.net/", "https://vault.azure.net",
                                                  "https://containerregistry.azure.net"])
         # The token itself is never written out: only its expiry is queried.
         self.assertEqual(loop.group(2).count("get-access-token"), 1)
@@ -390,6 +393,54 @@ class WorkflowGuardTests(unittest.TestCase):
         script = (ROOT / "tools/deploy-azure-aci.sh").read_text()
         self.assertIn("az_cli acr repository show", script)
         self.assertIn("az_rw acr login", script)
+
+    def run_azure_login(self, failing: str = "") -> tuple[int, str, list[str]]:
+        """Run tools/azure-oidc-login.sh against recording stand-ins for az and curl.
+
+        Returns the exit status, the output, and one line per az call. An az
+        call whose arguments contain `failing` exits 1.
+        """
+        with tempfile.TemporaryDirectory() as tmp:
+            calls = Path(tmp) / "calls"
+            calls.write_text("")
+            (Path(tmp) / "az").write_text(
+                "#!/usr/bin/env bash\n"
+                'printf \'%s\\n\' "$*" | sed -E \'s/--federated-token [^ ]+/--federated-token <t>/\' >> "$CALLS"\n'
+                'if [ -n "$FAILING" ] && [[ "$*" == *"$FAILING"* ]]; then exit 1; fi\n'
+                'if [[ "$*" == *get-access-token* ]]; then echo "2026-01-01 00:00:00.000000"; fi\n')
+            (Path(tmp) / "curl").write_text("#!/usr/bin/env bash\ncat >/dev/null\necho '{\"value\": \"stand-in\"}'\n")
+            for name in ("az", "curl"):
+                (Path(tmp) / name).chmod(0o755)
+            guid = "00000000-0000-0000-0000-000000000000"
+            env = {"PATH": f"{tmp}:{os.environ['PATH']}", "CALLS": str(calls), "FAILING": failing,
+                   "AZURE_CLIENT_ID": guid, "AZURE_TENANT_ID": guid, "AZURE_SUBSCRIPTION_ID": guid,
+                   "ACTIONS_ID_TOKEN_REQUEST_URL": "https://example.invalid/token?x=1",
+                   "ACTIONS_ID_TOKEN_REQUEST_TOKEN": "request"}
+            done = subprocess.run(["bash", str(ROOT / "tools/azure-oidc-login.sh")], env=env,
+                                  capture_output=True, text=True, timeout=60, check=False)
+            return done.returncode, done.stdout + done.stderr, calls.read_text().splitlines()
+
+    def test_azure_login_starts_from_an_empty_cache_and_stops_on_any_refusal(self):
+        status, output, calls = self.run_azure_login()
+        self.assertEqual(status, 0, output)
+        self.assertEqual([call.split(" --")[0] for call in calls], [
+            "cloud set", "account clear", "login", "account set",
+            "account get-access-token", "account get-access-token", "account get-access-token"])
+        # Cleared before the login, so the login and every later request mint
+        # new tokens instead of returning an earlier step's.
+        self.assertLess(calls.index(next(c for c in calls if c.startswith("account clear"))),
+                        calls.index(next(c for c in calls if c.startswith("login"))))
+        self.assertEqual([call.split("--resource ")[1].split()[0] for call in calls if "get-access-token" in call],
+                         ["https://management.core.windows.net/", "https://vault.azure.net",
+                          "https://containerregistry.azure.net"])
+        self.assertEqual(output.count("cached until 2026-01-01"), 3)
+        self.assertNotIn("stand-in", output.replace("::add-mask::stand-in", ""))
+        for failing in ("account clear", "login", "account set", "https://vault.azure.net",
+                        "https://containerregistry.azure.net"):
+            status, output, calls = self.run_azure_login(failing)
+            self.assertEqual(status, 1, failing)
+            self.assertIn("::error::azure-oidc-login:", output, failing)
+            self.assertIn(failing, calls[-1], "nothing runs after the refused call")
 
     def test_only_the_azure_rollout_declares_its_identity_environment(self):
         for path in sorted((ROOT / ".github/workflows").glob("*.y*ml")):
