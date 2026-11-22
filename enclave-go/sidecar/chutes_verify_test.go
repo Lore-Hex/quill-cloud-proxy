@@ -732,7 +732,8 @@ func TestPinnedChutesKimiK3Version150RequiresAllRegisters(t *testing.T) {
 		}
 	}
 	for _, pinned := range verifier.measurements {
-		if pinned.Version == "1.5.0" && pinned.Name != measurement.Name {
+		if pinned.Version == "1.5.0" && pinned.Name != measurement.Name &&
+			pinned.Name != "8xh200 [10.2.1, numa-188c-1128g-nvsw-node1]" {
 			t.Fatalf("unreviewed 1.5.0 profile was added: %s", pinned.Name)
 		}
 	}
@@ -767,6 +768,46 @@ func TestPinnedChutesNemoProfileRequiresAllRegisters(t *testing.T) {
 	if measurement.Version != "1.4.1" || measurement.Name != "8xpro_6000 [10.2.1, numa-124c-768g] (58443435b208)" ||
 		measurement.GPUCount != 8 || len(measurement.ExpectedGPUs) != 1 || measurement.ExpectedGPUs[0] != "pro_6000" {
 		t.Fatalf("unexpected Nemo profile: %+v", measurement)
+	}
+	for index, register := range append([][]byte{body.MrTd}, body.Rtmrs...) {
+		register[0] ^= 0xff
+		_, err := verifier.matchMeasurement(body)
+		register[0] ^= 0xff
+		if err == nil {
+			t.Fatalf("tampered register %d was accepted", index)
+		}
+	}
+}
+
+func TestPinnedChutesQwenH200Version150RequiresAllRegisters(t *testing.T) {
+	verifier, err := newChutesVerifier()
+	if err != nil {
+		t.Fatal(err)
+	}
+	decode := func(value string) []byte {
+		t.Helper()
+		decoded, err := hex.DecodeString(value)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return decoded
+	}
+	body := &tdxpb.TDQuoteBody{
+		MrTd: decode("261CE538B435E2D0E85FC97E254BC99154C507B7A8E13D59B69F8532384F1D0BFAADFDDF3FCCC6E0A411203840BBEE8D"),
+		Rtmrs: [][]byte{
+			decode("BA81DBF034D968FD4BE0975C031CBE6451295D63CB509CD857372FC915DADA1B24FC4E1B0486DB4A276A9EFB49D415E6"),
+			decode("D3A862FF47357F374FC72C7F02A480A13790D1805E24AAA8DE1F03994256625CE0F593AE35EA8F0C24D09F7DF36CB0ED"),
+			decode("E1DE99043052F3E1AB5A4463D3310B5680E851631ADF10E071B15CBD8B4D664EA435B0EC33E7F18E908DDA60734056F7"),
+			decode("9617BE835BEAC8C62093A9DB424F015F3E12651235D0101C112729E7225B7A70836A184DEE0B45F28CD190F1871AFE6E"),
+		},
+	}
+	measurement, err := verifier.matchMeasurement(body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if measurement.Version != "1.5.0" || measurement.Name != "8xh200 [10.2.1, numa-188c-1128g-nvsw-node1]" ||
+		measurement.GPUCount != 8 || len(measurement.ExpectedGPUs) != 1 || measurement.ExpectedGPUs[0] != "h200" {
+		t.Fatalf("unexpected Qwen H200 profile: %+v", measurement)
 	}
 	for index, register := range append([][]byte{body.MrTd}, body.Rtmrs...) {
 		register[0] ^= 0xff
