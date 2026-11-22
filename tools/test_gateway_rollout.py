@@ -373,6 +373,24 @@ class WorkflowGuardTests(unittest.TestCase):
         peer = next(s for s in jobs["preflight"]["steps"] if "peer-check" in s.get("run", ""))
         self.assertEqual(peer["if"], "${{ !inputs.rehearse }}")
 
+    def test_azure_login_caches_a_token_for_every_resource_a_step_uses(self):
+        # az exchanges the GitHub token per resource, lazily, and that token is
+        # valid for minutes. A resource first used after the registry build and
+        # missing here fails there, after the region is drained. The registry's
+        # own audience is what `az acr repository show` and `az acr login` ask for.
+        login = (ROOT / "tools/azure-oidc-login.sh").read_text()
+        loop = re.search(r"^for resource in ([^;\n]+); do\n((?:  .*\n)+)done$", login, flags=re.M)
+        self.assertIsNotNone(loop)
+        self.assertEqual(loop.group(1).split(), ["https://management.azure.com/", "https://vault.azure.net",
+                                                 "https://containerregistry.azure.net"])
+        # The token itself is never written out: only its expiry is queried.
+        self.assertEqual(loop.group(2).count("get-access-token"), 1)
+        self.assertIn('get-access-token --resource "$resource" --query expiresOn --output tsv', loop.group(2))
+        self.assertEqual(login.count("get-access-token"), 1)
+        script = (ROOT / "tools/deploy-azure-aci.sh").read_text()
+        self.assertIn("az_cli acr repository show", script)
+        self.assertIn("az_rw acr login", script)
+
     def test_only_the_azure_rollout_declares_its_identity_environment(self):
         for path in sorted((ROOT / ".github/workflows").glob("*.y*ml")):
             if path != AZURE_WF:
