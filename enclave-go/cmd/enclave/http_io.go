@@ -1303,6 +1303,16 @@ func providerErrorBody(err error, authorization *trustedrouter.Authorization) (i
 		}
 		body["metadata"] = map[string]any{"provider_name": provider, "raw": d.Raw}
 	}
+	if requestID := upstreamerror.RequestID(err); requestID != "" && !hidden && !funding {
+		// The provider's request ID lets an operator quote the failed call to
+		// the provider; it is a bounded plain identifier, never content.
+		metadata, _ := body["metadata"].(map[string]any)
+		if metadata == nil {
+			metadata = map[string]any{}
+			body["metadata"] = metadata
+		}
+		metadata["provider_request_id"] = requestID
+	}
 	return d.Status, body
 }
 
