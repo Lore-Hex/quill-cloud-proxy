@@ -218,7 +218,10 @@ class WorkflowGuardTests(unittest.TestCase):
         workflow["on"] = workflow.pop(True, workflow.get("on"))
         return workflow
 
-    def common(self, workflow: dict, cloud: str) -> None:
+    def common(self, workflow: dict, cloud: str, unreserved: frozenset[str] = frozenset()) -> None:
+        # `unreserved` names the jobs of this one workflow that hold no
+        # reservation because they replace nothing. The caller that passes a
+        # name owns the test that pins what that job runs.
         self.assertEqual(set(workflow["on"]), {"workflow_dispatch"})
         self.assertTrue(workflow["on"]["workflow_dispatch"]["inputs"]["release_sha"]["required"])
         self.assertEqual(workflow["permissions"], {"contents": "read"})
@@ -231,9 +234,9 @@ class WorkflowGuardTests(unittest.TestCase):
         self.assertIn("always()", final["if"])
         release = "\n".join(s.get("run", "") for s in final["steps"])
         self.assertIn(f"cloud-rollout.py release --cloud {cloud}", release)
-        self.assertEqual(set(final["needs"]), set(jobs) - {"preflight", "finalize-cloud"})
+        self.assertEqual(set(final["needs"]), set(jobs) - {"preflight", "finalize-cloud"} - unreserved)
         for name, job in jobs.items():
-            if name in {"preflight", "admit-cloud", "finalize-cloud"}:
+            if name in {"preflight", "admit-cloud", "finalize-cloud"} | unreserved:
                 continue
             self.assertIn("admit-cloud", job["needs"], name)
             self.assertEqual(job["env"]["TR_DEPLOY_MUTEX_CLOUD"] if "env" in job and "TR_DEPLOY_MUTEX_CLOUD" in job["env"] else cloud, cloud)
@@ -276,7 +279,8 @@ class WorkflowGuardTests(unittest.TestCase):
 
     def test_azure_workflow_drains_before_replacing_and_narrows_after_publishing(self):
         workflow = self.load(AZURE_WF)
-        self.common(workflow, "azure")
+        # test_azure_rehearsal_reserves_and_replaces_nothing pins that job.
+        self.common(workflow, "azure", unreserved=frozenset({"rehearse"}))
         jobs = workflow["jobs"]
         for name in ("preflight", "dubai", "sydney"):
             self.assertEqual(jobs[name]["environment"], "azure-gateway-rollout")
@@ -298,6 +302,76 @@ class WorkflowGuardTests(unittest.TestCase):
         sydney_publish = next(s for s in jobs["sydney"]["steps"] if s.get("name", "").startswith("Sydney: publish"))
         self.assertIn("--keep-accepted", dubai_publish["run"])
         self.assertNotIn("--keep-accepted", sydney_publish["run"])
+
+    def test_azure_workflow_runs_the_deploy_script_through_bash(self):
+        # The script is not executable in every release commit the workflow may
+        # check out, and "./tools/x.sh" then stops with exit 126 after the
+        # region is drained.
+        text = AZURE_WF.read_text()
+        calls = re.findall(r"(\S*)[ \t]+\./tools/deploy-azure-aci\.sh", text)
+        self.assertGreaterEqual(len(calls), 10, calls)
+        self.assertEqual(set(calls), {"bash"})
+
+    def test_azure_rehearsal_reserves_and_replaces_nothing(self):
+        workflow = self.load(AZURE_WF)
+        jobs = workflow["jobs"]
+        declared = workflow["on"]["workflow_dispatch"]["inputs"]["rehearse"]
+        self.assertEqual(declared["type"], "boolean")
+        self.assertIs(declared["default"], False)
+        self.assertNotIn("rehearse", self.load(AWS_WF)["jobs"])
+        job = jobs["rehearse"]
+        self.assertEqual(job["needs"], "preflight")
+        self.assertEqual(job["if"], "${{ inputs.rehearse }}")
+        self.assertEqual(job["environment"], "azure-gateway-rollout")
+        # A rehearsal never becomes a rollout: the reservation, and with it
+        # every job that replaces a region, is for the other value only.
+        self.assertEqual(jobs["admit-cloud"]["if"], "${{ !inputs.rehearse }}")
+        for name in ("dubai", "sydney"):
+            self.assertIn("admit-cloud", jobs[name]["needs"])
+            self.assertNotIn("if", jobs[name])
+        self.assertEqual(jobs["finalize-cloud"]["if"], "${{ always() && needs.admit-cloud.result == 'success' }}")
+        # The whole job is pinned, not searched for known-bad words: its
+        # environment, its steps in order, and every line the last step runs.
+        self.assertEqual(set(job["env"]), {"BUNDLE_VERSION"})
+        self.assertEqual(job["permissions"], {"contents": "read", "id-token": "write"})
+        self.assertEqual(
+            [s["uses"].split("@")[0].rsplit("/", 1)[-1] if "uses" in s else s["name"] for s in job["steps"]],
+            ["checkout", "checkout", "setup-uv", "Install locked attestation dependencies in isolation",
+             "cosign-install", "The checked-out release is exactly the requested commit",
+             "Rehearsal: Dubai's preflight, build, template and policy, then the key audit"])
+        for step in job["steps"]:
+            self.assertNotIn("TRUST_PUSH_TOKEN", str(step.get("with", "")) + str(step.get("env", "")))
+            self.assertNotIn("if", step)
+        installs = dict(jobs["dubai"]["steps"][3])
+        self.assertEqual(job["steps"][3], installs)
+        self.assertEqual(job["steps"][5]["run"], 'test "$(git -C src rev-parse HEAD)" = "$RELEASE_SHA"')
+        rehearsal = job["steps"][6]
+        self.assertEqual(set(rehearsal), {"name", "working-directory", "run"})
+        self.assertEqual(rehearsal["working-directory"], "src")
+        self.assertEqual(rehearsal["run"].splitlines(), [
+            "set -euo pipefail",
+            "bash ../trust/tools/azure-oidc-login.sh",
+            "set -a",
+            'eval "$(python3 ../trust/tools/azure_gateway_rollout.py env --region dubai)"',
+            "set +a",
+            'WORKDIR="$RUNNER_TEMP/aci-rehearsal" QUILL_AZURE_BUNDLE_VERSION="$BUNDLE_VERSION" \\',
+            "  TR_CONTROL_PLANE_BASE_URL=https://trustedrouter.com \\",
+            "  bash ./tools/deploy-azure-aci.sh --apply preflight build template policy",
+            'WORKDIR="$RUNNER_TEMP/aci-rehearsal" QUILL_AZURE_BUNDLE_VERSION="$BUNDLE_VERSION" \\',
+            "  bash ./tools/deploy-azure-aci.sh audit",
+            'echo "## Azure gateway rollout rehearsal: release \\`$RELEASE_SHA\\` built, rendered, measured and audited; '
+            'nothing reserved or replaced." >> "$GITHUB_STEP_SUMMARY"',
+        ])
+        # The phases above are the ones deploy-azure-aci.sh runs without the
+        # reservation; the guarded ones are named in its own dispatch.
+        script = (ROOT / "tools/deploy-azure-aci.sh").read_text()
+        guarded = re.search(r"^    ([a-z|-]+)\)\n      if \[ \"\$APPLY\" = \"1\" \]; then\n        source [^\n]*cloud-rollout-guard\.sh", script, flags=re.M)
+        self.assertIsNotNone(guarded)
+        self.assertEqual(set(guarded.group(1).split("|")), {"all", "bind", "deploy", "narrow", "narrow-live", "rollback"})
+        self.assertFalse({"preflight", "build", "template", "policy", "audit"} & set(guarded.group(1).split("|")))
+        # The peer check belongs to a rollout: a rehearsal may run while a region is drained.
+        peer = next(s for s in jobs["preflight"]["steps"] if "peer-check" in s.get("run", ""))
+        self.assertEqual(peer["if"], "${{ !inputs.rehearse }}")
 
     def test_only_the_azure_rollout_declares_its_identity_environment(self):
         for path in sorted((ROOT / ".github/workflows").glob("*.y*ml")):

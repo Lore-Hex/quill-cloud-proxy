@@ -177,6 +177,24 @@ any failure leaves the reservation blocked. Its identity is the user-assigned
 managed identity in `tools/azure-gateway-rollout-identity/` (GitHub environment
 `azure-gateway-rollout`, main only).
 
+Rehearse first when the workflow's steps have not run on a runner since they
+last changed. A rehearsal proves what only a runner and the rollout identity
+can prove (the registry build, the confidential-computing policy generation and
+the key read) without a reservation or a drain:
+
+~~~bash
+gh workflow run rollout-azure-gateway.yml --repo Lore-Hex/quill-cloud-proxy --ref main -f release_sha=<full sha> -f rehearse=true
+~~~
+
+It leaves one unused image tag and its build record in the registry. It also
+ends red when the audit finds a bind window still open or a running workload
+the key no longer authorizes; that is a finding about the region, not about the
+rehearsal. Rehearsals and rollouts share one concurrency group: a run waits for
+the one in progress, and a second waiting run replaces the first waiting one, so
+do not queue a rehearsal behind a rollout that has not started.
+
+Then the rollout:
+
 ~~~bash
 gh workflow run rollout-azure-gateway.yml --repo Lore-Hex/quill-cloud-proxy --ref main -f release_sha=<full sha>
 ~~~
