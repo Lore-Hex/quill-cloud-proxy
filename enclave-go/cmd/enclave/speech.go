@@ -70,17 +70,21 @@ func serveSpeech(ctx context.Context, conn io.Writer, raw []byte, gateway *trust
 		writeGatewayAuthorizationError(conn, err)
 		return
 	}
-	if authorization.IdempotentReplay {
+	if authorization.IdempotentReplay && !authorization.OwnReplay() {
 		// Audio is never stored. Do not regenerate (or refund another active
 		// request) when replaying an authorization whose response was lost.
+		// This request's own authorize handed back to its own retry is not
+		// that case: nothing has run for it, and it is served below.
 		writeOpenAIError(conn, 409, "This speech idempotency key was already used; audio responses are not retained", "invalid_request_error", "speech_not_replayable", "")
 		return
 	}
+	// An exit that neither settled nor refunded the hold is refunded on the way out.
+	defer refundUnclosedHold(ctx, gateway, authorization, "audio.speech", started, nil)
 	refund := func(status int, reason string) {
 		// A disconnected client must not cancel the credit release.
 		refundCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 15*time.Second)
 		defer cancel()
-		_ = gateway.Refund(refundCtx, authorization, status, reason, time.Since(started).Seconds(), nil)
+		refundHold(refundCtx, gateway, authorization, status, reason, time.Since(started).Seconds(), nil)
 	}
 	if authorization.Model != req.Model || authorization.Provider != spec.Provider || authorization.UsageType != "Credits" || authorization.UpstreamModel != spec.Upstream {
 		refund(502, "speech_catalog_mismatch")

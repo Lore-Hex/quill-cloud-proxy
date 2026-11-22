@@ -304,8 +304,9 @@ func telluvianModelNames(name string) []string {
 }
 
 // Admission and finalization are the same durable operations used by every
-// generation. The selector never runs on a replayed admission, since its own
-// API has no idempotency guarantee. Do not retry ambiguous selector failures.
+// generation. The selector never runs on another request's replayed admission,
+// since its own API has no idempotency guarantee. Do not retry ambiguous
+// selector failures.
 func preparePolyphemus(ctx context.Context, req *types.OpenAIChatRequest, gateway polyphemusGateway, selector modelSelector, bearer, requestLogID string) (context.Context, error) {
 	if err := validatePolyphemus(req, "responses"); err != nil {
 		return ctx, err
@@ -375,9 +376,11 @@ func preparePolyphemus(ctx context.Context, req *types.OpenAIChatRequest, gatewa
 	if err != nil {
 		return ctx, err
 	}
-	if auth.IdempotentReplay {
+	if auth.IdempotentReplay && !auth.OwnReplay() {
 		return ctx, polyphemusError(409, "Polyphemus request already admitted; use a new idempotency key for a new request")
 	}
+	// An admission replayed to this request's own retry (OwnReplay) is this
+	// request's hold and the selector has not run for it: carry on.
 	if auth.Model != polyphemusModel || auth.Provider != "telluvian" || !strings.EqualFold(auth.UsageType, "credits") {
 		_ = gateway.Refund(ctx, auth, 502, "routing_integrity_error", 0, req.Metadata)
 		return ctx, polyphemusError(502, "Polyphemus selection routing integrity check failed")

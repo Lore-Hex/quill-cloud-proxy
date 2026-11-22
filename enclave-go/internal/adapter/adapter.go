@@ -42,6 +42,34 @@ func (e *AdapterError) Error() string {
 	return fmt.Sprintf("adapter: %s (status %d)", e.Message, e.Status)
 }
 
+// NormalizeChatRoles rewrites a chat request's "developer" messages to
+// "system". "developer" is the role newer OpenAI clients send in place of
+// "system"; ResponsesToChat maps it the same way for /v1/responses input.
+//
+// The chat completions parse calls this once, before anything reads the
+// roles, so for a request that came through that parse every later stage sees
+// the role it already handles: ToAnthropic, the provider translations that
+// read req.Messages directly, the orchestration handlers that rebuild the
+// message list, and cache affinity. A developer message then behaves exactly
+// as the same message sent as system: hoisted into the system prompt wherever
+// it sits, joined with the others in order, and refused under the same
+// conditions. Any other unknown role is left alone and is still refused by
+// ToAnthropic.
+//
+// Two paths read a chat body without that parse and are not covered. The
+// speculation serializer (internal/speculation) decodes the original body
+// itself and calls ToAnthropic, which still refuses "developer": such a
+// request is not speculated and is served on the ordinary path. Native batch
+// (cmd/enclave/batch_native_authorizer.go, internal/batch) forwards each item's
+// body to the provider as the client wrote it, roles included.
+func NormalizeChatRoles(messages []types.OpenAIChatMessage) {
+	for i := range messages {
+		if messages[i].Role == "developer" {
+			messages[i].Role = "system"
+		}
+	}
+}
+
 // ToAnthropic translates an OpenAI request into an Anthropic Messages body.
 func ToAnthropic(req *types.OpenAIChatRequest, defaultModel string) (*types.AnthropicMessagesRequest, error) {
 	if err := RejectUnsupportedN(req); err != nil {

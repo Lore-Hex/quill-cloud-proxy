@@ -1401,6 +1401,32 @@ func serveOneRequest(
 		return
 	}
 
+	// Translate before authorizing. Whether the request translates depends only
+	// on what the client sent (roles, tools, tool_choice, an empty conversation),
+	// never on the route the control plane picks, so a request that cannot be
+	// translated is answered here and no credit is ever held for it. This used to
+	// be found out after the authorize, and that exit sent no refund: each retry
+	// of the same malformed request stranded another hold until expiry.
+	//
+	// The order of errors changes with it: a request that is both malformed and
+	// from a caller the control plane would refuse (unknown key, no credit, over
+	// a limit) now gets this 400 instead of the 401, 402 or 429, as a request
+	// with invalid JSON or an unknown parameter always has.
+	//
+	// It covers the plain chat and responses path only. Polyphemus selection and
+	// the orchestration handlers above run first, authorize their own calls and
+	// translate after: a request like this one costs them an authorize and a
+	// refund per call, never a stranded hold.
+	if _, err := adapter.ToAnthropic(&req, "claude-opus-4-7"); err != nil {
+		var aerr *adapter.AdapterError
+		if asAdapterErr(err, &aerr) {
+			writeError(conn, aerr.Status, aerr.Message)
+			return
+		}
+		writeError(conn, 500, "adapter error")
+		return
+	}
+
 	var authorization *trustedrouter.Authorization
 	var invokeOptions []llm.InvokeOptions
 	requestStarted := time.Now()
@@ -1408,6 +1434,12 @@ func serveOneRequest(
 	var spendLeaseReserveRequest *types.OpenAIChatRequest
 	var routeMemoryKey string
 	var routeDemand providerRouteDemand
+	// From here an exit that neither settled nor refunded the hold is refunded
+	// on the way out. It reads authorization at exit, so it covers the hold the
+	// spend-lease reserve returns as well.
+	defer func() {
+		refundUnclosedHold(ctx, trGateway, authorization, routeType, requestStarted, req.Metadata)
+	}()
 	if trEnabled {
 		// Before any hold: refuse when every provider this credential and
 		// routing policy was last authorized for has an open circuit.
@@ -1454,8 +1486,8 @@ func serveOneRequest(
 			if spendLeasePlan != nil {
 				spendLeasePlan.Cancel()
 			} else {
-				_ = trGateway.Refund(
-					ctx, authorization, 502, "routing_integrity_error",
+				refundHold(
+					ctx, trGateway, authorization, 502, "routing_integrity_error",
 					time.Since(requestStarted).Seconds(), req.Metadata,
 				)
 			}
@@ -1474,7 +1506,7 @@ func serveOneRequest(
 			if spendLeasePlan != nil {
 				spendLeasePlan.Cancel()
 			} else {
-				_ = trGateway.Refund(ctx, authorization, 502, "byok_secret_error", time.Since(requestStarted).Seconds(), req.Metadata)
+				refundHold(ctx, trGateway, authorization, 502, "byok_secret_error", time.Since(requestStarted).Seconds(), req.Metadata)
 			}
 			writeError(conn, 502, "BYOK provider key unavailable")
 			return
@@ -1486,13 +1518,21 @@ func serveOneRequest(
 			req.Model = authorization.Model
 		}
 	}
+	// The same translation passed before the authorize, so this cannot fail on
+	// the client's input. It still closes the hold if it ever does.
 	anthropicReq, err := adapter.ToAnthropic(&req, "claude-opus-4-7")
 	if err != nil {
-		if spendLeasePlan != nil {
-			spendLeasePlan.Cancel()
-		}
+		status := 500
 		var aerr *adapter.AdapterError
 		if asAdapterErr(err, &aerr) {
+			status = aerr.Status
+		}
+		if spendLeasePlan != nil {
+			spendLeasePlan.Cancel()
+		} else if trEnabled {
+			refundHold(ctx, trGateway, authorization, status, "adapter_error", time.Since(requestStarted).Seconds(), req.Metadata)
+		}
+		if aerr != nil {
 			writeError(conn, aerr.Status, aerr.Message)
 			return
 		}
@@ -1519,13 +1559,13 @@ func serveOneRequest(
 			req = *spendLeaseReserveRequest
 			requestIdentity.bindAuthorization(authorization)
 			if err := validateAuthorizationRouting(&req, authorization); err != nil {
-				_ = trGateway.Refund(ctx, authorization, 502, "routing_integrity_error", time.Since(requestStarted).Seconds(), req.Metadata)
+				refundHold(ctx, trGateway, authorization, 502, "routing_integrity_error", time.Since(requestStarted).Seconds(), req.Metadata)
 				writeErrorWithSourceHeaders(conn, 502, "routing integrity check failed", "router", nil)
 				return
 			}
 			invokeOptions, err = invokeOptionsForAuthorization(ctx, byokSecrets, authorization)
 			if err != nil {
-				_ = trGateway.Refund(ctx, authorization, 502, "byok_secret_error", time.Since(requestStarted).Seconds(), req.Metadata)
+				refundHold(ctx, trGateway, authorization, 502, "byok_secret_error", time.Since(requestStarted).Seconds(), req.Metadata)
 				writeError(conn, 502, "BYOK provider key unavailable")
 				return
 			}
@@ -1537,7 +1577,7 @@ func serveOneRequest(
 			}
 			anthropicReq, err = adapter.ToAnthropic(&req, "claude-opus-4-7")
 			if err != nil {
-				_ = trGateway.Refund(ctx, authorization, 400, "adapter_error", time.Since(requestStarted).Seconds(), req.Metadata)
+				refundHold(ctx, trGateway, authorization, 400, "adapter_error", time.Since(requestStarted).Seconds(), req.Metadata)
 				writeError(conn, 400, "adapter error")
 				return
 			}
@@ -1546,7 +1586,7 @@ func serveOneRequest(
 			requestIdentity.bindAuthorization(authorization)
 			if err := validateAuthorizationRouting(&req, authorization); err != nil {
 				speculative.abort(err)
-				_ = trGateway.Refund(ctx, authorization, 502, "routing_integrity_error", time.Since(requestStarted).Seconds(), req.Metadata)
+				refundHold(ctx, trGateway, authorization, 502, "routing_integrity_error", time.Since(requestStarted).Seconds(), req.Metadata)
 				writeErrorWithSourceHeaders(conn, 502, "routing integrity check failed", "router", nil)
 				return
 			}
@@ -1556,7 +1596,7 @@ func serveOneRequest(
 			if marked {
 				speculative.abort(errors.New("request metadata unavailable"))
 			}
-			_ = trGateway.Refund(ctx, authorization, 503, "request_metadata_unavailable", time.Since(requestStarted).Seconds(), req.Metadata)
+			refundHold(ctx, trGateway, authorization, 503, "request_metadata_unavailable", time.Since(requestStarted).Seconds(), req.Metadata)
 			writeGatewayAuthorizationError(conn, &trustedrouter.ControlPlaneError{
 				Path: "/internal/gateway/authorize", StatusCode: 503, Type: "request_metadata_unavailable",
 				Message: "request tagging is not available on the active control plane",
@@ -1673,6 +1713,7 @@ func parseChatRequest(body []byte) (*types.OpenAIChatRequest, error) {
 		req.Reasoning = validation.ReasoningAlias
 		req.ReasoningEffort = ""
 	}
+	adapter.NormalizeChatRoles(req.Messages)
 	types.RecoverToolCallNames(req.Messages)
 	adapter.ConfigureReasoningVisibility(&req, validation.ExcludeReasoning)
 	if err := adapter.ConfigureChatWebSearch(&req); err != nil {
@@ -1819,7 +1860,7 @@ func serveResponsesNonStreaming(
 		// Surface the real upstream status+message instead of an opaque 502.
 		status, _ := upstreamErrorResponse(err)
 		if trGateway != nil && trGateway.Enabled() {
-			_ = trGateway.Refund(ctx, authorization, status, failureReason(err), time.Since(requestStarted).Seconds(), req.Metadata)
+			refundHold(ctx, trGateway, authorization, status, failureReason(err), time.Since(requestStarted).Seconds(), req.Metadata)
 		}
 		writeUpstreamError(conn, "responses", err, authorization)
 		return
@@ -1830,13 +1871,13 @@ func serveResponsesNonStreaming(
 			if asAdapterErr(err, &aerr) {
 				fmt.Fprintf(os.Stderr, "enclave.responses_structured_output_failed model=%q context=%q\n", req.Model, aerr.Context)
 				if trGateway != nil && trGateway.Enabled() {
-					_ = trGateway.Refund(ctx, authorization, aerr.Status, "provider_structured_output_error", time.Since(requestStarted).Seconds(), req.Metadata)
+					refundHold(ctx, trGateway, authorization, aerr.Status, "provider_structured_output_error", time.Since(requestStarted).Seconds(), req.Metadata)
 				}
 				writeAdapterOpenAIError(conn, aerr)
 				return
 			}
 			if trGateway != nil && trGateway.Enabled() {
-				_ = trGateway.Refund(ctx, authorization, 502, "provider_structured_output_error", time.Since(requestStarted).Seconds(), req.Metadata)
+				refundHold(ctx, trGateway, authorization, 502, "provider_structured_output_error", time.Since(requestStarted).Seconds(), req.Metadata)
 			}
 			writeSpentProviderError(conn, 502, "provider structured output error")
 			return
@@ -1876,6 +1917,8 @@ func serveResponsesNonStreaming(
 	}
 	var body bytes.Buffer
 	if err := adapter.WriteResponsesResponse(&body, requestID, responseModel, result.Text, result.ToolCalls, result.FinishReason, inputTokens, outputTokens, result.Usage, time.Now().Unix(), responseTextConfig(req), req.Response); err != nil {
+		// Nothing is delivered and nothing has been settled: close the hold.
+		refundHold(ctx, trGateway, authorization, 500, "response_encoding_error", time.Since(requestStarted).Seconds(), req.Metadata)
 		writeSpentError(conn, 500, "responses encoding error")
 		return
 	}
@@ -1959,7 +2002,7 @@ func serveChatNonStreaming(
 		// path. upstreamErrorResponse falls back to 502 if it can't classify.
 		status, _ := upstreamErrorResponse(err)
 		if trGateway != nil && trGateway.Enabled() {
-			_ = trGateway.Refund(ctx, authorization, status, failureReason(err), time.Since(requestStarted).Seconds(), req.Metadata)
+			refundHold(ctx, trGateway, authorization, status, failureReason(err), time.Since(requestStarted).Seconds(), req.Metadata)
 		}
 		writeUpstreamError(conn, "chat.completions", err, authorization)
 		return
@@ -1984,6 +2027,8 @@ func serveChatNonStreaming(
 		result.ToolCalls, inputTokens, outputTokens, result.Usage, time.Now().Unix(),
 		result.FinishReason, result.Citations, result.SearchResults, result.Decision,
 	); err != nil {
+		// Nothing is delivered and nothing has been settled: close the hold.
+		refundHold(ctx, trGateway, authorization, 500, "response_encoding_error", time.Since(requestStarted).Seconds(), req.Metadata)
 		writeSpentError(conn, 500, "chat completion encoding error")
 		return
 	}
@@ -2641,6 +2686,10 @@ func serveMessages(
 	trEnabled := trGateway != nil && trGateway.Enabled()
 	var authorization *trustedrouter.Authorization
 	var invokeOptions []llm.InvokeOptions
+	// An exit that neither settled nor refunded the hold is refunded on the way out.
+	defer func() {
+		refundUnclosedHold(ctx, trGateway, authorization, "messages", requestStarted, req.Metadata)
+	}()
 	if trEnabled {
 		routeMemoryKey := providerRouteMemoryKey(ctx, bearer, "messages", req)
 		routeDemand := providerRouteDemandFor(req)
@@ -2654,7 +2703,7 @@ func serveMessages(
 		}
 		invokeOptions, err = invokeOptionsForAuthorization(ctx, byokSecrets, authorization)
 		if err != nil {
-			_ = trGateway.Refund(ctx, authorization, 502, "byok_secret_error", time.Since(requestStarted).Seconds(), req.Metadata)
+			refundHold(ctx, trGateway, authorization, 502, "byok_secret_error", time.Since(requestStarted).Seconds(), req.Metadata)
 			writeAnthropicError(conn, 502, "BYOK provider key unavailable")
 			return
 		}
@@ -2678,7 +2727,7 @@ func serveMessages(
 			fmt.Fprintf(os.Stderr, "enclave.messages_collect_failed model=%q err=%v\n", req.Model, errorClass(err))
 			status, _ := upstreamErrorResponse(err)
 			if trEnabled {
-				_ = trGateway.Refund(ctx, authorization, status, failureReason(err), time.Since(requestStarted).Seconds(), req.Metadata)
+				refundHold(ctx, trGateway, authorization, status, failureReason(err), time.Since(requestStarted).Seconds(), req.Metadata)
 			}
 			writeUpstreamError(conn, "messages", err, authorization)
 			return
@@ -2699,6 +2748,8 @@ func serveMessages(
 		responseModel := authorizationResponseModel(req.Model, authorization)
 		var envelope bytes.Buffer
 		if err := adapter.WriteMessagesResponse(&envelope, messageID, responseModel, result, inputTokens, outputTokens); err != nil {
+			// Nothing is delivered and nothing has been settled: close the hold.
+			refundHold(ctx, trGateway, authorization, 500, "response_encoding_error", time.Since(requestStarted).Seconds(), req.Metadata)
 			writeAnthropicError(conn, 500, "messages encoding error")
 			return
 		}
@@ -2757,13 +2808,16 @@ func serveMessages(
 		_ = pr.Close()
 		status, _ := upstreamErrorResponse(providerErr)
 		if trEnabled {
-			_ = trGateway.Refund(ctx, authorization, status, failureReason(providerErr), time.Since(requestStarted).Seconds(), req.Metadata)
+			refundHold(ctx, trGateway, authorization, status, failureReason(providerErr), time.Since(requestStarted).Seconds(), req.Metadata)
 		}
 		writeUpstreamError(conn, "messages", providerErr, authorization)
 		return
 	}
 	if headErr != nil {
+		// The client went away before the stream head was written. No output
+		// was delivered, so the hold is refunded, as the chat stream does.
 		_ = pr.Close()
+		refundHold(ctx, trGateway, authorization, 499, "client_write_failed", time.Since(requestStarted).Seconds(), req.Metadata)
 		return
 	}
 	chunkW := newChunkedWriter(conn)
@@ -2828,7 +2882,7 @@ func serveMessages(
 		fmt.Fprintf(os.Stderr, "enclave.messages_relay_failed model=%q err=%v\n", req.Model, errorClass(err))
 		status, _ := upstreamErrorResponse(err)
 		if trEnabled && !settledBeforeTerminal {
-			_ = trGateway.Refund(ctx, authorization, status, failureReason(err), time.Since(requestStarted).Seconds(), req.Metadata)
+			refundHold(ctx, trGateway, authorization, status, failureReason(err), time.Since(requestStarted).Seconds(), req.Metadata)
 		}
 		if writeErr := writeStreamingProviderError(statsW, "messages", messageID, responseModel, err, hidesPublicRouteMetadata(authorization)); writeErr == nil {
 			_ = chunkW.Complete()

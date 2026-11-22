@@ -132,10 +132,10 @@ func headerLenienceAllowed(ctx context.Context, gateway *trustedrouter.Client, b
 // opted in, so requests that already pass pay nothing. It returns the body
 // that parsed; later stages that re-read the body must use it.
 //
-// later, when set, runs checks a later stage applies to a parsed request
-// (after authorization). A droppable failure there is handled here for a
-// lenient request, before any credit is held; for a strict request it is left
-// to that stage, which reports it as it always has.
+// later, when set, runs checks a later stage (the translation) applies to a
+// parsed request. A droppable failure there is handled here for a lenient
+// request, before any credit is held; for a strict request it is left to that
+// stage, which reports it as it always has.
 func parseWithLenience[T any](
 	ctx context.Context,
 	log io.Writer,
@@ -179,7 +179,7 @@ func parseWithLenience[T any](
 			}
 		} else if _, lenient, _ := lookupKeyLenience(ctx, gateway, bearer, route, nil, body); !lenient {
 			// No refusal is attached: a strict key gets the later stage's
-			// answer, after authorization, exactly as before.
+			// answer, exactly as before.
 			return result, body, nil
 		}
 		return finishLenientParse(log, statsConn, route, requestLogID, body, withLater)
@@ -229,12 +229,12 @@ func finishLenientParse[T any](
 	return lenientResult, parsedBody, nil
 }
 
-// laterChatChecks mirrors what adapter.ToAnthropic refuses after
-// authorization that the parse does not: a tool_choice object that is not a
-// function. It reads the parsed request, after web search normalization
-// turned a hosted search choice into the gateway's own function. Unsupported
-// tools are already refused by the parse, by index. TrustedRouter
-// orchestration choices, which their handlers consume first, pass.
+// laterChatChecks mirrors what adapter.ToAnthropic refuses that the parse
+// does not: a tool_choice object that is not a function. It reads the parsed
+// request, after web search normalization turned a hosted search choice into
+// the gateway's own function. Unsupported tools are already refused by the
+// parse, by index. TrustedRouter orchestration choices, which their handlers
+// consume first, pass.
 func laterChatChecks(req *types.OpenAIChatRequest) error {
 	if req == nil {
 		return nil

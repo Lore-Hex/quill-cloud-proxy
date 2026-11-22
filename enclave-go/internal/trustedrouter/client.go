@@ -631,6 +631,7 @@ type Authorization struct {
 	// Wire metadata alone cannot activate async behavior. async is bound only
 	// after enclave opt-in; preserve raw snapshot bytes for canonical hashing.
 	async                                 *asyncAuthorization
+	hold                                  *holdState
 	shadowSettlement                      *shadowAuthorization
 	shadowBindingPresent                  bool
 	BillingShadowPolicy                   json.RawMessage       `json:"-"`
@@ -1035,6 +1036,7 @@ func (c *Client) AuthorizeWithRoute(ctx context.Context, bearer string, req *qty
 		return nil, err
 	}
 	c.afterCredentialCheck(ctx, lookupHash, nil)
+	decoded.trackHold()
 	decoded.pinControlPlaneEndpoint(controlPlaneEndpoint)
 	decoded.cacheAffinityKey, decoded.cacheAffinityExplicit = cacheAffinity(lookupHash, req, routeType)
 	decoded.RouteType = routeType
@@ -1206,6 +1208,7 @@ func (c *Client) authorizeEmbeddingsWithRoute(ctx context.Context, bearer string
 		return nil, err
 	}
 	c.afterCredentialCheck(ctx, lookupHash, nil)
+	decoded.trackHold()
 	decoded.pinControlPlaneEndpoint(controlPlaneEndpoint)
 	decoded.RouteType = routeType
 	if negotiate {
@@ -1272,6 +1275,7 @@ func (c *Client) Settle(ctx context.Context, auth *Authorization, usage Usage) (
 	if auth == nil {
 		return nil, fmt.Errorf("trustedrouter: nil authorization")
 	}
+	auth.noteTerminalAttempt()
 	if c.AsyncSettlementNegotiated(auth) {
 		// Async, snapshot sync and any final legacy recovery share one budget.
 		var cancel context.CancelFunc
@@ -1452,6 +1456,7 @@ func (c *Client) refundDetailed(
 	if auth == nil {
 		return &SettleResult{}, nil
 	}
+	auth.noteTerminalAttempt()
 	ctx = c.withShadowHeader(ctx, auth, Usage{}, "refund")
 	if ctx == nil {
 		ctx = context.Background()

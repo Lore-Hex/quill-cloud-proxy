@@ -252,6 +252,7 @@ func (c *Client) ReserveSpendLeaseAdmission(
 		return nil, false, err
 	}
 	c.afterCredentialCheck(ctx, plan.lookupHash, nil)
+	decoded.trackHold()
 	decoded.pinControlPlaneEndpoint(endpoint)
 	decoded.RouteType = plan.routeType
 	marker := decoded.SpendLeaseAdmission

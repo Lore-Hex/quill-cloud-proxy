@@ -78,8 +78,9 @@ func refundPartnerTopLevel(
 	if status < 400 {
 		status = 502
 	}
-	_ = trGateway.Refund(
+	refundHold(
 		ctx,
+		trGateway,
 		auth,
 		status,
 		"partner_orchestration_error",

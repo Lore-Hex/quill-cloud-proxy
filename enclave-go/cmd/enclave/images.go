@@ -199,6 +199,8 @@ func serveImages(
 		writeGatewayAuthorizationError(conn, err)
 		return
 	}
+	// An exit that neither settled nor refunded the hold is refunded on the way out.
+	defer refundUnclosedHold(ctx, trGateway, authorization, "images", started, req.Metadata)
 	invokeOptions, err := invokeOptionsForAuthorization(ctx, secretCache, authorization)
 	if err != nil || len(invokeOptions) == 0 {
 		refundImageGeneration(ctx, trGateway, authorization, 502, "byok_secret_error", started, req.Metadata)
@@ -495,5 +497,5 @@ func refundImageGeneration(
 	}
 	refundCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 10*time.Second)
 	defer cancel()
-	_ = client.Refund(refundCtx, authorization, status, errorType, time.Since(started).Seconds(), metadata)
+	refundHold(refundCtx, client, authorization, status, errorType, time.Since(started).Seconds(), metadata)
 }
