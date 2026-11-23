@@ -81,8 +81,11 @@ rollout role on a runner, in a session as long as a rollout's, it:
 
 - authenticates the release's manifest and exchanges a Google token;
 - asks GitHub whether the trust token may open a pull request, with a branch
-  that does not exist, so nothing is opened (the Azure rollout uses the same
-  token and helper);
+  that does not exist, so nothing is opened, and reads a merged pull
+  request's required checks and the signing workflows' runs with it, as the
+  trust PR helper will (the Azure rollout uses the same token and helper).
+  The job's own token, which may not open pull requests, is asked first and
+  must be refused, which shows the question can tell the two apart;
 - checks the published set, the runtime pins and the live endpoint as they
   stand;
 - verifies every serving member in Paris and then Dublin over SSM against

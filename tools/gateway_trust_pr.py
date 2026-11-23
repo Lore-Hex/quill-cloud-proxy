@@ -15,8 +15,12 @@ before the plane's signing workflow does.
     wait-signed      wait for the plane's signing workflow run on a commit at
                      or after the merge to succeed.
     probe-token      for a rehearsal: ask GitHub whether the token may open a
-                     pull request and read the signing workflow's runs,
-                     without opening anything.
+                     pull request, read a pull request's checks as
+                     open-and-merge does, and read the signing workflow's
+                     runs, without opening anything. With --expect-refusal
+                     the same request must be refused: run with a token that
+                     lacks the permission, it shows the question can tell
+                     the two apart.
 
 Nothing here reads a secret value; GH_TOKEN comes from the environment.
 """
@@ -170,15 +174,24 @@ def open_and_merge(plane: str, branch: str, title: str, body: str, timeout: int)
     raise SystemExit(f"PR #{number} did not merge within {timeout}s")
 
 
-def probe_token() -> None:
+def probe_token(expect_refusal: bool = False) -> None:
     """Whether GH_TOKEN may open a pull request here, without opening one.
 
     The request names a head branch that does not exist. GitHub decides whether
     the caller may open pull requests before it looks at the branch, so a
     permitted token is refused with 422 for the head field, and a token without
     the permission with 403 or 404. Neither answer leaves anything behind.
-    Pushing the branch and merging use the write access the GCP release
-    workflow already exercises with this token; they are not asked about here.
+
+    That order is GitHub's behaviour, not its documentation, so the rehearsal
+    also asks with a token known to lack the permission (expect_refusal) and
+    requires the 403 or 404: if GitHub ever looked at the branch first, that
+    token would be answered 422 too and this probe would tell nothing.
+
+    A permitted token is then held to the reads open-and-merge depends on: a
+    pull request's state with the required checks in its rollup, and the
+    signing workflows' runs. Pushing the branch and merging use the write
+    access the GCP release workflow already exercises with this token; they
+    are not asked about here.
     """
     head = "bot/no-such-branch-" + os.urandom(8).hex()
     answer = subprocess.run(
@@ -190,16 +203,39 @@ def probe_token() -> None:
     code = status.group(1) if status else "no answer"
     if code.startswith("2"):
         raise SystemExit(f"the probe opened a pull request from {head}; close it and report this")
+    if expect_refusal:
+        if code not in {"403", "404"}:
+            raise SystemExit(f"a token without pull request write was answered HTTP {code}, not refused; "
+                             "the probe cannot tell a permitted token from this one")
+        print(f"a token without pull request write is refused the request (HTTP {code}); nothing was opened")
+        return
     if code != "422" or '"field":"head"' not in (answer.stdout or "").replace(" ", ""):
         raise SystemExit(f"the token may not open a pull request on {REPO} (HTTP {code}); "
                          "it needs Pull requests: write there")
+    # open-and-merge reads the pull request it opened, and merges only once
+    # the required checks show in that reading. Any merged pull request has them.
+    merged = subprocess.run(
+        ["gh", "pr", "list", "--repo", REPO, "--state", "merged", "--limit", "1", "--json", "number"],
+        check=False, text=True, capture_output=True, timeout=120)
+    try:
+        number = int(json.loads(merged.stdout)[0]["number"]) if merged.returncode == 0 else 0
+        state = pr_state(number) if number else {}
+    except (ValueError, KeyError, IndexError, TypeError, subprocess.SubprocessError):
+        state = {}
+    names = {check.get("name") or check.get("context") for check in state.get("statusCheckRollup") or []}
+    missing = [name for name in REQUIRED_CHECKS if name not in names]
+    if state.get("state") != "MERGED" or missing:
+        raise SystemExit(f"the token cannot read a pull request's state with its required checks on {REPO} "
+                         f"(not seen: {', '.join(missing) or 'the pull request'}); open-and-merge would wait for "
+                         "them until it timed out")
     for workflow in sorted(set(SIGNER.values())):
         listed = subprocess.run(
             ["gh", "run", "list", "--repo", REPO, "--workflow", workflow, "--limit", "1", "--json", "databaseId"],
             check=False, text=True, capture_output=True, timeout=120)
         if listed.returncode != 0:
             raise SystemExit(f"the token may not read {workflow} runs on {REPO}; it needs Actions: read there")
-    print("the token may open a pull request and read the signing workflows' runs; nothing was opened")
+    print("the token may open a pull request, read a pull request's required checks and read the signing "
+          "workflows' runs; nothing was opened")
 
 
 def contains(descendant: str, ancestor: str) -> bool:
@@ -289,7 +325,8 @@ def main() -> None:
     public.add_argument("--plane", choices=sorted(PLANE_PATHS), required=True)
     public.add_argument("--record", type=Path, required=True)
     public.add_argument("--timeout", type=int, default=1800)
-    sub.add_parser("probe-token")
+    probe = sub.add_parser("probe-token")
+    probe.add_argument("--expect-refusal", action="store_true")
     args = parser.parse_args()
     if args.command == "wait-public":
         wait_public(args.plane, args.record, args.timeout)
@@ -297,7 +334,7 @@ def main() -> None:
     if not os.environ.get("GH_TOKEN"):
         raise SystemExit("GH_TOKEN is required")
     if args.command == "probe-token":
-        probe_token()
+        probe_token(args.expect_refusal)
     elif args.command == "open-and-merge":
         print(open_and_merge(args.plane, args.branch, args.title, args.body_file.read_text(), args.timeout))
     else:

@@ -145,7 +145,9 @@ jobs:
   # candidate, refresh and repin steps. A missing permission or tool then
   # shows before a reservation exists rather than after a region changed.
   # One step holds the trust token, to ask whether it may open a pull request
-  # (it asks with a branch that does not exist; nothing is opened).
+  # (it asks with a branch that does not exist; nothing is opened) and read
+  # what the trust PR helper reads. The step before it asks the same with
+  # this job's own token, which may not, and requires the refusal.
   # Not covered: the two key policy reads (the kms-widen wait retries those
   # for kms_wait_minutes), the journal, the trust token's branch push and
   # merge, and every call that writes.
@@ -193,6 +195,10 @@ jobs:
           session-manager-plugin --version
           gcloud auth print-access-token > /dev/null
           python3 tools/aws_gateway_rollout.py fetch-release --source "$RELEASE_SHA" --out "$RUNNER_TEMP/release"
+      - name: "Rehearsal: a token without pull request write is refused the same request"
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: python3 tools/gateway_trust_pr.py probe-token --expect-refusal
       - name: "Rehearsal: the trust token may open a pull request (none is opened)"
         env:
           GH_TOKEN: ${{ secrets.TRUST_PUSH_TOKEN }}
@@ -248,7 +254,7 @@ jobs:
           for region in eu-west-3 eu-west-1; do
             python3 tools/aws_gateway_rollout.py rehearse-reads --region "$region" --serving "$RUNNER_TEMP/serving-$region.json"
           done
-          echo "## AWS gateway rollout rehearsal: release \`$RELEASE_SHA\` authenticated; the published state, both serving fleets, the template generator's lookups and the candidate, refresh and repin reads all passed with the rollout role. The trust token may open a pull request. Nothing reserved or written. Not covered: the key policy reads, the journal, the trust token's branch push and merge, and every write." >> "$GITHUB_STEP_SUMMARY"
+          echo "## AWS gateway rollout rehearsal: release \`$RELEASE_SHA\` authenticated; the published state, both serving fleets, the template generator's lookups and the candidate, refresh and repin reads all passed with the rollout role. The trust token may open a pull request and read its checks. Nothing reserved or written. Not covered: the key policy reads, the journal, the trust token's branch push and merge, and every write." >> "$GITHUB_STEP_SUMMARY"
 
   admit-cloud:
     needs: preflight
