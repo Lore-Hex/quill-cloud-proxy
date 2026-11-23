@@ -151,7 +151,7 @@ jobs:
     needs: preflight
     if: ${{ inputs.rehearse }}
     runs-on: ubuntu-latest
-    timeout-minutes: 60
+    timeout-minutes: 100
     permissions:
       contents: read
       id-token: write
@@ -191,8 +191,20 @@ jobs:
           session-manager-plugin --version
           gcloud auth print-access-token > /dev/null
           python3 tools/aws_gateway_rollout.py fetch-release --source "$RELEASE_SHA" --out "$RUNNER_TEMP/release"
+      # A rehearsal holds no reservation, so a router deploy may be moving
+      # the two control plane services from one release to the next while it
+      # runs, and this check refuses them until both serve one release again.
+      # A router deploy's AWS step takes some minutes: wait for it, bounded.
       - name: "Rehearsal: published set, runtime pins and live endpoint as they stand"
-        run: bash tools/release-aws-enclave.sh --verify-only
+        run: |
+          set -euo pipefail
+          for attempt in $(seq 1 30); do
+            if bash tools/release-aws-enclave.sh --verify-only; then exit 0; fi
+            echo "The published-state check did not pass (attempt $attempt of 30). If a router deploy is moving the AWS control plane, it passes once that step ends; next attempt in 60 s."
+            sleep 60
+          done
+          echo "::error::the published-state check did not pass in 30 attempts, one minute apart"
+          exit 1
       - name: "Rehearsal: Paris, every serving member verified over SSM"
         run: |
           set -euo pipefail

@@ -98,11 +98,12 @@ Pass the `bundle_version` the fleet reports now: the serving members are
 checked against it, and a mismatch ends the rehearsal red at the first
 region's census.
 
-A rehearsal holds no reservation, so a router deploy can roll the AWS control
-plane services while it runs. Its check of the published set and runtime pins
-refuses a service in the middle of a deployment ("serving pin verification
-failed"); run the rehearsal again once the deploy's AWS step is over. A
-rollout cannot meet this: it holds the AWS reservation that step waits for.
+A rehearsal holds no reservation, so a router deploy can move the two AWS
+control plane services from one release to the next while it runs. Its check
+of the published set and runtime pins refuses them until both serve one
+release again ("serving pin verification failed"), so the rehearsal repeats
+that check once a minute for up to 30 minutes. A rollout cannot meet this: it
+holds the AWS reservation that a router deploy's AWS step waits for.
 
 A red rehearsal is safe to repeat. Rehearsals and rollouts share one
 concurrency group; a rehearsal dispatched during a rollout waits for it, and
