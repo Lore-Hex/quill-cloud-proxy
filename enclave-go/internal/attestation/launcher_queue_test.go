@@ -29,15 +29,30 @@ func TestLauncherQueueBoundsWaitAndAdmission(t *testing.T) {
 	}
 }
 
-func TestLauncherQueueWaitRidesOutSlowIssuanceBeforeClientTimeout(t *testing.T) {
+func TestLauncherQueueWaitCoversSlowIssuanceTail(t *testing.T) {
+	// Google's issuer occasionally takes 8 to 15 s; a waiter queued behind one
+	// such mint must not give up at the old 5 s.
 	if launcherTokens.waitTimeout < 15*time.Second {
-		t.Fatalf("queue wait %s: callers behind one slow (8-15 s) issuance must not fail", launcherTokens.waitTimeout)
-	}
-	if launcherTokens.waitTimeout >= 20*time.Second {
-		t.Fatalf("queue wait %s: must answer before a 20 s client timeout", launcherTokens.waitTimeout)
+		t.Fatalf("queue wait %s is shorter than the slow-issuance tail", launcherTokens.waitTimeout)
 	}
 	if launcherTokens.waitTimeout > launcherTokens.mintTimeout {
 		t.Fatal("waiting must not outlast the mint budget")
+	}
+	if cap(launcherTokens.admitted) != 5 || cap(launcherTokens.active) != 1 {
+		t.Fatal("waiter capacity and issuance concurrency must stay at four and one")
+	}
+}
+
+// waitFor polls cond until it holds or a generous deadline passes, so the test
+// asserts queue state instead of assuming goroutine scheduling.
+func waitFor(t *testing.T, what string, cond func() bool) {
+	t.Helper()
+	deadline := time.Now().Add(10 * time.Second)
+	for !cond() {
+		if time.Now().After(deadline) {
+			t.Fatalf("timed out waiting for %s", what)
+		}
+		time.Sleep(time.Millisecond)
 	}
 }
 
@@ -55,15 +70,21 @@ func TestLauncherWaiterBehindSlowMintSucceedsWithinWait(t *testing.T) {
 		}
 		return append([]byte(nil), body...), nil
 	}
-	q := newTokenQueue(1, 2*time.Second, 5*time.Second)
+	// Generous wait and mint budgets: the test proves a queued caller is
+	// served once the slow mint finishes, not anything about wall-clock speed.
+	q := newTokenQueue(1, 30*time.Second, 30*time.Second)
 	slowDone := make(chan error, 1)
 	go func() { _, err := q.mint(t.Context(), []byte("slow")); slowDone <- err }()
-	for len(q.active) == 0 {
-		time.Sleep(time.Millisecond)
-	}
+	waitFor(t, "the slow mint to hold the launcher", func() bool { return len(q.active) == 1 })
 	waiterDone := make(chan error, 1)
 	go func() { _, err := q.mint(t.Context(), []byte("waiter")); waiterDone <- err }()
-	time.Sleep(300 * time.Millisecond) // the slow mint outlasts a short wait, not this queue's
+	// The waiter holds an admission slot while it waits for the launcher.
+	waitFor(t, "the waiter to be queued", func() bool { return len(q.admitted) == 2 })
+	select {
+	case err := <-waiterDone:
+		t.Fatalf("waiter returned while the launcher was busy: %v", err)
+	default:
+	}
 	close(release)
 	if err := <-slowDone; err != nil {
 		t.Fatalf("slow mint: %v", err)

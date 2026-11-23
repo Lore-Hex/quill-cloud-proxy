@@ -67,9 +67,11 @@ var launcherTokens = newTokenQueue(4, launcherQueueWait, 30*time.Second)
 // launcherQueueWait bounds how long a caller waits for the launcher while
 // another token is being minted. Google's issuer occasionally takes 8 to 15 s
 // in some regions; with a 5 s wait, every caller queued behind one such mint
-// answered 503 even though that mint succeeded. 15 s lets them ride out the
-// tail and still answer (or return the retryable 503) before a 20 s client
-// timeout, such as the synthetic attestation probe's.
+// answered 503 even though that mint succeeded. 15 s lets a waiter ride out
+// most of that tail. It is a best-effort improvement, not a guarantee: the
+// caller's own mint still follows, and consecutive slow mints can exhaust it.
+// Callers bound their total time with their own deadline, which both the wait
+// and the mint honor (public /attestation: attestationResponseBudget).
 const launcherQueueWait = 15 * time.Second
 
 // The launcher serializes issuance and can finish after a caller times out.
