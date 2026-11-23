@@ -543,6 +543,41 @@ def cmd_capture_narrow(args: argparse.Namespace) -> None:
     print(f"narrowed to {args.expected_pcr0} via {member}")
 
 
+def cmd_rehearse_reads(args: argparse.Namespace) -> None:
+    """The reads a rollout makes that recording and verifying the serving fleet
+    do not: those of candidate-version, launch-candidate, verify-instance,
+    refresh, rollback, terminate-candidate and the control plane repin. Each is
+    issued against what is serving now and its result discarded; a refusal
+    names the call. Nothing here writes."""
+    region = require_region(args.region)
+    serving = json.loads(Path(args.serving).read_text())
+    member = serving["instances"][0]
+    if not INSTANCE.fullmatch(member):
+        raise SystemExit("invalid instance id")
+    aws(region, "ec2", "describe-launch-templates", "--launch-template-ids", serving["launch_template_id"])
+    aws(region, "ec2", "describe-instances", "--filters", f"Name=tag:Project,Values={CANDIDATE_PROJECT}",
+        "Name=instance-state-name,Values=pending,running,stopping,stopped")
+    aws(region, "ec2", "describe-instances", "--instance-ids", member)
+    aws(region, "ssm", "describe-instance-information", "--filters", f"Key=InstanceIds,Values={member}")
+    aws(region, "autoscaling", "describe-instance-refreshes", "--auto-scaling-group-name", ASG, "--max-records", "1")
+    # The repin registers a copy of the serving task definition with its tags.
+    # A task definition can hold values that must not reach a log: the reply
+    # is parsed for one field and never printed.
+    sys.path.insert(0, str(ROOT))
+    from tools import aws_fargate_pins
+
+    surfaces = [(cluster, service) for surface, cluster, service in aws_fargate_pins.SURFACES if surface == region]
+    if len(surfaces) != 1:
+        raise SystemExit(f"{region}: expected exactly one control plane service")
+    (cluster, service), = surfaces
+    services = aws(region, "ecs", "describe-services", "--cluster", cluster, "--services", service)["services"]
+    if len(services) != 1:
+        raise SystemExit(f"{region}: control plane service {service} not found")
+    aws(region, "ecs", "describe-task-definition", "--task-definition", services[0]["taskDefinition"],
+        "--include", "TAGS")
+    print(f"{region}: the candidate, refresh and repin reads are allowed")
+
+
 def cmd_wait_kms(args: argparse.Namespace) -> None:
     sys.path.insert(0, str(ROOT))
     from tools import aws_kms_admission
@@ -615,6 +650,8 @@ def main() -> None:
     p = region_cmd("capture-narrow")
     p.add_argument("--source", required=True)
     p.add_argument("--expected-pcr0", required=True)
+    p = region_cmd("rehearse-reads")
+    p.add_argument("--serving", required=True)
     p = sub.add_parser("wait-kms")
     p.add_argument("--accepted", required=True)
     p.add_argument("--timeout", type=int, default=0)

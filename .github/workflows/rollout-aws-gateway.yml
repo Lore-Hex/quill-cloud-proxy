@@ -136,12 +136,16 @@ jobs:
           } >> "$GITHUB_STEP_SUMMARY"
 
   # rehearse=true stops here: no reservation, no trust PR, no template, no
-  # instance. With the rollout role on a runner it repeats, against what is
-  # serving now, the reads and the SSM verification a rollout performs on its
-  # candidate and its refreshed fleet, so a missing permission or tool shows
-  # before a reservation exists rather than after a region was changed.
+  # instance. With the rollout role on a runner, in a session as long as a
+  # rollout's, it repeats against what is serving now the reads and the SSM
+  # verification a rollout performs: the published state, each region's
+  # census, the template generator without --apply (every lookup it makes
+  # for this release, no template version), and the remaining reads of the
+  # candidate, refresh and repin steps. A missing permission or tool then
+  # shows before a reservation exists rather than after a region changed.
   # Not covered: the two key policy reads (the kms-widen wait retries those
-  # for kms_wait_minutes) and every call that writes.
+  # for kms_wait_minutes), the journal and the trust token, and every call
+  # that writes.
   rehearse:
     needs: preflight
     if: ${{ inputs.rehearse }}
@@ -175,6 +179,7 @@ jobs:
         with:
           role-to-assume: ${{ env.AWS_ROLLOUT_ROLE_ARN }}
           aws-region: eu-west-1
+          role-duration-seconds: ${{ env.AWS_ROLLOUT_SESSION_SECONDS }}
       - uses: Lore-Hex/quill-cloud-proxy/.github/actions/cosign-install@582cbdee7b7023cfeb915b62a7f635aa1e4662b1 # main 2026-11-13
         with:
           cosign-release: v2.6.5
@@ -205,7 +210,26 @@ jobs:
           python3 tools/aws_gateway_rollout.py census --region eu-west-1 --version "$(jq -r .version "$RUNNER_TEMP/serving-eu-west-1.json")" \
             --release "$RUNNER_TEMP/serving-release-eu-west-1/release.json" --manifest "$RUNNER_TEMP/serving-release-eu-west-1/manifest.json" \
             --signature "$RUNNER_TEMP/serving-release-eu-west-1/manifest.json.bundle" --bundle-version "$BUNDLE_VERSION" --boot-timeout 300
-          echo "## AWS gateway rollout rehearsal: release \`$RELEASE_SHA\` authenticated, the published state and both serving fleets verified with the rollout role; nothing reserved or written. Not covered: the key policy reads and every write." >> "$GITHUB_STEP_SUMMARY"
+      - name: "Rehearsal: the template generator's lookups for this release, without --apply"
+        run: |
+          set -euo pipefail
+          for region in eu-west-3 eu-west-1; do
+            AWS_REGION="$region" \
+            AWS_EIF_MANIFEST="$RUNNER_TEMP/release/manifest.json" \
+            AWS_EIF_SIGNATURE="$RUNNER_TEMP/release/manifest.json.bundle" \
+            AWS_EIF_SOURCE_COMMIT="$RELEASE_SHA" \
+            AWS_PARENT_IMAGE_DIGEST="$(jq -r .parent_digest "$RUNNER_TEMP/serving-$region.json")" \
+            AWS_PARENT_PUMP_IMAGE_DIGEST="$(jq -r .pump_digest "$RUNNER_TEMP/serving-$region.json")" \
+            CANDIDATE_TEMPLATE_ONLY=1 \
+              bash tools/deploy-aws-nitro.sh --phase compute
+          done
+      - name: "Rehearsal: the remaining reads of the candidate, refresh and repin steps"
+        run: |
+          set -euo pipefail
+          for region in eu-west-3 eu-west-1; do
+            python3 tools/aws_gateway_rollout.py rehearse-reads --region "$region" --serving "$RUNNER_TEMP/serving-$region.json"
+          done
+          echo "## AWS gateway rollout rehearsal: release \`$RELEASE_SHA\` authenticated; the published state, both serving fleets, the template generator's lookups and the candidate, refresh and repin reads all passed with the rollout role. Nothing reserved or written. Not covered: the key policy reads, the journal and trust token, and every write." >> "$GITHUB_STEP_SUMMARY"
 
   admit-cloud:
     needs: preflight

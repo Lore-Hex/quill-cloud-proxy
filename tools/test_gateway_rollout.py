@@ -7,11 +7,11 @@ deploy, refresh a fleet before its candidate verified, or give CI a KMS write.
 """
 from __future__ import annotations
 
+import ast
 import base64
 import gzip
 import hashlib
 import importlib.util
-import inspect
 import json
 import os
 import re
@@ -300,30 +300,34 @@ class WorkflowGuardTests(unittest.TestCase):
             self.assertNotIn("if", jobs[name])
         self.assertEqual(jobs["finalize-cloud"]["if"], "${{ always() && needs.admit-cloud.result == 'success' }}")
         # The whole job is pinned, not searched for known-bad words: its
-        # environment, its steps in order, and every line each step runs.
+        # keys, its environment, its steps in order, and every line each
+        # step runs. A step may carry nothing that lets it pass unverified.
+        self.assertEqual(set(job), {"needs", "if", "runs-on", "timeout-minutes", "permissions", "env", "steps"})
+        self.assertEqual(job["runs-on"], "ubuntu-latest")
+        self.assertEqual(job["timeout-minutes"], 60)
         self.assertEqual(job["env"], {"BUNDLE_VERSION": "${{ inputs.bundle_version }}"})
         self.assertEqual(job["permissions"], {"contents": "read", "id-token": "write"})
+        self.assertEqual(set(workflow["env"]), {
+            "RELEASE_SHA", "AWS_ROLLOUT_ROLE_ARN", "AWS_ROLLOUT_SESSION_SECONDS", "STRICT_BOOTSTRAP_SOURCE"})
+        self.assertNotIn("secrets.", str(workflow["env"]))
         self.assertEqual(
             [s["uses"].split("@")[0].rsplit("/", 1)[-1] if "uses" in s else s["name"] for s in job["steps"]],
             ["checkout", "setup-uv", "Install locked attestation dependencies in isolation", "gcp-auth",
              "setup-gcloud", "aws-credentials", "cosign-install", "Rehearsal: tools and both cloud identities",
              "Rehearsal: published set, runtime pins and live endpoint as they stand",
              "Rehearsal: Paris, every serving member verified over SSM",
-             "Rehearsal: Dublin, every serving member verified over SSM"])
+             "Rehearsal: Dublin, every serving member verified over SSM",
+             "Rehearsal: the template generator's lookups for this release, without --apply",
+             "Rehearsal: the remaining reads of the candidate, refresh and repin steps"])
         for step in job["steps"]:
-            self.assertNotIn("TRUST_PUSH_TOKEN", str(step))
-            self.assertNotIn("if", step)
-            self.assertNotIn("env", step)
-        # The setup is the fleet job's own, step for step, so the rehearsal
-        # runs with the tools and identities a rollout will have. Only the
-        # session length differs: a rehearsal needs no four-hour session.
-        fleet = jobs["fleet"]["steps"]
-        self.assertEqual(job["steps"][:5], fleet[:5])
-        self.assertEqual(job["steps"][5]["uses"], fleet[5]["uses"])
-        self.assertEqual(job["steps"][5]["with"],
-                         {"role-to-assume": "${{ env.AWS_ROLLOUT_ROLE_ARN }}", "aws-region": "eu-west-1"})
-        self.assertEqual(job["steps"][6], fleet[6])
+            self.assertNotIn("secrets.", str(step))
+            self.assertIn(set(step), ({"uses"}, {"uses", "with"}, {"name", "run"}), step)
+        # The setup is the fleet job's own, step for step and value for
+        # value, so the rehearsal runs with the tools, the identities and the
+        # four-hour session a rollout will have.
+        self.assertEqual(job["steps"][:7], jobs["fleet"]["steps"][:7])
         self.assertEqual(job["steps"][0]["with"], {"ref": "main", "fetch-depth": 0, "persist-credentials": False})
+        self.assertEqual(job["steps"][5]["with"]["role-duration-seconds"], "${{ env.AWS_ROLLOUT_SESSION_SECONDS }}")
         self.assertEqual(job["steps"][7]["run"].splitlines(), [
             "set -euo pipefail",
             '[[ "$BUNDLE_VERSION" =~ ^[1-9][0-9]{0,5}$ ]] || { echo "::error::bundle_version must be a positive integer"; exit 1; }',
@@ -332,10 +336,7 @@ class WorkflowGuardTests(unittest.TestCase):
             'python3 tools/aws_gateway_rollout.py fetch-release --source "$RELEASE_SHA" --out "$RUNNER_TEMP/release"',
         ])
         self.assertEqual(job["steps"][8]["run"], "bash tools/release-aws-enclave.sh --verify-only")
-        summary = ('echo "## AWS gateway rollout rehearsal: release \\`$RELEASE_SHA\\` authenticated, the published state '
-                   "and both serving fleets verified with the rollout role; nothing reserved or written. "
-                   'Not covered: the key policy reads and every write." >> "$GITHUB_STEP_SUMMARY"')
-        for step, region, last in ((job["steps"][9], "eu-west-3", []), (job["steps"][10], "eu-west-1", [summary])):
+        for step, region in ((job["steps"][9], "eu-west-3"), (job["steps"][10], "eu-west-1")):
             serving, release = f'"$RUNNER_TEMP/serving-{region}.json"', f"$RUNNER_TEMP/serving-release-{region}"
             self.assertEqual(step["run"].splitlines(), [
                 "set -euo pipefail",
@@ -345,33 +346,130 @@ class WorkflowGuardTests(unittest.TestCase):
                 f'python3 tools/aws_gateway_rollout.py census --region {region} --version "$(jq -r .version {serving})" \\',
                 f'  --release "{release}/release.json" --manifest "{release}/manifest.json" \\',
                 f'  --signature "{release}/manifest.json.bundle" --bundle-version "$BUNDLE_VERSION" --boot-timeout 300',
-                *last,
             ])
-        # What those three commands can reach in the helper only reads, and
-        # opens a port forward. The helper's writes live in other commands,
-        # which this same scan does see.
-        verb = re.compile(r'"(?:autoscaling|ec2|ecs|elbv2|iam|kms|s3api|ssm)",\s*"([a-z0-9-]+)"')
+        # The generator runs as the fleet job runs it, one region after the
+        # other, with one difference: no --apply.
+        generator = job["steps"][11]["run"].splitlines()
+        self.assertEqual(generator, [
+            "set -euo pipefail",
+            "for region in eu-west-3 eu-west-1; do",
+            '  AWS_REGION="$region" \\',
+            '  AWS_EIF_MANIFEST="$RUNNER_TEMP/release/manifest.json" \\',
+            '  AWS_EIF_SIGNATURE="$RUNNER_TEMP/release/manifest.json.bundle" \\',
+            '  AWS_EIF_SOURCE_COMMIT="$RELEASE_SHA" \\',
+            '  AWS_PARENT_IMAGE_DIGEST="$(jq -r .parent_digest "$RUNNER_TEMP/serving-$region.json")" \\',
+            '  AWS_PARENT_PUMP_IMAGE_DIGEST="$(jq -r .pump_digest "$RUNNER_TEMP/serving-$region.json")" \\',
+            "  CANDIDATE_TEMPLATE_ONLY=1 \\",
+            "    bash tools/deploy-aws-nitro.sh --phase compute",
+            "done",
+        ])
+        fleet_steps = {s.get("name"): s for s in jobs["fleet"]["steps"]}
+        for city, region in (("Paris", "eu-west-3"), ("Dublin", "eu-west-1")):
+            real = fleet_steps[f"{city}: generate the numbered candidate template only"]["run"].splitlines()
+            call = real.index("  bash tools/deploy-aws-nitro.sh --apply --phase compute 2>&1 | tee "
+                              f'"$RUNNER_TEMP/compute-{region}.log"')
+            self.assertEqual(
+                [line.strip().replace(region, "$region") for line in real[1:call]],
+                [line.strip().replace('"$region"', "$region") for line in generator[2:9]], city)
+        self.assertEqual(job["steps"][12]["run"].splitlines(), [
+            "set -euo pipefail",
+            "for region in eu-west-3 eu-west-1; do",
+            '  python3 tools/aws_gateway_rollout.py rehearse-reads --region "$region" --serving "$RUNNER_TEMP/serving-$region.json"',
+            "done",
+            'echo "## AWS gateway rollout rehearsal: release \\`$RELEASE_SHA\\` authenticated; the published state, both '
+            "serving fleets, the template generator's lookups and the candidate, refresh and repin reads all passed "
+            "with the rollout role. Nothing reserved or written. Not covered: the key policy reads, the journal and "
+            'trust token, and every write." >> "$GITHUB_STEP_SUMMARY"',
+        ])
 
-        def verbs(*functions) -> set[str]:
-            return {found for function in functions for found in verb.findall(inspect.getsource(function))}
+    def test_aws_rehearsal_commands_only_read(self):
+        # Everything the rehearsal's four helper commands can reach, followed
+        # through the helper's own call graph, reads or opens a port forward.
+        source = Path(aws.__file__).read_text()
+        functions = {node.name: node for node in ast.parse(source).body if isinstance(node, ast.FunctionDef)}
+        verb = re.compile(r'"(?:autoscaling|ec2|ecr|ecs|elbv2|iam|kms|s3api|ssm|sts)",\s*"([a-z0-9-]+)"')
 
-        reached = verbs(aws.cmd_fetch_release, aws.cmd_serving, aws.cmd_census, aws.probe_instance, aws.ssm_forward,
-                        aws.group, aws.targets, aws.template_data, aws.census_problems)
-        self.assertEqual(reached, {
-            "describe-auto-scaling-groups", "describe-launch-template-versions", "describe-target-health",
-            "get-object", "list-objects-v2", "start-session"})
-        self.assertEqual(
-            verbs(aws.cmd_launch_candidate, aws.start_refresh, aws.cancel_active_refresh, aws.cmd_terminate_candidate)
-            - {"describe-instances", "describe-instance-refreshes"},
-            {"run-instances", "terminate-instances", "start-instance-refresh", "cancel-instance-refresh"})
-        for function in (aws.cmd_fetch_release, aws.cmd_serving, aws.cmd_census, aws.probe_instance):
-            called = set(re.findall(r"\b(cmd_\w+|start_refresh|cancel_active_refresh|wait_refresh)\(", inspect.getsource(function)))
-            self.assertEqual(called - {function.__name__}, set(), function.__name__)
+        def reach(*roots: str) -> set[str]:
+            seen: set[str] = set()
+            pending = list(roots)
+            while pending:
+                name = pending.pop()
+                if name in seen:
+                    continue
+                seen.add(name)
+                pending += [node.id for node in ast.walk(functions[name])
+                            if isinstance(node, ast.Name) and node.id in functions]
+            return seen
+
+        def verbs(names: set[str]) -> set[str]:
+            return {found for name in names for found in verb.findall(ast.get_source_segment(source, functions[name]))}
+
+        rehearsed = reach("cmd_fetch_release", "cmd_serving", "cmd_census", "cmd_rehearse_reads")
+        self.assertEqual(verbs(rehearsed), {
+            "describe-auto-scaling-groups", "describe-instance-information", "describe-instance-refreshes",
+            "describe-instances", "describe-launch-template-versions", "describe-launch-templates",
+            "describe-services", "describe-target-health", "describe-task-definition", "get-object",
+            "list-objects-v2", "start-session"})
+        # The scan is not blind: it sees the helper's writes, all of them in
+        # commands a rehearsal never runs, and no other command has a read
+        # that the rehearsal lacks.
+        everything = verbs(set(functions))
+        self.assertEqual(everything - verbs(rehearsed), {
+            "run-instances", "terminate-instances", "start-instance-refresh", "cancel-instance-refresh"})
+        self.assertFalse(rehearsed & {"cmd_launch_candidate", "cmd_refresh", "cmd_rollback", "cmd_terminate_candidate",
+                                      "cmd_capture_narrow", "cmd_wait_kms", "start_refresh", "cancel_active_refresh"})
+        # The reply of the task definition read is never printed.
+        reads = ast.get_source_segment(source, functions["cmd_rehearse_reads"])
+        self.assertEqual(reads.count("print("), 1)
+        self.assertIn('print(f"{region}: the candidate, refresh and repin reads are allowed")', reads)
         # release-aws-enclave.sh --verify-only is one read-only check.
         script = (ROOT / "tools/release-aws-enclave.sh").read_text()
         self.assertIn("  --verify-only)\n    exec python3 tools/capture-plane-measurements.py --plane aws --check-published\n", script)
         capture = (ROOT / "tools/capture-plane-measurements.py").read_text()
         self.assertIn('parser.error("--check-published is read-only")', capture)
+
+    def test_aws_template_generator_without_apply_writes_no_template(self):
+        # The rehearsal runs deploy-aws-nitro.sh --phase compute without
+        # --apply. That is only a rehearsal while the script starts in its
+        # dry-run mode, takes no reservation there, and guards each write on
+        # the path a candidate-only run takes.
+        script = (ROOT / "tools/deploy-aws-nitro.sh").read_text()
+        self.assertIn('\nDRY_RUN=1\nPHASE="all"\n', script)
+        self.assertEqual(re.findall(r"DRY_RUN=0", script), ["DRY_RUN=0"])
+        self.assertIn("    --apply) DRY_RUN=0; shift ;;\n", script)
+        self.assertIn('if [ "$DRY_RUN" -eq 0 ]; then\n  source "${SCRIPT_DIR}/cloud-rollout-guard.sh"\n'
+                      "  require_cloud_rollout aws\n", script)
+        compute = script[script.index("\nphase_compute() {\n"):]
+        stop = ('  if [ "$CANDIDATE_TEMPLATE_ONLY" -eq 1 ]; then\n'
+                '    log "  candidate launch-template version ${lt_version} created; default, ASG, targets and DNS unchanged"\n'
+                "    return 0\n  fi\n")
+        candidate = compute[:compute.index(stop)]
+        # The host's own boot script is text here, not calls this script makes.
+        boot = candidate[candidate.index("  user_data=$(cat <<EOS\n"):candidate.index("\nEOS\n")]
+        made = candidate.replace(boot, "")
+        calls = re.findall(r"\baws ([a-z0-9]+) ([a-z0-9-]+)", made)
+        self.assertEqual(sorted(calls), sorted([
+            ("s3api", "head-object"), ("ec2", "describe-security-groups"), ("ec2", "describe-security-groups"),
+            ("ec2", "describe-subnets"), ("iam", "get-instance-profile"), ("ec2", "describe-launch-templates"),
+            ("autoscaling", "describe-auto-scaling-groups"), ("ec2", "create-launch-template"),
+            ("ec2", "create-launch-template-version"), ("ec2", "modify-launch-template")]))
+        # No call goes through the script's `run` wrapper on this path either.
+        self.assertEqual(re.findall(r"(?m)^\s*(?:\S+=\$\()?run\s", made), [])
+        writes = made[made.index('  local lt_version="DRY_RUN"\n'):]
+        self.assertEqual(writes.count("aws ec2 "), 3)
+        guarded = re.findall(r"(?m)^    if \[ \$DRY_RUN -eq 0 \]; then\n(.*?)^    fi\n", writes, flags=re.S)
+        self.assertEqual(len(guarded), 2)
+        self.assertEqual("".join(guarded).count("aws ec2 "), 3)
+        self.assertIn("aws ec2 create-launch-template --region", guarded[0])
+        self.assertIn("aws ec2 create-launch-template-version --region", guarded[1])
+        self.assertIn("aws ec2 modify-launch-template --region", guarded[1])
+        # The admission check a real run makes first is also for --apply only:
+        # a rehearsed release is not staged yet.
+        self.assertIn('  if [ "$DRY_RUN" -eq 0 ]; then\n'
+                      '    (cd "$SCRIPT_DIR/.." && python3 -m tools.aws_eif_admission check-ready \\\n', candidate)
+        # Image lookups happen before the generator and are reads.
+        resolve = script[script.index("\nresolve_parent_image() {\n"):script.index("\nphase_compute() {\n")]
+        self.assertEqual(set(re.findall(r"\baws ([a-z0-9]+) ([a-z0-9-]+)", resolve)), {("ecr", "describe-images")})
 
     def test_azure_workflow_drains_before_replacing_and_narrows_after_publishing(self):
         workflow = self.load(AZURE_WF)
