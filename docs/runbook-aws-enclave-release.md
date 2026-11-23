@@ -80,6 +80,9 @@ It takes no reservation, opens no PR and writes nothing in AWS. With the
 rollout role on a runner, in a session as long as a rollout's, it:
 
 - authenticates the release's manifest and exchanges a Google token;
+- asks GitHub whether the trust token may open a pull request, with a branch
+  that does not exist, so nothing is opened (the Azure rollout uses the same
+  token and helper);
 - checks the published set, the runtime pins and the live endpoint as they
   stand;
 - verifies every serving member in Paris and then Dublin over SSM against
@@ -91,8 +94,8 @@ rollout role on a runner, in a session as long as a rollout's, it:
 
 It does not cover the two key policy reads (the `kms-widen` wait retries
 those for `kms_wait_minutes`, long enough to correct a key policy), the
-shared journal and the trust token, or any call that writes: a template
-version, an instance, a refresh, a task definition.
+shared journal, the trust token's branch push and merge, or any call that
+writes: a template version, an instance, a refresh, a task definition.
 
 Pass the `bundle_version` the fleet reports now: the serving members are
 checked against it, and a mismatch ends the rehearsal red at the first

@@ -144,9 +144,11 @@ jobs:
   # for this release, no template version), and the remaining reads of the
   # candidate, refresh and repin steps. A missing permission or tool then
   # shows before a reservation exists rather than after a region changed.
+  # One step holds the trust token, to ask whether it may open a pull request
+  # (it asks with a branch that does not exist; nothing is opened).
   # Not covered: the two key policy reads (the kms-widen wait retries those
-  # for kms_wait_minutes), the journal and the trust token, and every call
-  # that writes.
+  # for kms_wait_minutes), the journal, the trust token's branch push and
+  # merge, and every call that writes.
   rehearse:
     needs: preflight
     if: ${{ inputs.rehearse }}
@@ -191,6 +193,10 @@ jobs:
           session-manager-plugin --version
           gcloud auth print-access-token > /dev/null
           python3 tools/aws_gateway_rollout.py fetch-release --source "$RELEASE_SHA" --out "$RUNNER_TEMP/release"
+      - name: "Rehearsal: the trust token may open a pull request (none is opened)"
+        env:
+          GH_TOKEN: ${{ secrets.TRUST_PUSH_TOKEN }}
+        run: python3 tools/gateway_trust_pr.py probe-token
       # A rehearsal holds no reservation, so a router deploy may be moving
       # the two control plane services from one release to the next while it
       # runs, and this check refuses them until both serve one release again.
@@ -242,7 +248,7 @@ jobs:
           for region in eu-west-3 eu-west-1; do
             python3 tools/aws_gateway_rollout.py rehearse-reads --region "$region" --serving "$RUNNER_TEMP/serving-$region.json"
           done
-          echo "## AWS gateway rollout rehearsal: release \`$RELEASE_SHA\` authenticated; the published state, both serving fleets, the template generator's lookups and the candidate, refresh and repin reads all passed with the rollout role. Nothing reserved or written. Not covered: the key policy reads, the journal and trust token, and every write." >> "$GITHUB_STEP_SUMMARY"
+          echo "## AWS gateway rollout rehearsal: release \`$RELEASE_SHA\` authenticated; the published state, both serving fleets, the template generator's lookups and the candidate, refresh and repin reads all passed with the rollout role. The trust token may open a pull request. Nothing reserved or written. Not covered: the key policy reads, the journal, the trust token's branch push and merge, and every write." >> "$GITHUB_STEP_SUMMARY"
 
   admit-cloud:
     needs: preflight

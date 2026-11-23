@@ -326,11 +326,20 @@ class WorkflowGuardTests(unittest.TestCase):
             [s["uses"].split("@")[0].rsplit("/", 1)[-1] if "uses" in s else s["name"] for s in job["steps"]],
             ["checkout", "setup-uv", "Install locked attestation dependencies in isolation", "gcp-auth",
              "setup-gcloud", "aws-credentials", "cosign-install", "Rehearsal: tools and both cloud identities",
+             "Rehearsal: the trust token may open a pull request (none is opened)",
              "Rehearsal: published set, runtime pins and live endpoint as they stand",
              "Rehearsal: Paris, every serving member verified over SSM",
              "Rehearsal: Dublin, every serving member verified over SSM",
              "Rehearsal: the template generator's lookups for this release, without --apply",
              "Rehearsal: the remaining reads of the candidate, refresh and repin steps"])
+        # One step, and only that step, holds the trust token: it runs the
+        # helper's probe and nothing else.
+        probe = job["steps"].pop(8)
+        self.assertEqual(probe, {
+            "name": "Rehearsal: the trust token may open a pull request (none is opened)",
+            "env": {"GH_TOKEN": "${{ secrets.TRUST_PUSH_TOKEN }}"},
+            "run": "python3 tools/gateway_trust_pr.py probe-token",
+        })
         for step in job["steps"]:
             self.assertNotIn("secrets.", str(step))
             self.assertIn(set(step), ({"uses"}, {"uses", "with"}, {"name", "run"}), step)
@@ -402,9 +411,79 @@ class WorkflowGuardTests(unittest.TestCase):
             "done",
             'echo "## AWS gateway rollout rehearsal: release \\`$RELEASE_SHA\\` authenticated; the published state, both '
             "serving fleets, the template generator's lookups and the candidate, refresh and repin reads all passed "
-            "with the rollout role. Nothing reserved or written. Not covered: the key policy reads, the journal and "
-            'trust token, and every write." >> "$GITHUB_STEP_SUMMARY"',
+            "with the rollout role. The trust token may open a pull request. Nothing reserved or written. Not covered: "
+            "the key policy reads, the journal, the trust token's branch push and merge, and every write.\" "
+            '>> "$GITHUB_STEP_SUMMARY"',
         ])
+
+    def test_trust_token_probe_asks_without_opening_anything(self):
+        # The probe's whole effect on GitHub is one refused request and two
+        # reads. It names a head that cannot exist, and treats any answer but
+        # the refusal of that head as a failure.
+        source = Path(trust_pr.__file__).read_text()
+        function = next(node for node in ast.parse(source).body
+                        if isinstance(node, ast.FunctionDef) and node.name == "probe_token")
+        body = ast.get_source_segment(source, function)
+        commands = [[element.value for element in node.elts if isinstance(element, ast.Constant)]
+                    for node in ast.walk(function) if isinstance(node, ast.List)
+                    and node.elts and isinstance(node.elts[0], ast.Constant) and node.elts[0].value == "gh"]
+        self.assertEqual(commands, [
+            ["gh", "api", "-i", "-X", "POST", "-f", "title=permission probe", "-f", "-f", "base=main"],
+            ["gh", "run", "list", "--repo", "--workflow", "--limit", "1", "--json", "databaseId"],
+        ])
+        self.assertIn('head = "bot/no-such-branch-" + os.urandom(8).hex()', body)
+        self.assertIn('"-f", f"head={head}"', body)
+        self.assertIn('f"repos/{REPO}/pulls"', body)
+        code = body.replace(ast.get_docstring(function, clean=False), "").replace("subprocess.run(", "")
+        for forbidden in ("git", "push", "merge", "pr create", "open_and_merge", "run("):
+            self.assertNotIn(forbidden, code, forbidden)
+        self.assertEqual(body.count("print("), 1)
+        self.assertNotIn("answer.stdout)", body.replace('(answer.stdout or "")', ""))
+
+        def answer(stdout: str, returncode: int = 1):
+            calls: list[list[str]] = []
+
+            def fake(command, **kwargs):
+                calls.append(command)
+                self.assertEqual(kwargs.get("capture_output"), True)
+                if command[:2] == ["gh", "api"]:
+                    return subprocess.CompletedProcess(command, returncode, stdout, "")
+                return subprocess.CompletedProcess(command, 0, "[]", "")
+            return calls, fake
+
+        refused_head = ('HTTP/2.0 422 Unprocessable Entity\r\n\r\n{"message":"Validation Failed","errors":'
+                        '[{"resource":"PullRequest","field":"head","code":"invalid"}],"status":"422"}')
+        original = trust_pr.subprocess.run
+        try:
+            calls, fake = answer(refused_head)
+            trust_pr.subprocess.run = fake
+            trust_pr.probe_token()
+            self.assertEqual([call[:3] for call in calls],
+                             [["gh", "api", "-i"], ["gh", "run", "list"], ["gh", "run", "list"]])
+            for stdout in (
+                'HTTP/2.0 403 Forbidden\r\n\r\n{"message":"Resource not accessible by personal access token"}',
+                'HTTP/2.0 404 Not Found\r\n\r\n{"message":"Not Found"}',
+                'HTTP/2.0 422 Unprocessable Entity\r\n\r\n{"errors":[{"field":"base","code":"invalid"}]}',
+                'HTTP/2.0 201 Created\r\n\r\n{"number":1}',
+                "",
+            ):
+                calls, fake = answer(stdout)
+                trust_pr.subprocess.run = fake
+                with self.assertRaises(SystemExit, msg=stdout[:40]):
+                    trust_pr.probe_token()
+                self.assertEqual(len(calls), 1, "no further request after a refusal")
+
+            # Permitted to open, but not to read the signing workflow's runs.
+            def unreadable(command, **kwargs):
+                if command[:2] == ["gh", "api"]:
+                    return subprocess.CompletedProcess(command, 1, refused_head, "")
+                return subprocess.CompletedProcess(command, 1, "", "HTTP 403")
+            trust_pr.subprocess.run = unreadable
+            with self.assertRaises(SystemExit) as refused:
+                trust_pr.probe_token()
+            self.assertIn("Actions: read", str(refused.exception))
+        finally:
+            trust_pr.subprocess.run = original
 
     def test_aws_rehearsal_commands_only_read(self):
         # Everything the rehearsal's four helper commands can reach, followed
