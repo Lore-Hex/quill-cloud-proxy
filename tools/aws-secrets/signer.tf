@@ -8,6 +8,9 @@ locals {
   operator_arn = "arn:aws:iam::330422590279:user/jperla"
   admin_arn    = "arn:aws:iam::330422590279:role/quill-enclave-key-admin"
   ci_arn       = "arn:aws:iam::330422590279:role/trustedrouter-github-trust-publisher"
+  # quill-router infra/aws_gateway_rollout_role.tf. It must exist before an
+  # apply names it: KMS refuses a key policy with an unknown principal.
+  rollout_arn = "arn:aws:iam::330422590279:role/trustedrouter-github-gateway-rollout"
   crypto_actions = [
     "kms:Encrypt", "kms:Decrypt", "kms:ReEncrypt*", "kms:GenerateDataKey*",
     "kms:GenerateRandom", "kms:Sign", "kms:Verify", "kms:GenerateMac",

@@ -109,6 +109,23 @@ class KMSAdmissionTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             gate.check_policy(json.dumps(candidate), self.pins)
 
+    def test_the_rollout_reader_statement_leaves_the_admission_check_exact(self):
+        # tools/aws-secrets lets the rollout workflow's role read the key's
+        # metadata and policy. That statement must neither satisfy nor disturb
+        # the comparison of the recipient-only Deny with the published set.
+        candidate = policy(self.pins)
+        candidate["Statement"].append({
+            "Sid": "RolloutReadsPolicy", "Effect": "Allow",
+            "Principal": {"AWS": "arn:aws:iam::330422590279:role/trustedrouter-github-gateway-rollout"},
+            "Action": ["kms:DescribeKey", "kms:GetKeyPolicy"], "Resource": "*"})
+        gate.check_policy(json.dumps(candidate), self.pins)
+        for other in (self.pins[:1], [*self.pins, "c" * 96]):
+            with self.assertRaises(ValueError):
+                gate.check_policy(json.dumps(candidate), other)
+        del candidate["Statement"][0]
+        with self.assertRaises(ValueError):
+            gate.check_policy(json.dumps(candidate), self.pins)
+
     def test_duplicate_fields_are_rejected(self):
         self.path.write_text('{"schema_version":1,"required":true,"required":false,"key_arns":{}}')
         with patch.object(gate, "aws_json") as aws, self.assertRaises(ValueError):

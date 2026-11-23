@@ -154,6 +154,14 @@ Named key administrators get no cryptographic operations; only the named
 operator may generate data keys for the bootstrap purpose. There is no
 account-root delegation or lockout-safety bypass.
 
+The rollout workflow's role, `trustedrouter-github-gateway-rollout`, may
+describe each key and read its policy, and nothing else. Without account-root
+delegation that role's own IAM policy has no effect on these keys, so the key
+policy names it (`RolloutReadsPolicy`). The role must exist before an apply:
+KMS refuses a key policy that names an unknown principal. The first apply
+after this statement was added shows both key policies updated in place for
+it, alongside any change to `accepted_pcr0`.
+
 Review a saved plan before applying it under the AWS rollout fence. Expected
 changes are the two keys, two aliases, two secret metadata records and one
 parent inline policy. Existing signer, artifact and legacy resources must not

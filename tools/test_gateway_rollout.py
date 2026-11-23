@@ -11,6 +11,7 @@ import base64
 import gzip
 import hashlib
 import importlib.util
+import inspect
 import json
 import os
 import re
@@ -251,7 +252,8 @@ class WorkflowGuardTests(unittest.TestCase):
 
     def test_aws_workflow_order(self):
         workflow = self.load(AWS_WF)
-        self.common(workflow, "aws")
+        # test_aws_rehearsal_reserves_and_writes_nothing pins that job.
+        self.common(workflow, "aws", unreserved=frozenset({"rehearse"}))
         jobs = workflow["jobs"]
         self.assertEqual(jobs["stage-admission"]["needs"], ["preflight", "admit-cloud"])
         self.assertIn("stage-admission", jobs["kms-widen"]["needs"])
@@ -279,6 +281,97 @@ class WorkflowGuardTests(unittest.TestCase):
         self.assertIn("release-aws-enclave.sh --verify-only", narrow)
         role = workflow["env"]["AWS_ROLLOUT_ROLE_ARN"]
         self.assertEqual(role, "arn:aws:iam::330422590279:role/trustedrouter-github-gateway-rollout")
+
+    def test_aws_rehearsal_reserves_and_writes_nothing(self):
+        workflow = self.load(AWS_WF)
+        jobs = workflow["jobs"]
+        declared = workflow["on"]["workflow_dispatch"]["inputs"]["rehearse"]
+        self.assertEqual(declared["type"], "boolean")
+        self.assertIs(declared["default"], False)
+        job = jobs["rehearse"]
+        self.assertEqual(job["needs"], "preflight")
+        self.assertEqual(job["if"], "${{ inputs.rehearse }}")
+        # A rehearsal never becomes a rollout: the reservation, and with it
+        # every job that stages, widens, refreshes or narrows, is for the
+        # other value only.
+        self.assertEqual(jobs["admit-cloud"]["if"], "${{ !inputs.rehearse }}")
+        for name in ("stage-admission", "kms-widen", "widen-runtime", "fleet", "narrow"):
+            self.assertIn("admit-cloud", jobs[name]["needs"])
+            self.assertNotIn("if", jobs[name])
+        self.assertEqual(jobs["finalize-cloud"]["if"], "${{ always() && needs.admit-cloud.result == 'success' }}")
+        # The whole job is pinned, not searched for known-bad words: its
+        # environment, its steps in order, and every line each step runs.
+        self.assertEqual(job["env"], {"BUNDLE_VERSION": "${{ inputs.bundle_version }}"})
+        self.assertEqual(job["permissions"], {"contents": "read", "id-token": "write"})
+        self.assertEqual(
+            [s["uses"].split("@")[0].rsplit("/", 1)[-1] if "uses" in s else s["name"] for s in job["steps"]],
+            ["checkout", "setup-uv", "Install locked attestation dependencies in isolation", "gcp-auth",
+             "setup-gcloud", "aws-credentials", "cosign-install", "Rehearsal: tools and both cloud identities",
+             "Rehearsal: published set, runtime pins and live endpoint as they stand",
+             "Rehearsal: Paris, every serving member verified over SSM",
+             "Rehearsal: Dublin, every serving member verified over SSM"])
+        for step in job["steps"]:
+            self.assertNotIn("TRUST_PUSH_TOKEN", str(step))
+            self.assertNotIn("if", step)
+            self.assertNotIn("env", step)
+        # The setup is the fleet job's own, step for step, so the rehearsal
+        # runs with the tools and identities a rollout will have. Only the
+        # session length differs: a rehearsal needs no four-hour session.
+        fleet = jobs["fleet"]["steps"]
+        self.assertEqual(job["steps"][:5], fleet[:5])
+        self.assertEqual(job["steps"][5]["uses"], fleet[5]["uses"])
+        self.assertEqual(job["steps"][5]["with"],
+                         {"role-to-assume": "${{ env.AWS_ROLLOUT_ROLE_ARN }}", "aws-region": "eu-west-1"})
+        self.assertEqual(job["steps"][6], fleet[6])
+        self.assertEqual(job["steps"][0]["with"], {"ref": "main", "fetch-depth": 0, "persist-credentials": False})
+        self.assertEqual(job["steps"][7]["run"].splitlines(), [
+            "set -euo pipefail",
+            '[[ "$BUNDLE_VERSION" =~ ^[1-9][0-9]{0,5}$ ]] || { echo "::error::bundle_version must be a positive integer"; exit 1; }',
+            "session-manager-plugin --version",
+            "gcloud auth print-access-token > /dev/null",
+            'python3 tools/aws_gateway_rollout.py fetch-release --source "$RELEASE_SHA" --out "$RUNNER_TEMP/release"',
+        ])
+        self.assertEqual(job["steps"][8]["run"], "bash tools/release-aws-enclave.sh --verify-only")
+        summary = ('echo "## AWS gateway rollout rehearsal: release \\`$RELEASE_SHA\\` authenticated, the published state '
+                   "and both serving fleets verified with the rollout role; nothing reserved or written. "
+                   'Not covered: the key policy reads and every write." >> "$GITHUB_STEP_SUMMARY"')
+        for step, region, last in ((job["steps"][9], "eu-west-3", []), (job["steps"][10], "eu-west-1", [summary])):
+            serving, release = f'"$RUNNER_TEMP/serving-{region}.json"', f"$RUNNER_TEMP/serving-release-{region}"
+            self.assertEqual(step["run"].splitlines(), [
+                "set -euo pipefail",
+                f"python3 tools/aws_gateway_rollout.py serving --region {region} --out {serving}",
+                f'python3 tools/aws_gateway_rollout.py fetch-release --source "$(jq -r .source {serving})" \\',
+                f'  --out "{release}"',
+                f'python3 tools/aws_gateway_rollout.py census --region {region} --version "$(jq -r .version {serving})" \\',
+                f'  --release "{release}/release.json" --manifest "{release}/manifest.json" \\',
+                f'  --signature "{release}/manifest.json.bundle" --bundle-version "$BUNDLE_VERSION" --boot-timeout 300',
+                *last,
+            ])
+        # What those three commands can reach in the helper only reads, and
+        # opens a port forward. The helper's writes live in other commands,
+        # which this same scan does see.
+        verb = re.compile(r'"(?:autoscaling|ec2|ecs|elbv2|iam|kms|s3api|ssm)",\s*"([a-z0-9-]+)"')
+
+        def verbs(*functions) -> set[str]:
+            return {found for function in functions for found in verb.findall(inspect.getsource(function))}
+
+        reached = verbs(aws.cmd_fetch_release, aws.cmd_serving, aws.cmd_census, aws.probe_instance, aws.ssm_forward,
+                        aws.group, aws.targets, aws.template_data, aws.census_problems)
+        self.assertEqual(reached, {
+            "describe-auto-scaling-groups", "describe-launch-template-versions", "describe-target-health",
+            "get-object", "list-objects-v2", "start-session"})
+        self.assertEqual(
+            verbs(aws.cmd_launch_candidate, aws.start_refresh, aws.cancel_active_refresh, aws.cmd_terminate_candidate)
+            - {"describe-instances", "describe-instance-refreshes"},
+            {"run-instances", "terminate-instances", "start-instance-refresh", "cancel-instance-refresh"})
+        for function in (aws.cmd_fetch_release, aws.cmd_serving, aws.cmd_census, aws.probe_instance):
+            called = set(re.findall(r"\b(cmd_\w+|start_refresh|cancel_active_refresh|wait_refresh)\(", inspect.getsource(function)))
+            self.assertEqual(called - {function.__name__}, set(), function.__name__)
+        # release-aws-enclave.sh --verify-only is one read-only check.
+        script = (ROOT / "tools/release-aws-enclave.sh").read_text()
+        self.assertIn("  --verify-only)\n    exec python3 tools/capture-plane-measurements.py --plane aws --check-published\n", script)
+        capture = (ROOT / "tools/capture-plane-measurements.py").read_text()
+        self.assertIn('parser.error("--check-published is read-only")', capture)
 
     def test_azure_workflow_drains_before_replacing_and_narrows_after_publishing(self):
         workflow = self.load(AZURE_WF)
@@ -321,7 +414,6 @@ class WorkflowGuardTests(unittest.TestCase):
         declared = workflow["on"]["workflow_dispatch"]["inputs"]["rehearse"]
         self.assertEqual(declared["type"], "boolean")
         self.assertIs(declared["default"], False)
-        self.assertNotIn("rehearse", self.load(AWS_WF)["jobs"])
         job = jobs["rehearse"]
         self.assertEqual(job["needs"], "preflight")
         self.assertEqual(job["if"], "${{ inputs.rehearse }}")
