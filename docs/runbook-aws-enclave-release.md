@@ -64,17 +64,27 @@ gh workflow run rollout-aws-gateway.yml --repo Lore-Hex/quill-cloud-proxy --ref 
 ~~~
 
 It takes no reservation, opens no PR and writes nothing in AWS. With the
-rollout role on a runner it authenticates the release's manifest, checks the
-published set, the runtime pins and the live endpoint as they stand, and
-verifies every serving member in Paris and then Dublin over SSM against the
-release that member already runs. That is every read and the SSM path a
-rollout uses on its candidate and its refreshed fleet. It does not cover the
-two key policy reads (the `kms-widen` wait retries those for
-`kms_wait_minutes`, long enough to correct a key policy) or any call that
-writes: a template version, an instance, a refresh, a task definition.
+rollout role on a runner, in a session as long as a rollout's, it:
 
-A red rehearsal is safe to repeat. Rehearsals and rollouts share one
-concurrency group, so a rehearsal dispatched during a rollout waits for it.
+- authenticates the release's manifest and exchanges a Google token;
+- checks the published set, the runtime pins and the live endpoint as they
+  stand;
+- verifies every serving member in Paris and then Dublin over SSM against
+  the release that member already runs;
+- runs the template generator for this release in both regions without
+  `--apply`, so every lookup it makes happens and no template version is
+  written;
+- issues the remaining reads of the candidate, refresh and repin steps.
+
+It does not cover the two key policy reads (the `kms-widen` wait retries
+those for `kms_wait_minutes`, long enough to correct a key policy), the
+shared journal and the trust token, or any call that writes: a template
+version, an instance, a refresh, a task definition.
+
+Pass the `bundle_version` the fleet runs now: the serving members are checked
+against it. A red rehearsal is safe to repeat. Rehearsals and rollouts share
+one concurrency group; a rehearsal dispatched during a rollout waits for it,
+and a later dispatch replaces an earlier one that is still waiting.
 
 ## 0. Preconditions and rollback record
 
