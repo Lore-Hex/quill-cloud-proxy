@@ -282,6 +282,18 @@ class WorkflowGuardTests(unittest.TestCase):
         role = workflow["env"]["AWS_ROLLOUT_ROLE_ARN"]
         self.assertEqual(role, "arn:aws:iam::330422590279:role/trustedrouter-github-gateway-rollout")
 
+    def test_aws_bundle_version_must_be_stated(self):
+        # A default goes stale the next time a bundle is sealed, and a stale
+        # number is refused only at the candidate, after the reservation.
+        declared = self.load(AWS_WF)["on"]["workflow_dispatch"]["inputs"]["bundle_version"]
+        self.assertEqual(set(declared), {"description", "required", "type"})
+        self.assertIs(declared["required"], True)
+        self.assertEqual(declared["type"], "string")
+        runbook = (ROOT / "docs/runbook-aws-enclave-release.md").read_text()
+        dispatches = re.findall(r"gh workflow run rollout-aws-gateway\.yml[^~]*?bundle_version=(\S+)", runbook)
+        self.assertEqual(dispatches, ["<version>", "<version>"])
+        self.assertIn("curl -s https://api-aws.trustedrouter.com/health | jq .aws_bootstrap.bundle_version", runbook)
+
     def test_aws_rehearsal_reserves_and_writes_nothing(self):
         workflow = self.load(AWS_WF)
         jobs = workflow["jobs"]
@@ -304,7 +316,7 @@ class WorkflowGuardTests(unittest.TestCase):
         # step runs. A step may carry nothing that lets it pass unverified.
         self.assertEqual(set(job), {"needs", "if", "runs-on", "timeout-minutes", "permissions", "env", "steps"})
         self.assertEqual(job["runs-on"], "ubuntu-latest")
-        self.assertEqual(job["timeout-minutes"], 60)
+        self.assertEqual(job["timeout-minutes"], 100)
         self.assertEqual(job["env"], {"BUNDLE_VERSION": "${{ inputs.bundle_version }}"})
         self.assertEqual(job["permissions"], {"contents": "read", "id-token": "write"})
         self.assertEqual(set(workflow["env"]), {
@@ -335,7 +347,19 @@ class WorkflowGuardTests(unittest.TestCase):
             "gcloud auth print-access-token > /dev/null",
             'python3 tools/aws_gateway_rollout.py fetch-release --source "$RELEASE_SHA" --out "$RUNNER_TEMP/release"',
         ])
-        self.assertEqual(job["steps"][8]["run"], "bash tools/release-aws-enclave.sh --verify-only")
+        # The one step that waits: it stops at the first pass, and thirty
+        # refusals a minute apart end it red. Nothing else runs in the loop.
+        self.assertEqual(job["steps"][8]["run"].splitlines(), [
+            "set -euo pipefail",
+            "for attempt in $(seq 1 30); do",
+            "  if bash tools/release-aws-enclave.sh --verify-only; then exit 0; fi",
+            '  echo "The published-state check did not pass (attempt $attempt of 30). If a router deploy is moving the '
+            'AWS control plane, it passes once that step ends; next attempt in 60 s."',
+            "  sleep 60",
+            "done",
+            'echo "::error::the published-state check did not pass in 30 attempts, one minute apart"',
+            "exit 1",
+        ])
         for step, region in ((job["steps"][9], "eu-west-3"), (job["steps"][10], "eu-west-1")):
             serving, release = f'"$RUNNER_TEMP/serving-{region}.json"', f"$RUNNER_TEMP/serving-release-{region}"
             self.assertEqual(step["run"].splitlines(), [
