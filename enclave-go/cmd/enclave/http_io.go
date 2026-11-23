@@ -756,6 +756,14 @@ func serveAttestation(conn io.Writer, leafDER, deviceBlob, nonce, channelBinding
 	return serveAttestationContext(context.Background(), conn, leafDER, deviceBlob, nonce, channelBinding)
 }
 
+// attestationResponseBudget bounds one public /attestation answer end to end:
+// waiting for the launcher behind another mint plus this caller's own mint.
+// The launcher queue alone allows a longer wait and a fresh mint budget, so
+// without this bound a caller behind a slow mint could answer after its client
+// gave up. At 18 s a client with a 20 s timeout (the synthetic attestation
+// probe's) always gets the document or the retryable 503.
+var attestationResponseBudget = 18 * time.Second
+
 // The document is public (anyone can fetch it) and readable from any web
 // origin; see publicCORSOriginHeader. Its errors carry the same header so a
 // browser client can read why attestation failed.
@@ -765,6 +773,8 @@ func serveAttestationContext(ctx context.Context, conn io.Writer, leafDER, devic
 		writePublicError(conn, 503, "TLS not enabled in this enclave; attestation requires a bound cert")
 		return false
 	}
+	ctx, cancel := context.WithTimeout(ctx, attestationResponseBudget)
+	defer cancel()
 	doc, err := getAttestation(ctx, leafDER, deviceBlob, nonce, channelBinding, nil)
 	if err != nil {
 		disableResponseReuse(conn)
