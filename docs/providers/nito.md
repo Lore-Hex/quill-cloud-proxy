@@ -32,6 +32,28 @@ the actual gateway. An invalid, changed, expired or missing proof must stop
 the request before any prompt leaves. Other evidence formats need their own
 verifiers; a passing model cannot grant an account-wide badge.
 
+## Encrypted route qualification, November 23, 2026 (UTC)
+
+Fresh v2 bindings on all nine encrypted routes selected three different
+verification procedures. None is production-qualified.
+
+| Routes | Independently checked | Still missing |
+| --- | --- | --- |
+| DeepSeek V4.1 Flash (standard), Gemma 4 31B, GLM 5.3, GPT-OSS 120B, Kimi K3.1 Pro, Llama 3.3 70B | All six EHBP bundles verified against the [published Tinfoil router release v0.0.179](https://github.com/tinfoilsh/confidential-model-router/releases/tag/v0.0.179) and independent native model list. Checked Sigstore, AMD SEV-SNP, build measurements, enclave certificate, HPKE key, and a fresh direct TLS connection matching the attested public key. Five substituted-key/host/digest controls rejected. | Nito returned HTTP 403 to one encrypted GPT-OSS request and one Kimi request; Kimi reported `forbidden`. Neither yielded an authenticated inference response. No inference on the other four. |
+| DeepSeek V4.1 Flash 1017 abliterated | NEAR reports matched the challenge, native ID and proposed signing key. The selected deployment YAML's SHA-256 matched the [independent NEAR source](https://github.com/nearai/cvm-compose-files/blob/30fbba879f83dcd046f1b5e5f47c827e57dfdc1c/prod/deepseek-v4.1-flash-1017-vllm-dep4x2.yaml). | Native model not in reviewed policy; neither model report had the TLS fingerprint required by our direct verifier. Need independently reviewed workload and hardware verification that binds the relayed field-encryption key. |
+| Gemma 4 26B A4B uncensored, Qwen 3.8 27B uncensored | RedPill evidence named a gateway source commit and a downstream TLS binding; the image digest and image provenance fields were null in both. | Establish accepted evidence for the running build, key custody and downstream inference. The [backend design](https://github.com/Dstack-TEE/private-ai-gateway/blob/3147f87151bb1960349a30022187108b2cbdfc70/docs/attested-confidential-inference.md) distinguishes gateway verification from provider-side privacy. No hardware pass or inference is claimed here. |
+
+For EHBP, build `./cmd/nito-bundle-check` from `enclave-go/sidecar`.
+Run `tools/check_nito_ehbp.py <exact-model:encrypted> --verifier <binary> --release-digest <digest>`
+with `NITO_API_KEY`. Obtain the digest via the configured Tinfoil router
+repository's current release, never from Nito's evidence. This is read-only
+unless `--canary` is supplied. That flag uses `tinfoil-ehbp==0.6.0` and
+allows **one** synthetic JSON request after verification, to Nito only;
+there are no redirects or retries. A provider denial is not a failed hardware
+signature, proof of an empty balance, or permission to use ordinary chat.
+Even a successful direct canary would still need a fail-closed gateway
+integration, real JSON/streaming and usage checks before labeling that route.
+
 The ordinary key maps to `trustedrouter-nito-api-key`; configuration and
 catalog discovery do not deploy or enable it. Verify each actual serving
 cloud and provider-pinned inference/billing before removing catalog holds.
