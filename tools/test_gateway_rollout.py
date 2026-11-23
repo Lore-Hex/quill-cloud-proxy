@@ -326,11 +326,31 @@ class WorkflowGuardTests(unittest.TestCase):
             [s["uses"].split("@")[0].rsplit("/", 1)[-1] if "uses" in s else s["name"] for s in job["steps"]],
             ["checkout", "setup-uv", "Install locked attestation dependencies in isolation", "gcp-auth",
              "setup-gcloud", "aws-credentials", "cosign-install", "Rehearsal: tools and both cloud identities",
+             "Rehearsal: a token without pull request write is refused the same request",
+             "Rehearsal: the trust token may open a pull request (none is opened)",
              "Rehearsal: published set, runtime pins and live endpoint as they stand",
              "Rehearsal: Paris, every serving member verified over SSM",
              "Rehearsal: Dublin, every serving member verified over SSM",
              "Rehearsal: the template generator's lookups for this release, without --apply",
              "Rehearsal: the remaining reads of the candidate, refresh and repin steps"])
+        # One step, and only that step, holds the trust token: it runs the
+        # helper's probe and nothing else.
+        # The step before it asks the same question with this job's own
+        # token, which the job's permissions keep from opening pull requests.
+        control = job["steps"].pop(8)
+        self.assertEqual(control, {
+            "name": "Rehearsal: a token without pull request write is refused the same request",
+            "env": {"GH_TOKEN": "${{ github.token }}"},
+            "run": "python3 tools/gateway_trust_pr.py probe-token --expect-refusal",
+        })
+        self.assertNotIn("pull-requests", job["permissions"])
+        self.assertNotIn("pull-requests", workflow["permissions"])
+        probe = job["steps"].pop(8)
+        self.assertEqual(probe, {
+            "name": "Rehearsal: the trust token may open a pull request (none is opened)",
+            "env": {"GH_TOKEN": "${{ secrets.TRUST_PUSH_TOKEN }}"},
+            "run": "python3 tools/gateway_trust_pr.py probe-token",
+        })
         for step in job["steps"]:
             self.assertNotIn("secrets.", str(step))
             self.assertIn(set(step), ({"uses"}, {"uses", "with"}, {"name", "run"}), step)
@@ -402,9 +422,112 @@ class WorkflowGuardTests(unittest.TestCase):
             "done",
             'echo "## AWS gateway rollout rehearsal: release \\`$RELEASE_SHA\\` authenticated; the published state, both '
             "serving fleets, the template generator's lookups and the candidate, refresh and repin reads all passed "
-            "with the rollout role. Nothing reserved or written. Not covered: the key policy reads, the journal and "
-            'trust token, and every write." >> "$GITHUB_STEP_SUMMARY"',
+            "with the rollout role. The trust token may open a pull request and read its checks. Nothing reserved or "
+            "written. Not covered: "
+            "the key policy reads, the journal, the trust token's branch push and merge, and every write.\" "
+            '>> "$GITHUB_STEP_SUMMARY"',
         ])
+
+    def test_trust_token_probe_asks_without_opening_anything(self):
+        # The probe's whole effect on GitHub is one refused request and reads.
+        # It names a head that cannot exist, and treats any answer but the
+        # refusal of that head as a failure.
+        source = Path(trust_pr.__file__).read_text()
+        function = next(node for node in ast.parse(source).body
+                        if isinstance(node, ast.FunctionDef) and node.name == "probe_token")
+        body = ast.get_source_segment(source, function)
+        commands = [[element.value for element in node.elts if isinstance(element, ast.Constant)]
+                    for node in ast.walk(function) if isinstance(node, ast.List)
+                    and node.elts and isinstance(node.elts[0], ast.Constant) and node.elts[0].value == "gh"]
+        self.assertEqual(commands, [
+            ["gh", "api", "-i", "-X", "POST", "-f", "title=permission probe", "-f", "-f", "base=main"],
+            ["gh", "pr", "list", "--repo", "--state", "merged", "--limit", "1", "--json", "number"],
+            ["gh", "run", "list", "--repo", "--workflow", "--limit", "1", "--json", "databaseId"],
+        ])
+        self.assertIn('head = "bot/no-such-branch-" + os.urandom(8).hex()', body)
+        self.assertIn('"-f", f"head={head}"', body)
+        self.assertIn('f"repos/{REPO}/pulls"', body)
+        code = body.replace(ast.get_docstring(function, clean=False), "").replace("subprocess.run(", "")
+        for forbidden in ("git", "push", '"merge"', "pr merge", "pr create", "open_and_merge", "run(", "update-branch"):
+            self.assertNotIn(forbidden, code, forbidden)
+        self.assertEqual(code.count("print("), 2)
+        self.assertNotIn("stdout)", code.replace('(answer.stdout or "")', "").replace("json.loads(merged.stdout)", ""))
+        self.assertNotIn("stderr", code)
+        # Its one other helper only reads.
+        view = ast.get_source_segment(source, next(
+            node for node in ast.parse(source).body if isinstance(node, ast.FunctionDef) and node.name == "pr_state"))
+        self.assertIn('run("gh", "pr", "view", str(number), "--repo", REPO, "--json",', view)
+
+        refused_head = ('HTTP/2.0 422 Unprocessable Entity\r\n\r\n{"message":"Validation Failed","errors":'
+                        '[{"resource":"PullRequest","field":"head","code":"invalid"}],"status":"422"}')
+        forbidden = 'HTTP/2.0 403 Forbidden\r\n\r\n{"message":"Resource not accessible by integration"}'
+        rollup = [{"__typename": "CheckRun", "name": name, "status": "COMPLETED", "conclusion": "SUCCESS"}
+                  for name in trust_pr.REQUIRED_CHECKS]
+
+        def github(api: str, *, merged: str = '[{"number": 7}]', listing: int = 0, view: dict | None = None,
+                   view_code: int = 0, runs: int = 0):
+            calls: list[list[str]] = []
+            view = {"state": "MERGED", "statusCheckRollup": rollup} if view is None else view
+
+            def fake(command, **kwargs):
+                command = list(command)
+                calls.append(command)
+                if command[:2] == ["gh", "api"]:
+                    self.assertEqual(kwargs.get("capture_output"), True)
+                    return subprocess.CompletedProcess(command, 1, api, "")
+                if command[:3] == ["gh", "pr", "list"]:
+                    return subprocess.CompletedProcess(command, listing, merged, "")
+                if command[:3] == ["gh", "pr", "view"]:
+                    self.assertEqual(command[3], "7")
+                    if view_code:
+                        raise subprocess.CalledProcessError(view_code, command)
+                    return subprocess.CompletedProcess(command, 0, json.dumps(view), "")
+                self.assertEqual(command[:3], ["gh", "run", "list"])
+                return subprocess.CompletedProcess(command, runs, "[]", "")
+            return calls, fake
+
+        def probe(expect_refusal: bool = False, **answers) -> list[list[str]]:
+            calls, fake = github(**answers)
+            original = trust_pr.subprocess.run
+            trust_pr.subprocess.run = fake
+            try:
+                trust_pr.probe_token(expect_refusal)
+            finally:
+                trust_pr.subprocess.run = original
+            return calls
+
+        # A permitted token: the refusal of the head, then only reads.
+        self.assertEqual([call[:3] for call in probe(api=refused_head)], [
+            ["gh", "api", "-i"], ["gh", "pr", "list"], ["gh", "pr", "view"], ["gh", "run", "list"], ["gh", "run", "list"]])
+        # Any other answer to the request fails and sends nothing further.
+        for api in (forbidden, 'HTTP/2.0 404 Not Found\r\n\r\n{"message":"Not Found"}',
+                    'HTTP/2.0 422 Unprocessable Entity\r\n\r\n{"errors":[{"field":"base","code":"invalid"}]}',
+                    'HTTP/2.0 201 Created\r\n\r\n{"number":1}', ""):
+            calls: list[list[str]] = []
+            with self.assertRaises(SystemExit, msg=api[:40]):
+                calls = probe(api=api)
+            self.assertEqual(calls, [])
+        # Permitted to open, but unable to read what open-and-merge reads.
+        for answers, said in (
+            ({"listing": 1}, ", ".join(trust_pr.REQUIRED_CHECKS)),
+            ({"merged": "[]"}, ", ".join(trust_pr.REQUIRED_CHECKS)),
+            ({"view_code": 1}, ", ".join(trust_pr.REQUIRED_CHECKS)),
+            ({"view": {"state": "MERGED", "statusCheckRollup": rollup[:1]}}, trust_pr.REQUIRED_CHECKS[1]),
+            ({"view": {"state": "MERGED", "statusCheckRollup": []}}, ", ".join(trust_pr.REQUIRED_CHECKS)),
+            ({"view": {"state": "OPEN", "statusCheckRollup": rollup}}, "the pull request"),
+            ({"runs": 1}, "Actions: read"),
+        ):
+            with self.assertRaises(SystemExit, msg=str(answers)) as refused:
+                probe(api=refused_head, **answers)
+            self.assertIn(said, str(refused.exception), answers)
+        # The control: a token without the permission must be refused, and
+        # the head's refusal there means the probe tells nothing.
+        for api in (forbidden, 'HTTP/2.0 404 Not Found\r\n\r\n{"message":"Not Found"}'):
+            self.assertEqual([call[:3] for call in probe(True, api=api)], [["gh", "api", "-i"]])
+        for api in (refused_head, 'HTTP/2.0 201 Created\r\n\r\n{"number":1}', "",
+                    'HTTP/2.0 500 Internal Server Error\r\n\r\n{}'):
+            with self.assertRaises(SystemExit, msg=api[:40]):
+                probe(True, api=api)
 
     def test_aws_rehearsal_commands_only_read(self):
         # Everything the rehearsal's four helper commands can reach, followed
