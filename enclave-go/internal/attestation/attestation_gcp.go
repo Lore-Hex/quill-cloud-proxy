@@ -62,7 +62,15 @@ const attestationTokenURL = "http://teeserver/v1/token" // #nosec G101 -- URL, n
 const Kind = "gcp-cs-jwt"
 
 var requestToken = requestTokenFromLauncher
-var launcherTokens = newTokenQueue(4, 5*time.Second, 30*time.Second)
+var launcherTokens = newTokenQueue(4, launcherQueueWait, 30*time.Second)
+
+// launcherQueueWait bounds how long a caller waits for the launcher while
+// another token is being minted. Google's issuer occasionally takes 8 to 15 s
+// in some regions; with a 5 s wait, every caller queued behind one such mint
+// answered 503 even though that mint succeeded. 15 s lets them ride out the
+// tail and still answer (or return the retryable 503) before a 20 s client
+// timeout, such as the synthetic attestation probe's.
+const launcherQueueWait = 15 * time.Second
 
 // The launcher serializes issuance and can finish after a caller times out.
 // Bound both waiting callers and queue time; never retry or share nonce-bound tokens.

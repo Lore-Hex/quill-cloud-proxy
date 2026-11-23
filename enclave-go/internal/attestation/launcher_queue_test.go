@@ -29,6 +29,53 @@ func TestLauncherQueueBoundsWaitAndAdmission(t *testing.T) {
 	}
 }
 
+func TestLauncherQueueWaitRidesOutSlowIssuanceBeforeClientTimeout(t *testing.T) {
+	if launcherTokens.waitTimeout < 15*time.Second {
+		t.Fatalf("queue wait %s: callers behind one slow (8-15 s) issuance must not fail", launcherTokens.waitTimeout)
+	}
+	if launcherTokens.waitTimeout >= 20*time.Second {
+		t.Fatalf("queue wait %s: must answer before a 20 s client timeout", launcherTokens.waitTimeout)
+	}
+	if launcherTokens.waitTimeout > launcherTokens.mintTimeout {
+		t.Fatal("waiting must not outlast the mint budget")
+	}
+}
+
+func TestLauncherWaiterBehindSlowMintSucceedsWithinWait(t *testing.T) {
+	old := requestToken
+	defer func() { requestToken = old }()
+	release := make(chan struct{})
+	requestToken = func(ctx context.Context, body []byte) ([]byte, error) {
+		if string(body) == "slow" {
+			select {
+			case <-release:
+			case <-ctx.Done():
+				return nil, ctx.Err()
+			}
+		}
+		return append([]byte(nil), body...), nil
+	}
+	q := newTokenQueue(1, 2*time.Second, 5*time.Second)
+	slowDone := make(chan error, 1)
+	go func() { _, err := q.mint(t.Context(), []byte("slow")); slowDone <- err }()
+	for len(q.active) == 0 {
+		time.Sleep(time.Millisecond)
+	}
+	waiterDone := make(chan error, 1)
+	go func() { _, err := q.mint(t.Context(), []byte("waiter")); waiterDone <- err }()
+	time.Sleep(300 * time.Millisecond) // the slow mint outlasts a short wait, not this queue's
+	close(release)
+	if err := <-slowDone; err != nil {
+		t.Fatalf("slow mint: %v", err)
+	}
+	if err := <-waiterDone; err != nil {
+		t.Fatalf("waiter behind a slow mint failed within its wait: %v", err)
+	}
+	if len(q.admitted) != 0 || len(q.active) != 0 {
+		t.Fatal("slots leaked")
+	}
+}
+
 func TestLauncherMintDeadlineAndCapacityRecovery(t *testing.T) {
 	old := requestToken
 	defer func() { requestToken = old }()
