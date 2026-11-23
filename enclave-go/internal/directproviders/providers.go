@@ -62,6 +62,7 @@ var specs = [...]Spec{
 	{Provider: "hixtube", BaseURL: "https://api.hixtube.com/v1", SecretEnv: "QUILL_HIXTUBE_SECRET", SecretName: "trustedrouter-hixtube-api-key", SecretLabel: "Hixtube pilot key"},
 	{Provider: "muna", BaseURL: "https://inference.muna.ai/v1", SecretEnv: "QUILL_MUNA_SECRET", SecretName: "trustedrouter-muna-api-key", SecretLabel: "Muna key"},
 	{Provider: "negbeta", BaseURL: "https://inference.negbeta.com/v1", SecretEnv: "QUILL_NEGBETA_SECRET", SecretName: "trustedrouter-negbeta-api-key", SecretLabel: "Negbeta key"},
+	{Provider: "nito", BaseURL: "https://app.trynito.ai/api/v1", SecretEnv: "QUILL_NITO_SECRET", SecretName: "trustedrouter-nito-api-key", SecretLabel: "Nito key"},
 	{Provider: "abliteration", BaseURL: "https://api.abliteration.ai/v1", SecretEnv: "QUILL_ABLITERATION_SECRET", SecretName: "trustedrouter-abliteration-api-key", SecretLabel: "Abliteration key"},
 	{Provider: "coralbricks", BaseURL: "https://inference.coralbricks.ai/v1", SecretEnv: "QUILL_CORALBRICKS_SECRET", SecretName: "trustedrouter-coralbricks-api-key", SecretLabel: "CoralBricks key"},
 	{Provider: "fortanix", BaseURL: "https://ctf.armet.ai/v1", SecretEnv: "QUILL_FORTANIX_SECRET", SecretName: "trustedrouter-fortanix-api-key", SecretLabel: "Fortanix test key"},

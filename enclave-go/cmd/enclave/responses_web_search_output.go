@@ -101,6 +101,11 @@ func responsesWebSearchProviderUsage(outcome responsesWebSearchOutcome) map[stri
 		usage["web_search_credit_microdollars"] = websearch.ContextCreditMicrodollars
 		usage["web_search_credits"] = outcome.SearchCostMicrodollars / websearch.ContextCreditMicrodollars
 	}
+	if outcome.SearchEngine == "parallel" {
+		delete(usage, "operator_web_search_cost_microdollars")
+		usage["web_search_engine"] = "parallel"
+		usage["web_search_pricing_basis"] = "published_basic_search_unit"
+	}
 	return pruneEmptyProviderUsage(usage)
 }
 

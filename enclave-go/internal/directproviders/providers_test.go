@@ -13,8 +13,12 @@ func TestSpecsAreValidAndImmutable(t *testing.T) {
 		t.Fatal(err)
 	}
 	all := All()
-	if len(all) != 53 {
-		t.Fatalf("provider specs = %d, want 53", len(all))
+	if len(all) != 54 {
+		t.Fatalf("provider specs = %d, want 54", len(all))
+	}
+	nito, ok := Lookup("nito")
+	if !ok || nito.BaseURL != "https://app.trynito.ai/api/v1" || nito.SecretName != "trustedrouter-nito-api-key" {
+		t.Fatal("Nito must have a dedicated ordinary-chat origin and credential")
 	}
 	original := all[0]
 	all[0].Provider = "mutated"

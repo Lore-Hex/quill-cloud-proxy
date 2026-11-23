@@ -1328,6 +1328,15 @@ func bootstrapDirectProviderAllowed(provider string) bool {
 }
 
 func directModelID(provider, model, upstreamModel string) string {
+	if provider == "nito" {
+		// Only the ordinary Nito chat tier speaks this transport. Never strip
+		// :encrypted or substitute a weaker sibling when E2EE is unavailable.
+		id := strings.TrimSpace(upstreamModel)
+		if strings.HasSuffix(model, ":encrypted") || !strings.HasSuffix(id, ":confidential") || strings.Count(id, ":") != 1 {
+			return ""
+		}
+		return id
+	}
 	if provider == "tencent" {
 		// TokenHub's /models IDs (including namespaced/custom endpoints) are
 		// opaque. Only use the authorized endpoint_model_id, never an alias.

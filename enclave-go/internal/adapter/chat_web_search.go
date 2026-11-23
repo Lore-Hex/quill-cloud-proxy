@@ -229,6 +229,8 @@ func parseExaWebSearchParameters(parameters map[string]any, context string) (*ty
 				config.Engine = "exa"
 			case "context.dev":
 				config.Engine = "context.dev"
+			case "parallel":
+				config.Engine = "parallel"
 			default:
 				return nil, &AdapterError{Status: 501, Message: "not_supported_in_alpha", Context: context + ".engine"}
 			}
@@ -299,6 +301,9 @@ func parseExaWebSearchParameters(parameters map[string]any, context string) (*ty
 		default:
 			return nil, unknownRequestParameter(context + "." + key)
 		}
+	}
+	if config.Engine == "parallel" && (config.Mode != "auto" || config.MaxResults > 10) {
+		return nil, &AdapterError{Status: 400, Message: "parallel supports mode auto and up to 10 results", Context: context}
 	}
 	if config.Engine == "context.dev" && config.Mode != "auto" {
 		return nil, &AdapterError{Status: 400, Message: "context.dev supports mode auto only", Context: context + ".mode"}

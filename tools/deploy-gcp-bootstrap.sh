@@ -124,6 +124,7 @@ GREENFERENCE_SECRET="${GREENFERENCE_SECRET:-trustedrouter-greenference-api-key}"
 HIXTUBE_SECRET="${HIXTUBE_SECRET:-trustedrouter-hixtube-api-key}"
 MUNA_SECRET="${MUNA_SECRET:-trustedrouter-muna-api-key}"
 NEGBETA_SECRET="${NEGBETA_SECRET:-trustedrouter-negbeta-api-key}"
+NITO_SECRET="${NITO_SECRET-trustedrouter-nito-api-key}"
 ABLITERATION_SECRET="${ABLITERATION_SECRET:-trustedrouter-abliteration-api-key}"
 CORALBRICKS_SECRET="${CORALBRICKS_SECRET:-trustedrouter-coralbricks-api-key}"
 FORTANIX_SECRET="${FORTANIX_SECRET:-trustedrouter-fortanix-api-key}"
@@ -158,6 +159,7 @@ RUNWAY_SECRET="${RUNWAY_SECRET:-trustedrouter-runway-api-key}"
 KLING_SECRET="${KLING_SECRET:-trustedrouter-kling-api-key}"
 EXA_SECRET="${EXA_SECRET:-trustedrouter-exa-api-key}"
 CONTEXT_DEV_SECRET="${CONTEXT_DEV_SECRET-trustedrouter-context-dev-api-key}"
+PARALLEL_SECRET="${PARALLEL_SECRET-trustedrouter-parallel-api-key}"
 XIAOMI_SECRET="${XIAOMI_SECRET:-trustedrouter-xiaomi-api-key}"
 SYNTH_PANEL_PROMPT_SECRET="${SYNTH_PANEL_PROMPT_SECRET:-trustedrouter-synth-panel-prompt-v1}"
 SYNTH_SYNTHESIS_PROMPT_SECRET="${SYNTH_SYNTHESIS_PROMPT_SECRET:-trustedrouter-synth-synthesis-prompt-v1}"
@@ -310,6 +312,7 @@ for secret in \
   "$HIXTUBE_SECRET" \
   "$MUNA_SECRET" \
   "$NEGBETA_SECRET" \
+  "$NITO_SECRET" \
   "$ABLITERATION_SECRET" \
   "$CORALBRICKS_SECRET" \
   "$FORTANIX_SECRET" \
@@ -344,6 +347,7 @@ for secret in \
   "$KLING_SECRET" \
   "$EXA_SECRET" \
   "$CONTEXT_DEV_SECRET" \
+  "$PARALLEL_SECRET" \
   "$XIAOMI_SECRET" \
   "$SYNTH_PANEL_PROMPT_SECRET" \
   "$SYNTH_SYNTHESIS_PROMPT_SECRET" \

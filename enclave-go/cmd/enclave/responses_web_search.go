@@ -31,6 +31,16 @@ const maxWebSearchCostPerCallMicrodollars = 100_000
 
 var enclaveWebSearchClient websearch.Client
 var enclaveContextSearchClient websearch.Client
+var enclaveParallelSearchClient websearch.Client
+
+func configureParallelSearch(key string) {
+	enclaveParallelSearchClient = nil
+	httpc := llm.NewProviderHTTPClient()
+	httpc.Timeout = 15 * time.Second
+	if c, err := websearch.NewParallelClient(key, httpc); err == nil {
+		enclaveParallelSearchClient = c
+	}
+}
 
 func configureContextSearch(apiKey string) {
 	httpc := llm.NewProviderHTTPClient()
@@ -49,6 +59,9 @@ func selectedWebSearchClient(config *types.ResponseWebSearchConfig) websearch.Cl
 	}
 	if config.Engine == "context.dev" {
 		return enclaveContextSearchClient
+	}
+	if config.Engine == "parallel" {
+		return enclaveParallelSearchClient
 	}
 	return nil
 }
@@ -374,6 +387,9 @@ func webSearchReservationMicrodollars(config *types.ResponseWebSearchConfig) int
 		results = 5
 	}
 	perCall := base + max(0, results-10)*1_000
+	if config.Engine == "parallel" {
+		perCall = websearch.ParallelBasicMicrodollars
+	}
 	if config.Engine == "context.dev" {
 		perCall = websearch.ContextMaxCredits(results) * websearch.ContextCreditMicrodollars
 	}
