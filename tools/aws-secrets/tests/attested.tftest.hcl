@@ -46,6 +46,24 @@ run "attested_keys_have_explicit_deny_boundary" {
     ])
     error_message = "Only named admins manage keys; only the operator seals; host/CI cannot create grants."
   }
+  assert {
+    condition = alltrue([
+      for policy in [module.attested_dublin[0].policy, module.attested_paris[0].policy] :
+      length(jsondecode(policy).Statement) == 6 &&
+      jsondecode(policy).Statement[5] == {
+        Sid       = "RolloutReadsPolicy"
+        Effect    = "Allow"
+        Principal = { AWS = ["arn:aws:iam::330422590279:role/trustedrouter-github-gateway-rollout"] }
+        Action    = ["kms:DescribeKey", "kms:GetKeyPolicy"]
+        Resource  = "*"
+      } &&
+      length([
+        for statement in jsondecode(policy).Statement : statement
+        if strcontains(jsonencode(statement), "trustedrouter-github-gateway-rollout")
+      ]) == 1
+    ])
+    error_message = "The rollout role reads key metadata and the policy, and appears in no other statement."
+  }
 }
 
 run "debug_measurement_is_refused" {

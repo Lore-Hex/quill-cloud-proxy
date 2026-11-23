@@ -48,6 +48,34 @@ The workflow's identity is `trustedrouter-github-gateway-rollout`
 (quill-router `infra/aws_gateway_rollout_role.tf`). The manual procedure
 below remains the fallback and the specification the workflow follows.
 
+The two recipient-only keys hand nothing to IAM, so that role can compare
+their policies with the published set only because each key's own policy
+names it (`RolloutReadsPolicy` in `tools/aws-secrets`, two metadata reads).
+A key policy applied from an older checkout loses that statement, and the
+`kms-widen` wait then never sees the widened set.
+
+### Rehearse before a rollout
+
+Run a rehearsal after the workflow, the role, or the helper scripts change,
+and before the first rollout from a new runner image:
+
+~~~bash
+gh workflow run rollout-aws-gateway.yml --repo Lore-Hex/quill-cloud-proxy --ref main -f release_sha=<full sha> -f bundle_version=2 -f rehearse=true
+~~~
+
+It takes no reservation, opens no PR and writes nothing in AWS. With the
+rollout role on a runner it authenticates the release's manifest, checks the
+published set, the runtime pins and the live endpoint as they stand, and
+verifies every serving member in Paris and then Dublin over SSM against the
+release that member already runs. That is every read and the SSM path a
+rollout uses on its candidate and its refreshed fleet. It does not cover the
+two key policy reads (the `kms-widen` wait retries those for
+`kms_wait_minutes`, long enough to correct a key policy) or any call that
+writes: a template version, an instance, a refresh, a task definition.
+
+A red rehearsal is safe to repeat. Rehearsals and rollouts share one
+concurrency group, so a rehearsal dispatched during a rollout waits for it.
+
 ## 0. Preconditions and rollback record
 
 Start from clean, reviewed, merged main. Required CI must pass. Acquire the

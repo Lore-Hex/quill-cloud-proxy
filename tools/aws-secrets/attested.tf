@@ -24,6 +24,7 @@ module "attested_dublin" {
   administrator_arns = [local.admin_arn, local.operator_arn]
   parent_arn         = "arn:aws:iam::330422590279:role/quill-enclave-role"
   crypto_actions     = local.crypto_actions
+  policy_reader_arns = [local.rollout_arn]
   depends_on         = [aws_iam_role.key_admin]
 }
 
@@ -36,6 +37,7 @@ module "attested_paris" {
   administrator_arns = [local.admin_arn, local.operator_arn]
   parent_arn         = "arn:aws:iam::330422590279:role/quill-enclave-role"
   crypto_actions     = local.crypto_actions
+  policy_reader_arns = [local.rollout_arn]
   depends_on         = [aws_iam_role.key_admin]
 }
 

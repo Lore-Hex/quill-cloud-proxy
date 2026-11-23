@@ -60,6 +60,11 @@ on:
         required: true
         default: "230"
         type: string
+      rehearse:
+        description: "Check the rollout role and the runner against the fleet as it stands; reserve and write nothing"
+        required: false
+        default: false
+        type: boolean
 
 concurrency:
   group: rollout-aws-gateway
@@ -130,8 +135,81 @@ jobs:
             done
           } >> "$GITHUB_STEP_SUMMARY"
 
+  # rehearse=true stops here: no reservation, no trust PR, no template, no
+  # instance. With the rollout role on a runner it repeats, against what is
+  # serving now, the reads and the SSM verification a rollout performs on its
+  # candidate and its refreshed fleet, so a missing permission or tool shows
+  # before a reservation exists rather than after a region was changed.
+  # Not covered: the two key policy reads (the kms-widen wait retries those
+  # for kms_wait_minutes) and every call that writes.
+  rehearse:
+    needs: preflight
+    if: ${{ inputs.rehearse }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    permissions:
+      contents: read
+      id-token: write
+    env:
+      BUNDLE_VERSION: ${{ inputs.bundle_version }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: main
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: Lore-Hex/quill-cloud-proxy/.github/actions/setup-uv@582cbdee7b7023cfeb915b62a7f635aa1e4662b1 # main 2026-11-13
+      - name: Install locked attestation dependencies in isolation
+        run: |
+          set -euo pipefail
+          uv venv "$RUNNER_TEMP/trust-validation"
+          uv export --locked --script tools/verify-attestation.py --output-file "$RUNNER_TEMP/attestation-requirements.txt" >/dev/null
+          uv pip install --python "$RUNNER_TEMP/trust-validation/bin/python" --require-hashes -r "$RUNNER_TEMP/attestation-requirements.txt"
+          echo "$RUNNER_TEMP/trust-validation/bin" >> "$GITHUB_PATH"
+      - uses: Lore-Hex/quill-cloud-proxy/.github/actions/gcp-auth@582cbdee7b7023cfeb915b62a7f635aa1e4662b1 # main 2026-11-13
+        with:
+          workload_identity_provider: projects/44325983244/locations/global/workloadIdentityPools/github-actions/providers/github
+          service_account: tr-deploy@quill-cloud-proxy.iam.gserviceaccount.com
+      - uses: Lore-Hex/quill-cloud-proxy/.github/actions/setup-gcloud@582cbdee7b7023cfeb915b62a7f635aa1e4662b1 # main 2026-11-13
+      - uses: Lore-Hex/quill-cloud-proxy/.github/actions/aws-credentials@582cbdee7b7023cfeb915b62a7f635aa1e4662b1 # main 2026-11-13
+        with:
+          role-to-assume: ${{ env.AWS_ROLLOUT_ROLE_ARN }}
+          aws-region: eu-west-1
+      - uses: Lore-Hex/quill-cloud-proxy/.github/actions/cosign-install@582cbdee7b7023cfeb915b62a7f635aa1e4662b1 # main 2026-11-13
+        with:
+          cosign-release: v2.6.5
+      - name: "Rehearsal: tools and both cloud identities"
+        run: |
+          set -euo pipefail
+          [[ "$BUNDLE_VERSION" =~ ^[1-9][0-9]{0,5}$ ]] || { echo "::error::bundle_version must be a positive integer"; exit 1; }
+          session-manager-plugin --version
+          gcloud auth print-access-token > /dev/null
+          python3 tools/aws_gateway_rollout.py fetch-release --source "$RELEASE_SHA" --out "$RUNNER_TEMP/release"
+      - name: "Rehearsal: published set, runtime pins and live endpoint as they stand"
+        run: bash tools/release-aws-enclave.sh --verify-only
+      - name: "Rehearsal: Paris, every serving member verified over SSM"
+        run: |
+          set -euo pipefail
+          python3 tools/aws_gateway_rollout.py serving --region eu-west-3 --out "$RUNNER_TEMP/serving-eu-west-3.json"
+          python3 tools/aws_gateway_rollout.py fetch-release --source "$(jq -r .source "$RUNNER_TEMP/serving-eu-west-3.json")" \
+            --out "$RUNNER_TEMP/serving-release-eu-west-3"
+          python3 tools/aws_gateway_rollout.py census --region eu-west-3 --version "$(jq -r .version "$RUNNER_TEMP/serving-eu-west-3.json")" \
+            --release "$RUNNER_TEMP/serving-release-eu-west-3/release.json" --manifest "$RUNNER_TEMP/serving-release-eu-west-3/manifest.json" \
+            --signature "$RUNNER_TEMP/serving-release-eu-west-3/manifest.json.bundle" --bundle-version "$BUNDLE_VERSION" --boot-timeout 300
+      - name: "Rehearsal: Dublin, every serving member verified over SSM"
+        run: |
+          set -euo pipefail
+          python3 tools/aws_gateway_rollout.py serving --region eu-west-1 --out "$RUNNER_TEMP/serving-eu-west-1.json"
+          python3 tools/aws_gateway_rollout.py fetch-release --source "$(jq -r .source "$RUNNER_TEMP/serving-eu-west-1.json")" \
+            --out "$RUNNER_TEMP/serving-release-eu-west-1"
+          python3 tools/aws_gateway_rollout.py census --region eu-west-1 --version "$(jq -r .version "$RUNNER_TEMP/serving-eu-west-1.json")" \
+            --release "$RUNNER_TEMP/serving-release-eu-west-1/release.json" --manifest "$RUNNER_TEMP/serving-release-eu-west-1/manifest.json" \
+            --signature "$RUNNER_TEMP/serving-release-eu-west-1/manifest.json.bundle" --bundle-version "$BUNDLE_VERSION" --boot-timeout 300
+          echo "## AWS gateway rollout rehearsal: release \`$RELEASE_SHA\` authenticated, the published state and both serving fleets verified with the rollout role; nothing reserved or written. Not covered: the key policy reads and every write." >> "$GITHUB_STEP_SUMMARY"
+
   admit-cloud:
     needs: preflight
+    if: ${{ !inputs.rehearse }}
     runs-on: ubuntu-latest
     # Same bound as deploy-enclave-gcp.yml: the coordinator's 4 h admission
     # wait plus one whole attempt.

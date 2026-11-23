@@ -9,6 +9,7 @@ variable "operator_arn" { type = string }
 variable "administrator_arns" { type = list(string) }
 variable "parent_arn" { type = string }
 variable "crypto_actions" { type = list(string) }
+variable "policy_reader_arns" { type = list(string) }
 
 locals {
   policy = {
@@ -64,6 +65,17 @@ locals {
         Condition = {
           ArnNotEquals = { "aws:PrincipalArn" = distinct(concat(var.administrator_arns, [var.operator_arn])) }
         }
+      },
+      {
+        # rollout-aws-gateway.yml compares this policy with the published
+        # admission set before and after the key administrator's apply. Two
+        # metadata reads and nothing else: this key hands nothing to IAM, so
+        # the reader's own IAM policy has no effect without this statement.
+        Sid       = "RolloutReadsPolicy"
+        Effect    = "Allow"
+        Principal = { AWS = var.policy_reader_arns }
+        Action    = ["kms:DescribeKey", "kms:GetKeyPolicy"]
+        Resource  = "*"
       },
     ]
   }
