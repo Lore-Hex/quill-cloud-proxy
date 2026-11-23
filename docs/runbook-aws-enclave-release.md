@@ -19,8 +19,21 @@ dispatched on main with the full `release_sha` of a commit whose EIF
 
 ~~~bash
 gh workflow run rollout-aws-gateway.yml --repo Lore-Hex/quill-cloud-proxy --ref main \
-  -f release_sha=<full sha> -f bundle_version=2
+  -f release_sha=<full sha> -f bundle_version=<version>
 ~~~
+
+`bundle_version` is the strict attested bootstrap bundle version every host
+must report once it runs the release, and it has no default. A host reads the
+current sealed bundle when it boots, so unless a newer bundle was sealed
+since the fleet last booted, it is what the fleet reports now:
+
+~~~bash
+curl -s https://api-aws.trustedrouter.com/health | jq .aws_bootstrap.bundle_version
+~~~
+
+A wrong number is refused only when the standalone candidate is verified,
+after the reservation and the widened admission. A rehearsal with the same
+number shows it first.
 
 It acquires the AWS reservation, lands the candidate admission through a PR
 it merges on green, then **waits** for the key administrator's reviewed
@@ -60,7 +73,7 @@ Run a rehearsal after the workflow, the role, or the helper scripts change,
 and before the first rollout from a new runner image:
 
 ~~~bash
-gh workflow run rollout-aws-gateway.yml --repo Lore-Hex/quill-cloud-proxy --ref main -f release_sha=<full sha> -f bundle_version=2 -f rehearse=true
+gh workflow run rollout-aws-gateway.yml --repo Lore-Hex/quill-cloud-proxy --ref main -f release_sha=<full sha> -f bundle_version=<version> -f rehearse=true
 ~~~
 
 It takes no reservation, opens no PR and writes nothing in AWS. With the
@@ -81,10 +94,19 @@ those for `kms_wait_minutes`, long enough to correct a key policy), the
 shared journal and the trust token, or any call that writes: a template
 version, an instance, a refresh, a task definition.
 
-Pass the `bundle_version` the fleet runs now: the serving members are checked
-against it. A red rehearsal is safe to repeat. Rehearsals and rollouts share
-one concurrency group; a rehearsal dispatched during a rollout waits for it,
-and a later dispatch replaces an earlier one that is still waiting.
+Pass the `bundle_version` the fleet reports now: the serving members are
+checked against it, and a mismatch ends the rehearsal red at the first
+region's census.
+
+A rehearsal holds no reservation, so a router deploy can roll the AWS control
+plane services while it runs. Its check of the published set and runtime pins
+refuses a service in the middle of a deployment ("serving pin verification
+failed"); run the rehearsal again once the deploy's AWS step is over. A
+rollout cannot meet this: it holds the AWS reservation that step waits for.
+
+A red rehearsal is safe to repeat. Rehearsals and rollouts share one
+concurrency group; a rehearsal dispatched during a rollout waits for it, and
+a later dispatch replaces an earlier one that is still waiting.
 
 ## 0. Preconditions and rollback record
 

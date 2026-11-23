@@ -45,10 +45,11 @@ on:
         description: "Full 40-hex QCP main commit whose EIF publish-aws-eif.yml already published"
         required: true
         type: string
+      # No default: the number changes whenever a bundle is sealed, and a
+      # stale one stops a rollout at its candidate, after the reservation.
       bundle_version:
-        description: "Expected strict attested bootstrap bundle version on every host"
+        description: "Strict attested bootstrap bundle version every host must report (what /health reports now, unless a newer bundle was sealed since)"
         required: true
-        default: "2"
         type: string
       template_diff_sha256:
         description: "Only after reviewing a failed run's template diff: its printed sha256"

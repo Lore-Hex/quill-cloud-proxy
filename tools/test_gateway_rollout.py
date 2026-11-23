@@ -282,6 +282,18 @@ class WorkflowGuardTests(unittest.TestCase):
         role = workflow["env"]["AWS_ROLLOUT_ROLE_ARN"]
         self.assertEqual(role, "arn:aws:iam::330422590279:role/trustedrouter-github-gateway-rollout")
 
+    def test_aws_bundle_version_must_be_stated(self):
+        # A default goes stale the next time a bundle is sealed, and a stale
+        # number is refused only at the candidate, after the reservation.
+        declared = self.load(AWS_WF)["on"]["workflow_dispatch"]["inputs"]["bundle_version"]
+        self.assertEqual(set(declared), {"description", "required", "type"})
+        self.assertIs(declared["required"], True)
+        self.assertEqual(declared["type"], "string")
+        runbook = (ROOT / "docs/runbook-aws-enclave-release.md").read_text()
+        dispatches = re.findall(r"gh workflow run rollout-aws-gateway\.yml[^~]*?bundle_version=(\S+)", runbook)
+        self.assertEqual(dispatches, ["<version>", "<version>"])
+        self.assertIn("curl -s https://api-aws.trustedrouter.com/health | jq .aws_bootstrap.bundle_version", runbook)
+
     def test_aws_rehearsal_reserves_and_writes_nothing(self):
         workflow = self.load(AWS_WF)
         jobs = workflow["jobs"]
