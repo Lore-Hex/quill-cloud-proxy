@@ -1908,8 +1908,19 @@ func EstimateInputTokens(req *qtypes.OpenAIChatRequest) int {
 	for _, message := range req.Messages {
 		total += qtypes.ContentTokenEstimate(message.Content) + 4
 	}
-	if len(req.Tools) > 0 {
-		if encoded, err := json.Marshal(req.Tools); err == nil {
+	tools := req.Tools
+	if req.Response != nil && req.Response.NativeCustom != nil {
+		// Count the actual declarations, including the grammar, not the
+		// shared chat projection which only carries the tool's name.
+		tools = req.Response.Tools
+		for _, message := range req.Messages {
+			for _, call := range message.ToolCalls {
+				total += (len(call.Function.Name) + len(call.Function.Arguments) + 3) / 4
+			}
+		}
+	}
+	if len(tools) > 0 {
+		if encoded, err := json.Marshal(tools); err == nil {
 			total += len(encoded) / 4
 		}
 	}

@@ -635,6 +635,7 @@ type OpenAIResponsesRequest struct {
 }
 
 type ResponseRequestMeta struct {
+	NativeCustom         *NativeCustomTools
 	Include              []string
 	Modalities           []string
 	InputModalities      []string

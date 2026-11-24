@@ -129,6 +129,24 @@ func invokeProviderStream(
 		selectedRoute.SetFailure(err)
 		_ = pw.CloseWithError(err)
 	}
+	if req.Response != nil && req.Response.NativeCustom != nil {
+		// Intersect with the already authorized candidates; never synthesize
+		// an OpenAI route or put an unsupported provider on the wire.
+		eligible := make([]llm.InvokeOptions, 0, len(options))
+		for _, o := range options {
+			model := strings.TrimPrefix(o.Model, "openai/")
+			if o.Provider == "openai" && o.ProviderAPIKey == "" && strings.EqualFold(o.UsageType, "Credits") &&
+				types.NativeCustomModel(o.Model) && model == strings.TrimPrefix(req.Model, "openai/") &&
+				(o.UpstreamModel == "" || strings.TrimPrefix(o.UpstreamModel, "openai/") == model) {
+				eligible = append(eligible, o)
+			}
+		}
+		if len(eligible) == 0 {
+			finishFailure(&adapter.AdapterError{Status: 400, Context: "tools", Message: "no authorized route supports native custom tools"})
+			return
+		}
+		options = eligible
+	}
 	var winningProvider, winningModel, winningEndpoint string
 	var winningBytes int
 	var winningTTFBms, winningTotalMs int64

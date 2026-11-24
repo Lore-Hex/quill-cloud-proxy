@@ -76,13 +76,14 @@ func isOpenAICompatibleBYOKProvider(provider string) bool {
 }
 
 type openAICompatibleRequest struct {
-	SafetyIdentifier  string        `json:"safety_identifier,omitempty"`
-	Model             string        `json:"model"`
-	Messages          []chatMessage `json:"messages"`
-	Stream            bool          `json:"stream"`
-	UserCacheSecret   string        `json:"user_cache_secret,omitempty"`
-	CacheSalt         string        `json:"cache_salt,omitempty"`
-	SearchContextSize string        `json:"search_context_size,omitempty"`
+	NativeCustom      *qtypes.NativeCustomTools `json:"-"`
+	SafetyIdentifier  string                    `json:"safety_identifier,omitempty"`
+	Model             string                    `json:"model"`
+	Messages          []chatMessage             `json:"messages"`
+	Stream            bool                      `json:"stream"`
+	UserCacheSecret   string                    `json:"user_cache_secret,omitempty"`
+	CacheSalt         string                    `json:"cache_salt,omitempty"`
+	SearchContextSize string                    `json:"search_context_size,omitempty"`
 	// max_tokens vs max_completion_tokens: OpenAI's gpt-5.x family
 	// (gpt-5, gpt-5.1, ..., gpt-5.4, gpt-5.4-mini, gpt-5.4-nano,
 	// gpt-5.5, ...) REQUIRES `max_completion_tokens` and returns
@@ -409,6 +410,9 @@ func invokeOpenAICompatibleStreamingWithClientOptions(
 	}
 	upstreamerror.Open(out)
 	if nativeResponses {
+		if req != nil && req.Response != nil && req.Response.NativeCustom != nil {
+			return translateNativeResponsesStream(resp.Body, out, req.Response.NativeCustom)
+		}
 		return translateOpenAIResponsesStream(resp.Body, out)
 	}
 	if decisionCompletion {
