@@ -92,7 +92,9 @@ func (c *vertexGeminiClient) InvokeStreaming(
 		return &upstreamHTTPError{status: resp.StatusCode, body: string(errBody)}
 	}
 	upstreamerror.Open(out)
-	return translateGeminiStreamToAnthropic(resp.Body, out)
+	// Requests opting into fragments require a terminal event: never turn a
+	// truncated argument stream into a successful tool call.
+	return translateGeminiStreamToAnthropicMode(resp.Body, out, vertexStreamsToolArgs(payload))
 }
 
 // BuildGeminiRequestShape exposes the production native projection for
@@ -102,10 +104,26 @@ func BuildGeminiRequestShape(ctx context.Context, req *qtypes.OpenAIChatRequest,
 }
 
 func vertexGeminiPayload(
+	ctx context.Context, req *qtypes.OpenAIChatRequest, body *qtypes.AnthropicMessagesRequest, modelID string,
+) (map[string]any, error) {
+	id := strings.TrimPrefix(strings.ToLower(modelID), "google/")
+	streamArgs := req.Stream && strings.HasPrefix(id, "gemini-") && geminiVersionAtLeast(id, 3, 0) &&
+		!strings.HasPrefix(id, "gemini-3.1-flash-lite") && !vertexGeminiImageModel(id) && !req.ImageGeneration
+	return geminiPayload(ctx, req, body, modelID, streamArgs)
+}
+
+func vertexStreamsToolArgs(payload map[string]any) bool {
+	config, _ := payload["toolConfig"].(map[string]any)
+	calling, _ := config["functionCallingConfig"].(map[string]any)
+	return calling["streamFunctionCallArguments"] == true
+}
+
+func geminiPayload(
 	ctx context.Context,
 	req *qtypes.OpenAIChatRequest,
 	body *qtypes.AnthropicMessagesRequest,
 	modelID string,
+	streamArgs bool,
 ) (map[string]any, error) {
 	if body != nil && body.NativeContent {
 		// The Messages shim retains Anthropic client tool blocks. Reuse the
@@ -297,7 +315,17 @@ func vertexGeminiPayload(
 	}
 	if toolDecls := geminiToolsFromChat(req.Tools); len(toolDecls) > 0 {
 		payload["tools"] = []map[string]any{{"functionDeclarations": toolDecls}}
-		if toolConfig := geminiToolConfig(req.ToolChoice); toolConfig != nil {
+		toolConfig := geminiToolConfig(req.ToolChoice)
+		if streamArgs {
+			if toolConfig == nil {
+				toolConfig = map[string]any{"functionCallingConfig": map[string]any{}}
+			}
+			calling := toolConfig["functionCallingConfig"].(map[string]any)
+			if calling["mode"] != "NONE" {
+				calling["streamFunctionCallArguments"] = true
+			}
+		}
+		if toolConfig != nil {
 			payload["toolConfig"] = toolConfig
 		}
 	}
@@ -640,7 +668,7 @@ func translateGeminiStreamToAnthropicMode(r io.Reader, w io.Writer, strict bool)
 
 	stopReason := "end_turn"
 	var usage *openAIStreamUsage
-	toolIndex := 1 // index 0 is reserved for the text content block
+	tools := geminiToolStream{index: 1} // index 0 is reserved for text
 	sawTool := false
 	sawTerminal := false
 	var errorTail string
@@ -661,7 +689,7 @@ func translateGeminiStreamToAnthropicMode(r io.Reader, w io.Writer, strict bool)
 		}
 		delta, calls, reason, chunkUsage, err := geminiChunkDelta(payload)
 		if err != nil {
-			if strict {
+			if strict || tools.args != nil {
 				return fmt.Errorf("llm/vertex-gemini-stream: malformed event: %w", err)
 			}
 			continue
@@ -676,24 +704,14 @@ func translateGeminiStreamToAnthropicMode(r io.Reader, w io.Writer, strict bool)
 		}
 		for _, call := range calls {
 			sawTool = true
-			id := fmt.Sprintf("call_%d", toolIndex)
-			if call.Signature != "" {
-				// Carry the thought_signature back on the next turn via the id.
-				id += geminiSignatureDelimiter + call.Signature
-			}
-			if err := writeAnthropicToolStart(w, toolIndex, id, call.Name); err != nil {
+			if err := tools.write(w, call); err != nil {
 				return err
 			}
-			argsJSON, _ := json.Marshal(call.Args)
-			if err := writeAnthropicToolDelta(w, toolIndex, string(argsJSON)); err != nil {
-				return err
-			}
-			if err := writeAnthropicToolStop(w, toolIndex); err != nil {
-				return err
-			}
-			toolIndex++
 		}
 		if reason != "" {
+			if tools.args != nil {
+				return fmt.Errorf("llm/vertex-gemini-stream: incomplete function call at finish reason")
+			}
 			sawTerminal = true
 			stopReason = mapGeminiFinishReason(reason)
 		}
@@ -703,6 +721,9 @@ func translateGeminiStreamToAnthropicMode(r io.Reader, w io.Writer, strict bool)
 	}
 	if strict && !sawTerminal {
 		return fmt.Errorf("llm/vertex-gemini-stream: truncated before terminal finish reason")
+	}
+	if tools.args != nil {
+		return fmt.Errorf("llm/vertex-gemini-stream: incomplete function call at EOF")
 	}
 	// Gemini reports finishReason STOP even when it emitted a functionCall;
 	// surface tool_use so the client/agentic loop sees the tool calls.
@@ -760,16 +781,25 @@ func isGeminiFunctionResponseContent(content map[string]any) bool {
 }
 
 type geminiFunctionCall struct {
-	Name      string
-	Args      map[string]any
-	Signature string
+	Name         string
+	Args         map[string]any
+	PartialArgs  []geminiPartialArg
+	WillContinue bool
+	Signature    string `json:"-"`
 }
 
 func geminiChunkDelta(payload string) (string, []geminiFunctionCall, string, *openAIStreamUsage, error) {
 	var chunk struct {
 		Candidates []struct {
 			Content struct {
-				Parts []map[string]any `json:"parts"`
+				Parts []struct {
+					Text             string
+					Thought          bool
+					ThoughtSignature string
+					FunctionCall     *geminiFunctionCall
+					Inline           *geminiInlineData `json:"inlineData"`
+					InlineSnake      *geminiInlineData `json:"inline_data"`
+				} `json:"parts"`
 			} `json:"content"`
 			FinishReason string `json:"finishReason"`
 		} `json:"candidates"`
@@ -806,54 +836,46 @@ func geminiChunkDelta(payload string) (string, []geminiFunctionCall, string, *op
 	var text strings.Builder
 	var calls []geminiFunctionCall
 	for _, part := range chunk.Candidates[0].Content.Parts {
-		if thought, _ := part["thought"].(bool); thought {
+		if part.Thought {
 			continue
 		}
-		if value, _ := part["text"].(string); value != "" {
-			text.WriteString(value)
+		text.WriteString(part.Text)
+		inline := part.Inline
+		if inline == nil {
+			inline = part.InlineSnake
 		}
-		if dataURL := geminiInlineDataURL(part); dataURL != "" {
+		if dataURL := inline.dataURL(); dataURL != "" {
 			if text.Len() > 0 {
 				text.WriteString("\n")
 			}
 			text.WriteString(dataURL)
 		}
-		if fc, ok := part["functionCall"].(map[string]any); ok {
-			name := stringValue(fc["name"])
-			args, _ := fc["args"].(map[string]any)
-			if args == nil {
-				args = map[string]any{}
-			}
-			calls = append(calls, geminiFunctionCall{
-				Name:      name,
-				Args:      args,
-				Signature: stringValue(part["thoughtSignature"]),
-			})
+		if fc := part.FunctionCall; fc != nil {
+			fc.Signature = part.ThoughtSignature
+			calls = append(calls, *fc)
 		}
 	}
 	return text.String(), calls, chunk.Candidates[0].FinishReason, usage, nil
 }
 
-func geminiInlineDataURL(part map[string]any) string {
-	inline, ok := part["inlineData"].(map[string]any)
-	if !ok {
-		inline, ok = part["inline_data"].(map[string]any)
-	}
-	if !ok {
+type geminiInlineData struct {
+	MimeType  string
+	MimeSnake string `json:"mime_type"`
+	Data      string
+}
+
+func (inline *geminiInlineData) dataURL() string {
+	if inline == nil || inline.Data == "" {
 		return ""
 	}
-	mimeType, _ := inline["mimeType"].(string)
+	mimeType := inline.MimeType
 	if mimeType == "" {
-		mimeType, _ = inline["mime_type"].(string)
+		mimeType = inline.MimeSnake
 	}
 	if mimeType == "" {
 		mimeType = "application/octet-stream"
 	}
-	data, _ := inline["data"].(string)
-	if data == "" {
-		return ""
-	}
-	return "data:" + mimeType + ";base64," + data
+	return "data:" + mimeType + ";base64," + inline.Data
 }
 
 func mapGeminiFinishReason(reason string) string {
