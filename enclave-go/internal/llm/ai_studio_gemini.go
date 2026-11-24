@@ -60,7 +60,7 @@ func (c *aiStudioGeminiClient) InvokeStreaming(
 	if modelID == "" {
 		return fmt.Errorf("llm/google-ai-studio: missing upstream model")
 	}
-	payload, err := vertexGeminiPayload(ctx, req, body, modelID)
+	payload, err := geminiPayload(ctx, req, body, modelID, false)
 	if err != nil {
 		return err
 	}

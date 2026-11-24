@@ -37,6 +37,20 @@ distinguish `incomplete_request_body`, `ambiguous_request_framing`,
 added to the response. The fixed-length upload limit remains 10 MiB; no unsafe
 Content-Length/Transfer-Encoding fallback is introduced.
 
+## Vertex Gemini tool-call arguments
+
+On supported Google Vertex Gemini 3 and later models, send ordinary function
+tools with `stream: true`. No provider-specific parameter is needed. For Chat
+Completions, concatenate `delta.tool_calls[].function.arguments` by tool-call
+index. A fragment may end inside a JSON string; parse and validate the complete
+arguments only after a successful tool-call finish, before executing the tool.
+Discard incomplete calls if the stream fails.
+
+This uses [Vertex's argument streaming](https://docs.cloud.google.com/gemini-enterprise-agent-platform/models/tools/function-calling#streaming_function_call_arguments).
+The gateway does not send this flag to Google AI Studio, on non-streaming
+requests, or for Gemini 3.1 Flash-Lite. An upstream may still return complete
+arguments in one event.
+
 DNS withdrawal is not connection drainage: clients can retain old addresses and
 existing HTTP/1.1 sockets. Shutdown tests cover partial uploads, direct dials to
 cached addresses, idle/pipelined connections, and completion of active requests
