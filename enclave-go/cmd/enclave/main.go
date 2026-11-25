@@ -176,6 +176,7 @@ var responseWriteTimeout = 30 * time.Second
 var errBodyTooLarge = errors.New("request body too large")
 
 func main() {
+	configureRerank()
 	if maple.HelperEntrypoint() {
 		return
 	}
@@ -1053,6 +1054,15 @@ func serveOneRequest(
 			return
 		}
 		serveDecide(ctx, conn, br, body, trGateway, trEnabled, bearer, byokSecrets, idempotencyKey, attribution, requestLogID)
+		return
+	}
+
+	if rerankEnabled && routePath == "/v1/rerank" {
+		if method != "POST" {
+			writeError(conn, 404, "route not found")
+			return
+		}
+		serveRerank(ctx, conn, br, body, trGateway, trEnabled, bearer, idempotencyKey, attribution, requestLogID)
 		return
 	}
 

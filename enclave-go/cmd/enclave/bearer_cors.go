@@ -9,6 +9,9 @@ import (
 // Wildcard origins do not permit credentialed browser requests. Keep browser
 // access scoped to these API routes rather than control-plane/account routes.
 func isBearerCORSRoute(path string) bool {
+	if path == "/v1/rerank" {
+		return rerankEnabled
+	}
 	switch path {
 	case "/v1/chat/completions", "/v1/responses", "/v1/messages",
 		"/v1/embeddings", "/v1/images", "/v1/audio/speech",

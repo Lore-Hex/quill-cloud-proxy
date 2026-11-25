@@ -5,6 +5,10 @@ browser calls to Chat Completions, Responses, Messages, embeddings, images,
 speech, transcription, Responses input-token counting, and key introspection.
 Public model discovery and attestation also support cross-origin reads.
 
+`POST /v1/rerank` and its preflight join this policy only when the gateway
+starts with `TR_RERANK_ENABLED=true`. Rerank is off by default and is not
+available on the confidential-only hostname.
+
 `OPTIONS` on these API routes returns `204` before authentication. Inference
 preflights allow `GET`, `POST`, and `OPTIONS`, with `Authorization` and
 `Content-Type` explicitly allowed. Other request headers, including SDK metadata
