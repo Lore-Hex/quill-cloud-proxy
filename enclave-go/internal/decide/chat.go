@@ -94,7 +94,7 @@ func IsHostedModel(model string) bool {
 const (
 	TrevModelID = "trustedrouter/trev-1.0" // gpt-oss-120b, on the chain below
 	MevModelID  = "trustedrouter/mev-1.0"  // Mercury 2, the fastest native and the cheapest fast one
-	ZevModelID  = "trustedrouter/zev-1.0"  // GLM 5.2 Fast
+	ZevModelID  = "trustedrouter/zev-1.0"  // GLM 5.3 Fast (GLM 5.2 Fast until 2026-11-25)
 	LevModelID  = "trustedrouter/lev-1.0"  // Llama 3.3 70B, the steadiest tail
 	GevModelID  = "trustedrouter/gev-1.0"  // Gemini 3.1 Flash Lite
 	DevModelID  = "trustedrouter/dev-1.0"  // DeepSeek V4.1 Flash
@@ -168,7 +168,11 @@ var DevProviders = []string{
 //     short", which was this table's mistake: Mercury reasons by default, and
 //     with no effort set the reasoning ate the token budget.
 //   - GLM 5.2 Fast (zev-1.0) on Fireworks 340-468 ms, Baseten 616 ms: 29/29,
-//     and about four times trev's price per decision.
+//     and about four times trev's price per decision. Since 2026-11-25 the
+//     name runs GLM 5.3 Fast on the same chain: Baseten, 5.2 Fast's last host,
+//     retires it on 2026-12-24 01:00 UTC and names 5.3 Fast as the successor
+//     (same list price, 1M window, tools and reasoning), so the name moved,
+//     as mev's and gemmev's did. 5.3 Fast is driven the way 5.2 Fast was.
 //   - Llama 3.3 70B (lev-1.0) on SambaNova 371-450 ms with the tightest tail
 //     (worst case 565 ms), then Parasail 927 ms, Together 1576 ms: 29/29. It
 //     does not reason, so there is no effort to set. Novita answered 429.
@@ -197,7 +201,7 @@ var (
 	gptOSS20B       = NativeModel{Providers: []string{"deepinfra"}, ReasoningEffort: "low", Temperature: &zeroTemperature, Format: FormatSchema}
 	gemma426BA4B    = NativeModel{Providers: []string{"nextbit", "wandb", "io-net"}, Temperature: &zeroTemperature, Format: FormatPrompt}
 	mercury3        = NativeModel{Providers: []string{"inception"}, ReasoningEffort: "none", Temperature: &zeroTemperature, Format: FormatPrompt}
-	glm52Fast       = NativeModel{Providers: []string{"fireworks", "baseten"}, ReasoningEffort: "none", Temperature: &zeroTemperature, Format: FormatPrompt}
+	glm53Fast       = NativeModel{Providers: []string{"fireworks", "baseten"}, ReasoningEffort: "none", Temperature: &zeroTemperature, Format: FormatPrompt}
 	llama33         = NativeModel{Providers: []string{"sambanova", "parasail", "together"}, Temperature: &zeroTemperature, Format: FormatPrompt}
 )
 
@@ -208,7 +212,7 @@ var NativeModels = map[string]NativeModel{
 	OevModelID: gptOSS20B, "openai/gpt-oss-20b": gptOSS20B,
 	GemmevModelID: gemma426BA4B, "google/gemma-4-26b-a4b-it": gemma426BA4B,
 	MevModelID: mercury3, "inception/mercury-3": mercury3,
-	ZevModelID: glm52Fast, "z-ai/glm-5.2-fast": glm52Fast,
+	ZevModelID: glm53Fast, "z-ai/glm-5.3-fast": glm53Fast,
 	LevModelID: llama33, "meta-llama/llama-3.3-70b-instruct": llama33,
 }
 
