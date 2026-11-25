@@ -121,3 +121,82 @@ func TestServeOneMessagesCapturedClaudeCodeSystemRole(t *testing.T) {
 		t.Fatal("request was not authorized")
 	}
 }
+
+// A system entry the gateway cannot carry as text is refused before the
+// control plane authorizes anything or a provider is called.
+func TestServeOneMessagesRefusesNonTextSystemEntry(t *testing.T) {
+	for name, entry := range map[string]string{
+		"tool change block": `{"role":"system","content":[{"type":"tool_addition","name":"x"}]}`,
+		"null content":      `{"role":"system","content":null}`,
+		"unknown role":      `{"role":"developer","content":"x"}`,
+	} {
+		t.Run(name, func(t *testing.T) {
+			wantMessage := "unsupported system message content"
+			if name == "unknown role" {
+				wantMessage = "unsupported role"
+			}
+			request := `{"model":"anthropic/claude-opus-5.5","max_tokens":16,"messages":[{"role":"user","content":"U"},` + entry + `]}`
+			gateway := trustedrouter.New("http://127.0.0.1", "test-token", &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
+				if r.URL.Path == "/internal/gateway/validate" {
+					payload := `{"data":{"workspace_id":"ws_system","api_key_hash":"key_system"}}`
+					return &http.Response{StatusCode: 200, Header: make(http.Header), Body: io.NopCloser(strings.NewReader(payload))}, nil
+				}
+				t.Errorf("control plane called at %s for a refused request", r.URL.Path)
+				return nil, fmt.Errorf("unexpected control-plane path %s", r.URL.Path)
+			})})
+			streamer := &fakeStreamingLLM{}
+			server, client := net.Pipe()
+			defer client.Close()
+			if err := client.SetDeadline(time.Now().Add(10 * time.Second)); err != nil {
+				t.Fatal(err)
+			}
+			done := make(chan struct{})
+			go func() {
+				defer close(done)
+				serveOne(context.Background(), server, registryForBearer("system-token"), streamer, nil, nil, gateway, nil)
+			}()
+			if _, err := fmt.Fprintf(client, "POST /v1/messages?beta=true HTTP/1.1\r\nAuthorization: Bearer system-token\r\nanthropic-version: 2023-06-01\r\nContent-Type: application/json\r\nContent-Length: %d\r\nConnection: close\r\n\r\n%s", len(request), request); err != nil {
+				t.Fatal(err)
+			}
+			reader := bufio.NewReader(client)
+			response, err := http.ReadResponse(reader, nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer response.Body.Close()
+			payload, err := io.ReadAll(response.Body)
+			if err != nil {
+				t.Fatal(err)
+			}
+			// The refusal is the only thing written: nothing may follow it.
+			if err := client.SetReadDeadline(time.Now().Add(300 * time.Millisecond)); err != nil {
+				t.Fatal(err)
+			}
+			if extra, _ := io.ReadAll(reader); len(extra) != 0 {
+				t.Fatalf("handler wrote %d more bytes after the refusal: %q", len(extra), extra)
+			}
+			_ = client.Close()
+			select {
+			case <-done:
+			case <-time.After(5 * time.Second):
+				t.Fatal("handler did not finish")
+			}
+			var envelope struct {
+				Type  string `json:"type"`
+				Error struct {
+					Type    string `json:"type"`
+					Message string `json:"message"`
+				} `json:"error"`
+			}
+			if err := json.Unmarshal(payload, &envelope); err != nil {
+				t.Fatalf("body is not JSON: %s", payload)
+			}
+			if response.StatusCode != 400 || envelope.Type != "error" || envelope.Error.Message != wantMessage {
+				t.Fatalf("status=%d body=%s, want 400 %q", response.StatusCode, payload, wantMessage)
+			}
+			if streamer.body != nil || streamer.request != nil {
+				t.Fatalf("provider called for a refused request: %#v", streamer.body)
+			}
+		})
+	}
+}

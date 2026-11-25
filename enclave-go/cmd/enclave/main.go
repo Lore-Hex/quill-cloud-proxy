@@ -2660,6 +2660,12 @@ func serveMessages(
 	native.Messages = messages
 	native.Model = types.CanonicalRouterModelID(native.Model)
 	req := adapter.MessagesToChatShim(&native)
+	if req == nil {
+		// The shim returns nil only for messages the rewrite above refuses.
+		// Answer rather than dereference if the two ever disagree.
+		writeAnthropicError(conn, 400, "invalid messages request")
+		return
+	}
 	req.IdempotencyKey = idempotencyKey
 	applyAttributionHeaders(req, attribution)
 	if err := validateOrObserveRequestMetadata(req, requestLogID); err != nil {
