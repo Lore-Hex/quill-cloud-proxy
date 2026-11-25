@@ -178,6 +178,54 @@ class RolloutSafetyTests(unittest.TestCase):
             self.assertIn("TR_ASYNC_SETTLE_SHADOW", policy)
             self.assertIn("TR_ASYNC_SETTLE_NEGOTIATE", policy)
 
+    def test_rerank_rollout_is_gcp_multi_only(self) -> None:
+        gcp = (ROOT / "tools/deploy-gcp-mig.sh").read_text()
+        self.assertIn('TR_RERANK_ENABLED="${TR_RERANK_ENABLED-true}"', gcp)
+        self.assertIn('|tee-env-TR_RERANK_ENABLED=${TR_RERANK_ENABLED}|', gcp)
+        for settings, expected in (({}, "true"), ({"TR_RERANK_ENABLED": "true"}, "true"),
+                                   ({"TR_RERANK_ENABLED": "false"}, "false")):
+            with self.subTest(settings=settings):
+                completed, _ = self._spend_lease_deploy_preflight(**settings)
+                self.assertEqual(completed.returncode, 0, completed.stderr)
+                entries = completed.stdout.strip().split("|")
+                self.assertEqual(
+                    [entry for entry in entries if entry.startswith("tee-env-TR_RERANK_ENABLED=")],
+                    [f"tee-env-TR_RERANK_ENABLED={expected}"],
+                )
+
+        aws = (ROOT / "enclave-go/Dockerfile.enclave").read_text()
+        self.assertIn("ARG TR_RERANK_ENABLED=false\n", aws)
+        self.assertIn("ENV TR_RERANK_ENABLED=${TR_RERANK_ENABLED}\n", aws)
+        aws_paths = [ROOT / "enclave-go/Dockerfile.enclave", ROOT / ".github/workflows/deploy.yml",
+                     ROOT / "tools/verify-pcr0.sh", ROOT / "tools/verify-build.sh"]
+        for directory in ("tools", ".github/workflows", "parent"):
+            aws_paths.extend(path for path in (ROOT / directory).rglob("*")
+                             if path.is_file() and "aws" in str(path.relative_to(ROOT)).lower()
+                             and path.suffix in (".sh", ".py", ".yml", ".json", ".tf")
+                             and not path.name.startswith("test"))
+        for path in aws_paths:
+            with self.subTest(path=path.relative_to(ROOT)):
+                self.assertNotIn("TR_RERANK_ENABLED=true", path.read_text())
+
+        for name in ("tools/deploy-azure-aci.sh", "enclave-go/Dockerfile.enclave.azure.multi",
+                     "tools/azure-seal-bundle.py", "tools/azure-bundle.manifest",
+                     "tools/bootstrap-azure-region.sh", ".github/workflows/rollout-azure-gateway.yml"):
+            with self.subTest(path=name):
+                self.assertNotIn("TR_RERANK_ENABLED", (ROOT / name).read_text())
+        for suffix in ("gcp", "gcp.anthropic"):
+            self.assertNotIn("TR_RERANK_ENABLED",
+                             (ROOT / f"enclave-go/Dockerfile.enclave.{suffix}").read_text())
+
+    def test_rerank_deploy_refuses_non_boolean_values_before_cloud_calls(self) -> None:
+        for value in ("", "on", "off", "1", "0", "TRUE", "False", " true", "true ",
+                      "true|tee-env-QUILL_KEEPALIVE=off", "true\n"):
+            with self.subTest(value=value):
+                completed, calls = self._spend_lease_deploy_preflight(TR_RERANK_ENABLED=value)
+                self.assertNotEqual(completed.returncode, 0)
+                self.assertIn("expected true or false", completed.stderr)
+                self.assertEqual(calls, [])
+                self.assertNotIn("--metadata=", completed.stdout)
+
     def test_async_settlement_keyring_is_one_canonical_ed25519_key(self) -> None:
         parsed = json.loads(ASYNC_SETTLE_KEYRING)
         self.assertEqual(list(parsed), ["tr-async-settle-2026-10a"])
@@ -424,6 +472,7 @@ class RolloutSafetyTests(unittest.TestCase):
         )
         self.assertIsNotNone(label_match, "GCP image env allowlist label is missing")
         allowed = set(label_match.group(1).split(","))
+        self.assertIn("TR_RERANK_ENABLED", allowed)
 
         explicit_envs = set(re.findall(r"tee-env-([A-Z][A-Z0-9_]+)=", deploy))
         optional_envs = set(
@@ -434,6 +483,7 @@ class RolloutSafetyTests(unittest.TestCase):
             )
         )
         deployed = explicit_envs | optional_envs
+        self.assertIn("TR_RERANK_ENABLED", deployed)
         self.assertTrue(deployed, "GCP deploy env discovery is vacuous")
         self.assertEqual(
             deployed - allowed,
