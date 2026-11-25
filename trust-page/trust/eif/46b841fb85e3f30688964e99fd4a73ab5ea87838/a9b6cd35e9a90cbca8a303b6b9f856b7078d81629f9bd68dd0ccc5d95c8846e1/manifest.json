@@ -1,0 +1,14 @@
+{
+  "builder_image": "330422590279.dkr.ecr.eu-west-1.amazonaws.com/quill-enclave-eif-builder@sha256:7367ca7473a74d70433aa29bbce60ecef6aa0f713f7a361e18f90cd4c1044c06",
+  "eif_sha256": "a9b6cd35e9a90cbca8a303b6b9f856b7078d81629f9bd68dd0ccc5d95c8846e1",
+  "eif_size_bytes": 605500048,
+  "enclave_image_id": "sha256:1d24369a34b1654ca895bfdff4376e7808dfd2a649d32ab8038287ffc5757cad",
+  "measurements": {
+    "PCR0": "49b062de2a00f23411ab1be38a579aeb63aa5cd0e8fc4afe803b6fcf1bcdc8fb9e4875d0e197d0fa0fe61736c084aa47",
+    "PCR1": "0343b056cd8485ca7890ddd833476d78460aed2aa161548e4e26bedf321726696257d623e8805f3f605946b3d8b0c6aa",
+    "PCR2": "ed573d6cc4dcf4a44f68bde49f23d7b95272e19ff31d4f035a66d3ba54dc9389fd6a344dce55981d16a429f472764ea7"
+  },
+  "nitro_cli_version": "1.5.3",
+  "schema": "trustedrouter.aws-eif.v1",
+  "source_commit": "46b841fb85e3f30688964e99fd4a73ab5ea87838"
+}
