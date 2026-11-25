@@ -670,7 +670,7 @@ func TestEveryNamedDecisionModelIsDrivenOnItsOwnHostAndAnswersUnderItsName(t *te
 		// And nextbit here: its native id for the same model looks nothing alike.
 		decide.GemmevModelID: {"nextbit,wandb,io-net", "google/gemma-4-26b-a4b-it", "nextbit", "gemma4:26b-a4b"},
 		decide.MevModelID:    {"inception", "inception/mercury-3", "inception", "mercury-3"},
-		decide.ZevModelID:    {"fireworks,baseten", "z-ai/glm-5.2-fast", "fireworks", "accounts/fireworks/routers/glm-5p2-fast"},
+		decide.ZevModelID:    {"fireworks,baseten", "z-ai/glm-5.3-fast", "fireworks", "accounts/fireworks/routers/glm-5p3-fast"},
 		decide.LevModelID:    {"sambanova,parasail,together", "meta-llama/llama-3.3-70b-instruct", "sambanova", "Meta-Llama-3.3-70B-Instruct"},
 	} {
 		var authorized, settled []map[string]any

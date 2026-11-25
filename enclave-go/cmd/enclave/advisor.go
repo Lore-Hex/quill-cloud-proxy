@@ -85,17 +85,21 @@ var defaultAdvisorWorkerModels = []string{
 
 // Released named presets are immutable. New component graphs require a new
 // public version; G1/G2 and all prior Socrates/Athena graphs stay frozen.
+// The one exception is a provider-forced swap, as Liberty 4.0's Nemotron 3
+// Ultra for 3.5 Super (#723): when a member's last host retires it, its named
+// successor takes the same slot. GLM 5.3 Fast replaced GLM 5.2 Fast this way
+// on 2026-11-25 (Baseten retires 5.2 Fast on 2026-12-24 01:00 UTC).
 var socrates11WorkerModels = []string{
 	"xiaomi/mimo-v2.5-pro-ultraspeed",
 	"minimax/minimax-m3",
-	"z-ai/glm-5.2-fast",
+	"z-ai/glm-5.3-fast",
 	"deepseek/deepseek-v4-flash",
 }
 
 var socrates20WorkerModels = []string{
 	"xiaomi/mimo-v2.5-pro-ultraspeed",
 	"minimax/minimax-m3",
-	"z-ai/glm-5.2-fast",
+	"z-ai/glm-5.3-fast",
 	deepSeekV4Pro0813Model,
 }
 
@@ -202,13 +206,13 @@ func advisorPresetForModel(model string) (advisorConfig, bool) {
 	case trustedRouterAristotle11Model:
 		return advisorConfig{
 			Enabled:       true,
-			WorkerModels:  []string{"z-ai/glm-5.2-fast", "z-ai/glm-5.2"},
+			WorkerModels:  []string{"z-ai/glm-5.3-fast", "z-ai/glm-5.2"},
 			AdvisorModels: []string{trustedRouterZeus10Model},
 		}, true
 	case trustedRouterAristotleModel, trustedRouterAristotle20Model:
 		return advisorConfig{
 			Enabled:       true,
-			WorkerModels:  []string{"z-ai/glm-5.2-fast", "z-ai/glm-5.2"},
+			WorkerModels:  []string{"z-ai/glm-5.3-fast", "z-ai/glm-5.2"},
 			AdvisorModels: []string{trustedRouterZeus20Model},
 		}, true
 	case trustedRouterPlato10Model:
@@ -275,7 +279,7 @@ func advisorPresetForModel(model string) (advisorConfig, bool) {
 	case trustedRouterOpenPatcherFast1Model:
 		return advisorConfig{
 			Enabled:              true,
-			WorkerModels:         []string{"z-ai/glm-5.2-fast"},
+			WorkerModels:         []string{"z-ai/glm-5.3-fast"},
 			AdvisorModels:        []string{trustedRouterOpenPatcherA1Model},
 			ProviderJurisdiction: providerJurisdictionUS,
 		}, true
@@ -296,7 +300,7 @@ func advisorPresetForModel(model string) (advisorConfig, bool) {
 	case trustedRouterAthena10Model:
 		return advisorConfig{
 			Enabled:              true,
-			WorkerModels:         []string{"z-ai/glm-5.2-fast", "z-ai/glm-5.2"},
+			WorkerModels:         []string{"z-ai/glm-5.3-fast", "z-ai/glm-5.2"},
 			AdvisorModels:        []string{trustedRouterZeus10MiniModel, fusionCodeKimi, fusionGeneralKimi},
 			HidePublicMetadata:   true,
 			ProviderJurisdiction: providerJurisdictionUS,
@@ -304,7 +308,7 @@ func advisorPresetForModel(model string) (advisorConfig, bool) {
 	case trustedRouterAthenaModel, trustedRouterAthena20Model:
 		return advisorConfig{
 			Enabled:              true,
-			WorkerModels:         []string{"z-ai/glm-5.2-fast", "z-ai/glm-5.2"},
+			WorkerModels:         []string{"z-ai/glm-5.3-fast", "z-ai/glm-5.2"},
 			AdvisorModels:        []string{trustedRouterZeus20Model, fusionCodeKimi, fusionGeneralKimi},
 			HidePublicMetadata:   true,
 			ProviderJurisdiction: providerJurisdictionUS,
@@ -337,7 +341,7 @@ func advisorPresetForModel(model string) (advisorConfig, bool) {
 func openPatcherG1AdvisorConfig(hidePublicMetadata bool) advisorConfig {
 	return advisorConfig{
 		Enabled:              true,
-		WorkerModels:         []string{"z-ai/glm-5.2-fast", "z-ai/glm-5.2"},
+		WorkerModels:         []string{"z-ai/glm-5.3-fast", "z-ai/glm-5.2"},
 		AdvisorModels:        []string{fusionCodeKimi, trustedRouterPrometheus101MModel},
 		HidePublicMetadata:   hidePublicMetadata,
 		ProviderJurisdiction: providerJurisdictionUS,
