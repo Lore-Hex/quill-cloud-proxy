@@ -18,8 +18,8 @@ import (
 // {model, texts, input_type, embedding_types} and returns
 // {embeddings:{float:[[...]]}, meta:{billed_units:{input_tokens}}}. We adapt
 // that to the OpenAI embeddings envelope. Cohere chat (command-*) is a
-// different non-OpenAI shape and is not wired — TR only catalogs Cohere
-// embedding models today.
+// different non-OpenAI shape and is not wired. Text rerank is implemented
+// separately in multi_rerank.go.
 const cohereBaseURL = "https://api.cohere.com/v2"
 
 type cohereClient struct {
@@ -57,7 +57,7 @@ func newCohere(apiKey string) *cohereClient {
 }
 
 // InvokeStreaming satisfies the Client interface so cohere can sit in the
-// multi dispatcher, but chat is not served — only embeddings.
+// multi dispatcher, but chat is not served.
 func (c *cohereClient) InvokeStreaming(
 	ctx context.Context,
 	req *qtypes.OpenAIChatRequest,

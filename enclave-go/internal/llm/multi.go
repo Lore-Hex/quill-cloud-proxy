@@ -99,10 +99,9 @@ func New(boot *qtypes.BootstrapData) Client {
 		azure:           newAzure(boot.AzureAPIKey),
 		// Xiaomi MiMo — OpenAI-compatible chat completions at api.xiaomimimo.com/v1.
 		xiaomi: newOpenAICompatible("xiaomi", boot.XiaomiAPIKey),
-		// Cohere — embeddings only (native /v2/embed). Its InvokeStreaming
-		// returns an error; embeddings dispatch is in multi_embeddings.go.
+		// Cohere — native embeddings and text rerank. Chat is not served.
 		cohere: newCohere(boot.CohereAPIKey),
-		// Voyage — embeddings only (OpenAI-shaped /v1/embeddings).
+		// Voyage — OpenAI-shaped embeddings and native text rerank.
 		voyage: newOpenAICompatible("voyage", boot.VoyageAPIKey),
 	}
 }

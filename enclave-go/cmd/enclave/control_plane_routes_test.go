@@ -75,7 +75,7 @@ func TestControlPlaneDiscoveryLeavesGatewayRoutes(t *testing.T) {
 		"/health", "/attestation", "/receipt-key", "/receipt-attestation",
 		"/v1/key", "/v1/key/", "/v1/models", "/v1/models/openai/gpt-5.5",
 		"/v1/chat/completions", "/v1/responses", "/v1/responses/input_tokens", "/v1/messages",
-		"/v1/embeddings", "/v1/images/generations", "/v1/videos", "/v1/files", "/v1/batches",
+		"/v1/embeddings", "/v1/rerank", "/v1/images/generations", "/v1/videos", "/v1/files", "/v1/batches",
 		"/v1/keys-extra", "/v1/creditsXYZ", "/v1/workspaces-extra", "/v1/authorization", "/v1/unknown", "/other/v1/keys",
 	} {
 		t.Run(path, func(t *testing.T) {

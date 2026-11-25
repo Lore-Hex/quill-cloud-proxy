@@ -160,6 +160,8 @@ ENV QUILL_ENCLAVE_TLS=true
 #     dependency, so /attestation serves the moment the enclave is up.
 #
 # Defaults preserve the previous ACME behaviour so nothing else changes.
+ARG TR_RERANK_ENABLED=false
+ENV TR_RERANK_ENABLED=${TR_RERANK_ENABLED}
 ARG QUILL_BILLING_402_BACKOFF_MS=5000
 ENV QUILL_BILLING_402_BACKOFF_MS=${QUILL_BILLING_402_BACKOFF_MS}
 ARG QUILL_TLS_MODE=acme

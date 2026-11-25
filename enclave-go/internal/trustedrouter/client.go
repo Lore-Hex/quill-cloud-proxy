@@ -1133,6 +1133,9 @@ func (c *Client) AuthorizeEmbeddingsWithRouteSync(ctx context.Context, bearer st
 }
 
 func (c *Client) authorizeEmbeddingsWithRoute(ctx context.Context, bearer string, req *qtypes.EmbeddingRequest, inputTokens int, routeType string, allowAsync bool) (*Authorization, error) {
+	if routeType == "rerank" {
+		ctx = context.WithValue(ctx, rerankSyncKey{}, true)
+	}
 	if err := rejectRetiredModels(req.Model, nil); err != nil {
 		return nil, err
 	}
@@ -1163,6 +1166,9 @@ func (c *Client) authorizeEmbeddingsWithRoute(ctx context.Context, bearer string
 		"region":                 c.region,
 		"route_type":             routeType,
 		"idempotency_key":        idempotencyKey,
+	}
+	if routeType == "rerank" {
+		body["stream"] = false
 	}
 	markIdempotencyKeySource(body, minted)
 	if req.Provider != nil {
@@ -1260,6 +1266,9 @@ type SettleResult struct {
 }
 
 func (c *Client) Settle(ctx context.Context, auth *Authorization, usage Usage) (result *SettleResult, err error) {
+	if auth != nil && auth.RouteType == "rerank" {
+		ctx = context.WithValue(ctx, rerankSyncKey{}, true)
+	}
 	phases := requesttiming.FromContext(ctx)
 	settleStarted := phases.Now()
 	defer func() {
@@ -1635,10 +1644,10 @@ func (c *Client) postToControlPlaneWithBootAuth(
 		if c.openAISafety && path == "/internal/gateway/authorize" {
 			req.Header.Set("X-TR-OpenAI-Safety", "v1")
 		}
-		if c.asyncShadow && path == "/internal/gateway/authorize" {
+		if c.asyncShadow && path == "/internal/gateway/authorize" && ctx.Value(rerankSyncKey{}) != true {
 			req.Header.Set(shadowPolicyHeader, shadowPolicyV2)
 		}
-		if mode, _ := ctx.Value(asyncModeKey{}).(string); (mode == "async-v1" || mode == "sync") && (path == "/internal/gateway/authorize" || path == "/internal/gateway/settle") {
+		if mode, _ := ctx.Value(asyncModeKey{}).(string); ctx.Value(rerankSyncKey{}) != true && (mode == "async-v1" || mode == "sync") && (path == "/internal/gateway/authorize" || path == "/internal/gateway/settle") {
 			req.Header.Set(asyncSettlementHeader, mode)
 		}
 		if header, _ := ctx.Value(shadowHeaderKey{}).(string); header != "" && (path == "/internal/gateway/settle" || path == "/internal/gateway/refund") {
