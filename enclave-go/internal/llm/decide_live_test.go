@@ -87,10 +87,10 @@ var liveUpstream = map[string]string{
 	decide.OevModelID:                   "openai/gpt-oss-20b",
 	decide.GemmevModelID:                "gemma4:26b-a4b",
 	"inception/mercury-3":               "mercury-3",
-	"z-ai/glm-5.2-fast":                 "accounts/fireworks/routers/glm-5p2-fast",
+	"z-ai/glm-5.3-fast":                 "accounts/fireworks/routers/glm-5p3-fast",
 	"meta-llama/llama-3.3-70b-instruct": "Meta-Llama-3.3-70B-Instruct",
 	decide.MevModelID:                   "mercury-3",
-	decide.ZevModelID:                   "accounts/fireworks/routers/glm-5p2-fast",
+	decide.ZevModelID:                   "accounts/fireworks/routers/glm-5p3-fast",
 	decide.LevModelID:                   "Meta-Llama-3.3-70B-Instruct",
 }
 
