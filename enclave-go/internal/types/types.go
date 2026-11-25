@@ -95,11 +95,11 @@ type BootstrapData struct {
 	TogetherAPIKey    string `json:"together_api_key,omitempty"`
 	FireworksAPIKey   string `json:"fireworks_api_key,omitempty"`
 
-	// Cohere — embeddings only for now (native /v2/embed). Optional like
+	// Cohere — native embeddings and text rerank. Optional like
 	// every other provider key; only the llm_multi build reads it.
 	CohereAPIKey string `json:"cohere_api_key,omitempty"`
 
-	// Voyage AI — embeddings only (OpenAI-shaped /v1/embeddings). Optional;
+	// Voyage AI — embeddings and text rerank. Optional;
 	// only the llm_multi build reads it.
 	VoyageAPIKey string `json:"voyage_api_key,omitempty"`
 

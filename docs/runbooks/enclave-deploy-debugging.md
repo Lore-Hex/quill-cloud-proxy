@@ -162,6 +162,15 @@ To put workload lines back on the serial console for one debugging deploy, set
 backs the console up, which stalls the launcher's token handler and turns
 `/attestation` into 503s.
 
+Rerank is on for the GCP multi-provider gateway fleet through
+`tee-env-TR_RERANK_ENABLED=true`; AWS and Azure remain off. The Vertex-only
+and Anthropic-only GCP images remain off. To turn it off again, run the GCP
+rollout with `TR_RERANK_ENABLED=false`, which sets
+`tee-env-TR_RERANK_ENABLED=false` in each new instance template; complete the
+rollout so every gateway restarts with that value. Only exact `true` and
+`false` are accepted. The control plane must enable the provider's rerank
+flag first, or a rerank request is refused.
+
 Common substring → cause:
 
 - **`env var ... is not allowed to be overridden on this image`** —

@@ -223,7 +223,7 @@ func (c *Client) registerAttestedBoot(ctx context.Context, signer *receipt.Signe
 }
 
 // authorizeAtDecodeSeam is the only authorize POST/decode seam. All public
-// chat, messages, responses, embeddings, images, fusion, partner, batch, and
+// chat, messages, responses, embeddings, rerank, images, fusion, partner, batch, and
 // video paths inherit its echo/sign/verify behavior through the two authorize
 // entry points.
 func (c *Client) authorizeAtDecodeSeam(

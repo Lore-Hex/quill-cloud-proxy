@@ -176,7 +176,7 @@ func TestNativeModelListIsPinned(t *testing.T) {
 		decide.GemmevModelID: "nextbit,wandb,io-net",
 		// The three fast ones, and the chat models behind them.
 		decide.MevModelID: "inception", "inception/mercury-3": "inception",
-		decide.ZevModelID: "fireworks,baseten", "z-ai/glm-5.2-fast": "fireworks,baseten",
+		decide.ZevModelID: "fireworks,baseten", "z-ai/glm-5.3-fast": "fireworks,baseten",
 		decide.LevModelID: "sambanova,parasail,together", "meta-llama/llama-3.3-70b-instruct": "sambanova,parasail,together",
 	}
 	// A name's reasoning setting and output format are part of what it
@@ -191,7 +191,7 @@ func TestNativeModelListIsPinned(t *testing.T) {
 		decide.OevModelID:    {"openai/gpt-oss-20b", "low", decide.FormatSchema},
 		decide.GemmevModelID: {"google/gemma-4-26b-a4b-it", "", decide.FormatPrompt},
 		decide.MevModelID:    {"inception/mercury-3", "none", decide.FormatPrompt},
-		decide.ZevModelID:    {"z-ai/glm-5.2-fast", "none", decide.FormatPrompt},
+		decide.ZevModelID:    {"z-ai/glm-5.3-fast", "low", decide.FormatPrompt},
 		decide.LevModelID:    {"meta-llama/llama-3.3-70b-instruct", "", decide.FormatPrompt},
 	} {
 		named := decide.NativeModels[name]

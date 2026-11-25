@@ -17,6 +17,9 @@ func billingBackoffRoute(method, route string) bool {
 	if method != http.MethodPost {
 		return false
 	}
+	if route == "/v1/rerank" {
+		return rerankEnabled
+	}
 	switch route {
 	case "/v1/chat/completions", "/v1/responses", "/v1/messages", "/v1/embeddings", "/v1/images", "/v1/audio/speech", "/v1/tools/fetch":
 		return true

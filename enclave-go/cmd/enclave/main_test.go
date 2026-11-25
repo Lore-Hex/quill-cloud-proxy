@@ -4247,9 +4247,9 @@ func TestServeOneOpenPatcherG1PreservesAliasAndReportsAdvisorUsage(t *testing.T)
 	trGateway, _, cleanup := newFusionGatewayRecorder(t)
 	defer cleanup()
 	streamer := &advisorScriptedLLM{
-		callAdviceForModels: map[string]bool{"z-ai/glm-5.2-fast": true},
+		callAdviceForModels: map[string]bool{"z-ai/glm-5.3-fast": true},
 		reasoningByModel: map[string]int{
-			"z-ai/glm-5.2-fast":              11,
+			"z-ai/glm-5.3-fast":              11,
 			fusionCodeKimi:                   17,
 			trustedRouterPrometheus101MModel: 19,
 			// The nested Prometheus 1.0 1M advisor's judge.
@@ -4299,7 +4299,7 @@ func TestServeOneOpenPatcherG1PreservesAliasAndReportsAdvisorUsage(t *testing.T)
 	}
 	if details["router"] != trustedRouterOpenPatcherG1Model ||
 		details["primitive"] != trustedRouterAdvisorModel ||
-		details["selected_model"] != "z-ai/glm-5.2-fast" ||
+		details["selected_model"] != "z-ai/glm-5.3-fast" ||
 		details["advice_call_count"] != float64(1) {
 		t.Fatalf("advisor details = %#v", details)
 	}
@@ -4309,7 +4309,7 @@ func TestServeOneOpenPatcherG1PreservesAliasAndReportsAdvisorUsage(t *testing.T)
 	}
 	if providerUsage["router"] != trustedRouterOpenPatcherG1Model ||
 		providerUsage["primitive"] != trustedRouterAdvisorModel ||
-		providerUsage["selected_model"] != "z-ai/glm-5.2-fast" ||
+		providerUsage["selected_model"] != "z-ai/glm-5.3-fast" ||
 		providerUsage["advice_call_count"] != float64(1) ||
 		providerUsage["reasoning_tokens"] != float64(45) {
 		t.Fatalf("provider_usage = %#v", providerUsage)
@@ -4478,9 +4478,9 @@ func TestServeOneAthenaPreservesAliasAndReportsRedactedAdvisorCounters(t *testin
 	trGateway, _, cleanup := newFusionGatewayRecorder(t)
 	defer cleanup()
 	streamer := &advisorScriptedLLM{
-		callAdviceForModels: map[string]bool{"z-ai/glm-5.2-fast": true},
+		callAdviceForModels: map[string]bool{"z-ai/glm-5.3-fast": true},
 		reasoningByModel: map[string]int{
-			"z-ai/glm-5.2-fast": 11,
+			"z-ai/glm-5.3-fast": 11,
 			"z-ai/glm-5.2":      17,
 		},
 	}
@@ -4549,7 +4549,7 @@ func TestServeOneAthenaPreservesAliasAndReportsRedactedAdvisorCounters(t *testin
 	encoded := string(bodyBytes)
 	for _, forbidden := range []string{
 		`"trustedrouter"`,
-		`"model":"z-ai/glm-5.2-fast"`,
+		`"model":"z-ai/glm-5.3-fast"`,
 		`"model":"z-ai/glm-5.2"`,
 		`"model":"` + fusionCodeKimi + `"`,
 		`"model":"` + fusionGeneralKimi + `"`,
@@ -4627,9 +4627,9 @@ func TestServeOneAthenaStreamingHidesAdvisorMetadata(t *testing.T) {
 	trGateway, _, cleanup := newFusionGatewayRecorder(t)
 	defer cleanup()
 	streamer := &advisorScriptedLLM{
-		callAdviceForModels: map[string]bool{"z-ai/glm-5.2-fast": true},
+		callAdviceForModels: map[string]bool{"z-ai/glm-5.3-fast": true},
 		reasoningByModel: map[string]int{
-			"z-ai/glm-5.2-fast": 11,
+			"z-ai/glm-5.3-fast": 11,
 			"z-ai/glm-5.2":      17,
 		},
 	}
@@ -4677,7 +4677,7 @@ func TestServeOneAthenaStreamingHidesAdvisorMetadata(t *testing.T) {
 	}
 	for _, forbidden := range []string{
 		`"trustedrouter"`,
-		`"model":"z-ai/glm-5.2-fast"`,
+		`"model":"z-ai/glm-5.3-fast"`,
 		`"model":"z-ai/glm-5.2"`,
 		`"model":"` + fusionCodeKimi + `"`,
 		`"model":"` + fusionGeneralKimi + `"`,
@@ -5143,17 +5143,17 @@ func TestAdvisorComboPresetsConfigureWorkerAndAdvisorModels(t *testing.T) {
 		},
 		{
 			model:    trustedRouterAristotle11Model,
-			workers:  []string{"z-ai/glm-5.2-fast", "z-ai/glm-5.2"},
+			workers:  []string{"z-ai/glm-5.3-fast", "z-ai/glm-5.2"},
 			advisors: []string{trustedRouterZeus10Model},
 		},
 		{
 			model:    trustedRouterAristotle20Model,
-			workers:  []string{"z-ai/glm-5.2-fast", "z-ai/glm-5.2"},
+			workers:  []string{"z-ai/glm-5.3-fast", "z-ai/glm-5.2"},
 			advisors: []string{trustedRouterZeus20Model},
 		},
 		{
 			model:    trustedRouterAristotleModel,
-			workers:  []string{"z-ai/glm-5.2-fast", "z-ai/glm-5.2"},
+			workers:  []string{"z-ai/glm-5.3-fast", "z-ai/glm-5.2"},
 			advisors: []string{trustedRouterZeus20Model},
 		},
 		{
@@ -5198,17 +5198,17 @@ func TestAdvisorComboPresetsConfigureWorkerAndAdvisorModels(t *testing.T) {
 		},
 		{
 			model:    trustedRouterSocratesProPlus10Model,
-			workers:  []string{"xiaomi/mimo-v2.5-pro-ultraspeed", "minimax/minimax-m3", "z-ai/glm-5.2-fast", "deepseek/deepseek-v4-flash"},
+			workers:  []string{"xiaomi/mimo-v2.5-pro-ultraspeed", "minimax/minimax-m3", "z-ai/glm-5.3-fast", "deepseek/deepseek-v4-flash"},
 			advisors: []string{trustedRouterZeus10Model},
 		},
 		{
 			model:    trustedRouterSocrates11Model,
-			workers:  []string{"xiaomi/mimo-v2.5-pro-ultraspeed", "minimax/minimax-m3", "z-ai/glm-5.2-fast", "deepseek/deepseek-v4-flash"},
+			workers:  []string{"xiaomi/mimo-v2.5-pro-ultraspeed", "minimax/minimax-m3", "z-ai/glm-5.3-fast", "deepseek/deepseek-v4-flash"},
 			advisors: []string{trustedRouterZeus10Model},
 		},
 		{
 			model:    trustedRouterSocrates20Model,
-			workers:  []string{"xiaomi/mimo-v2.5-pro-ultraspeed", "minimax/minimax-m3", "z-ai/glm-5.2-fast", deepSeekV4Pro0813Model},
+			workers:  []string{"xiaomi/mimo-v2.5-pro-ultraspeed", "minimax/minimax-m3", "z-ai/glm-5.3-fast", deepSeekV4Pro0813Model},
 			advisors: []string{trustedRouterZeus20Model},
 		},
 		{
@@ -5224,13 +5224,13 @@ func TestAdvisorComboPresetsConfigureWorkerAndAdvisorModels(t *testing.T) {
 		},
 		{
 			model:        trustedRouterOpenPatcherFast1Model,
-			workers:      []string{"z-ai/glm-5.2-fast"},
+			workers:      []string{"z-ai/glm-5.3-fast"},
 			advisors:     []string{trustedRouterOpenPatcherA1Model},
 			jurisdiction: providerJurisdictionUS,
 		},
 		{
 			model:        trustedRouterOpenPatcherG1Model,
-			workers:      []string{"z-ai/glm-5.2-fast", "z-ai/glm-5.2"},
+			workers:      []string{"z-ai/glm-5.3-fast", "z-ai/glm-5.2"},
 			advisors:     []string{fusionCodeKimi, trustedRouterPrometheus101MModel},
 			jurisdiction: providerJurisdictionUS,
 		},
@@ -5246,19 +5246,19 @@ func TestAdvisorComboPresetsConfigureWorkerAndAdvisorModels(t *testing.T) {
 		},
 		{
 			model:        trustedRouterAthena10Model,
-			workers:      []string{"z-ai/glm-5.2-fast", "z-ai/glm-5.2"},
+			workers:      []string{"z-ai/glm-5.3-fast", "z-ai/glm-5.2"},
 			advisors:     []string{trustedRouterZeus10MiniModel, fusionCodeKimi, fusionGeneralKimi},
 			jurisdiction: providerJurisdictionUS,
 		},
 		{
 			model:        trustedRouterAthena20Model,
-			workers:      []string{"z-ai/glm-5.2-fast", "z-ai/glm-5.2"},
+			workers:      []string{"z-ai/glm-5.3-fast", "z-ai/glm-5.2"},
 			advisors:     []string{trustedRouterZeus20Model, fusionCodeKimi, fusionGeneralKimi},
 			jurisdiction: providerJurisdictionUS,
 		},
 		{
 			model:        trustedRouterAthenaModel,
-			workers:      []string{"z-ai/glm-5.2-fast", "z-ai/glm-5.2"},
+			workers:      []string{"z-ai/glm-5.3-fast", "z-ai/glm-5.2"},
 			advisors:     []string{trustedRouterZeus20Model, fusionCodeKimi, fusionGeneralKimi},
 			jurisdiction: providerJurisdictionUS,
 		},

@@ -1,6 +1,6 @@
 {
   "accepted_pcr0s": [
-    "baf7f4fd2a8de81c1661345afe7e57e0a42fbbf9effded4f055c65874865641bf6a46fa966c0dd1ac6c2256200f769e6"
+    "49b062de2a00f23411ab1be38a579aeb63aa5cd0e8fc4afe803b6fcf1bcdc8fb9e4875d0e197d0fa0fe61736c084aa47"
   ],
   "api_base_url": "https://api-aws.trustedrouter.com/v1",
   "attestation_format": "cose-sign1-nitro-attestation-document",
@@ -11,14 +11,13 @@
     "control_plane_prompt_access": false,
     "prompt_output_storage": false
   },
-  "measurement_provenance": "On 2026-11-17 all four serving hosts were replaced after legacy parent secret-reading and decryption access was revoked. Paris uses launch-template version 55 and Dublin version 61. Each host was individually verified against the signed CI PCR0: exact instance, Nitro chain, fresh nonce, TLS certificate and exporter binding, then strict attested-bootstrap version 2 health over the same verified connection. Separate host checks found v2-only parents, port 9101 present and plaintext port 9100 absent. Both regional refreshes, full checkpoints, drain and final observation periods completed successfully, with exactly two healthy verified targets per region and no old serving targets. Actual host-role checks in both regions denied legacy secret reads and legacy-key decryption while permitting only the independently verified encrypted bundle read. Both recipient-key policies, runtime pin consumers and this public accepted set admit only this strict measurement. Both regions run the create-only CI EIF with SHA256 b0bf0713620f9ce1df123511d7066db93aebe282100c01d0eec1594ddfcb9268 (605253776 bytes), from protected-main publisher run 43995426874. Its authenticated manifest remains at eif/c1863c2c154b3aadfc3b1ee4b7be0675e29756f8/b0bf0713620f9ce1df123511d7066db93aebe282100c01d0eec1594ddfcb9268/manifest.json. Source-to-image provenance remains operator-asserted; this is not an independent image reproduction. Old secret records are retained and historical credential rotation remains pending. See docs/runbooks/aws-sealed-bootstrap.md for the deployment and denial evidence.",
   "measurement_type": "nitro-pcr0-sha384",
-  "observed_module_id": "i-054065b7a5b4d0a76-enc01a1e9bf238e46ce",
-  "pcr0": "baf7f4fd2a8de81c1661345afe7e57e0a42fbbf9effded4f055c65874865641bf6a46fa966c0dd1ac6c2256200f769e6",
+  "observed_module_id": "i-0a81272839a64fffb-enc01a2119a3b366b53",
+  "pcr0": "49b062de2a00f23411ab1be38a579aeb63aa5cd0e8fc4afe803b6fcf1bcdc8fb9e4875d0e197d0fa0fe61736c084aa47",
   "platform": "aws-nitro-enclaves",
   "release_state": "current",
   "reproduce": "tools/verify-pcr0.sh",
-  "source_commit": "c1863c2c154b3aadfc3b1ee4b7be0675e29756f8",
+  "source_commit": "46b841fb85e3f30688964e99fd4a73ab5ea87838",
   "source_commit_provenance": "operator-asserted",
   "source_repo": "https://github.com/Lore-Hex/quill-cloud-proxy",
   "tls": {
