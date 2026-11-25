@@ -78,7 +78,7 @@ func nativeCustomRequest(req *types.OpenAIResponsesRequest) (*types.NativeCustom
 		default:
 			other = true
 		}
-		names[name]++
+		names[strings.TrimSpace(name)]++
 	}
 	choice, _ := req.ToolChoice.(map[string]any)
 	if choice["type"] == "custom" {
@@ -98,7 +98,11 @@ func nativeCustomRequest(req *types.OpenAIResponsesRequest) (*types.NativeCustom
 	functionIDs := map[string]bool{}
 	for index, raw := range items {
 		item, _ := raw.(map[string]any)
-		id := strings.TrimSpace(stringValue(item["call_id"]))
+		rawID := stringValue(item["call_id"])
+		id := strings.TrimSpace(rawID)
+		if kind := stringValue(item["type"]); (kind == "custom_tool_call" || kind == "custom_tool_call_output") && (id == "" || id != rawID) {
+			return nil, customError(fmt.Sprintf("input[%d].call_id", index), "custom tool call_id must be nonempty and have no surrounding whitespace")
+		}
 		switch stringValue(item["type"]) {
 		case "custom_tool_call":
 			if _, ok := item["input"].(string); !ok || n.CallIDs[id] {

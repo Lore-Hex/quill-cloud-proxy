@@ -957,6 +957,10 @@ func collectAnthropicText(r io.Reader, observer StreamObserver, requireTerminal,
 			continue
 		}
 		switch eventName {
+		case "content_block_stop":
+			if call := toolCallsByIndex[getInt(dataJSON, "index")]; call != nil {
+				call.Incomplete, _ = dataJSON["tr_custom_incomplete"].(bool)
+			}
 		case "message_start":
 			mergeMessageStartUsage(&usage, getMap(dataJSON, "message"))
 		case "content_block_start":
@@ -1082,7 +1086,7 @@ func WriteResponsesResponse(
 	// with a positive cached_tokens and a total that excludes the prompt.
 	promptTokens := foldedPromptTokens(inputTokens, cachedTokens, cacheCreationTokens, inputExcludesCache)
 	payload := responsesObject(responseID, model, text, toolCalls, promptTokens, outputTokens, cachedTokens, reasoningTokens, created, "completed", textConfig, meta)
-	markResponsesLengthIncomplete(payload, finishReason)
+	markResponsesIncomplete(payload, finishReason, meta)
 	body, err := json.Marshal(payload)
 	if err != nil {
 		return err
@@ -1622,6 +1626,7 @@ func TransformResponsesStreamControlled(
 				continue
 			}
 			toolDone[blockIndex] = true
+			call.Incomplete, _ = dataJSON["tr_custom_incomplete"].(bool)
 			outputIndex := toolOutputIndexes[blockIndex]
 			_, field, events := responseToolWire(call.Name, meta)
 			done := map[string]any{
@@ -1631,11 +1636,13 @@ func TransformResponsesStreamControlled(
 				"output_index": outputIndex,
 				field:          call.Arguments,
 			}
-			if control != nil {
+			if control != nil && field == "arguments" {
 				done["name"], _ = ResponseFunctionCallName(call.Name, meta)
 			}
-			if err := writeResponseEventSeq(w, &seq, events+"done", done); err != nil {
-				return StreamResult{}, err
+			if !call.Incomplete {
+				if err := writeResponseEventSeq(w, &seq, events+"done", done); err != nil {
+					return StreamResult{}, err
+				}
 			}
 			if err := writeResponseEventSeq(w, &seq, "response.output_item.done", map[string]any{
 				"type":         "response.output_item.done",
@@ -1810,7 +1817,7 @@ func finishResponsesStream(
 	}
 	terminalName := "response.completed"
 	terminalResponse := responsesObject(responseID, model, text, toolCalls, inputTokens, outputTokens, cachedTokens, reasoningTokens, created, "completed", textConfig, meta)
-	if markResponsesLengthIncomplete(terminalResponse, finishReason) {
+	if markResponsesIncomplete(terminalResponse, finishReason, meta) {
 		terminalName = "response.incomplete"
 		if messageStarted {
 			events[len(events)-1].body["item"].(map[string]any)["status"] = "incomplete"
@@ -1860,16 +1867,19 @@ func finishResponsesStream(
 	return result, emit()
 }
 
-// markResponsesLengthIncomplete reports a max-token stop the way OpenAI does:
+// markResponsesIncomplete reports a max-token stop the way OpenAI does:
 // status "incomplete" with reason max_output_tokens, keeping the partial output
 // and usage. Reporting it as completed hides that the answer was cut off (or,
 // for a reasoning model that spent the whole budget thinking, never started).
-func markResponsesLengthIncomplete(response map[string]any, finishReason string) bool {
-	if finishReason != "length" {
+func markResponsesIncomplete(response map[string]any, finishReason string, meta *types.ResponseRequestMeta) bool {
+	reason := "max_output_tokens"
+	if finishReason == "content_filter" && meta != nil && meta.NativeCustom != nil {
+		reason = "content_filter"
+	} else if finishReason != "length" {
 		return false
 	}
 	response["status"] = "incomplete"
-	response["incomplete_details"] = map[string]any{"reason": "max_output_tokens"}
+	response["incomplete_details"] = map[string]any{"reason": reason}
 	response["completed_at"] = nil
 	if output, ok := response["output"].([]map[string]any); ok {
 		for _, item := range output {
@@ -2054,6 +2064,9 @@ func responseFunctionCallItem(responseID string, index int, call types.ToolCall,
 	}
 	name, namespace := ResponseFunctionCallName(call.Name, meta)
 	item["name"] = name
+	if kind == "custom_tool_call" && call.Incomplete {
+		item["status"] = "incomplete"
+	}
 	if namespace != "" {
 		item["namespace"] = namespace
 	}

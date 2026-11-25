@@ -165,6 +165,96 @@ func TestNativeCustomStreamRejectsMismatches(t *testing.T) {
 	}
 }
 
+func TestNativeCustomTruncatedCallKeepsUsage(t *testing.T) {
+	const model = "openai/gpt-5.5"
+	meta := &qtypes.ResponseRequestMeta{NativeCustom: &qtypes.NativeCustomTools{Definitions: map[string]map[string]any{"patch": {"type": "custom"}}}}
+	for _, reason := range []string{"content_filter", "max_output_tokens"} {
+		for _, itemClosed := range []bool{false, true} {
+			t.Run(fmt.Sprintf("%s/itemClosed=%v", reason, itemClosed), func(t *testing.T) {
+				parts := strings.SplitN(customTestEvents(t, []string{"partial"}), "\n\n", 3)
+				wire := parts[0] + "\n\n" + parts[1] + "\n\n"
+				if itemClosed {
+					wire += "data: " + `{"type":"response.output_item.done","output_index":0,"item":{"type":"custom_tool_call","id":"ctc_123","call_id":"call_xyz","name":"patch","status":"incomplete","input":"partial"}}` + "\n\n"
+				}
+				wire += fmt.Sprintf("data: "+`{"type":"response.incomplete","response":{"status":"incomplete","incomplete_details":{"reason":%q},"usage":{"input_tokens":100,"output_tokens":30,"total_tokens":130}}}`+"\n\n", reason)
+				var internal, public bytes.Buffer
+				if err := translateNativeResponsesStream(strings.NewReader(wire), &internal, meta.NativeCustom); err != nil {
+					t.Fatal(err)
+				}
+				result, err := adapter.CollectAnthropicTextStrict(bytes.NewReader(internal.Bytes()))
+				if err != nil || result.Usage == nil || result.Usage.InputTokens != 100 || result.Usage.OutputTokens != 30 {
+					t.Fatalf("lost provider usage: %+v, %v", result.Usage, err)
+				}
+				check := func(payload []byte) {
+					t.Helper()
+					var r struct {
+						Status            string
+						IncompleteDetails struct{ Reason string } `json:"incomplete_details"`
+						Usage             struct {
+							Total int `json:"total_tokens"`
+						}
+						Output []struct{ Type, Status, Input string }
+					}
+					if err := json.Unmarshal(payload, &r); err != nil {
+						t.Fatal(err)
+					}
+					if r.Status != "incomplete" || r.IncompleteDetails.Reason != reason || r.Usage.Total != 130 || len(r.Output) != 1 || r.Output[0].Type != "custom_tool_call" || r.Output[0].Input != "partial" || r.Output[0].Status != "incomplete" {
+						t.Fatalf("wrong truncated response: %+v", r)
+					}
+				}
+				if err := adapter.WriteResponsesResponse(&public, "resp_test", model, "", result.ToolCalls, result.FinishReason, 100, 30, result.Usage, 1, nil, meta); err != nil {
+					t.Fatal(err)
+				}
+				check(public.Bytes())
+				public.Reset()
+				settlements := 0
+				control := &adapter.StreamControl{ExposeResponsesUsage: true, BeforeTerminal: func(term adapter.StreamTerminal) error {
+					settlements++
+					if term.Result.Usage == nil || term.Result.Usage.InputTokens != 100 || term.Result.Usage.OutputTokens != 30 {
+						t.Fatal("lost terminal settlement usage")
+					}
+					return term.Emit()
+				}}
+				if _, err := adapter.TransformResponsesStreamControlled(bytes.NewReader(internal.Bytes()), &public, "resp_test", model, 100, nil, meta, nil, control); err != nil {
+					t.Fatal(err)
+				}
+				var terminals int
+				for _, line := range strings.Split(public.String(), "\n") {
+					if !strings.HasPrefix(line, "data: {") {
+						continue
+					}
+					var e struct {
+						Type     string
+						Response json.RawMessage
+					}
+					if err := json.Unmarshal([]byte(line[6:]), &e); err != nil {
+						t.Fatal(err)
+					}
+					switch e.Type {
+					case "response.incomplete":
+						terminals++
+						check(e.Response)
+					case "response.completed", "response.custom_tool_call_input.done":
+						t.Fatalf("false completion: %s", e.Type)
+					}
+				}
+				if settlements != 1 || terminals != 1 || strings.Count(public.String(), "data: [DONE]") != 1 {
+					t.Fatal("wrong terminal count")
+				}
+			})
+		}
+	}
+}
+
+func TestNativeCustomRejectsChangedReplayIDs(t *testing.T) {
+	for _, meta := range []*qtypes.NativeCustomTools{{CallIDs: map[string]bool{"original": true}}, {OutputIDs: map[string]bool{"original": true}}} {
+		req := openAICompatibleRequest{Model: "gpt-5.5", NativeCustom: meta, Messages: []chatMessage{{Role: "tool", ToolCallID: "rewritten", Content: "ok"}}}
+		if _, err := buildOpenAIResponsesRequest(req); err == nil || !strings.Contains(err.Error(), "history IDs") {
+			t.Fatalf("missing or wrong rejection: %v", err)
+		}
+	}
+}
+
 func TestNativeCustomDeltaArrivesBeforeUpstreamFinishes(t *testing.T) {
 	up, send := io.Pipe()
 	events, translated := io.Pipe()

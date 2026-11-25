@@ -716,10 +716,11 @@ type ProviderSearchResult struct {
 }
 
 type ToolCall struct {
-	ID        string
-	CallID    string
-	Name      string
-	Arguments string
+	Incomplete bool `json:"-"`
+	ID         string
+	CallID     string
+	Name       string
+	Arguments  string
 }
 
 // ProviderRouting mirrors the OpenRouter provider-routing object closely

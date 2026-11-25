@@ -11,6 +11,7 @@ type nativeCustomStreamCall struct {
 	id, name, itemID string
 	digest           hash.Hash
 	inputDone        bool
+	truncated        bool
 }
 
 func newNativeCustomStreamCall(id, name, itemID string) *nativeCustomStreamCall {
