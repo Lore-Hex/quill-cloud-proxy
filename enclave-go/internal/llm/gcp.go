@@ -179,6 +179,9 @@ func (c *gcpClient) InvokeStreaming(
 	out io.Writer,
 	options ...InvokeOptions,
 ) error {
+	if req != nil && req.Response != nil && req.Response.NativeCustom != nil {
+		return responsesInputError("native custom tools on a Vertex client")
+	}
 	if handled, err := invokeBYOKStreaming(ctx, req, body, out, firstOptions(options)); handled {
 		return err
 	}

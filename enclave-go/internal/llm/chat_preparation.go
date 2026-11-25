@@ -103,6 +103,12 @@ func PrepareChatRequest(provider, upstreamModel string, req *qtypes.OpenAIChatRe
 	var payload any = reqBody
 	path := directChatCompletionsPath(provider)
 	nativeResponses := useOpenAIResponses(provider, reqBody)
+	if req != nil && req.Response != nil && req.Response.NativeCustom != nil {
+		if normalizeDirectProvider(provider) != "openai" || bool(req.Deidentify) || !nativeResponses || !qtypes.NativeCustomModel(reqBody.Model) {
+			return PreparedChatRequest{}, responsesInputError("native custom tool route")
+		}
+		reqBody.NativeCustom = req.Response.NativeCustom
+	}
 	if nativeResponses {
 		// Chat normalization retains effort only. Responses also understands
 		// summary preferences; validate the original object in its wire builder.

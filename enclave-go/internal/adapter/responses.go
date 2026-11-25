@@ -254,6 +254,10 @@ func ResponsesToChat(req *types.OpenAIResponsesRequest) (*types.OpenAIChatReques
 	if err != nil {
 		return nil, err
 	}
+	nativeCustom, err := nativeCustomRequest(req)
+	if err != nil {
+		return nil, err
+	}
 	tools, namespaces, err := chatToolsFromResponsesTools(req.Tools)
 	if err != nil {
 		return nil, err
@@ -333,6 +337,7 @@ func ResponsesToChat(req *types.OpenAIResponsesRequest) (*types.OpenAIChatReques
 		ServiceTier:         req.ServiceTier,
 		RequestedParameters: responsesRequestedParameters(req, responseFormat, tools),
 		Response: &types.ResponseRequestMeta{
+			NativeCustom:         nativeCustom,
 			Include:              req.Include,
 			Modalities:           req.Modalities,
 			ParallelToolCalls:    req.ParallelToolCalls,
@@ -952,6 +957,10 @@ func collectAnthropicText(r io.Reader, observer StreamObserver, requireTerminal,
 			continue
 		}
 		switch eventName {
+		case "content_block_stop":
+			if call := toolCallsByIndex[getInt(dataJSON, "index")]; call != nil {
+				call.Incomplete, _ = dataJSON["tr_custom_incomplete"].(bool)
+			}
 		case "message_start":
 			mergeMessageStartUsage(&usage, getMap(dataJSON, "message"))
 		case "content_block_start":
@@ -1077,7 +1086,7 @@ func WriteResponsesResponse(
 	// with a positive cached_tokens and a total that excludes the prompt.
 	promptTokens := foldedPromptTokens(inputTokens, cachedTokens, cacheCreationTokens, inputExcludesCache)
 	payload := responsesObject(responseID, model, text, toolCalls, promptTokens, outputTokens, cachedTokens, reasoningTokens, created, "completed", textConfig, meta)
-	markResponsesLengthIncomplete(payload, finishReason)
+	markResponsesIncomplete(payload, finishReason, meta)
 	body, err := json.Marshal(payload)
 	if err != nil {
 		return err
@@ -1381,9 +1390,10 @@ func TransformResponsesStreamControlled(
 				item := responseFunctionCallItem(responseID, outputIndex, *call, meta)
 				if !toolDone[blockIndex] {
 					item["status"] = "incomplete"
-					if err := writeResponseEventSeq(w, &seq, "response.function_call_arguments.done", map[string]any{
-						"type":    "response.function_call_arguments.done",
-						"item_id": call.ID, "output_index": outputIndex, "name": item["name"], "arguments": call.Arguments,
+					_, field, events := responseToolWire(call.Name, meta)
+					if err := writeResponseEventSeq(w, &seq, events+"done", map[string]any{
+						"type":    events + "done",
+						"item_id": call.ID, "output_index": outputIndex, "name": item["name"], field: call.Arguments,
 					}); err != nil {
 						return err
 					}
@@ -1507,13 +1517,14 @@ func TransformResponsesStreamControlled(
 			nextOutputIndex++
 			toolOutputIndexes[blockIndex] = outputIndex
 			name, namespace := ResponseFunctionCallName(call.Name, meta)
+			kind, field, _ := responseToolWire(call.Name, meta)
 			item := map[string]any{
-				"id":        call.ID,
-				"type":      "function_call",
-				"status":    "in_progress",
-				"call_id":   call.CallID,
-				"name":      name,
-				"arguments": "",
+				"id":      call.ID,
+				"type":    kind,
+				"status":  "in_progress",
+				"call_id": call.CallID,
+				"name":    name,
+				field:     "",
 			}
 			if namespace != "" {
 				item["namespace"] = namespace
@@ -1593,10 +1604,11 @@ func TransformResponsesStreamControlled(
 					continue
 				}
 				deltaText := getString(delta, "partial_json")
+				_, _, events := responseToolWire(call.Name, meta)
 				if err := emitSemantic(StreamDelta{Type: "input_json_delta", Index: blockIndex, Text: deltaText}, func(slice string) error {
 					call.Arguments += slice
-					return writeResponseEventSeq(w, &seq, "response.function_call_arguments.delta", map[string]any{
-						"type": "response.function_call_arguments.delta", "response_id": responseID,
+					return writeResponseEventSeq(w, &seq, events+"delta", map[string]any{
+						"type": events + "delta", "response_id": responseID,
 						"item_id": call.ID, "output_index": toolOutputIndexes[blockIndex], "delta": slice,
 					})
 				}); err != nil {
@@ -1614,19 +1626,23 @@ func TransformResponsesStreamControlled(
 				continue
 			}
 			toolDone[blockIndex] = true
+			call.Incomplete, _ = dataJSON["tr_custom_incomplete"].(bool)
 			outputIndex := toolOutputIndexes[blockIndex]
+			_, field, events := responseToolWire(call.Name, meta)
 			done := map[string]any{
-				"type":         "response.function_call_arguments.done",
+				"type":         events + "done",
 				"response_id":  responseID,
 				"item_id":      call.ID,
 				"output_index": outputIndex,
-				"arguments":    call.Arguments,
+				field:          call.Arguments,
 			}
-			if control != nil {
+			if control != nil && field == "arguments" {
 				done["name"], _ = ResponseFunctionCallName(call.Name, meta)
 			}
-			if err := writeResponseEventSeq(w, &seq, "response.function_call_arguments.done", done); err != nil {
-				return StreamResult{}, err
+			if !call.Incomplete {
+				if err := writeResponseEventSeq(w, &seq, events+"done", done); err != nil {
+					return StreamResult{}, err
+				}
 			}
 			if err := writeResponseEventSeq(w, &seq, "response.output_item.done", map[string]any{
 				"type":         "response.output_item.done",
@@ -1801,7 +1817,7 @@ func finishResponsesStream(
 	}
 	terminalName := "response.completed"
 	terminalResponse := responsesObject(responseID, model, text, toolCalls, inputTokens, outputTokens, cachedTokens, reasoningTokens, created, "completed", textConfig, meta)
-	if markResponsesLengthIncomplete(terminalResponse, finishReason) {
+	if markResponsesIncomplete(terminalResponse, finishReason, meta) {
 		terminalName = "response.incomplete"
 		if messageStarted {
 			events[len(events)-1].body["item"].(map[string]any)["status"] = "incomplete"
@@ -1851,16 +1867,19 @@ func finishResponsesStream(
 	return result, emit()
 }
 
-// markResponsesLengthIncomplete reports a max-token stop the way OpenAI does:
+// markResponsesIncomplete reports a max-token stop the way OpenAI does:
 // status "incomplete" with reason max_output_tokens, keeping the partial output
 // and usage. Reporting it as completed hides that the answer was cut off (or,
 // for a reasoning model that spent the whole budget thinking, never started).
-func markResponsesLengthIncomplete(response map[string]any, finishReason string) bool {
-	if finishReason != "length" {
+func markResponsesIncomplete(response map[string]any, finishReason string, meta *types.ResponseRequestMeta) bool {
+	reason := "max_output_tokens"
+	if finishReason == "content_filter" && meta != nil && meta.NativeCustom != nil {
+		reason = "content_filter"
+	} else if finishReason != "length" {
 		return false
 	}
 	response["status"] = "incomplete"
-	response["incomplete_details"] = map[string]any{"reason": "max_output_tokens"}
+	response["incomplete_details"] = map[string]any{"reason": reason}
 	response["completed_at"] = nil
 	if output, ok := response["output"].([]map[string]any); ok {
 		for _, item := range output {
@@ -2035,15 +2054,19 @@ func responseFunctionCallItem(responseID string, index int, call types.ToolCall,
 	if callID == "" {
 		callID = id
 	}
+	kind, field, _ := responseToolWire(call.Name, meta)
 	item := map[string]any{
-		"id":        id,
-		"type":      "function_call",
-		"status":    "completed",
-		"call_id":   callID,
-		"arguments": call.Arguments,
+		"id":      id,
+		"type":    kind,
+		"status":  "completed",
+		"call_id": callID,
+		field:     call.Arguments,
 	}
 	name, namespace := ResponseFunctionCallName(call.Name, meta)
 	item["name"] = name
+	if kind == "custom_tool_call" && call.Incomplete {
+		item["status"] = "incomplete"
+	}
 	if namespace != "" {
 		item["namespace"] = namespace
 	}
@@ -2772,6 +2795,13 @@ func chatToolFromResponsesTool(tool any) (map[string]any, error) {
 		return nil, &AdapterError{Status: 400, Message: "tool must be an object", Context: "tools"}
 	}
 	switch stringValue(m["type"]) {
+	case "custom":
+		if err := validateCustomTool(m); err != nil {
+			return nil, err
+		}
+		// Internal chat projection only. Only the exact native declaration
+		// may leave the gateway; dispatch refuses all non-native candidates.
+		return normalizeChatFunctionTool(map[string]any{"name": m["name"], "description": m["description"]})
 	case "web_search", "web_search_preview":
 		if _, err := parseResponsesWebSearchTool(m); err != nil {
 			return nil, err
@@ -2860,6 +2890,12 @@ func ChatToolChoiceFromResponses(choice any) (any, error) {
 		}
 	case map[string]any:
 		choiceType := stringValue(value["type"])
+		if choiceType == "custom" {
+			if name := stringValue(value["name"]); len(value) == 2 && providerFunctionName.MatchString(name) {
+				return map[string]any{"type": "function", "function": map[string]any{"name": name}}, nil
+			}
+			return nil, customError("tool_choice", "invalid custom tool_choice")
+		}
 		if choiceType == "web_search" || choiceType == "web_search_preview" {
 			return map[string]any{
 				"type":     "function",

@@ -10,6 +10,7 @@ import (
 	"sort"
 	"strings"
 
+	qtypes "github.com/Lore-Hex/quill-cloud-proxy/enclave-go/internal/types"
 	"github.com/Lore-Hex/quill-cloud-proxy/enclave-go/internal/upstreamerror"
 )
 
@@ -119,13 +120,25 @@ func buildOpenAIResponsesRequest(req openAICompatibleRequest) (map[string]any, e
 	}
 	out["reasoning"] = reasoning
 	input := make([]any, 0, len(req.Messages))
+	var seenCalls, seenOutputs map[string]bool
+	if req.NativeCustom != nil {
+		seenCalls, seenOutputs = map[string]bool{}, map[string]bool{}
+	}
 	for _, message := range req.Messages {
 		if message.Role == "tool" {
 			output, ok := message.Content.(string)
 			if !ok || strings.TrimSpace(message.ToolCallID) == "" {
 				return nil, responsesInputError("tool result")
 			}
-			input = append(input, map[string]any{"type": "function_call_output", "call_id": message.ToolCallID, "output": output})
+			kind := "function_call_output"
+			if req.NativeCustom != nil && req.NativeCustom.OutputIDs[message.ToolCallID] {
+				if seenOutputs[message.ToolCallID] {
+					return nil, responsesInputError("duplicate custom tool result")
+				}
+				seenOutputs[message.ToolCallID] = true
+				kind = "custom_tool_call_output"
+			}
+			input = append(input, map[string]any{"type": kind, "call_id": message.ToolCallID, "output": output})
 			continue
 		}
 		content, err := responsesMessageContent(message.Role, message.Content)
@@ -143,8 +156,25 @@ func buildOpenAIResponsesRequest(req openAICompatibleRequest) (map[string]any, e
 			if strings.TrimSpace(id) == "" || strings.TrimSpace(name) == "" || !ok || !json.Valid([]byte(arguments)) {
 				return nil, responsesInputError("tool call history")
 			}
-			input = append(input, map[string]any{"type": "function_call", "call_id": id, "name": name, "arguments": arguments})
+			if req.NativeCustom != nil && req.NativeCustom.CallIDs[id] {
+				if seenCalls[id] {
+					return nil, responsesInputError("duplicate custom tool call")
+				}
+				seenCalls[id] = true
+				var arg struct {
+					Input *string `json:"input"`
+				}
+				if json.Unmarshal([]byte(arguments), &arg) != nil || arg.Input == nil {
+					return nil, responsesInputError("custom tool call input")
+				}
+				input = append(input, map[string]any{"type": "custom_tool_call", "call_id": id, "name": name, "input": *arg.Input})
+			} else {
+				input = append(input, map[string]any{"type": "function_call", "call_id": id, "name": name, "arguments": arguments})
+			}
 		}
+	}
+	if req.NativeCustom != nil && (len(seenCalls) != len(req.NativeCustom.CallIDs) || len(seenOutputs) != len(req.NativeCustom.OutputIDs)) {
+		return nil, responsesInputError("normalized custom tool history IDs do not match")
 	}
 	out["input"] = input
 	tools, _ := out["tools"].([]any)
@@ -153,6 +183,12 @@ func buildOpenAIResponsesRequest(req openAICompatibleRequest) (map[string]any, e
 		function, ok := tool["function"].(map[string]any)
 		if tool["type"] != "function" || !ok {
 			return nil, responsesInputError("tools")
+		}
+		if req.NativeCustom != nil {
+			if definition := req.NativeCustom.Definitions[stringValue(function["name"])]; definition != nil {
+				tools[i] = definition
+				continue
+			}
 		}
 		function["type"] = "function"
 		// Responses defaults schemas to strict; Chat Completions does not.
@@ -166,7 +202,14 @@ func buildOpenAIResponsesRequest(req openAICompatibleRequest) (map[string]any, e
 		if choice["type"] != "function" || !ok {
 			return nil, responsesInputError("tool_choice")
 		}
-		out["tool_choice"] = map[string]any{"type": "function", "name": function["name"]}
+		kind := "function"
+		if req.NativeCustom != nil && req.NativeCustom.Choice != "" {
+			if req.NativeCustom.Choice != function["name"] {
+				return nil, responsesInputError("custom tool_choice")
+			}
+			kind = "custom"
+		}
+		out["tool_choice"] = map[string]any{"type": kind, "name": function["name"]}
 	}
 	if req.ResponseFormat != nil {
 		format, ok := req.ResponseFormat.(map[string]any)
@@ -293,13 +336,18 @@ func responsesMessageContent(role string, content any) (any, error) {
 }
 
 type responsesStreamEvent struct {
-	Type        string `json:"type"`
-	OutputIndex int    `json:"output_index"`
-	Delta       string `json:"delta"`
+	Type        string  `json:"type"`
+	Input       *string `json:"input"`
+	ItemID      string  `json:"item_id"`
+	OutputIndex int     `json:"output_index"`
+	Delta       string  `json:"delta"`
 	Item        struct {
-		Type   string `json:"type"`
-		CallID string `json:"call_id"`
-		Name   string `json:"name"`
+		Type   string  `json:"type"`
+		ID     string  `json:"id"`
+		CallID string  `json:"call_id"`
+		Status string  `json:"status"`
+		Name   string  `json:"name"`
+		Input  *string `json:"input"`
 	} `json:"item"`
 	Response struct {
 		ServiceTier string `json:"service_tier"`
@@ -319,9 +367,14 @@ type responsesStreamEvent struct {
 // Emit the same internal events as every other provider. Settlement, refunds,
 // public Chat/Responses/Messages output, and cache accounting remain shared.
 func translateOpenAIResponsesStream(r io.Reader, w io.Writer) error {
+	return translateNativeResponsesStream(r, w, nil)
+}
+
+func translateNativeResponsesStream(r io.Reader, w io.Writer, custom *qtypes.NativeCustomTools) error {
 	scanner := bufio.NewScanner(r)
 	scanner.Buffer(make([]byte, 0, 64*1024), 1<<20)
 	tools := make(map[int]bool)
+	customCalls := make(map[int]*nativeCustomStreamCall)
 	thinkingStarted := false
 	var data strings.Builder
 	for scanner.Scan() {
@@ -358,7 +411,24 @@ func translateOpenAIResponsesStream(r io.Reader, w io.Writer) error {
 			}
 			err = writeAnthropicThinkingDelta(w, 0, event.Delta)
 		case "response.output_item.added":
+			if event.Item.Type == "custom_tool_call" {
+				if custom == nil || custom.Definitions[event.Item.Name] == nil || event.Item.CallID == "" || event.Item.ID == "" {
+					return fmt.Errorf("llm/openai-responses: undeclared custom call")
+				}
+				if _, duplicate := tools[event.OutputIndex]; duplicate {
+					return fmt.Errorf("llm/openai-responses: duplicate custom call")
+				}
+				c := newNativeCustomStreamCall(event.Item.CallID, event.Item.Name, event.Item.ID)
+				customCalls[event.OutputIndex], tools[event.OutputIndex] = c, false
+				err = writeAnthropicToolStart(w, event.OutputIndex+1, c.id, c.name)
+				if err == nil && event.Item.Input != nil && *event.Item.Input != "" {
+					err = c.writeDelta(w, event.OutputIndex, *event.Item.Input)
+				}
+			}
 			if event.Item.Type == "function_call" {
+				if custom != nil && custom.Definitions[event.Item.Name] != nil {
+					return fmt.Errorf("llm/openai-responses: custom tool returned as function")
+				}
 				if _, duplicate := tools[event.OutputIndex]; duplicate || event.Item.CallID == "" || event.Item.Name == "" {
 					return fmt.Errorf("llm/openai-responses: invalid function call")
 				}
@@ -366,13 +436,44 @@ func translateOpenAIResponsesStream(r io.Reader, w io.Writer) error {
 				err = writeAnthropicToolStart(w, event.OutputIndex+1, event.Item.CallID, event.Item.Name)
 			}
 		case "response.function_call_arguments.delta":
-			if done, exists := tools[event.OutputIndex]; !exists || done {
+			if done, exists := tools[event.OutputIndex]; !exists || done || customCalls[event.OutputIndex] != nil {
 				return fmt.Errorf("llm/openai-responses: arguments without open function call")
 			}
 			err = writeAnthropicToolDelta(w, event.OutputIndex+1, event.Delta)
+		case "response.custom_tool_call_input.delta", "response.custom_tool_call_input.done":
+			c := customCalls[event.OutputIndex]
+			if c == nil || c.inputDone || c.truncated || tools[event.OutputIndex] || event.ItemID != c.itemID {
+				return fmt.Errorf("llm/openai-responses: custom input without open call")
+			}
+			if event.Type == "response.custom_tool_call_input.delta" {
+				err = c.writeDelta(w, event.OutputIndex, event.Delta)
+			} else if !c.matches(event.Input) {
+				return fmt.Errorf("llm/openai-responses: inconsistent custom input")
+			} else {
+				c.inputDone = true
+			}
 		case "response.output_item.done":
+			if event.Item.Type == "custom_tool_call" {
+				c := customCalls[event.OutputIndex]
+				if c == nil || c.truncated || tools[event.OutputIndex] || event.Item.CallID != c.id || event.Item.Name != c.name || event.Item.ID != c.itemID {
+					return fmt.Errorf("llm/openai-responses: invalid custom call completion")
+				}
+				if event.Item.Status == "incomplete" {
+					if event.Item.Input != nil && !c.matches(event.Item.Input) {
+						return fmt.Errorf("llm/openai-responses: inconsistent partial custom input")
+					}
+					// Wait for the terminal response with actual usage before closing this partial item.
+					c.truncated = true
+					continue
+				}
+				if (event.Item.Status != "" && event.Item.Status != "completed") || !c.inputDone || !c.matches(event.Item.Input) {
+					return fmt.Errorf("llm/openai-responses: invalid completed custom input")
+				}
+				tools[event.OutputIndex] = true
+				err = writeAnthropicToolStop(w, event.OutputIndex+1)
+			}
 			if event.Item.Type == "function_call" {
-				if done, exists := tools[event.OutputIndex]; !exists || done {
+				if done, exists := tools[event.OutputIndex]; !exists || done || customCalls[event.OutputIndex] != nil {
 					return fmt.Errorf("llm/openai-responses: invalid function completion")
 				}
 				tools[event.OutputIndex] = true
@@ -415,6 +516,13 @@ func translateOpenAIResponsesStream(r io.Reader, w io.Writer) error {
 				if !tools[index] {
 					if event.Type == "response.completed" {
 						return fmt.Errorf("llm/openai-responses: unfinished function call")
+					}
+					if customCalls[index] != nil {
+						// Distinguish truncation from a successful tool call in both public renderers.
+						if _, err := fmt.Fprintf(w, "event: content_block_stop\ndata: {\"type\":\"content_block_stop\",\"index\":%d,\"tr_custom_incomplete\":true}\n\n", index+1); err != nil {
+							return err
+						}
+						continue
 					}
 					if err := writeAnthropicToolStop(w, index+1); err != nil {
 						return err
