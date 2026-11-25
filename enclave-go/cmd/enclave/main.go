@@ -2645,6 +2645,19 @@ func serveMessages(
 			return
 		}
 	}
+	// Normalize once before the shim, authorization, estimates, and settlement
+	// consume native messages, so every path sees the same bridged history.
+	messages, err := adapter.RewriteSystemMessages(native.Messages)
+	if err != nil {
+		var aerr *adapter.AdapterError
+		if asAdapterErr(err, &aerr) {
+			writeAnthropicError(conn, aerr.Status, aerr.Message)
+			return
+		}
+		writeAnthropicError(conn, 400, "invalid messages request")
+		return
+	}
+	native.Messages = messages
 	native.Model = types.CanonicalRouterModelID(native.Model)
 	req := adapter.MessagesToChatShim(&native)
 	req.IdempotencyKey = idempotencyKey

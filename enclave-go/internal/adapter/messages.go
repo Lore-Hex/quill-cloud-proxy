@@ -62,21 +62,17 @@ func MessagesToAnthropic(req *AnthropicNativeRequest) (*types.AnthropicMessagesR
 	if req.MaxTokens <= 0 {
 		return nil, &AdapterError{Status: 400, Message: "max_tokens is required", Context: "max_tokens"}
 	}
-	for i, m := range req.Messages {
-		if m.Role != "user" && m.Role != "assistant" {
-			return nil, &AdapterError{
-				Status:  400,
-				Message: "unsupported role",
-				Context: fmt.Sprintf("messages[%d].role=%q", i, m.Role),
-			}
-		}
+	messages, err := RewriteSystemMessages(req.Messages)
+	if err != nil {
+		return nil, err
 	}
+
 	systemText, systemRaw := flattenSystem(req.System)
 	out := &types.AnthropicMessagesRequest{
 		AnthropicVersion:  "bedrock-2023-05-31",
 		System:            systemText,
 		SystemRaw:         systemRaw,
-		Messages:          sanitizeAnthropicMessages(req.Messages),
+		Messages:          sanitizeAnthropicMessages(messages),
 		MaxTokens:         req.MaxTokens,
 		MaxTokensExplicit: true,
 		Temperature:       req.Temperature,
@@ -91,6 +87,86 @@ func MessagesToAnthropic(req *AnthropicNativeRequest) (*types.AnthropicMessagesR
 		NativeContent:     true,
 	}
 	return out, nil
+}
+
+// RewriteSystemMessages bridges mid-conversation system text into user content:
+// into the user message just before it, otherwise into the next message that
+// is not itself a system entry when that one is a user message (after its
+// existing blocks, so tool_result blocks stay first and still answer the
+// tool_use before them), otherwise into a user message of its own. A run of
+// system entries is placed as one, in order. It validates roles and system
+// content using original input indices and never changes the caller's slice
+// or content lists. Per-turn settings have already been discarded by
+// AnthropicMessage decoding.
+func RewriteSystemMessages(messages []types.AnthropicMessage) ([]types.AnthropicMessage, error) {
+	pending := append([]types.AnthropicMessage(nil), messages...)
+	out := make([]types.AnthropicMessage, 0, len(messages))
+	appendText := func(content any, blocks []any) []any {
+		var result []any
+		switch value := content.(type) {
+		case string:
+			result = []any{map[string]any{"type": "text", "text": value}}
+		case []any:
+			result = append([]any(nil), value...)
+		default:
+			// Preserve other user content for existing downstream validation.
+			result = []any{value}
+		}
+		return append(result, blocks...)
+	}
+	for i, m := range pending {
+		if m.Role != "system" {
+			if m.Role != "user" && m.Role != "assistant" {
+				return nil, &AdapterError{Status: 400, Message: "unsupported role", Context: fmt.Sprintf("messages[%d].role=%q", i, m.Role)}
+			}
+			out = append(out, m)
+			continue
+		}
+		badContent := &AdapterError{Status: 400, Message: "unsupported system message content", Context: fmt.Sprintf("messages[%d].content", i)}
+		var blocks []any
+		switch value := m.Content.(type) {
+		case string:
+			blocks = []any{map[string]any{"type": "text", "text": value}}
+		case []any:
+			blocks = value
+		default:
+			return nil, badContent
+		}
+		hasText := false
+		for _, item := range blocks {
+			block, ok := item.(map[string]any)
+			if !ok || block["type"] != "text" {
+				return nil, badContent
+			}
+			text, ok := block["text"].(string)
+			if !ok {
+				return nil, badContent
+			}
+			hasText = hasText || strings.TrimSpace(text) != ""
+		}
+		if !hasText {
+			continue
+		}
+		if n := len(out); n > 0 && out[n-1].Role == "user" {
+			out[n-1].Content = appendText(out[n-1].Content, blocks)
+		} else if next := nextNonSystem(pending, i+1); next >= 0 && pending[next].Role == "user" {
+			pending[next].Content = appendText(pending[next].Content, blocks)
+		} else {
+			out = append(out, types.AnthropicMessage{Role: "user", Content: append([]any(nil), blocks...)})
+		}
+	}
+	return out, nil
+}
+
+// nextNonSystem returns the index of the first entry at or after from whose
+// role is not "system", or -1.
+func nextNonSystem(messages []types.AnthropicMessage, from int) int {
+	for i := from; i < len(messages); i++ {
+		if messages[i].Role != "system" {
+			return i
+		}
+	}
+	return -1
 }
 
 // sanitizeAnthropicMessages drops empty/whitespace-only text blocks from each
@@ -166,18 +242,23 @@ func flattenSystem(system any) (string, any) {
 // MessagesToChatShim builds the OpenAIChatRequest used for control-plane
 // authorization, token estimation, and settlement metadata. Tools are
 // converted to OpenAI shape so non-Anthropic upstream dispatch (which
-// reads req.Tools) still sees them.
+// reads req.Tools) still sees them. Invalid roles or system content return nil;
+// callers needing error details should validate with MessagesToAnthropic first.
 func MessagesToChatShim(req *AnthropicNativeRequest) *types.OpenAIChatRequest {
+	rewritten, err := RewriteSystemMessages(req.Messages)
+	if err != nil {
+		return nil
+	}
 	maxTokens := req.MaxTokens
 	var stop any
 	if len(req.StopSequences) > 0 {
 		stop = append([]string(nil), req.StopSequences...)
 	}
-	messages := make([]types.OpenAIChatMessage, 0, len(req.Messages)+1)
+	messages := make([]types.OpenAIChatMessage, 0, len(rewritten)+1)
 	if text, _ := flattenSystem(req.System); text != "" {
 		messages = append(messages, types.OpenAIChatMessage{Role: "system", Content: text})
 	}
-	for _, m := range req.Messages {
+	for _, m := range rewritten {
 		messages = append(messages, types.OpenAIChatMessage{Role: m.Role, Content: m.Content})
 	}
 	return &types.OpenAIChatRequest{
