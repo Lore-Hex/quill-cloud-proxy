@@ -1,0 +1,21 @@
+{
+  "model": "anthropic/claude-opus-5.5",
+  "max_tokens": 128000,
+  "stream": true,
+  "system": [
+    {"type": "text", "text": "S1"},
+    {"type": "text", "text": "S2", "cache_control": {"type": "ephemeral"}},
+    {"type": "text", "text": "S3", "cache_control": {"type": "ephemeral"}}
+  ],
+  "messages": [
+    {"role": "user", "content": [{"type": "text", "text": "U1"}, {"type": "text", "text": "U2"}]},
+    {"role": "system", "content": "REMINDER TEXT", "output_config": {"effort": "medium"}},
+    {"role": "assistant", "content": [{"type": "tool_use", "id": "toolu_1", "name": "Read", "input": {"file_path": "/tmp/notes.txt"}}]},
+    {"role": "user", "content": [{"type": "tool_result", "tool_use_id": "toolu_1", "content": "heliotrope"}]}
+  ],
+  "tools": [{"name": "Read", "description": "d", "input_schema": {"type": "object"}, "defer_loading": false}],
+  "thinking": {"type": "adaptive", "display": "omitted"},
+  "output_config": {"effort": "medium"},
+  "context_management": {"edits": [{"type": "clear_thinking_20251015", "keep": "all"}]},
+  "metadata": {"user_id": "u"}
+}

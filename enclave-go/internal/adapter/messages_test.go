@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"os"
 	"reflect"
 	"strings"
 	"testing"
@@ -64,7 +65,7 @@ func TestMessagesToAnthropicValidatesAndPreservesNativeShape(t *testing.T) {
 		{Model: "", Messages: req.Messages, MaxTokens: 16},
 		{Model: "m", Messages: nil, MaxTokens: 16},
 		{Model: "m", Messages: req.Messages, MaxTokens: 0},
-		{Model: "m", Messages: []types.AnthropicMessage{{Role: "system", Content: "x"}}, MaxTokens: 16},
+		{Model: "m", Messages: []types.AnthropicMessage{{Role: "tool", Content: "x"}}, MaxTokens: 16},
 	} {
 		if _, err := MessagesToAnthropic(bad); err == nil {
 			t.Fatalf("invalid request accepted: %#v", bad)
@@ -557,5 +558,210 @@ func TestMessagesTerminalHookPreservesEventsAndOptionalUsage(t *testing.T) {
 				}
 			})
 		}
+	}
+}
+
+// This is the literal Claude Code 2.1.330 second tool-loop request, including
+// unsupported fields that decoding has always ignored.
+func TestMessagesCapturedClaudeCodeSystemRole(t *testing.T) {
+	body, err := os.ReadFile("testdata/claude-code-messages.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var req AnthropicNativeRequest
+	if err := json.Unmarshal(body, &req); err != nil {
+		t.Fatal(err)
+	}
+	out, err := MessagesToAnthropic(&req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := decodeNativeMessages(t, `[
+		{"role":"user","content":[{"type":"text","text":"U1"},{"type":"text","text":"U2"},{"type":"text","text":"REMINDER TEXT"}]},
+		{"role":"assistant","content":[{"type":"tool_use","id":"toolu_1","name":"Read","input":{"file_path":"/tmp/notes.txt"}}]},
+		{"role":"user","content":[{"type":"tool_result","tool_use_id":"toolu_1","content":"heliotrope"}]}
+	]`)
+	if !reflect.DeepEqual(out.Messages, want) {
+		t.Fatalf("messages = %#v, want %#v", out.Messages, want)
+	}
+	encoded, err := json.Marshal(out)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var wire struct {
+		Messages     []map[string]any `json:"messages"`
+		OutputConfig any              `json:"output_config"`
+	}
+	if err := json.Unmarshal(encoded, &wire); err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(encoded), `"role":"system"`) {
+		t.Fatalf("system role forwarded: %s", encoded)
+	}
+	for _, message := range wire.Messages {
+		if len(message) != 2 || message["role"] == nil || message["content"] == nil {
+			t.Fatalf("message keys must be only role and content: %#v", message)
+		}
+		if _, ok := message["output_config"]; ok {
+			t.Fatalf("per-turn output_config forwarded: %#v", message)
+		}
+	}
+	if !reflect.DeepEqual(wire.OutputConfig, map[string]any{"effort": "medium"}) {
+		t.Fatalf("top-level output_config = %#v", wire.OutputConfig)
+	}
+	shim := MessagesToChatShim(&req)
+	wantShim := []types.OpenAIChatMessage{{Role: "system", Content: "S1\n\nS2\n\nS3"}}
+	for _, m := range want {
+		wantShim = append(wantShim, types.OpenAIChatMessage{Role: m.Role, Content: m.Content})
+	}
+	if shim == nil || !reflect.DeepEqual(shim.Messages, wantShim) {
+		t.Fatalf("shim = %#v, want messages %#v", shim, wantShim)
+	}
+}
+
+func decodeNativeMessages(t *testing.T, body string) []types.AnthropicMessage {
+	t.Helper()
+	var messages []types.AnthropicMessage
+	if err := json.Unmarshal([]byte(body), &messages); err != nil {
+		t.Fatal(err)
+	}
+	return messages
+}
+
+func TestMessagesSystemRolePlacement(t *testing.T) {
+	text := func(s string) any { return map[string]any{"type": "text", "text": s} }
+	user := types.AnthropicMessage{Role: "user", Content: []any{text("U")}}
+	assistant := types.AnthropicMessage{Role: "assistant", Content: []any{map[string]any{"type": "tool_use", "id": "toolu_1", "name": "Read", "input": map[string]any{"file_path": "/tmp/notes.txt"}}}}
+	result := types.AnthropicMessage{Role: "user", Content: []any{map[string]any{"type": "tool_result", "tool_use_id": "toolu_1", "content": "heliotrope"}}}
+	for _, n := range []int{1, 2, 3} {
+		var systems []types.AnthropicMessage
+		var blocks []any
+		for i := 1; i <= n; i++ {
+			s := fmt.Sprintf("S%d", i)
+			systems = append(systems, types.AnthropicMessage{Role: "system", Content: s})
+			blocks = append(blocks, text(s))
+		}
+		own := types.AnthropicMessage{Role: "user", Content: blocks}
+		withUser := types.AnthropicMessage{Role: "user", Content: append([]any{text("U")}, blocks...)}
+		withResult := types.AnthropicMessage{Role: "user", Content: append([]any{result.Content.([]any)[0]}, blocks...)}
+		// A run of systems is placed as one: before a user message it joins
+		// that message after its blocks, so a tool_result still directly
+		// answers the tool_use before the run.
+		userThenSystems := types.AnthropicMessage{Role: "user", Content: append([]any{text("U")}, blocks...)}
+		firstUser := []types.AnthropicMessage{userThenSystems}
+		betweenTool := []types.AnthropicMessage{assistant, withResult}
+		for _, tc := range []struct {
+			name                string
+			before, after, want []types.AnthropicMessage
+		}{
+			{"first before assistant", nil, []types.AnthropicMessage{assistant}, []types.AnthropicMessage{own, assistant}},
+			{"first before user", nil, []types.AnthropicMessage{user}, firstUser},
+			{"last after assistant", []types.AnthropicMessage{assistant}, nil, []types.AnthropicMessage{assistant, own}},
+			{"last after user", []types.AnthropicMessage{user}, nil, []types.AnthropicMessage{withUser}},
+			{"between tool use and result", []types.AnthropicMessage{assistant}, []types.AnthropicMessage{result}, betweenTool},
+			{"between user and assistant", []types.AnthropicMessage{user}, []types.AnthropicMessage{assistant}, []types.AnthropicMessage{withUser, assistant}},
+			{"between assistants", []types.AnthropicMessage{assistant}, []types.AnthropicMessage{assistant}, []types.AnthropicMessage{assistant, own, assistant}},
+			{"between users", []types.AnthropicMessage{user}, []types.AnthropicMessage{user}, []types.AnthropicMessage{withUser, user}},
+		} {
+			t.Run(fmt.Sprintf("%s/%d", tc.name, n), func(t *testing.T) {
+				input := append(append(append([]types.AnthropicMessage{}, tc.before...), systems...), tc.after...)
+				out, err := MessagesToAnthropic(&AnthropicNativeRequest{Model: "m", MaxTokens: 16, Messages: input})
+				if err != nil {
+					t.Fatal(err)
+				}
+				if !reflect.DeepEqual(out.Messages, tc.want) {
+					t.Fatalf("messages = %#v, want %#v", out.Messages, tc.want)
+				}
+				shim := MessagesToChatShim(&AnthropicNativeRequest{Messages: input})
+				var shimMessages []types.AnthropicMessage
+				for _, m := range shim.Messages {
+					shimMessages = append(shimMessages, types.AnthropicMessage{Role: m.Role, Content: m.Content})
+				}
+				if !reflect.DeepEqual(shimMessages, tc.want) {
+					t.Fatalf("shim messages = %#v, want %#v", shimMessages, tc.want)
+				}
+			})
+		}
+	}
+}
+
+func TestMessagesSystemRoleContent(t *testing.T) {
+	for _, tc := range []struct{ name, input, want string }{
+		{"string user upgraded", `[{"role":"user","content":"U"},{"role":"system","content":"S"}]`, `[{"role":"user","content":[{"type":"text","text":"U"},{"type":"text","text":"S"}]}]`},
+		{"next string user upgraded", `[{"role":"system","content":"S"},{"role":"user","content":"U"}]`, `[{"role":"user","content":[{"type":"text","text":"U"},{"type":"text","text":"S"}]}]`},
+		{"cache control and sanitation", `[{"role":"system","content":[{"type":"text","text":""},{"type":"text","text":"S1","cache_control":{"type":"ephemeral"}},{"type":"text","text":"S2"},{"type":"text","text":"  "}]}]`, `[{"role":"user","content":[{"type":"text","text":"S1","cache_control":{"type":"ephemeral"}},{"type":"text","text":"S2"}]}]`},
+		{"empty string", `[{"role":"user","content":"U"},{"role":"system","content":"","output_config":{"effort":"medium"}}]`, `[{"role":"user","content":"U"}]`},
+		{"whitespace", `[{"role":"system","content":" \n\t"},{"role":"user","content":"U"}]`, `[{"role":"user","content":"U"}]`},
+		{"empty list", `[{"role":"user","content":"U"},{"role":"system","content":[]}]`, `[{"role":"user","content":"U"}]`},
+		{"empty blocks", `[{"role":"user","content":"U"},{"role":"system","content":[{"type":"text","text":""},{"type":"text","text":" \n","cache_control":{"type":"ephemeral"}}]}]`, `[{"role":"user","content":"U"}]`},
+		{"empty among systems", `[{"role":"system","content":"S1"},{"role":"system","content":" "},{"role":"system","content":"S2"},{"role":"user","content":"U"}]`, `[{"role":"user","content":[{"type":"text","text":"U"},{"type":"text","text":"S1"},{"type":"text","text":"S2"}]}]`},
+		{"no systems", `[{"role":"user","content":"U"},{"role":"assistant","content":[{"type":"text","text":"A"}]}]`, `[{"role":"user","content":"U"},{"role":"assistant","content":[{"type":"text","text":"A"}]}]`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			out, err := MessagesToAnthropic(&AnthropicNativeRequest{Model: "m", MaxTokens: 16, Messages: decodeNativeMessages(t, tc.input)})
+			if err != nil {
+				t.Fatal(err)
+			}
+			want := decodeNativeMessages(t, tc.want)
+			if !reflect.DeepEqual(out.Messages, want) {
+				t.Fatalf("messages = %#v, want %#v", out.Messages, want)
+			}
+		})
+	}
+}
+
+func TestMessagesSystemRoleErrors(t *testing.T) {
+	for _, content := range []string{`[{"type":"image"}]`, `42`, `null`, `{}`, `true`, `["text"]`, `[{"type":"text"}]`, `[{"type":"text","text":42}]`, `[{"type":"text","text":""},{"type":"tool_result"}]`, `[{"type":"document","text":"D"}]`, `[{"text":"untyped"}]`} {
+		t.Run(content, func(t *testing.T) {
+			input := decodeNativeMessages(t, `[{"role":"system","content":""},{"role":"system","content":`+content+`}]`)
+			_, err := MessagesToAnthropic(&AnthropicNativeRequest{Model: "m", MaxTokens: 16, Messages: input})
+			want := &AdapterError{Status: 400, Message: "unsupported system message content", Context: "messages[1].content"}
+			if !reflect.DeepEqual(err, want) {
+				t.Fatalf("error = %#v, want %#v", err, want)
+			}
+			if shim := MessagesToChatShim(&AnthropicNativeRequest{Messages: input}); shim != nil {
+				t.Fatalf("invalid system content accepted by shim: %#v", shim)
+			}
+		})
+	}
+	for _, role := range []string{"tool", "developer", ""} {
+		t.Run("role="+role, func(t *testing.T) {
+			input := []types.AnthropicMessage{{Role: "system", Content: ""}, {Role: role, Content: "x"}}
+			_, err := MessagesToAnthropic(&AnthropicNativeRequest{Model: "m", MaxTokens: 16, Messages: input})
+			want := &AdapterError{Status: 400, Message: "unsupported role", Context: fmt.Sprintf("messages[1].role=%q", role)}
+			if !reflect.DeepEqual(err, want) {
+				t.Fatalf("error = %#v, want %#v", err, want)
+			}
+		})
+	}
+}
+
+func TestMessagesSystemRoleDoesNotMutateInput(t *testing.T) {
+	for _, next := range []bool{false, true} {
+		t.Run(fmt.Sprintf("next=%t", next), func(t *testing.T) {
+			// Spare capacity and an observable tail catch append into the input's
+			// backing array even when the visible input length stays unchanged.
+			backing := []any{map[string]any{"type": "text", "text": "U"}, map[string]any{"type": "text", "text": "tail"}}
+			user := types.AnthropicMessage{Role: "user", Content: backing[:1]}
+			system := types.AnthropicMessage{Role: "system", Content: []any{map[string]any{"type": "text", "text": "S", "cache_control": map[string]any{"type": "ephemeral"}}}}
+			input := []types.AnthropicMessage{user, system}
+			if next {
+				input = []types.AnthropicMessage{system, user}
+			}
+			encoded, _ := json.Marshal(input)
+			before := decodeNativeMessages(t, string(encoded))
+			out, err := MessagesToAnthropic(&AnthropicNativeRequest{Model: "m", MaxTokens: 16, Messages: input})
+			if err != nil {
+				t.Fatal(err)
+			}
+			want := decodeNativeMessages(t, `[{"role":"user","content":[{"type":"text","text":"U"},{"type":"text","text":"S","cache_control":{"type":"ephemeral"}}]}]`)
+			if !reflect.DeepEqual(out.Messages, want) {
+				t.Fatalf("messages = %#v, want %#v", out.Messages, want)
+			}
+			_ = MessagesToChatShim(&AnthropicNativeRequest{Messages: input})
+			if !reflect.DeepEqual(input, before) || backing[1].(map[string]any)["text"] != "tail" {
+				t.Fatalf("input mutated: %#v; backing: %#v", input, backing)
+			}
+		})
 	}
 }
