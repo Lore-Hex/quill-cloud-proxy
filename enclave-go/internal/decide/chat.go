@@ -172,7 +172,15 @@ var DevProviders = []string{
 //     name runs GLM 5.3 Fast on the same chain: Baseten, 5.2 Fast's last host,
 //     retires it on 2026-12-24 01:00 UTC and names 5.3 Fast as the successor
 //     (same list price, 1M window, tools and reasoning), so the name moved,
-//     as mev's and gemmev's did. 5.3 Fast is driven the way 5.2 Fast was.
+//     as mev's and gemmev's did. 5.3 Fast is driven at "low" effort, not
+//     off: Fireworks answers every reasoning_effort=none request for it with
+//     an upstream error (8 of 8 on 2026-11-25, through the decide route with
+//     the host pinned), so the name failed on its first host. At "low" it
+//     scored 29/29 with 8/8 valid outputs, 61-77 output tokens a decision and
+//     0.7-1.1 s end to end through the gateway; the default budget fits that
+//     without the caller's reasoning allowance. Baseten answered 529
+//     (overloaded) to every request that day, at any effort, so its leg is
+//     not yet measured on 5.3 Fast.
 //   - Llama 3.3 70B (lev-1.0) on SambaNova 371-450 ms with the tightest tail
 //     (worst case 565 ms), then Parasail 927 ms, Together 1576 ms: 29/29. It
 //     does not reason, so there is no effort to set. Novita answered 429.
@@ -201,7 +209,7 @@ var (
 	gptOSS20B       = NativeModel{Providers: []string{"deepinfra"}, ReasoningEffort: "low", Temperature: &zeroTemperature, Format: FormatSchema}
 	gemma426BA4B    = NativeModel{Providers: []string{"nextbit", "wandb", "io-net"}, Temperature: &zeroTemperature, Format: FormatPrompt}
 	mercury3        = NativeModel{Providers: []string{"inception"}, ReasoningEffort: "none", Temperature: &zeroTemperature, Format: FormatPrompt}
-	glm53Fast       = NativeModel{Providers: []string{"fireworks", "baseten"}, ReasoningEffort: "none", Temperature: &zeroTemperature, Format: FormatPrompt}
+	glm53Fast       = NativeModel{Providers: []string{"fireworks", "baseten"}, ReasoningEffort: "low", Temperature: &zeroTemperature, Format: FormatPrompt}
 	llama33         = NativeModel{Providers: []string{"sambanova", "parasail", "together"}, Temperature: &zeroTemperature, Format: FormatPrompt}
 )
 

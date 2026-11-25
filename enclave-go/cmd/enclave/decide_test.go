@@ -191,7 +191,7 @@ func TestNativeModelListIsPinned(t *testing.T) {
 		decide.OevModelID:    {"openai/gpt-oss-20b", "low", decide.FormatSchema},
 		decide.GemmevModelID: {"google/gemma-4-26b-a4b-it", "", decide.FormatPrompt},
 		decide.MevModelID:    {"inception/mercury-3", "none", decide.FormatPrompt},
-		decide.ZevModelID:    {"z-ai/glm-5.3-fast", "none", decide.FormatPrompt},
+		decide.ZevModelID:    {"z-ai/glm-5.3-fast", "low", decide.FormatPrompt},
 		decide.LevModelID:    {"meta-llama/llama-3.3-70b-instruct", "", decide.FormatPrompt},
 	} {
 		named := decide.NativeModels[name]
