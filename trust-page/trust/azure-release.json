@@ -1,9 +1,7 @@
 {
   "accepted_hostdata": [
     "b4389f97842fc47c50354ddb21832335dab9358c891f901e9debd2f0e07a54a8",
-    "5c18910228af9d59dc330e3c9a34fb9b871499cfb85e572793662b52a34cbf1c",
-    "a67c37dd9aba84bfe0d644375f6e3d69a4b9e7c4dfabc31a2f85629f7b88a0be",
-    "bd59ed05a393e89238ae252a34f6447d8de50e98691b8914fc619773a98b7fe6"
+    "929d06b2c4cc92ce8fbd1c5fbd40ae01a3d59c02a5d1548b63cb697074207915"
   ],
   "api_base_url": "https://api-azure.trustedrouter.com/v1",
   "attestation_format": "microsoft-azure-attestation-jwt",
@@ -40,16 +38,16 @@
       "attestation_url": "https://api-azure-syd.trustedrouter.com/attestation",
       "bundle_version": "8d45fbfbca0f456fb125360b5ce0d820",
       "compliance_status": "azure-compliant-uvm",
-      "hostdata": "5c18910228af9d59dc330e3c9a34fb9b871499cfb85e572793662b52a34cbf1c",
-      "image_build_commit": "940345c1d9783f5a6c441382e3c881e3581de88c",
-      "image_digest": "sha256:e7fffa8353adc21e89c3d8c46262cfebe556cb989dfe460d71319c2e974078d0",
+      "hostdata": "929d06b2c4cc92ce8fbd1c5fbd40ae01a3d59c02a5d1548b63cb697074207915",
+      "image_build_commit": "f8b96d277f82c9dee46916729f5c09b6b22f5679",
+      "image_digest": "sha256:c791e54817a39aaa8cd96b4d8349217b80ae2adc38e51fb659fee85235b177b6",
       "launch_measurement": "dc3f5a934489232a9b1818f12a0a88d2324ced00f8ab370f40451a76b7880bc3e211849a0739642d3d6c3b2b4bfb9866",
       "origin_hostname": "quill-enclave-australiaeast.australiaeast.azurecontainer.io",
-      "source_commit": "940345c1d9783f5a6c441382e3c881e3581de88c"
+      "source_commit": "f8b96d277f82c9dee46916729f5c09b6b22f5679"
     }
   ],
   "release_state": "multi-region",
-  "source_commit": "940345c1d9783f5a6c441382e3c881e3581de88c",
+  "source_commit": "f8b96d277f82c9dee46916729f5c09b6b22f5679",
   "source_commit_provenance": "operator-asserted",
   "source_repo": "https://github.com/Lore-Hex/quill-cloud-proxy",
   "tls": {
