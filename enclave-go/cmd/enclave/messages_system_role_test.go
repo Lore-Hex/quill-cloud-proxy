@@ -168,10 +168,10 @@ func TestServeOneMessagesRefusesNonTextSystemEntry(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			// The refusal is the only thing written: nothing may follow it.
-			if err := client.SetReadDeadline(time.Now().Add(300 * time.Millisecond)); err != nil {
-				t.Fatal(err)
-			}
+			// The refusal is the only thing written: nothing may follow it. The
+			// handler may already have closed its end, in which case setting a
+			// deadline reports a closed pipe and the read below ends at once.
+			_ = client.SetReadDeadline(time.Now().Add(300 * time.Millisecond))
 			if extra, _ := io.ReadAll(reader); len(extra) != 0 {
 				t.Fatalf("handler wrote %d more bytes after the refusal: %q", len(extra), extra)
 			}
