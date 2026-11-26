@@ -69,7 +69,7 @@ func (c *openAICompatibleClient) InvokeEmbedding(
 		}
 		return invokeOpenAICompatibleEmbeddings(ctx, client, provider, privatemode.BaseURL, c.apiKey, req, option.UpstreamModel)
 	}
-	apiKey := c.apiKey
+	var apiKey string
 	baseURL := c.baseURL
 	// BYOK: the customer's key (resolved upstream) overrides the bootstrap
 	// key, and the base URL is re-derived from the provider slug.
