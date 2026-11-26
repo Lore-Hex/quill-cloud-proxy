@@ -150,6 +150,11 @@ func (c *Client) bindAsyncAuthorization(a *Authorization, req *qtypes.OpenAIChat
 // ineligible usage: the settle is synchronous.
 var errCacheConvention = errors.New("cache_convention_mismatch")
 
+// errCacheCreation1h is returned when the usage has one-hour cache writes.
+// The billing-v1 body has no field for that count, so it would charge them at
+// the five-minute rate; the synchronous settle carries the count.
+var errCacheCreation1h = errors.New("cache_creation_1h")
+
 func buildAsyncSettlement(a *asyncAuthorization, usage Usage) (asyncSettlementRequest, error) {
 	var body asyncSettlementRequest
 	if usage.UsageEstimated || usage.RouteType != a.terminal.RouteType || usage.Streamed != a.terminal.Streamed || usage.SelectedEndpoint == "" || (usage.FinishReason == "heartbeat_lost" || usage.FinishReason == "cap_reached") {
@@ -162,6 +167,9 @@ func buildAsyncSettlement(a *asyncAuthorization, usage Usage) (asyncSettlementRe
 		if candidate.EndpointID == usage.SelectedEndpoint && usage.InputExcludesCache != (candidate.PromptConvention == "excludes_cache") {
 			return body, errCacheConvention
 		}
+	}
+	if usage.CacheCreation1hInputTokens != 0 {
+		return body, errCacheCreation1h
 	}
 	observed := a.requested
 	observed.RouteType, observed.Streamed = usage.RouteType, usage.Streamed
@@ -214,6 +222,8 @@ func (c *Client) tryAsyncSettlement(ctx context.Context, auth *Authorization, us
 			reason := "ineligible_usage"
 			if errors.Is(err, errCacheConvention) {
 				reason = "cache_convention_mismatch"
+			} else if errors.Is(err, errCacheCreation1h) {
+				reason = "cache_creation_1h"
 			}
 			asyncLog("fallback", reason)
 			return nil, nil

@@ -5,10 +5,19 @@ import (
 	"math/big"
 )
 
+// cacheCreation1hInputMultiple is the control plane's CACHE_WRITE_1H_MULTIPLIER:
+// one-hour cache writes cost this many times the input rate.
+const cacheCreation1hInputMultiple = 2
+
 // CostMicrodollars mirrors stage_d.endpoint_cost_microdollars_from_candidate.
 // Inputs are normalized UNCACHED tokens, as in the Python pricing primitive.
 // This is reporting only; it must not replace settlement or cap accounting.
-func (p CandidatePrice) CostMicrodollars(input, output, cached, creation, tierInput int) (int, bool) {
+//
+// creation1h is the one-hour subset of creation. As in the Python primitive it
+// is clamped to [0, creation] and priced at twice the selected tier's input
+// rate; the rest of creation keeps the cache-creation rate. It is part of
+// creation, so it does not change the prompt total or the tier.
+func (p CandidatePrice) CostMicrodollars(input, output, cached, creation, creation1h, tierInput int) (int, bool) {
 	if p.incompleteSnapshot || p.Rounding != "half_up_per_million" || p.PriceHistoryVersion != 1 || p.RequestFeeMicro < 0 {
 		return 0, false
 	}
@@ -31,20 +40,24 @@ func (p CandidatePrice) CostMicrodollars(input, output, cached, creation, tierIn
 			break
 		}
 	}
+	creation1h = min(max(creation1h, 0), creation)
+	// Doubling in big.Int keeps a large input rate from wrapping.
+	creation1hRate := new(big.Int).Mul(big.NewInt(cacheCreation1hInputMultiple), big.NewInt(rates.InputMicroPerMillion))
 	cost := big.NewInt(p.RequestFeeMicro)
 	positive := p.RequestFeeMicro > 0
 	for _, component := range []struct {
 		tokens int
-		rate   int64
+		rate   *big.Int
 	}{
-		{input, rates.InputMicroPerMillion}, {output, rates.OutputMicroPerMillion},
-		{cached, rates.CachedInputMicroPerMillion}, {creation, rates.CacheCreationMicroPerMillion},
+		{input, big.NewInt(rates.InputMicroPerMillion)}, {output, big.NewInt(rates.OutputMicroPerMillion)},
+		{cached, big.NewInt(rates.CachedInputMicroPerMillion)}, {creation - creation1h, big.NewInt(rates.CacheCreationMicroPerMillion)},
+		{creation1h, creation1hRate},
 	} {
-		if component.rate < 0 {
+		if component.rate.Sign() < 0 {
 			return 0, false
 		}
-		positive = positive || (component.tokens > 0 && component.rate > 0)
-		part := new(big.Int).Mul(big.NewInt(int64(component.tokens)), big.NewInt(component.rate))
+		positive = positive || (component.tokens > 0 && component.rate.Sign() > 0)
+		part := new(big.Int).Mul(big.NewInt(int64(component.tokens)), component.rate)
 		part.Add(part, big.NewInt(500_000))
 		part.Quo(part, big.NewInt(1_000_000))
 		cost.Add(cost, part)

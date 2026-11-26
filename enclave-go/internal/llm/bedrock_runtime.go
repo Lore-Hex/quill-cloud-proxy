@@ -192,7 +192,8 @@ func (c *bedrockRuntimeClient) invokeProfile(ctx context.Context, req *qtypes.Op
 }
 
 func validateBedrockRuntimeCacheTTL(body *qtypes.AnthropicMessagesRequest) error {
-	// The shared cache-write ledger currently represents only the 5m tariff.
+	// Bedrock Runtime has not been confirmed to report the one-hour breakdown
+	// of its cache writes, so settlement could only price them at the 5m rate.
 	if err := validateVertexClaudeCacheTTL(body); err != nil {
 		return &upstreamHTTPError{status: 400, body: "Bedrock Runtime supports only five-minute cache writes"}
 	}

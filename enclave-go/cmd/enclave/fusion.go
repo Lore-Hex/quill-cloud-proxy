@@ -3694,6 +3694,11 @@ func fusionAggregateStreamUsage(inputTokens int, outputTokens int, groups ...[]f
 				usage.CacheCreationInputTokens += item.Result.Usage.CacheCreationInputTokens
 				hasProviderDetails = true
 			}
+			// The one-hour count only splits the cache writes summed above, so
+			// it is not a provider detail by itself.
+			if item.Result.Usage.CacheCreation1hInputTokens > 0 {
+				usage.CacheCreation1hInputTokens += item.Result.Usage.CacheCreation1hInputTokens
+			}
 		}
 	}
 	if !hasProviderDetails {

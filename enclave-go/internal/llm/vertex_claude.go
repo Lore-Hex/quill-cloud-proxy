@@ -11,8 +11,10 @@ import (
 
 const vertexClaudeCacheTTLError = `{"error":{"type":"invalid_request_error","param":"cache_control.ttl","message":"Vertex Claude currently supports only five-minute cache writes; omit ttl or use 5m."}}`
 
-// Settlement currently records aggregate cache writes at the 5m multiplier.
-// Until it distinguishes 1h writes, reject those before sending paid traffic.
+// Settlement prices one-hour cache writes only from the usage breakdown the
+// upstream reports (cache_creation.ephemeral_1h_input_tokens). Vertex has not
+// been confirmed to return that breakdown, and without it a one-hour write
+// would settle at the 5m rate, so reject those before sending paid traffic.
 func validateVertexClaudeCacheTTL(body *qtypes.AnthropicMessagesRequest) error {
 	wire, err := json.Marshal(body)
 	if err != nil {
