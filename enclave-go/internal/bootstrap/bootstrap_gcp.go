@@ -167,6 +167,8 @@ func Fetch(ctx context.Context) (*types.BootstrapData, error) {
 	makoraSecret := os.Getenv("QUILL_MAKORA_SECRET")
 	nebiusSecret := os.Getenv("QUILL_NEBIUS_SECRET")
 	minimaxSecret := os.Getenv("QUILL_MINIMAX_SECRET")
+	minimaxStandbySecret := os.Getenv("QUILL_MINIMAX_STANDBY_SECRET")
+	falStandbySecret := os.Getenv("QUILL_FAL_STANDBY_SECRET")
 	chutesSecret := os.Getenv("QUILL_CHUTES_SECRET")
 	digitalOceanSecret := os.Getenv("QUILL_DIGITALOCEAN_SECRET")
 	cloudflareWorkersAISecret := os.Getenv("QUILL_CLOUDFLARE_WORKERS_AI_SECRET")
@@ -539,6 +541,19 @@ func Fetch(ctx context.Context) (*types.BootstrapData, error) {
 		}
 	}
 	var chutesKey []byte
+	var minimaxStandby, falStandby []byte
+	if minimaxStandbySecret != "" {
+		minimaxStandby, err = fetchSecret(ctx, httpc, token, project, minimaxStandbySecret)
+		if err != nil {
+			return nil, fmt.Errorf("bootstrap/gcp: minimax standby: %w", err)
+		}
+	}
+	if falStandbySecret != "" {
+		falStandby, err = fetchSecret(ctx, httpc, token, project, falStandbySecret)
+		if err != nil {
+			return nil, fmt.Errorf("bootstrap/gcp: fal standby: %w", err)
+		}
+	}
 	if chutesSecret != "" {
 		chutesKey, err = fetchSecret(ctx, httpc, token, project, chutesSecret)
 		if err != nil {
@@ -843,6 +858,8 @@ func Fetch(ctx context.Context) (*types.BootstrapData, error) {
 		MakoraAPIKey:                 strings.TrimSpace(string(makoraKey)),
 		NebiusAPIKey:                 strings.TrimSpace(string(nebiusKey)),
 		MiniMaxAPIKey:                strings.TrimSpace(string(minimaxKey)),
+		MiniMaxStandbyKey:            strings.TrimSpace(string(minimaxStandby)),
+		FALStandbyKey:                strings.TrimSpace(string(falStandby)),
 		ChutesAPIKey:                 strings.TrimSpace(string(chutesKey)),
 		DigitalOceanAPIKey:           strings.TrimSpace(string(digitalOceanKey)),
 		CloudflareWorkersAIAPIKey:    strings.TrimSpace(string(cloudflareWorkersAIKey)),

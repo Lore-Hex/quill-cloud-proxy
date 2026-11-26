@@ -9,6 +9,7 @@ import (
 
 func videoProviderKeys(boot *types.BootstrapData) video.ProviderKeys {
 	return video.ProviderKeys{
+		FALStandby: boot.FALStandbyKey, MiniMaxStandby: boot.MiniMaxStandbyKey,
 		BytePlus: boot.ProviderAPIKeys["byteplus"],
 		Venice:   boot.VeniceAPIKey, FAL: boot.ProviderAPIKeys["fal"], Google: boot.GeminiAPIKey,
 		MiniMax: boot.MiniMaxAPIKey, XAI: boot.GrokAPIKey, Alibaba: boot.AlibabaAPIKey,

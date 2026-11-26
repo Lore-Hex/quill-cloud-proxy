@@ -142,6 +142,22 @@ def test_tencent_uses_the_cloud_local_tokenhub_secret() -> None:
     assert "gcp_service_account_key_json" not in payload
 
 
+def test_ordered_provider_keys_do_not_replace_primary_keys() -> None:
+    sm = _StubSecretsManager(
+        {
+            "quill/trustedrouter-fal-api-key": "fal-first",
+            "quill/trustedrouter-fal-standby-api-key": "fal-second",
+            "quill/trustedrouter-minimax-api-key": "minimax-first",
+            "quill/trustedrouter-minimax-standby-api-key": "minimax-second",
+        }
+    )
+    payload = _build_payload(sm=sm, kms=_StubKMS({}))
+    assert payload["provider_api_keys"] == {"fal": "fal-first"}
+    assert payload["minimax_api_key"] == "minimax-first"
+    assert payload["fal_standby_key"] == "fal-second"
+    assert payload["minimax_standby_key"] == "minimax-second"
+
+
 def test_neurometric_uses_the_cloud_local_legacy_bootstrap_field() -> None:
     secret_name = "quill/trustedrouter-neurometric-api-key"
     sm = _StubSecretsManager({secret_name: " test-neurometric-key\n"})
@@ -309,6 +325,8 @@ def test_build_payload_iterates_all_known_providers() -> None:
         "makora_api_key",
         "nebius_api_key",
         "minimax_api_key",
+        "minimax_standby_key",
+        "fal_standby_key",
         "azure_api_key",
         "voyage_api_key",
         "xiaomi_api_key",

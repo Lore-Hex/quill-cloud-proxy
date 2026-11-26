@@ -206,6 +206,8 @@ SECRETS=(
   trustedrouter-perplexity-api-key
   trustedrouter-krea-api-key
   trustedrouter-fal-api-key
+  trustedrouter-fal-standby-api-key
+  trustedrouter-minimax-standby-api-key
   trustedrouter-byteplus-api-key
   trustedrouter-tencent-tokenhub-api-key
   trustedrouter-vultr-api-key

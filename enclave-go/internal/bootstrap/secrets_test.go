@@ -216,8 +216,8 @@ func TestSecretBindingsAssignDistinctFields(t *testing.T) {
 // TestSealerBindingTableMatchesSecretBindings enforce the other two corners of
 // that triangle.
 func TestSecretBindingsTableIsWellFormed(t *testing.T) {
-	if len(secretBindings) != 123 {
-		t.Errorf("secretBindings has %d entries, want 123", len(secretBindings))
+	if len(secretBindings) != 125 {
+		t.Errorf("secretBindings has %d entries, want 125", len(secretBindings))
 	}
 	providers := 0
 	envs := map[string]string{}
@@ -249,6 +249,16 @@ func TestSecretBindingsTableIsWellFormed(t *testing.T) {
 	}
 	if err := directproviders.Validate(); err != nil {
 		t.Errorf("direct provider secret specs: %v", err)
+	}
+}
+
+func TestStandbyKeysAloneCannotEnableBootstrap(t *testing.T) {
+	validSecretEnv(t)
+	t.Setenv("QUILL_OPENROUTER_SECRET", "")
+	t.Setenv("QUILL_MINIMAX_STANDBY_SECRET", "minimax-spare")
+	t.Setenv("QUILL_FAL_STANDBY_SECRET", "fal-spare")
+	if _, err := resolveSecretConfig("bootstrap/azure"); err == nil || !strings.Contains(err.Error(), "at least one provider") {
+		t.Fatalf("expected provider guard to reject standby-only configuration, got %v", err)
 	}
 }
 

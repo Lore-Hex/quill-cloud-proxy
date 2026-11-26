@@ -364,17 +364,23 @@ func serveNativeImageAuthorized(
 	clientClosed := cancelOnClientDisconnect(generationCtx, cancel, conn)
 	authorization.RecordShadowInvocation(option.EndpointID, option.Provider)
 	nativeRequest.OpenAISafetyIdentifier = option.OpenAISafetyIdentifier
+	nativeRequest.ManagedKeyGeneration = option.ManagedKeyGeneration
 	result, err := imageProviderGateway.Generate(
 		generationCtx, nativeRequest, option.ProviderAPIKey, idempotencyKey,
 	)
 	if err != nil {
+		var providerErr *imagegen.ProviderError
+		if option.Provider == "fal" && strings.EqualFold(option.UsageType, "Credits") && option.ProviderAPIKey == "" &&
+			errors.As(err, &providerErr) && providerErr.StatusCode == http.StatusPaymentRequired &&
+			imageProviderGateway.IsPairedFALPrimary(option.ManagedKeyGeneration) {
+			trGateway.ReportFALPrimary402(ctx, authorization, option.EndpointID, option.ManagedKeyGeneration)
+		}
 		if clientClosed.Load() {
 			refundImageGeneration(ctx, trGateway, authorization, 499, "client_closed", started, req.Metadata)
 			return
 		}
 		status := 502
 		providerStatus := 0
-		var providerErr *imagegen.ProviderError
 		if errors.As(err, &providerErr) {
 			providerStatus = providerErr.StatusCode
 			if providerErr.StatusCode >= 400 && providerErr.StatusCode < 500 {

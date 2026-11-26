@@ -2,6 +2,7 @@ package video
 
 import (
 	"context"
+	"encoding/hex"
 	"fmt"
 	"io"
 	"net/http"
@@ -9,6 +10,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/Lore-Hex/quill-cloud-proxy/enclave-go/internal/orderedkey"
 )
 
 type QueueResult struct {
@@ -69,19 +72,21 @@ func QueueTimeout(provider Provider) time.Duration {
 }
 
 type ProviderKeys struct {
-	BytePlus   string
-	Venice     string
-	FAL        string
-	Google     string
-	MiniMax    string
-	AtlasCloud string
-	XAI        string
-	Alibaba    string
-	LTX        string
-	Runway     string
-	OpenAI     string
-	Kling      string
-	Decart     string
+	FALStandby     string
+	MiniMaxStandby string
+	BytePlus       string
+	Venice         string
+	FAL            string
+	Google         string
+	MiniMax        string
+	AtlasCloud     string
+	XAI            string
+	Alibaba        string
+	LTX            string
+	Runway         string
+	OpenAI         string
+	Kling          string
+	Decart         string
 	// VertexProject/VertexLocation enable Veo on Vertex AI using the
 	// workload's GCP metadata-server identity. Set only on GCP builds.
 	VertexProject  string
@@ -90,10 +95,16 @@ type ProviderKeys struct {
 
 type Registry struct {
 	providers map[string]Provider
+	standbys  map[string]boundStandby
+}
+
+type boundStandby struct {
+	generation string
+	provider   Provider
 }
 
 func NewRegistry(keys ProviderKeys, httpc *http.Client) *Registry {
-	return NewRegistryWithProviders(
+	r := NewRegistryWithProviders(
 		NewBytePlusClient(keys.BytePlus, httpc),
 		NewFALVideoClient(keys.FAL, httpc),
 		NewGoogleVeoClient(keys.Google, httpc),
@@ -109,6 +120,67 @@ func NewRegistry(keys ProviderKeys, httpc *http.Client) *Registry {
 		NewDecartVideoClient(keys.Decart, httpc),
 		NewVeniceClient(keys.Venice, httpc),
 	)
+	r.standbys = make(map[string]boundStandby)
+	if keys.FALStandby != "" {
+		gen := orderedkey.Generation("fal", keys.FAL, keys.FALStandby)
+		r.standbys["fal"] = boundStandby{gen, NewFALVideoClient(keys.FALStandby, httpc)}
+	}
+	if keys.MiniMaxStandby != "" {
+		gen := orderedkey.Generation("minimax", keys.MiniMax, keys.MiniMaxStandby)
+		r.standbys["minimax"] = boundStandby{gen, NewMiniMaxClient(keys.MiniMaxStandby, httpc)}
+	}
+	return r
+}
+
+func (r *Registry) IsPairedFALPrimary(decision string) bool {
+	s := r.standbys["fal"]
+	return s.generation != "" && decision == "primary:"+s.generation
+}
+
+func (r *Registry) ForGeneration(id, generation string) (Provider, bool) {
+	if r == nil {
+		return nil, false
+	}
+	s, ok := r.standbys[id]
+	if generation == "" {
+		if ok {
+			return nil, false
+		}
+		return r.Provider(id)
+	}
+	if expected, explicit := strings.CutPrefix(generation, "primary:"); explicit {
+		if len(expected) != 64 || (ok && expected != s.generation) {
+			return nil, false
+		}
+		if _, err := hex.DecodeString(expected); err != nil {
+			return nil, false
+		}
+		return r.Provider(id)
+	}
+	return s.provider, ok && s.generation == generation && s.provider.Enabled()
+}
+
+// The control plane persists this internal field. Never send the marker to
+// the provider: reads and cleanup must use the submitting account after restart.
+func BindJobModel(model, generation string) string {
+	if generation == "" || strings.HasPrefix(generation, "primary:") {
+		return model
+	}
+	return "tr-slot2:" + generation + ":" + model
+}
+
+func (r *Registry) ForJob(id, model string) (Provider, string, bool) {
+	rest, marked := strings.CutPrefix(model, "tr-slot2:")
+	if !marked {
+		p, ok := r.Provider(id)
+		return p, model, ok
+	}
+	gen, raw, ok := strings.Cut(rest, ":")
+	if !ok || len(gen) != 64 || raw == "" {
+		return nil, "", false
+	}
+	p, ok := r.ForGeneration(id, gen)
+	return p, raw, ok
 }
 
 func NewRegistryWithProviders(providers ...Provider) *Registry {

@@ -140,13 +140,20 @@ func (c *openAICompatibleClient) InvokeDecide(ctx context.Context, req *DecideRe
 	if c.provider == "privatemode" || provider == "privatemode" {
 		return nil, &DecideError{Provider: "privatemode", Class: DecideErrConfig}
 	}
-	apiKey, baseURL := c.apiKey, c.baseURL
+	var apiKey string
+	baseURL := c.baseURL
 	if option.ProviderAPIKey != "" || strings.EqualFold(option.UsageType, "BYOK") {
 		if provider != normalizeDirectProvider(c.provider) {
 			return nil, &DecideError{Provider: provider, Class: DecideErrConfig}
 		}
 		apiKey = strings.TrimSpace(option.ProviderAPIKey)
 		baseURL = directBaseURL(provider)
+	} else {
+		var err error
+		apiKey, err = c.managedKey(option)
+		if err != nil {
+			return nil, &DecideError{Provider: provider, Class: DecideErrConfig}
+		}
 	}
 	if strings.TrimSpace(apiKey) == "" || strings.TrimSpace(baseURL) == "" {
 		return nil, &DecideError{Provider: provider, Class: DecideErrConfig}
