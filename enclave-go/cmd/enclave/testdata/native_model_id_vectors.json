@@ -1,0 +1,225 @@
+{
+  "note": "Requested model spellings against the one authorized catalog model, with fallbacks disabled. The control plane's own check of Anthropic model ids must accept no pair this file refuses.",
+  "cases": [
+    {
+      "requested": "claude-opus-5-5",
+      "selected": "anthropic/claude-opus-5.5",
+      "allowed": true
+    },
+    {
+      "requested": "claude-opus-5",
+      "selected": "anthropic/claude-opus-5",
+      "allowed": true
+    },
+    {
+      "requested": "claude-haiku-4-5",
+      "selected": "anthropic/claude-haiku-4.5",
+      "allowed": true
+    },
+    {
+      "requested": "claude-haiku-4-5-20251001",
+      "selected": "anthropic/claude-haiku-4.5",
+      "allowed": true
+    },
+    {
+      "requested": "claude-opus-5-5:nitro",
+      "selected": "anthropic/claude-opus-5.5",
+      "allowed": true
+    },
+    {
+      "requested": "claude-opus-5-5:floor",
+      "selected": "anthropic/claude-opus-5.5",
+      "allowed": true
+    },
+    {
+      "requested": "claude-opus-5-5",
+      "selected": "anthropic/claude-opus-5.6",
+      "allowed": false
+    },
+    {
+      "requested": "claude-opus-5-5",
+      "selected": "anthropic/claude-opus-5.5-aws",
+      "allowed": false
+    },
+    {
+      "requested": "claude-opus-5-5",
+      "selected": "anthropic/claude-sonnet-5.5",
+      "allowed": false
+    },
+    {
+      "requested": "claude-opus-5-5",
+      "selected": "amazon/claude-opus-5.5",
+      "allowed": false
+    },
+    {
+      "requested": "claude-opus-5-5",
+      "selected": "google/claude-opus-5.5",
+      "allowed": false
+    },
+    {
+      "requested": "claude-opus-5.5",
+      "selected": "anthropic/claude-opus-5.5",
+      "allowed": false
+    },
+    {
+      "requested": "claude-opus-5-5-2025",
+      "selected": "anthropic/claude-opus-5.5",
+      "allowed": false
+    },
+    {
+      "requested": "claude-opus-5-5-202511011",
+      "selected": "anthropic/claude-opus-5.5",
+      "allowed": false
+    },
+    {
+      "requested": "claude-opus-5-5-2025110a",
+      "selected": "anthropic/claude-opus-5.5",
+      "allowed": false
+    },
+    {
+      "requested": "claude-opus-5-520251101",
+      "selected": "anthropic/claude-opus-5.5",
+      "allowed": false
+    },
+    {
+      "requested": "claude-opus-5-5-20251101-20251101",
+      "selected": "anthropic/claude-opus-5.5",
+      "allowed": false
+    },
+    {
+      "requested": "opus",
+      "selected": "anthropic/claude-opus-5.5",
+      "allowed": false
+    },
+    {
+      "requested": "-20251101",
+      "selected": "anthropic/",
+      "allowed": false
+    },
+    {
+      "requested": "",
+      "selected": "anthropic/",
+      "allowed": false
+    },
+    {
+      "requested": "anthropic/claude-opus-5-5",
+      "selected": "anthropic/claude-opus-5.5",
+      "allowed": false
+    },
+    {
+      "requested": "vendor/claude-opus-5-5",
+      "selected": "anthropic/claude-opus-5.5",
+      "allowed": false
+    },
+    {
+      "requested": "claude-nine-20300101",
+      "selected": "anthropic/claude-nine-20300101",
+      "allowed": true
+    },
+    {
+      "requested": "claude-opus-5-5",
+      "selected": "claude-opus-5.5",
+      "allowed": false
+    },
+    {
+      "requested": "team/model-1-5",
+      "selected": "anthropic/team/model-1.5",
+      "allowed": false
+    },
+    {
+      "requested": "claude-haiku-4-5-20240101",
+      "selected": "anthropic/claude-haiku-4.5-20251001",
+      "allowed": false
+    },
+    {
+      "requested": "claude-haiku-4-5",
+      "selected": "anthropic/claude-haiku-4.5-20251001",
+      "allowed": false
+    },
+    {
+      "requested": "claude-haiku-4-5-20251001",
+      "selected": "anthropic/claude-haiku-4.5-20251001",
+      "allowed": true
+    },
+    {
+      "requested": "Claude-Opus-5-5",
+      "selected": "anthropic/claude-opus-5.5",
+      "allowed": false
+    },
+    {
+      "requested": "claude-opus-5-5",
+      "selected": "Anthropic/claude-opus-5.5",
+      "allowed": false
+    },
+    {
+      "requested": "claude-opus-5-5-19990101",
+      "selected": "anthropic/claude-opus-5.5",
+      "allowed": true
+    },
+    {
+      "requested": "claude-opus-5-5",
+      "selected": "anthropic/claude-opus-5-5",
+      "allowed": true
+    },
+    {
+      "requested": "claude-opus-5-5-20251101",
+      "selected": "anthropic/claude-opus-5.5-aws",
+      "allowed": false
+    },
+    {
+      "requested": "claude-opus-5-5",
+      "selected": "openai/claude-opus-5.5",
+      "allowed": false
+    },
+    {
+      "requested": "opus-5-5",
+      "selected": "anthropic/claude-opus-5.5",
+      "allowed": false
+    },
+    {
+      "requested": "claude-opus-55",
+      "selected": "anthropic/claude-opus-5.5",
+      "allowed": false
+    },
+    {
+      "requested": "claude-3-7-sonnet",
+      "selected": "anthropic/claude-3.7-sonnet:thinking",
+      "allowed": false
+    },
+    {
+      "requested": "claude-3-7-sonnet-thinking",
+      "selected": "anthropic/claude-3.7-sonnet:thinking",
+      "allowed": false
+    },
+    {
+      "requested": "model-1-5",
+      "selected": "anthropic/team/model-1.5",
+      "allowed": false
+    },
+    {
+      "requested": "claude-opus-5-5-2025-1-1",
+      "selected": "anthropic/claude-opus-5.5",
+      "allowed": false
+    },
+    {
+      "requested": "claude-opus-5-5-2025110:",
+      "selected": "anthropic/claude-opus-5.5",
+      "allowed": false
+    },
+    {
+      "requested": "claude-opus-5-5-a0251101",
+      "selected": "anthropic/claude-opus-5.5",
+      "allowed": false
+    },
+    {
+      "requested": "claude-opus-5-5.20251101",
+      "selected": "anthropic/claude-opus-5.5",
+      "allowed": false
+    },
+    {
+      "requested": "claude-opus-5-5--20251101",
+      "selected": "anthropic/claude-opus-5.5",
+      "allowed": false
+    }
+  ]
+}

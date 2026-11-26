@@ -81,7 +81,42 @@ func requestedModelAllowsSelection(requested string, selected string) bool {
 	if !strings.Contains(requested, "/") && selected == "openai/"+requested {
 		return true
 	}
-	return false
+	return nativeAnthropicIDNames(requested, selected)
+}
+
+// nativeAnthropicIDNames reports whether requested is Anthropic's own id for
+// the catalog model selected. Anthropic writes a model id without a vendor
+// prefix and with a dashed version, optionally followed by an undashed date
+// ("claude-opus-5-5", "claude-haiku-4-5-20251001"); the catalog id is the
+// same words under the vendor prefix with a dotted version
+// ("anthropic/claude-opus-5.5"). The control plane decides which of these ids
+// it resolves; this only bounds what it may resolve one to.
+func nativeAnthropicIDNames(requested string, selected string) bool {
+	const vendor = "anthropic/"
+	if requested == "" || strings.Contains(requested, "/") || !strings.HasPrefix(selected, vendor) {
+		return false
+	}
+	dashed := strings.ReplaceAll(strings.TrimPrefix(selected, vendor), ".", "-")
+	return requested == dashed || stripUndashedModelDate(requested) == dashed
+}
+
+// stripUndashedModelDate removes a trailing "-YYYYMMDD" (a dash and exactly
+// eight digits) from a model id.
+func stripUndashedModelDate(model string) string {
+	const width = len("-20000101")
+	if len(model) <= width {
+		return model
+	}
+	suffix := model[len(model)-width:]
+	if suffix[0] != '-' {
+		return model
+	}
+	for _, char := range suffix[1:] {
+		if char < '0' || char > '9' {
+			return model
+		}
+	}
+	return model[:len(model)-width]
 }
 
 func stripDatedModelSnapshot(model string) string {
