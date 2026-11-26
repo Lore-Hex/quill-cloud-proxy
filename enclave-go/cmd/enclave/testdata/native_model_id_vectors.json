@@ -170,6 +170,56 @@
       "requested": "claude-opus-5-5",
       "selected": "openai/claude-opus-5.5",
       "allowed": false
+    },
+    {
+      "requested": "opus-5-5",
+      "selected": "anthropic/claude-opus-5.5",
+      "allowed": false
+    },
+    {
+      "requested": "claude-opus-55",
+      "selected": "anthropic/claude-opus-5.5",
+      "allowed": false
+    },
+    {
+      "requested": "claude-3-7-sonnet",
+      "selected": "anthropic/claude-3.7-sonnet:thinking",
+      "allowed": false
+    },
+    {
+      "requested": "claude-3-7-sonnet-thinking",
+      "selected": "anthropic/claude-3.7-sonnet:thinking",
+      "allowed": false
+    },
+    {
+      "requested": "model-1-5",
+      "selected": "anthropic/team/model-1.5",
+      "allowed": false
+    },
+    {
+      "requested": "claude-opus-5-5-2025-1-1",
+      "selected": "anthropic/claude-opus-5.5",
+      "allowed": false
+    },
+    {
+      "requested": "claude-opus-5-5-2025110:",
+      "selected": "anthropic/claude-opus-5.5",
+      "allowed": false
+    },
+    {
+      "requested": "claude-opus-5-5-a0251101",
+      "selected": "anthropic/claude-opus-5.5",
+      "allowed": false
+    },
+    {
+      "requested": "claude-opus-5-5.20251101",
+      "selected": "anthropic/claude-opus-5.5",
+      "allowed": false
+    },
+    {
+      "requested": "claude-opus-5-5--20251101",
+      "selected": "anthropic/claude-opus-5.5",
+      "allowed": false
     }
   ]
 }
