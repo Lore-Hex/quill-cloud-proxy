@@ -20,6 +20,7 @@ import (
 	"time"
 
 	"github.com/Lore-Hex/quill-cloud-proxy/enclave-go/internal/llm"
+	"github.com/Lore-Hex/quill-cloud-proxy/enclave-go/internal/orderedkey"
 	_ "golang.org/x/image/webp"
 )
 
@@ -43,20 +44,22 @@ const (
 )
 
 type ProviderKeys struct {
-	OpenAI    string
-	XAI       string
-	Decart    string
-	Recraft   string
-	BFL       string
-	Nscale    string
-	Krea      string
-	FAL       string
-	Riverflow string
+	FALStandby string
+	OpenAI     string
+	XAI        string
+	Decart     string
+	Recraft    string
+	BFL        string
+	Nscale     string
+	Krea       string
+	FAL        string
+	Riverflow  string
 }
 
 type Registry struct {
-	http *http.Client
-	keys map[string]string
+	falStandby string
+	http       *http.Client
+	keys       map[string]string
 }
 
 type GeneratedImage struct {
@@ -101,7 +104,8 @@ func NewRegistry(keys ProviderKeys, client *http.Client) *Registry {
 		clone.Timeout = 10 * time.Minute
 	}
 	return &Registry{
-		http: &clone,
+		falStandby: keys.FALStandby,
+		http:       &clone,
 		keys: map[string]string{
 			"openai": keys.OpenAI, "grok": keys.XAI, "decart": keys.Decart,
 			"recraft": keys.Recraft, "bfl": keys.BFL, "nscale": keys.Nscale,
@@ -131,6 +135,13 @@ func (r *Registry) Generate(
 	key := strings.TrimSpace(providerAPIKey)
 	if key == "" {
 		key = strings.TrimSpace(r.keys[resolved.Spec.Provider])
+		if resolved.Spec.Provider == "fal" {
+			var err error
+			key, err = orderedkey.Select("fal", key, r.falStandby, resolved.ManagedKeyGeneration)
+			if err != nil {
+				return nil, err
+			}
+		}
 	}
 	if key == "" {
 		return nil, fmt.Errorf("image provider key is unavailable")

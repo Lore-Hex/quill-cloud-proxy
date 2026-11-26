@@ -147,6 +147,12 @@ func (c *openAICompatibleClient) InvokeDecide(ctx context.Context, req *DecideRe
 		}
 		apiKey = strings.TrimSpace(option.ProviderAPIKey)
 		baseURL = directBaseURL(provider)
+	} else {
+		var err error
+		apiKey, err = c.managedKey(option)
+		if err != nil {
+			return nil, &DecideError{Provider: provider, Class: DecideErrConfig}
+		}
 	}
 	if strings.TrimSpace(apiKey) == "" || strings.TrimSpace(baseURL) == "" {
 		return nil, &DecideError{Provider: provider, Class: DecideErrConfig}

@@ -187,6 +187,7 @@ func invokeOptionsForAuthorization(
 			safetyID = callerID
 		}
 		options = append(options, llm.InvokeOptions{
+			ManagedKeyGeneration:   authorization.ManagedKeyGeneration(candidate.Provider, candidate.UsageType),
 			Model:                  candidate.Model,
 			UpstreamModel:          candidate.UpstreamModel,
 			ProviderAPIKey:         providerKey,

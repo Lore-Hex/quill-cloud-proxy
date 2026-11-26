@@ -40,6 +40,7 @@ type Client interface {
 }
 
 type InvokeOptions struct {
+	ManagedKeyGeneration   string `json:"-"`
 	Model                  string
 	UpstreamModel          string
 	ProviderAPIKey         string

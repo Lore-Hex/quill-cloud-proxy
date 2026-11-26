@@ -76,6 +76,12 @@ func (c *openAICompatibleClient) InvokeEmbedding(
 	if option.ProviderAPIKey != "" {
 		apiKey = option.ProviderAPIKey
 		baseURL = directBaseURL(provider)
+	} else {
+		var err error
+		apiKey, err = c.managedKey(option)
+		if err != nil {
+			return nil, err
+		}
 	}
 	httpc, err := c.resolveHTTPClient()
 	if err != nil {

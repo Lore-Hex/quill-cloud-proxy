@@ -627,7 +627,9 @@ func (c *Client) primaryBaseURL() string {
 }
 
 type Authorization struct {
-	CreditReservationID string `json:"credit_reservation_id,omitempty"`
+	// Only set by the internal authorize response, never by public request metadata.
+	ManagedKeyCutovers  map[string]string `json:"managed_key_cutovers,omitempty"`
+	CreditReservationID string            `json:"credit_reservation_id,omitempty"`
 	// Wire metadata alone cannot activate async behavior. async is bound only
 	// after enclave opt-in; preserve raw snapshot bytes for canonical hashing.
 	async                                 *asyncAuthorization
@@ -696,6 +698,13 @@ type Authorization struct {
 	// GatewayRegion is enclave-local provenance, never supplied by the control
 	// plane. Region remains the unchanged accounting/routing protocol field.
 	GatewayRegion string `json:"-"`
+}
+
+func (a *Authorization) ManagedKeyGeneration(provider, usage string) string {
+	if a == nil || !strings.EqualFold(usage, "Credits") || (provider != "minimax" && provider != "fal") {
+		return ""
+	}
+	return a.ManagedKeyCutovers[provider]
 }
 
 func (a *Authorization) pinControlPlaneEndpoint(endpoint int) {

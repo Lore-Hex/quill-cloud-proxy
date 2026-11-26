@@ -35,6 +35,8 @@ type AWSBootstrapEvidence struct {
 // migration path instead exposes plaintext to the parent and is not a fallback
 // permitted by the strict measured binary.
 type BootstrapData struct {
+	MiniMaxStandbyKey string                `json:"minimax_standby_key,omitempty"`
+	FALStandbyKey     string                `json:"fal_standby_key,omitempty"`
 	AWSBootstrap      *AWSBootstrapEvidence `json:"-"`
 	Devices           []DeviceConfig        `json:"devices"`
 	BedrockAccessKey  string                `json:"bedrock_access_key"`

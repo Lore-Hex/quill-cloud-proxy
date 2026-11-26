@@ -425,10 +425,11 @@ func (s *videoService) rejectVideoAuthorization(ctx context.Context, conn io.Wri
 }
 
 type authorizedVideoRoute struct {
-	Provider           string
-	EndpointID         string
-	UpstreamModel      string
-	QuotedMicrodollars int
+	ManagedKeyGeneration string
+	Provider             string
+	EndpointID           string
+	UpstreamModel        string
+	QuotedMicrodollars   int
 }
 
 type videoQuote struct {
@@ -494,7 +495,7 @@ func authorizedVideoRoutes(
 	}
 	routes := make([]authorizedVideoRoute, 0, len(auth.RouteCandidates)+1)
 	seen := make(map[string]struct{}, len(auth.RouteCandidates)+1)
-	appendRoute := func(provider, endpointID, upstreamModel string) {
+	appendRoute := func(provider, endpointID, upstreamModel, usage string) {
 		// Check after authorization (the echo is only known now), but before
 		// preparing a job or paid queueing. Filter primary AND fallback routes.
 		// Other authorized candidates can use the shared hold and settle their
@@ -511,13 +512,18 @@ func authorizedVideoRoutes(
 		}
 		seen[endpointID] = struct{}{}
 		routes = append(routes, authorizedVideoRoute{
-			Provider: provider, EndpointID: endpointID, UpstreamModel: upstreamModel,
+			ManagedKeyGeneration: auth.ManagedKeyGeneration(provider, usage),
+			Provider:             provider, EndpointID: endpointID, UpstreamModel: upstreamModel,
 			QuotedMicrodollars: quote.Microdollars,
 		})
 	}
-	appendRoute(auth.Provider, auth.EndpointID, auth.UpstreamModel)
+	appendRoute(auth.Provider, auth.EndpointID, auth.UpstreamModel, auth.UsageType)
 	for _, candidate := range auth.RouteCandidates {
-		appendRoute(candidate.Provider, candidate.EndpointID, candidate.UpstreamModel)
+		usage := candidate.UsageType
+		if usage == "" {
+			usage = auth.UsageType
+		}
+		appendRoute(candidate.Provider, candidate.EndpointID, candidate.UpstreamModel, usage)
 	}
 	return routes
 }
@@ -530,7 +536,10 @@ func (s *videoService) queueVideoJob(
 ) (authorizedVideoRoute, *video.QueueResult, error) {
 	var lastErr error
 	for _, route := range routes {
-		provider, ok := s.providers.Provider(route.Provider)
+		provider, ok := s.providers.ForGeneration(route.Provider, route.ManagedKeyGeneration)
+		if !ok && route.ManagedKeyGeneration != "" {
+			return authorizedVideoRoute{}, nil, fmt.Errorf("authorized video credential unavailable")
+		}
 		if !ok || !provider.Supports(request) {
 			continue
 		}
@@ -545,6 +554,7 @@ func (s *videoService) queueVideoJob(
 		cancel()
 		logVideoQueueAttempt(os.Stderr, trustedrouter.RequestLogIDFromContext(ctx), request.Model.ID, route, err, time.Since(started))
 		if err == nil {
+			queued.ProviderModel = video.BindJobModel(queued.ProviderModel, route.ManagedKeyGeneration)
 			return route, queued, nil
 		}
 		lastErr = err
@@ -633,12 +643,12 @@ func (s *videoService) serveContent(ctx context.Context, conn io.Writer, bearer,
 			return
 		}
 	}
-	provider, ok := s.providers.Provider(job.Provider)
+	provider, rawModel, ok := s.providers.ForJob(job.Provider, job.ProviderModel)
 	if !ok {
 		writeOpenAIError(conn, 503, "video provider is temporarily unavailable", "server_error", "video_provider_unavailable", "")
 		return
 	}
-	result, err := provider.Retrieve(ctx, job.ProviderModel, job.ProviderJobID)
+	result, err := provider.Retrieve(ctx, rawModel, job.ProviderJobID)
 	if err != nil {
 		writeVideoProviderError(conn, err, "could not retrieve video content")
 		return
@@ -672,7 +682,7 @@ func (s *videoService) serveContent(ctx context.Context, conn io.Writer, bearer,
 		return
 	}
 	cleanupCtx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
-	if err := provider.Complete(cleanupCtx, job.ProviderModel, job.ProviderJobID); err == nil {
+	if err := provider.Complete(cleanupCtx, rawModel, job.ProviderJobID); err == nil {
 		_ = s.control.MarkVideoJobCleaned(cleanupCtx, job)
 	}
 	cancel()
@@ -696,7 +706,7 @@ func (s *videoService) pollAndFinalize(ctx context.Context, job *trustedrouter.V
 	if job.ProviderJobID == "" {
 		return job, nil
 	}
-	provider, ok := s.providers.Provider(job.Provider)
+	provider, rawModel, ok := s.providers.ForJob(job.Provider, job.ProviderModel)
 	if !ok {
 		return job, fmt.Errorf("video provider %s is not configured", job.Provider)
 	}
@@ -707,7 +717,7 @@ func (s *videoService) pollAndFinalize(ctx context.Context, job *trustedrouter.V
 		if job.CleanedAt != "" {
 			return job, nil
 		}
-		if err := provider.Complete(ctx, job.ProviderModel, job.ProviderJobID); err != nil {
+		if err := provider.Complete(ctx, rawModel, job.ProviderJobID); err != nil {
 			return job, err
 		}
 		if err := s.control.MarkVideoJobCleaned(ctx, job); err != nil {
@@ -716,7 +726,7 @@ func (s *videoService) pollAndFinalize(ctx context.Context, job *trustedrouter.V
 		job.CleanedAt = time.Now().UTC().Format(time.RFC3339)
 		return job, nil
 	}
-	result, err := provider.Retrieve(ctx, job.ProviderModel, job.ProviderJobID)
+	result, err := provider.Retrieve(ctx, rawModel, job.ProviderJobID)
 	if err != nil {
 		var httpErr *video.HTTPError
 		if errors.As(err, &httpErr) && !httpErr.Retryable {
