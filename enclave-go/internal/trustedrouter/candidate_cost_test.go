@@ -29,7 +29,7 @@ func TestCandidateCostSharedPythonVectors(t *testing.T) {
 	if err := json.Unmarshal(data, &cases); err != nil {
 		t.Fatal(err)
 	}
-	if len(cases) != 38 {
+	if len(cases) != 40 {
 		t.Fatalf("case count = %d", len(cases))
 	}
 	withCreation1h, nonZeroCreation1h := 0, 0
@@ -50,7 +50,7 @@ func TestCandidateCostSharedPythonVectors(t *testing.T) {
 		})
 	}
 	// The one-hour vectors must reach the cost function with their count.
-	if withCreation1h != 9 || nonZeroCreation1h != 8 {
+	if withCreation1h != 11 || nonZeroCreation1h != 10 {
 		t.Fatalf("one-hour vectors = %d, non-zero = %d", withCreation1h, nonZeroCreation1h)
 	}
 }
