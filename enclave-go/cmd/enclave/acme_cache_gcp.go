@@ -16,7 +16,7 @@ import (
 // A separate bucket ensures misses never fall back to legacy private keys.
 const (
 	acmeSealedBucket = "quill-cloud-proxy-acme-sealed-v1"
-	acmeSealedKey    = "projects/quill-cloud-proxy/locations/us-central1/keyRings/trusted-router/cryptoKeys/acme-workload-wrap"
+	acmeSealedKey    = "projects/quill-cloud-proxy/locations/us-central1/keyRings/trusted-router-tls/cryptoKeys/acme-workload-wrap"
 	acmeWIF          = "//iam.googleapis.com/projects/44325983244/locations/global/workloadIdentityPools/trustedrouter-batch/providers/confidential-space"
 )
 

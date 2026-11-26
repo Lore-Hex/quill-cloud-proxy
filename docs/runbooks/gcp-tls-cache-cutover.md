@@ -4,6 +4,38 @@ Do not merge an image that selects an empty cache into the ordinary release
 train until the operations below have been qualified. Creating a bucket and a
 KMS key is not a cutover. This runbook does not change AWS or Azure.
 
+### Production IAM gate
+
+The destination is `us-central1/keyRings/trusted-router-tls`. Do not use the
+similarly named key in the shared `trusted-router` ring or tag that ring.
+The [deny policy](../../infra/gcp/tls-cache/deny-direct-decrypt.json) is
+attached to project 44325983244 and matches a tag by its permanent key and
+value IDs. Verify the tag is assigned directly to the TLS ring and is absent
+from every other ring (including inherited tags). Do not reuse this tag.
+The exception for the attestation pool is **not a grant**. Verify the pool's
+providers and each effective allow binding separately; grant only reviewed
+image digests. Never exempt a human or a blanket service-account group.
+
+With a project Deny Admin, preflight create/get/update/delete rights and
+record baseline permissions on existing keys. Validate scope and rollback
+before creation. From the repository root:
+
+```sh
+gcloud iam policies create tr-tls-ring-direct-decrypt \
+  --kind=denypolicies --project=quill-cloud-proxy \
+  --attachment-point=cloudresourcemanager.googleapis.com/projects/44325983244 \
+  --policy-file=infra/gcp/tls-cache/deny-direct-decrypt.json
+```
+
+Read the installed policy back, compare the actual rule, and wait for IAM
+propagation. Before admitting a workload, verify denial for a human on a
+synthetic ciphertext on the new ring, unchanged permissions on existing
+keys, and approved-enclave success using synthetic data. Do not inspect or
+reuse production TLS key material. A tag binding with no deny policy does
+not restrict access.
+
+### Gateway cutover
+
 1. Inventory public hostnames, aliases, current public leaf serials, SPKI
    fingerprints, expiration and every serving fleet. Use the public TLS
    handshakes, release manifests and inventory, not the old cache objects.
