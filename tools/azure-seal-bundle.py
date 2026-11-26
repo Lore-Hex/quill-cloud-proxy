@@ -150,6 +150,8 @@ BINDINGS: tuple[Binding, ...] = (
     Binding(("QUILL_MAKORA_SECRET",), "makora key", True),
     Binding(("QUILL_NEBIUS_SECRET",), "nebius key", True),
     Binding(("QUILL_MINIMAX_SECRET",), "minimax key", True),
+    Binding(("QUILL_MINIMAX_STANDBY_SECRET",), "minimax standby", False),
+    Binding(("QUILL_FAL_STANDBY_SECRET",), "fal standby", False),
     Binding(("QUILL_XIAOMI_SECRET",), "xiaomi key", True),
     # Kept in step with secrets.go by TestSealerBindingTableMatchesSecretBindings.
     Binding(("QUILL_ALIBABA_SECRET",), "alibaba key", True),
@@ -243,8 +245,6 @@ BINDINGS: tuple[Binding, ...] = (
     Binding(("QUILL_PERPLEXITY_SECRET",), "Perplexity key", True),
     Binding(("QUILL_KREA_SECRET",), "Krea key", True),
     Binding(("QUILL_FAL_SECRET",), "FAL key", True),
-    Binding(("QUILL_FAL_STANDBY_SECRET",), "fal standby", True),
-    Binding(("QUILL_MINIMAX_STANDBY_SECRET",), "minimax standby", True),
     Binding(("QUILL_BYTEPLUS_SECRET",), "BytePlus ModelArk key", True),
     Binding(("QUILL_TENCENT_SECRET",), "Tencent TokenHub key", True),
     Binding(("QUILL_VULTR_SECRET",), "Vultr inference key", True),
