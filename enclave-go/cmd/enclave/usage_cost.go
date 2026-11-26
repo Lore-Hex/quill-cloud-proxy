@@ -89,7 +89,7 @@ func candidateSettlement(settlement *trustedrouter.SettleResult, auth *trustedro
 	if provider == "sakana" && model == "sakana-ai/fugu-ultra-v1.1" {
 		tierInput = usage.PriceTierInputTokens
 	}
-	cost, ok := price.CostMicrodollars(input, usage.OutputTokens, usage.CacheReadInputTokens, usage.CacheCreationInputTokens, tierInput)
+	cost, ok := price.CostMicrodollars(input, usage.OutputTokens, usage.CacheReadInputTokens, usage.CacheCreationInputTokens, usage.CacheCreation1hInputTokens, tierInput)
 	if !ok {
 		return settlement
 	}

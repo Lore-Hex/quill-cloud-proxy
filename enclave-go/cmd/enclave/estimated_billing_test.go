@@ -91,8 +91,8 @@ func TestEstimatedBufferNeverExceedsAuthorizedCostOrOutputLimit(t *testing.T) {
 				auth.CapMicro, auth.EstimatedCostMicrodollars = int64(cap), cap+5
 				maxOutput := output + 1
 				in, out := bufferedMissingUsage(result, input, output, abliterateTestModel, &types.OpenAIChatRequest{MaxTokens: &maxOutput}, auth, "served")
-				before, _ := auth.CandidatePrices[0].CostMicrodollars(input, output, 0, 0, input)
-				after, valid := auth.CandidatePrices[0].CostMicrodollars(in, out, 0, 0, in)
+				before, _ := auth.CandidatePrices[0].CostMicrodollars(input, output, 0, 0, 0, input)
+				after, valid := auth.CandidatePrices[0].CostMicrodollars(in, out, 0, 0, 0, in)
 				if !valid || in < input || out < output || in > input*2 || out > output*2 || out > maxOutput || (before <= cap && after > cap) || (before > cap && (in != input || out != output)) {
 					t.Fatalf("input=%d output=%d cap=%d -> %d/%d cost=%d", input, output, cap, in, out, after)
 				}

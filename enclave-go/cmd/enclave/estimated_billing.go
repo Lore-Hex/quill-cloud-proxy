@@ -62,7 +62,7 @@ func bufferedMissingUsage(result adapter.StreamResult, input, output int, model 
 	// This is only a limit on the optional buffer. The control plane remains
 	// the billing authority and still enforces the original reservation/cap.
 	fits := func(in, out int) bool {
-		cost, valid := price.CostMicrodollars(in, out, 0, 0, in)
+		cost, valid := price.CostMicrodollars(in, out, 0, 0, 0, in)
 		return valid && int64(cost) <= cap
 	}
 	if !fits(input, output) {

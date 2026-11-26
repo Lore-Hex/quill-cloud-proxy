@@ -186,6 +186,7 @@ func aggregateWebSearchStreamUsage(outcome responsesWebSearchOutcome) *adapter.S
 	}
 	if outcome.Final.Result.Usage != nil {
 		usage.CacheCreationInputTokens = outcome.Final.Result.Usage.CacheCreationInputTokens
+		usage.CacheCreation1hInputTokens = outcome.Final.Result.Usage.CacheCreation1hInputTokens
 		usage.ServiceTier = outcome.Final.Result.Usage.ServiceTier
 		usage.InputExcludesCache = outcome.Final.Result.Usage.InputExcludesCache
 	}

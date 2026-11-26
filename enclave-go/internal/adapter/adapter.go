@@ -637,6 +637,12 @@ type StreamUsage struct {
 	// CacheCreationInputTokens were written to it (Anthropic only).
 	CacheReadInputTokens     int
 	CacheCreationInputTokens int
+	// CacheCreation1hInputTokens is the part of CacheCreationInputTokens written
+	// with a one-hour lifetime (Anthropic usage.cache_creation
+	// .ephemeral_1h_input_tokens), which settles at a higher rate than the
+	// five-minute writes. It is stored as reported; applyCacheUsage clamps it to
+	// the total. It is a billing field and is never public output.
+	CacheCreation1hInputTokens int
 	// InputExcludesCache is true when InputTokens counts ONLY the uncached
 	// prompt remainder (the Anthropic convention: input_tokens excludes cache
 	// reads/writes, which are reported separately). It is false for
@@ -1536,6 +1542,9 @@ func mergeUsage(usage **StreamUsage, m map[string]any) {
 	priceTierInput := getInt(m, "price_tier_input_tokens")
 	cacheRead := getInt(m, "cache_read_input_tokens")
 	cacheCreation := getInt(m, "cache_creation_input_tokens")
+	// The one-hour count only splits the total above, so it does not by itself
+	// make a usage object non-empty. A missing or non-object breakdown reads 0.
+	cacheCreation1h := getInt(getMap(m, "cache_creation"), "ephemeral_1h_input_tokens")
 	serviceTier := getString(m, "service_tier")
 	if in == 0 && out == 0 && reasoning == 0 && priceTierInput == 0 && cacheRead == 0 && cacheCreation == 0 && serviceTier == "" {
 		return
@@ -1560,6 +1569,9 @@ func mergeUsage(usage **StreamUsage, m map[string]any) {
 	}
 	if cacheCreation > 0 {
 		(*usage).CacheCreationInputTokens = cacheCreation
+	}
+	if cacheCreation1h > 0 {
+		(*usage).CacheCreation1hInputTokens = cacheCreation1h
 	}
 	if serviceTier != "" {
 		(*usage).ServiceTier = serviceTier

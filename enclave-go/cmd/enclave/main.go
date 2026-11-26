@@ -2975,6 +2975,10 @@ func applyCacheUsage(usage *trustedrouter.Usage, result adapter.StreamResult) {
 	usage.PriceTierInputTokens = result.Usage.PriceTierInputTokens
 	usage.CacheReadInputTokens = result.Usage.CacheReadInputTokens
 	usage.CacheCreationInputTokens = result.Usage.CacheCreationInputTokens
+	// The one-hour count is a subset of the cache writes. This is the only
+	// place it is bounded, so settlement never prices more one-hour tokens
+	// than were written.
+	usage.CacheCreation1hInputTokens = max(min(result.Usage.CacheCreation1hInputTokens, result.Usage.CacheCreationInputTokens), 0)
 	usage.InputExcludesCache = result.Usage.InputExcludesCache
 	if tier, ok := canonicalServiceTier(result.Usage.ServiceTier); ok {
 		usage.ServiceTier = tier
