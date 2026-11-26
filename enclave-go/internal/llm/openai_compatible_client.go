@@ -7,14 +7,16 @@ import (
 	"net/http"
 	"strings"
 
+	"github.com/Lore-Hex/quill-cloud-proxy/enclave-go/internal/orderedkey"
 	qtypes "github.com/Lore-Hex/quill-cloud-proxy/enclave-go/internal/types"
 )
 
 type openAICompatibleClient struct {
-	provider string
-	baseURL  string
-	apiKey   string
-	httpc    *http.Client
+	standbyKey string
+	provider   string
+	baseURL    string
+	apiKey     string
+	httpc      *http.Client
 	// httpcGetter, when non-nil, is consulted instead of the static httpc
 	// field on every InvokeStreaming call. Used by the tinfoil path so the
 	// per-request client comes from the attested-and-pinned cache and
@@ -75,6 +77,17 @@ func (c *openAICompatibleClient) resolveHTTPClient() (*http.Client, error) {
 	return c.httpc, nil
 }
 
+func (c *openAICompatibleClient) managedKey(option InvokeOptions) (string, error) {
+	if c.provider != "minimax" {
+		return c.apiKey, nil
+	}
+	if strings.EqualFold(option.UsageType, "BYOK") ||
+		(option.Provider != "" && normalizeDirectProvider(option.Provider) != c.provider) {
+		return "", orderedkey.ErrUnavailable
+	}
+	return orderedkey.Select(c.provider, c.apiKey, c.standbyKey, option.ManagedKeyGeneration)
+}
+
 func (c *openAICompatibleClient) InvokeStreaming(
 	ctx context.Context,
 	req *qtypes.OpenAIChatRequest,
@@ -112,12 +125,16 @@ func (c *openAICompatibleClient) InvokeStreaming(
 	if err != nil {
 		return fmt.Errorf("llm/%s: http client unavailable: %w", c.provider, err)
 	}
+	key, err := c.managedKey(option)
+	if err != nil {
+		return err
+	}
 	return invokeOpenAICompatibleStreamingWithClientOptions(
 		ctx,
 		httpc,
 		provider,
 		c.baseURL,
-		c.apiKey,
+		key,
 		req,
 		body,
 		out,

@@ -138,6 +138,8 @@ SCALEDOWN_SECRET="${SCALEDOWN_SECRET:-trustedrouter-scaledown-api-key}"
 PERPLEXITY_SECRET="${PERPLEXITY_SECRET:-trustedrouter-perplexity-api-key}"
 KREA_SECRET="${KREA_SECRET:-trustedrouter-krea-api-key}"
 FAL_SECRET="${FAL_SECRET:-trustedrouter-fal-api-key}"
+FAL_STANDBY_SECRET="${FAL_STANDBY_SECRET:-trustedrouter-fal-standby-api-key}"
+MINIMAX_STANDBY_SECRET="${MINIMAX_STANDBY_SECRET:-trustedrouter-minimax-standby-api-key}"
 BYTEPLUS_SECRET="${BYTEPLUS_SECRET:-trustedrouter-byteplus-api-key}"
 TENCENT_SECRET="${TENCENT_SECRET:-trustedrouter-tencent-tokenhub-api-key}"
 VULTR_SECRET="${VULTR_SECRET:-trustedrouter-vultr-api-key}"
@@ -324,6 +326,7 @@ for secret in \
   "$PERPLEXITY_SECRET" \
   "$KREA_SECRET" \
   "$FAL_SECRET" \
+  "$FAL_STANDBY_SECRET" "$MINIMAX_STANDBY_SECRET" \
   "$BYTEPLUS_SECRET" \
   "$TENCENT_SECRET" \
   "$VULTR_SECRET" \

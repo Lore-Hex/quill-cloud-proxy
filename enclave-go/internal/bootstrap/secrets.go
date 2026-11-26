@@ -113,6 +113,8 @@ var secretBindings = func() []secretBinding {
 		{[]string{"QUILL_MAKORA_SECRET"}, "makora key", true, func(b *types.BootstrapData, v string) { b.MakoraAPIKey = v }},
 		{[]string{"QUILL_NEBIUS_SECRET"}, "nebius key", true, func(b *types.BootstrapData, v string) { b.NebiusAPIKey = v }},
 		{[]string{"QUILL_MINIMAX_SECRET"}, "minimax key", true, func(b *types.BootstrapData, v string) { b.MiniMaxAPIKey = v }},
+		{[]string{"QUILL_MINIMAX_STANDBY_SECRET"}, "minimax standby", false, func(b *types.BootstrapData, v string) { b.MiniMaxStandbyKey = v }},
+		{[]string{"QUILL_FAL_STANDBY_SECRET"}, "fal standby", false, func(b *types.BootstrapData, v string) { b.FALStandbyKey = v }},
 		{[]string{"QUILL_XIAOMI_SECRET"}, "xiaomi key", true, func(b *types.BootstrapData, v string) { b.XiaomiAPIKey = v }},
 		// Providers added to bootstrap_gcp.go after this file was written. Kept in
 		// step by TestProviderSecretParityAcrossClouds, which fails if the two

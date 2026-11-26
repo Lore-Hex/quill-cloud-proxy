@@ -30,6 +30,8 @@ import (
 // New returns the multi-provider dispatcher. Each backend is constructed
 // up-front so connection pools and any cached state warm up at boot.
 func New(boot *qtypes.BootstrapData) Client {
+	minimax := newOpenAICompatible("minimax", boot.MiniMaxAPIKey)
+	minimax.standbyKey = boot.MiniMaxStandbyKey
 	return &multiClient{
 		bedrockRuntime: newBedrockRuntime(boot.ProviderAPIKeys["amazon-bedrock"]),
 		direct:         newBootstrapDirectClients(boot.ProviderAPIKeys),
@@ -69,7 +71,7 @@ func New(boot *qtypes.BootstrapData) Client {
 		crusoe:           newOpenAICompatible("crusoe", boot.CrusoeAPIKey),
 		makora:           newOpenAICompatible("makora", boot.MakoraAPIKey),
 		nebius:           newOpenAICompatible("nebius", boot.NebiusAPIKey),
-		minimax:          newOpenAICompatible("minimax", boot.MiniMaxAPIKey),
+		minimax:          minimax,
 		chutes:           newChutesE2EE(boot.ChutesAPIKey),
 		digitalocean:     newOpenAICompatible("digitalocean", boot.DigitalOceanAPIKey),
 		cloudflareWorkersAI: newOpenAICompatibleAt(

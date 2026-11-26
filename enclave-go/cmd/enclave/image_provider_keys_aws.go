@@ -13,7 +13,8 @@ func imageProviderKeys(boot *types.BootstrapData) imagegen.ProviderKeys {
 	// URLs use the authenticated control-plane image fetcher, which repeats the
 	// same SSRF, byte, format, dimension, and pixel checks as the direct path.
 	return imagegen.ProviderKeys{
-		OpenAI: boot.OpenAIAPIKey, XAI: boot.GrokAPIKey,
+		FALStandby: boot.FALStandbyKey,
+		OpenAI:     boot.OpenAIAPIKey, XAI: boot.GrokAPIKey,
 		Nscale:    boot.ProviderAPIKeys["nscale"],
 		FAL:       boot.ProviderAPIKeys["fal"],
 		Riverflow: boot.ProviderAPIKeys["riverflow"],

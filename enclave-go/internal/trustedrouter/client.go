@@ -627,7 +627,9 @@ func (c *Client) primaryBaseURL() string {
 }
 
 type Authorization struct {
-	CreditReservationID string `json:"credit_reservation_id,omitempty"`
+	// Only set by the internal authorize response, never by public request metadata.
+	ManagedKeyCutovers  map[string]string `json:"managed_key_cutovers,omitempty"`
+	CreditReservationID string            `json:"credit_reservation_id,omitempty"`
 	// Wire metadata alone cannot activate async behavior. async is bound only
 	// after enclave opt-in; preserve raw snapshot bytes for canonical hashing.
 	async                                 *asyncAuthorization
@@ -698,12 +700,41 @@ type Authorization struct {
 	GatewayRegion string `json:"-"`
 }
 
+func (a *Authorization) ManagedKeyGeneration(provider, usage string) string {
+	if a == nil || !strings.EqualFold(usage, "Credits") || (provider != "minimax" && provider != "fal") {
+		return ""
+	}
+	return a.ManagedKeyCutovers[provider]
+}
+
 func (a *Authorization) pinControlPlaneEndpoint(endpoint int) {
 	if a == nil || endpoint < 0 {
 		return
 	}
 	a.ControlPlaneEndpoint = endpoint
 	a.ControlPlaneEndpointSet = true
+}
+
+// ReportFALPrimary402 sends only rejection metadata to the issuer of this
+// authorization. Never replay the paid request or move the report across ledgers.
+func (c *Client) ReportFALPrimary402(ctx context.Context, auth *Authorization, endpointID, decision string) {
+	gen, ok := strings.CutPrefix(decision, "primary:")
+	if c == nil || !ok || len(gen) != 64 || auth.pinnedControlPlaneEndpoint() < 0 ||
+		auth.AuthorizationID == "" || endpointID == "" || auth.ManagedKeyGeneration("fal", "Credits") != decision {
+		return
+	}
+	reportCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 2*time.Second)
+	defer cancel()
+	var ack struct {
+		Accepted   bool   `json:"accepted"`
+		Generation string `json:"generation"`
+	}
+	_, err := c.postJSONAtEndpoint(reportCtx, "/internal/gateway/fal-primary-402", map[string]any{
+		"authorization_id": auth.AuthorizationID, "endpoint_id": endpointID, "primary_generation": gen, "upstream_status": http.StatusPaymentRequired,
+	}, &ack, auth.pinnedControlPlaneEndpoint())
+	if err != nil || !ack.Accepted || ack.Generation != gen {
+		fmt.Fprintln(os.Stderr, "enclave.fal_primary_402_report_unacknowledged")
+	}
 }
 
 func (a *Authorization) pinnedControlPlaneEndpoint() int {

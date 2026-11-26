@@ -89,6 +89,7 @@ type Request struct {
 }
 
 type ResolvedRequest struct {
+	ManagedKeyGeneration   string `json:"-"`
 	OpenAISafetyIdentifier string `json:"-"`
 	Request                Request
 	Spec                   ModelSpec
