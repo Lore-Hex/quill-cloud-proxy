@@ -125,6 +125,51 @@
       "requested": "team/model-1-5",
       "selected": "anthropic/team/model-1.5",
       "allowed": false
+    },
+    {
+      "requested": "claude-haiku-4-5-20240101",
+      "selected": "anthropic/claude-haiku-4.5-20251001",
+      "allowed": false
+    },
+    {
+      "requested": "claude-haiku-4-5",
+      "selected": "anthropic/claude-haiku-4.5-20251001",
+      "allowed": false
+    },
+    {
+      "requested": "claude-haiku-4-5-20251001",
+      "selected": "anthropic/claude-haiku-4.5-20251001",
+      "allowed": true
+    },
+    {
+      "requested": "Claude-Opus-5-5",
+      "selected": "anthropic/claude-opus-5.5",
+      "allowed": false
+    },
+    {
+      "requested": "claude-opus-5-5",
+      "selected": "Anthropic/claude-opus-5.5",
+      "allowed": false
+    },
+    {
+      "requested": "claude-opus-5-5-19990101",
+      "selected": "anthropic/claude-opus-5.5",
+      "allowed": true
+    },
+    {
+      "requested": "claude-opus-5-5",
+      "selected": "anthropic/claude-opus-5-5",
+      "allowed": true
+    },
+    {
+      "requested": "claude-opus-5-5-20251101",
+      "selected": "anthropic/claude-opus-5.5-aws",
+      "allowed": false
+    },
+    {
+      "requested": "claude-opus-5-5",
+      "selected": "openai/claude-opus-5.5",
+      "allowed": false
     }
   ]
 }

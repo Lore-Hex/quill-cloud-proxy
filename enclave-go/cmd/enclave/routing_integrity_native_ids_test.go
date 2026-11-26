@@ -104,6 +104,28 @@ func TestNativeAnthropicIDsLeaveTheOtherChecksInPlace(t *testing.T) {
 	if err := validateAuthorizationRouting(req, other); err != nil {
 		t.Fatalf("the named model on another host refused: %v", err)
 	}
+	// The control plane echoes the spelling the request used; an echo of the
+	// catalog id is not the request's model.
+	echoed := &trustedrouter.Authorization{
+		Model:          "anthropic/claude-opus-5.5",
+		RequestedModel: "claude-opus-5-5",
+		RouteCandidates: []trustedrouter.RouteCandidate{
+			{Model: "anthropic/claude-opus-5.5", Provider: "anthropic"},
+		},
+	}
+	if err := validateAuthorizationRouting(req, echoed); err != nil {
+		t.Fatalf("an echo of the request's own spelling refused: %v", err)
+	}
+	rewritten := &trustedrouter.Authorization{
+		Model:          "anthropic/claude-opus-5.5",
+		RequestedModel: "anthropic/claude-opus-5.5",
+		RouteCandidates: []trustedrouter.RouteCandidate{
+			{Model: "anthropic/claude-opus-5.5", Provider: "anthropic"},
+		},
+	}
+	if err := validateAuthorizationRouting(req, rewritten); err == nil {
+		t.Fatal("a requested model that differs from the request must fail")
+	}
 	for _, pair := range [][2]string{
 		{"gpt-4.1", "openai/gpt-4.1"},
 		{"gpt-4.1-2025-04-14", "openai/gpt-4.1"},
