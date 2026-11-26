@@ -176,6 +176,14 @@ var responseWriteTimeout = 30 * time.Second
 var errBodyTooLarge = errors.New("request body too large")
 
 func main() {
+	if os.Getenv("QUILL_TLS_MODE") == "gcp-acme-custody-check" {
+		if err := checkGCPCacheCustody(); err != nil {
+			fmt.Fprintln(os.Stderr, "acme_custody_check:", err)
+			os.Exit(1)
+		}
+		fmt.Println("acme_custody_check: PASS")
+		return
+	}
 	configureRerank()
 	if maple.HelperEntrypoint() {
 		return

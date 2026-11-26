@@ -16,6 +16,12 @@ The exception for the attestation pool is **not a grant**. Verify the pool's
 providers and each effective allow binding separately; grant only reviewed
 image digests. Never exempt a human or a blanket service-account group.
 
+Require both `useToEncrypt` and `useToDecrypt` to be denied to other principals.
+The encrypted format provides no separate proof of who wrapped the data key.
+Use a fresh `acme-workload-wrap-v2` created only after both denials are
+effective. Never use the prior `acme-workload-wrap`, import an earlier
+envelope, or accept ciphertext encrypted for another KMS key.
+
 Use an existing authorized administrator in the project's parent organization
 (currently `256036015125`). The predefined
 [`roles/iam.denyAdmin`](https://docs.cloud.google.com/iam/docs/roles-permissions/iam#iam.denyAdmin)
@@ -33,10 +39,13 @@ gcloud iam policies create tr-tls-ring-direct-decrypt \
   --policy-file=infra/gcp/tls-cache/deny-direct-decrypt.json
 ```
 
+If the decrypt-only policy is already installed, do not create a duplicate.
+Read its exact rules, UID and etag. Update that policy in place with the
+reviewed file and the observed etag; preserve the original rule for rollback.
 Read the installed policy back, compare the actual rule, and wait for IAM
-propagation. Before admitting a workload, verify denial for a human on a
-synthetic ciphertext on the new ring, unchanged permissions on existing
-keys, and approved-enclave success using synthetic data. Do not inspect or
+propagation. Before admitting a workload, verify both denials for a human
+using synthetic inputs, unchanged permissions on existing keys, and
+approved-enclave success using synthetic data. Do not inspect or
 reuse production TLS key material. A tag binding with no deny policy does
 not restrict access.
 
@@ -57,6 +66,14 @@ not restrict access.
    Authorize only that measured identity on the separate ciphertext bucket and
    wrapping key. Do not grant the whole pool, the VM account, object-storage
    service agents, or an older image just to get a deployment through startup.
+   Launch the same production-mode Confidential Space image by its approved
+   digest in an isolated instance with `QUILL_TLS_MODE=gcp-acme-custody-check`.
+   This branch exits before normal bootstrap or opening any listener. It
+   writes, reads, compares and deletes a fresh synthetic object using the
+   actual serving cache and WIF identity. Require independent verification of
+   the instance, release digest, non-debug measurement and the corresponding
+   workload identity and KMS data-access evidence. A local pass, a host
+   service-account operation, or a standalone log line is not that proof.
 4. In an isolated rehearsal, prove DNS-01 issuance into an empty cache, cold
    restart, a second replica reading the issued certificate, and renewal.
    Include the primary hostname as well as shared aliases. Legacy replicas
