@@ -16,7 +16,13 @@ The exception for the attestation pool is **not a grant**. Verify the pool's
 providers and each effective allow binding separately; grant only reviewed
 image digests. Never exempt a human or a blanket service-account group.
 
-With a project Deny Admin, preflight create/get/update/delete rights and
+Use an existing authorized administrator in the project's parent organization
+(currently `256036015125`). The predefined
+[`roles/iam.denyAdmin`](https://docs.cloud.google.com/iam/docs/roles-permissions/iam#iam.denyAdmin)
+can be granted only on an organization, even though **the policy below
+attaches only to this project**. Do not grant organization-wide permissions
+or move the attachment point to the organization for this cutover.
+Preflight create/get/update/delete rights on the target project and
 record baseline permissions on existing keys. Validate scope and rollback
 before creation. From the repository root:
 
