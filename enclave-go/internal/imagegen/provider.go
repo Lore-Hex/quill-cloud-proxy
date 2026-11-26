@@ -120,6 +120,11 @@ func (r *Registry) Enabled(provider string) bool {
 	return r != nil && r.http != nil && strings.TrimSpace(r.keys[provider]) != ""
 }
 
+func (r *Registry) IsPairedFALPrimary(decision string) bool {
+	gen := orderedkey.Generation("fal", r.keys["fal"], r.falStandby)
+	return gen != "" && decision == "primary:"+gen
+}
+
 func (r *Registry) Generate(
 	ctx context.Context,
 	resolved *ResolvedRequest,
@@ -310,6 +315,9 @@ func (r *Registry) generateFAL(
 		maxInlineImageResponse,
 		maxProviderErrorBytes,
 	)
+	if status == http.StatusPaymentRequired {
+		return nil, &ProviderError{StatusCode: status, Message: http.StatusText(status)}
+	}
 	if err != nil {
 		return nil, err
 	}

@@ -715,6 +715,28 @@ func (a *Authorization) pinControlPlaneEndpoint(endpoint int) {
 	a.ControlPlaneEndpointSet = true
 }
 
+// ReportFALPrimary402 sends only rejection metadata to the issuer of this
+// authorization. Never replay the paid request or move the report across ledgers.
+func (c *Client) ReportFALPrimary402(ctx context.Context, auth *Authorization, endpointID, decision string) {
+	gen, ok := strings.CutPrefix(decision, "primary:")
+	if c == nil || !ok || len(gen) != 64 || auth.pinnedControlPlaneEndpoint() < 0 ||
+		auth.AuthorizationID == "" || endpointID == "" || auth.ManagedKeyGeneration("fal", "Credits") != decision {
+		return
+	}
+	reportCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 2*time.Second)
+	defer cancel()
+	var ack struct {
+		Accepted   bool   `json:"accepted"`
+		Generation string `json:"generation"`
+	}
+	_, err := c.postJSONAtEndpoint(reportCtx, "/internal/gateway/fal-primary-402", map[string]any{
+		"authorization_id": auth.AuthorizationID, "endpoint_id": endpointID, "primary_generation": gen, "upstream_status": http.StatusPaymentRequired,
+	}, &ack, auth.pinnedControlPlaneEndpoint())
+	if err != nil || !ack.Accepted || ack.Generation != gen {
+		fmt.Fprintln(os.Stderr, "enclave.fal_primary_402_report_unacknowledged")
+	}
+}
+
 func (a *Authorization) pinnedControlPlaneEndpoint() int {
 	if a == nil || !a.ControlPlaneEndpointSet {
 		return -1

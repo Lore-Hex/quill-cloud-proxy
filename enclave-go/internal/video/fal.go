@@ -32,8 +32,10 @@ func NewFALVideoClientAt(apiKey, baseURL string, httpc *http.Client) *FALVideoCl
 	if httpc == nil {
 		httpc = http.DefaultClient
 	}
+	client := *httpc
+	client.CheckRedirect = func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }
 	return &FALVideoClient{
-		apiKey: strings.TrimSpace(apiKey), baseURL: strings.TrimRight(baseURL, "/"), httpc: httpc,
+		apiKey: strings.TrimSpace(apiKey), baseURL: strings.TrimRight(baseURL, "/"), httpc: &client,
 	}
 }
 

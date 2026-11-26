@@ -558,6 +558,11 @@ func (s *videoService) queueVideoJob(
 			return route, queued, nil
 		}
 		lastErr = err
+		var rejection *video.HTTPError
+		if route.Provider == "fal" && errors.As(err, &rejection) && rejection.Provider == "fal" && rejection.Status == http.StatusPaymentRequired &&
+			s.providers.IsPairedFALPrimary(route.ManagedKeyGeneration) && len(shadowAuth) > 0 {
+			s.control.ReportFALPrimary402(ctx, shadowAuth[0], route.EndpointID, route.ManagedKeyGeneration)
+		}
 		if !video.IsRetryableProviderError(err) {
 			break
 		}

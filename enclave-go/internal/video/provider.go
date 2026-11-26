@@ -132,6 +132,11 @@ func NewRegistry(keys ProviderKeys, httpc *http.Client) *Registry {
 	return r
 }
 
+func (r *Registry) IsPairedFALPrimary(decision string) bool {
+	s := r.standbys["fal"]
+	return s.generation != "" && decision == "primary:"+s.generation
+}
+
 func (r *Registry) ForGeneration(id, generation string) (Provider, bool) {
 	if r == nil {
 		return nil, false
