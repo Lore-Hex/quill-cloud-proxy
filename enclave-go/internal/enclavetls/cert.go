@@ -259,14 +259,13 @@ func NewACME(
 	return NewACMEWithCache(dnsName, email, directoryURL, cache, eab)
 }
 
-// NewACMECache preserves the GCP/AWS cache selection used by existing
-// deployments. Azure constructs its cloud-local encrypted Blob cache and calls
-// NewACMEWithCache directly.
+// NewACMECache selects a development cache or the legacy non-GCP shared
+// cache. Production GCP and Azure inject their respective protected caches.
 func NewACMECache(cacheDir, gcsCacheBucket string) (autocert.Cache, error) {
 	var cache autocert.Cache = newMemoryACMECache()
 	switch {
 	case gcsCacheBucket != "":
-		cache = NewGCSCache(gcsCacheBucket)
+		return platformGCSCache(gcsCacheBucket)
 	case cacheDir != "" && cacheDir != "memory":
 		if err := os.MkdirAll(cacheDir, 0o700); err != nil {
 			return nil, fmt.Errorf("enclavetls: create acme cache: %w", err)
