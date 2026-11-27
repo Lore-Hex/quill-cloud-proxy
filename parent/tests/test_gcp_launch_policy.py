@@ -43,6 +43,17 @@ def test_gcp_multi_launch_policy_allows_deployed_env_overrides() -> None:
     assert "TR_NATIVE_BATCH_PROVIDERS" not in deploy_script.read_text()
 
 
+def test_serving_images_pin_authority_and_tls_mode() -> None:
+    protected = {"TR_CONTROL_PLANE_BASE_URL", "QUILL_TLS_MODE", "QUILL_ACME_DIRECTORY_URL"}
+    for suffix in ("multi", "anthropic"):
+        image = (REPO_ROOT / "enclave-go" / f"Dockerfile.enclave.gcp.{suffix}").read_text()
+        label = re.search(r'LABEL "tee\.launch_policy\.allow_env_override"="([^"]+)"', image)
+        assert label is not None
+        assert protected.isdisjoint(label[1].split(","))
+        assert "ENV TR_CONTROL_PLANE_BASE_URL=https://trustedrouter.com\n" in image
+        assert "ENV QUILL_TLS_MODE=acme\n" in image
+
+
 def test_settle_outbox_env_names_are_in_every_gcp_launch_policy_label() -> None:
     # Confidential Space refuses to launch a workload whose tee-env name is
     # not in the image label, so the sweep name must be allowed before the
