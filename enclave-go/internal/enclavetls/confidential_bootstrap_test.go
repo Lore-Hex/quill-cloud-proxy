@@ -5,6 +5,7 @@ import (
 	"context"
 	"crypto/ecdsa"
 	"crypto/rand"
+	"crypto/sha256"
 	"crypto/tls"
 	"crypto/x509"
 	"fmt"
@@ -31,6 +32,11 @@ func TestTLS13OnlyUsesPreissuedECDSALeaf(t *testing.T) {
 	cache := autocert.DirCache(t.TempDir())
 	if err := cache.Put(context.Background(), host, blob); err != nil {
 		t.Fatal(err)
+	}
+	pin, err := CachedDNS01PublicPin(context.Background(), cache, host)
+	leaf, parseErr := x509.ParseCertificate(issued.Certificate.Certificate[0])
+	if parseErr != nil || err != nil || pin != fmt.Sprintf("%x", sha256.Sum256(leaf.RawSubjectPublicKeyInfo)) {
+		t.Fatal("cached public fingerprint did not match the issued certificate")
 	}
 	srv, err := NewACMEWithCache(host, "", "http://127.0.0.1:1", cache, nil)
 	if err != nil {

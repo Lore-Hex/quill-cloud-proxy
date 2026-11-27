@@ -5,6 +5,7 @@ package main
 import (
 	"context"
 	"errors"
+	"fmt"
 	"os"
 	"strings"
 	"time"
@@ -26,7 +27,7 @@ func singleIssuerPlan(mode, host string) (gcpIssuerPlan, error) {
 	switch mode {
 	case "gcp-acme-preissue":
 		p.bucket, p.directory = acmeSealedBucket, acme.LetsEncryptURL
-	case "gcp-acme-rehearse", "gcp-acme-rehearse-renew":
+	case "gcp-acme-rehearse", "gcp-acme-rehearse-renew", "gcp-acme-rehearse-read":
 		p.bucket, p.directory = rehearsalBucket, "https://acme-staging-v02.api.letsencrypt.org/directory"
 		p.renew = mode == "gcp-acme-rehearse-renew"
 	default:
@@ -63,6 +64,14 @@ func issueGCPLeaf(mode, host string) error {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 8*time.Minute)
 	defer cancel()
+	if mode == "gcp-acme-rehearse-read" {
+		pin, err := enclavetls.CachedDNS01PublicPin(ctx, cache, host)
+		if err != nil {
+			return errors.New("rehearsal certificate readback failed")
+		}
+		fmt.Printf("acme_rehearsal_read: host=%s spki_sha256=%s\n", host, pin)
+		return nil
+	}
 	client := enclavetls.NewDNS01HTTPClient()
 	cfg := enclavetls.DNS01Config{DNSName: host, ChallengeRecord: p.record, Email: "acme@trustedrouter.com", Provider: enclavetls.NewCloudDNSProvider("quill-cloud-proxy", p.zone, client), Cache: cache, DirectoryURL: p.directory, HTTPClient: client}
 	return enclavetls.PreissueDNS01(ctx, cfg, p.renew)

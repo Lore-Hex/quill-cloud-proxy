@@ -23,7 +23,7 @@ func TestGCPSingleIssuerScope(t *testing.T) {
 			t.Fatal("missing mirror delegation")
 		}
 	}
-	for _, host := range []string{"api-aws.trustedrouter.com", "api-azure.trustedrouter.com", "*.trustedrouter.com", "api.trusted.allyrouter.com:443", "api.trusted.allyrouter.com.", "foo.test", ""} {
+	for _, host := range []string{"api.trustedrouter.com,api.allyrouter.com", "api-aws.trustedrouter.com", "api-azure.trustedrouter.com", "*.trustedrouter.com", "api.trusted.allyrouter.com:443", "api.trusted.allyrouter.com.", "foo.test", ""} {
 		if _, err := singleIssuerPlan("gcp-acme-preissue", host); err == nil {
 			t.Fatalf("unexpected host allowed: %s", host)
 		}

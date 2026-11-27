@@ -109,13 +109,15 @@ The plain AllyRouter and UptimeRouter names require their own explicit
 `_acme-challenge.api` CNAME delegations. A working traffic record or an
 existing certificate is not proof of either delegation.
 
-Set `QUILL_ACME_ISSUE_HOST` to one exact gateway hostname. The following
+Set the existing measured launch override `QUILL_API_HOST` to one exact
+gateway hostname, not the comma-separated serving list. The following
 `QUILL_TLS_MODE` values exit before opening a listener or loading provider
 credentials. Each invocation can submit at most one order, to one fixed CA.
 
 | Mode | Cache | Action |
 |---|---|---|
 | `gcp-acme-rehearse` | Dedicated rehearsal bucket | Issue using Let's Encrypt staging; verify the cached hostname and key pair. |
+| `gcp-acme-rehearse-read` | Dedicated rehearsal bucket | Compare the public SPKI on a cold start and second replica, without DNS, orders or writes. Grant only read and unwrap. |
 | `gcp-acme-rehearse-renew` | Dedicated rehearsal bucket | Replace an existing staging leaf, once. |
 | `gcp-acme-preissue` | Sealed serving bucket | Issue using Let's Encrypt production only on a confirmed miss. An invalid entry stops the task; a valid existing entry spends no order. |
 

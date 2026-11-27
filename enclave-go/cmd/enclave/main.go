@@ -176,8 +176,9 @@ var responseWriteTimeout = 30 * time.Second
 var errBodyTooLarge = errors.New("request body too large")
 
 func main() {
-	if mode := os.Getenv("QUILL_TLS_MODE"); mode == "gcp-acme-preissue" || mode == "gcp-acme-rehearse" || mode == "gcp-acme-rehearse-renew" {
-		if err := issueGCPLeaf(mode, os.Getenv("QUILL_ACME_ISSUE_HOST")); err != nil {
+	switch mode := os.Getenv("QUILL_TLS_MODE"); mode {
+	case "gcp-acme-preissue", "gcp-acme-rehearse", "gcp-acme-rehearse-renew", "gcp-acme-rehearse-read":
+		if err := issueGCPLeaf(mode, os.Getenv("QUILL_API_HOST")); err != nil {
 			fmt.Fprintln(os.Stderr, "acme_single_issuer:", err)
 			os.Exit(1)
 		}

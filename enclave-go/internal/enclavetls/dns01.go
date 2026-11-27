@@ -36,6 +36,7 @@ import (
 	"crypto/ecdsa"
 	"crypto/elliptic"
 	"crypto/rand"
+	"crypto/sha256"
 	"crypto/tls"
 	"crypto/x509"
 	"encoding/json"
@@ -175,28 +176,31 @@ func StartDNS01Renewer(ctx context.Context, cfg DNS01Config) {
 	}()
 }
 
+// CachedDNS01PublicPin validates the cached leaf and matching private key. It
+// returns only a public fingerprint and performs no DNS or ACME operation.
+func CachedDNS01PublicPin(ctx context.Context, cache autocert.Cache, host string) (string, error) {
+	raw, err := cache.Get(ctx, host)
+	if err != nil {
+		return "", err
+	}
+	pair, err := tls.X509KeyPair(raw, raw)
+	if err != nil {
+		return "", errors.New("invalid single-issuer cached key pair")
+	}
+	leaf, err := x509.ParseCertificate(pair.Certificate[0])
+	if err != nil || leaf.VerifyHostname(host) != nil || time.Now().Before(leaf.NotBefore) || !time.Now().Before(leaf.NotAfter) {
+		return "", errors.New("invalid single-issuer cached certificate")
+	}
+	return fmt.Sprintf("%x", sha256.Sum256(leaf.RawSubjectPublicKeyInfo)), nil
+}
+
 // PreissueDNS01 runs once without a serving listener. Never place a replacement
 // production order for an existing entry; fail closed on any bad cache read.
 func PreissueDNS01(ctx context.Context, cfg DNS01Config, renewRehearsal bool) error {
 	if cfg.Cache == nil || cfg.Provider == nil || cfg.DNSName == "" || len(cfg.FallbackCAs) != 0 {
 		return errors.New("invalid single-issuer configuration")
 	}
-	check := func() error {
-		raw, err := cfg.Cache.Get(ctx, cfg.DNSName)
-		if err != nil {
-			return err
-		}
-		pair, err := tls.X509KeyPair(raw, raw)
-		if err != nil {
-			return errors.New("invalid single-issuer cached key pair")
-		}
-		leaf, err := x509.ParseCertificate(pair.Certificate[0])
-		if err != nil || leaf.VerifyHostname(cfg.DNSName) != nil || time.Now().Before(leaf.NotBefore) || !time.Now().Before(leaf.NotAfter) {
-			return errors.New("invalid single-issuer cached certificate")
-		}
-		return nil
-	}
-	err := check()
+	_, err := CachedDNS01PublicPin(ctx, cfg.Cache, cfg.DNSName)
 	if renewRehearsal {
 		if cfg.DirectoryURL != "https://acme-staging-v02.api.letsencrypt.org/directory" || err != nil {
 			return errors.New("renewal requires an existing rehearsal certificate")
@@ -207,7 +211,8 @@ func PreissueDNS01(ctx context.Context, cfg DNS01Config, renewRehearsal bool) er
 	if err := runDNS01Orders(ctx, cfg); err != nil {
 		return err
 	}
-	return check()
+	_, err = CachedDNS01PublicPin(ctx, cfg.Cache, cfg.DNSName)
+	return err
 }
 
 // maybeRenewDNS01 inspects the cert currently in Cache and runs a
