@@ -93,6 +93,8 @@ def changed_paths() -> list[str]:
 
 
 def allowed(plane: str, path: str) -> bool:
+    if plane == "azure" and re.fullmatch(r"trust-page/trust/azure-builds/[a-f0-9]{64}\.json(?:\.bundle)?", path):
+        return True
     return any(path == p or (p.endswith("/") and path.startswith(p)) for p in PLANE_PATHS[plane])
 
 
