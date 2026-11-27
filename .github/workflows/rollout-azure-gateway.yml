@@ -326,6 +326,7 @@ jobs:
           oldest="$(python3 tools/azure_gateway_rollout.py oldest-build --region dubai --record trust-page/trust/azure-release.json)"
           python3 tools/capture-plane-measurements.py --plane azure --write --keep-accepted \
             --source-commit "$oldest" --azure-region "$AZURE_REGION_ARG_DUBAI"
+          python3 tools/azure_build_witness.py sign --work "$RUNNER_TEMP/aci-dubai" --sha "$RELEASE_SHA" --hostdata "$HOSTDATA_DUBAI"
           cat > "$RUNNER_TEMP/body-dubai.md" <<EOF
           Publish the verified Azure Dubai measurement \`$HOSTDATA_DUBAI\` (\`$AZURE_REGION_ARG_DUBAI\`) from \`$RELEASE_SHA\`. The region attested over its own origin and its key release policy is still widened; it is narrowed only after this record is public.
 
@@ -469,6 +470,7 @@ jobs:
           # advance source_commit to it (runbook §3.6).
           python3 tools/capture-plane-measurements.py --plane azure --write \
             --source-commit "$RELEASE_SHA" --azure-region "$AZURE_REGION_ARG_SYDNEY"
+          python3 tools/azure_build_witness.py sign --work "$RUNNER_TEMP/aci-sydney" --sha "$RELEASE_SHA" --hostdata "$HOSTDATA_SYDNEY"
           cat > "$RUNNER_TEMP/body-sydney.md" <<EOF
           Publish the verified Azure Sydney measurement \`$HOSTDATA_SYDNEY\` (\`$AZURE_REGION_ARG_SYDNEY\`) from \`$RELEASE_SHA\`. The region attested over its own origin and its key release policy is still widened; it is narrowed only after this record is public.
 

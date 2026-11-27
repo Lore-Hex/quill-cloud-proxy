@@ -115,6 +115,8 @@ jobs:
           # refuses to invent the value in the first place — it has no default.
           provenance="$(jq -r '.source_commit_provenance // "none"' trust-page/trust/azure-release.json)"
           echo "azure-release.json source_commit ${commit} is in this history (provenance: ${provenance})"
+      - name: Verify each new regional measurement against the signed rollout build
+        run: python3 tools/azure_build_witness.py verify
       - name: Sign the Azure Confidential Containers record
         env:
           COSIGN_YES: "true"
