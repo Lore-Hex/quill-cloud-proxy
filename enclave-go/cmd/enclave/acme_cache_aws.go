@@ -18,7 +18,7 @@ import (
 // Only replace in reviewed source after GenerateDataKeyPairWithoutPlaintext
 // and an independent key-policy audit. Never recover a pin from live traffic,
 // parent configuration, an environment variable, or the recipient response.
-const nitroTLSCacheSPKI = ""
+const nitroTLSCacheSPKI = "4e1a625146a14ff092e8af073fca037405625ee7d2802ed88667144a8fbb52a2"
 
 func configuredACMECache(ctx context.Context, boot *types.BootstrapData) (autocert.Cache, error) {
 	if boot == nil || boot.AWSBootstrap == nil || boot.AWSBootstrap.Mode != "attested" || boot.AWSBootstrap.Policy != "strict" {

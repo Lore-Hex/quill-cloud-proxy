@@ -1,8 +1,10 @@
 # AWS gateway TLS key custody
 
-This is a release checklist, not a deploy script. The candidate with an empty
-`nitroTLSCacheSPKI` cannot start its ACME listener. Do not promote it, put an
-unreviewed pin in it, or turn off attested bootstrap to get a green check.
+This is a release checklist, not evidence of deployment. The AWS TLS cache
+fingerprint was recorded from the KMS-generated P-256 SPKI and checked against
+the independently audited generation receipt. A missing or mismatched
+`nitroTLSCacheSPKI` must block release. Do not replace it with a value
+learned from a running gateway, or turn off attested bootstrap.
 
 ## Key preparation
 
