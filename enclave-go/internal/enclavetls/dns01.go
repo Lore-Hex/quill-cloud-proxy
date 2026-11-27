@@ -58,6 +58,9 @@ import (
 // time. All fields are required unless noted. Created in cmd/enclave/
 // main.go from BootstrapData + the env-baked ACME config.
 type DNS01Config struct {
+	// Set only by PreissueDNS01. Serving renewers retain their existing
+	// cloud-specific transports, including the AWS vsock-only path.
+	preissue bool
 	// ChallengeRecord optionally names a pre-provisioned DNS-01 CNAME target.
 	// The CA still validates DNSName and follows its public challenge delegation.
 	ChallengeRecord    string
@@ -208,6 +211,7 @@ func PreissueDNS01(ctx context.Context, cfg DNS01Config, renewRehearsal bool) er
 	} else if err == nil || !errors.Is(err, autocert.ErrCacheMiss) {
 		return err
 	}
+	cfg.preissue = true
 	if err := runDNS01Orders(ctx, cfg); err != nil {
 		return err
 	}
@@ -456,6 +460,7 @@ func runDNS01Order(ctx context.Context, cfg DNS01Config, ca DNS01CA) error {
 		if err != nil {
 			return fmt.Errorf("%s TXT add: %w", provider.Name(), err)
 		}
+		published := time.Now()
 		// Best-effort cleanup of the TXT record whether the challenge
 		// passes or fails. LE rate-limits the same TXT being seen
 		// across consecutive orders, so leaving stale records around
@@ -475,6 +480,11 @@ func runDNS01Order(ctx context.Context, cfg DNS01Config, ca DNS01CA) error {
 		// validation doesn't race the propagation.
 		if err := waitForChallengeTXT(ctx, provider, recordID, recordName, token); err != nil {
 			return fmt.Errorf("dns propagation: %w", err)
+		}
+		if cfg.preissue {
+			if err := preissuePublicTXT(ctx, published, challengeRecordName(cfg.DNSName), recordName, token); err != nil {
+				return fmt.Errorf("public DNS propagation: %w", err)
+			}
 		}
 
 		if _, err := client.Accept(ctx, chal); err != nil {

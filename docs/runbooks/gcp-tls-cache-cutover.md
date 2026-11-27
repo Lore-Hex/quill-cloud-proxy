@@ -129,3 +129,22 @@ order budgets for staging and production. The serving cache rejects staging
 directory overrides. A PASS marker is not proof of public trust or of a live
 rollout. Check the public chain and SPKI independently, exercise cold replica
 recovery, and verify the exact measured release before shifting traffic.
+
+### DNS visibility before acceptance
+
+Check a direct validation name for conflicts at the authoritative zone; do
+not ask a public recursive resolver for an absent name immediately before
+publishing its TXT. For a mirror, confirm its existing CNAME as well. Check
+the zones' negative-cache TTLs; stop if they exceed the issuer's five-minute
+window. The first production attempt received NXDOMAIN even though the zone
+accepted the TXT change. Which cache the CA used was not observed.
+
+For a pending challenge the single issuer keeps the TXT published through
+that window and checks both Google Public DNS and Cloudflare (DNS over HTTPS
+on port 443). Both must answer the CA-facing name with the expected TXT,
+following the configured CNAME for a mirror. A mismatch, truncation, or
+resolver outage cannot authorize an early challenge submission. The existing
+eight-minute order deadline remains in force; a timed-out attempt must not
+be replayed automatically. A CA-reused, already-valid authorization has no
+pending challenge to submit. These checks reduce propagation races; they
+do not prove what every CA validation location can see.
