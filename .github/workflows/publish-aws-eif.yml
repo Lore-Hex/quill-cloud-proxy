@@ -33,12 +33,14 @@ jobs:
             --json status,conclusion,headSha,headBranch,event > "$RUNNER_TEMP/aws-eif-ci.json"
           python3 -c 'import json,sys; runs=json.load(open(sys.argv[1])); expected={"status":"completed","conclusion":"success","headSha":sys.argv[2],"headBranch":"main","event":"push"}; sys.exit(0 if isinstance(runs,list) and len(runs)==1 and runs[0]==expected else "Full main CI has not passed for this source; refusing EIF publication.")' \
             "$RUNNER_TEMP/aws-eif-ci.json" "$GITHUB_SHA"
+      - name: Verify the exporter normalizes measured file timestamps
+        run: python3 tools/check_aws_eif_timestamps.py
       - name: Build the measured application from this main commit
         run: |
           set -euo pipefail
           test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
           test -z "$(git status --porcelain)"
-          docker buildx build --platform linux/amd64 --load --provenance=false \
+          bash tools/build-aws-eif-image.sh --platform linux/amd64 \
             --file enclave-go/Dockerfile.enclave \
             --build-arg "SOURCE_REVISION=$GITHUB_SHA" \
             --build-arg BUILD_TAGS=cloud_aws,llm_multi \

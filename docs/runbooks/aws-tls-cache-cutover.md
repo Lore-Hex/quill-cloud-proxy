@@ -58,6 +58,11 @@ learned from a running gateway, or turn off attested bootstrap.
 - Verify both descriptor and parent relay revisions, CI on the exact release
   commit, and independent EIF/PCR0 reproduction. Do not infer AWS measurement
   from GCP. Only the reviewed non-debug PCR may enter the TLS key policies.
+  The publisher and `tools/verify-pcr0.sh` use the same pinned BuildKit exporter
+  with `rewrite-timestamp=true`: file timestamps are part of the measured
+  application ramdisk, not just image metadata. The scratch timestamp test
+  checks the exporter, not whether a specific release reproduced. A mismatch
+  in the independent full rebuild still blocks admission.
   Compare both regional policies, list grants again, and run positive/negative
   checks with a disposable encrypted fixture. Never test ordinary decryption
   using the real seed. A non-attested parent, unrelated principal, wrong

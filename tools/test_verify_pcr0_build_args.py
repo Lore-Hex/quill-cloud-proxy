@@ -46,7 +46,7 @@ def _assignments(script: Path) -> dict[str, str]:
 
 def _ci_build() -> str:
     steps = yaml.safe_load(RELEASE.read_text())["jobs"]["publish"]["steps"]
-    return next(step["run"] for step in steps if "docker buildx build" in step.get("run", ""))
+    return next(step["run"] for step in steps if "bash tools/build-aws-eif-image.sh" in step.get("run", ""))
 
 
 def _ci_arguments() -> dict[str, str]:
@@ -60,6 +60,15 @@ def _ci_arguments() -> dict[str, str]:
 
 
 class VerifyPcr0BuildArgs(unittest.TestCase):
+    def test_publisher_and_verifier_share_the_timestamp_normalizing_exporter(self) -> None:
+        for script in (_ci_build(), VERIFY.read_text()):
+            self.assertIn("bash tools/build-aws-eif-image.sh", script)
+            self.assertNotIn("--load", script)
+        worker = (TOOLS / "build-aws-eif-image.sh").read_text()
+        self.assertRegex(worker, r"moby/buildkit:v[\d.]+@sha256:[0-9a-f]{64}'")
+        self.assertIn("--driver docker-container", worker)
+        self.assertIn("--build-arg SOURCE_DATE_EPOCH=0 --output type=docker,rewrite-timestamp=true", worker)
+
     def test_native_builder_cross_compiles_for_target_architecture(self) -> None:
         dockerfile = (REPO_ROOT / "enclave-go/Dockerfile.enclave").read_text()
         self.assertRegex(dockerfile, r"(?m)^FROM --platform=\$BUILDPLATFORM golang:[^\s]+ AS builder$")
