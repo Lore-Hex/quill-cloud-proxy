@@ -133,9 +133,9 @@ ENV QUILL_ENCLAVE_TLS=true
 # match the hostname the client uses in SNI (api.quillrouter.com — same
 # as the public LB host).
 #
-# QUILL_ACME_CACHE_GCS_BUCKET points the cache at the shared GCS bucket
-# every Quill enclave uses. The AWS enclave reads via the cross-cloud
-# SA-key path (see internal/enclavetls/gcscache.go's tokenFromSAKey).
+# The measured AWS bucket is a ciphertext-only object transport. Opening
+# an entry also requires the TLS-specific Nitro recipient key. No old
+# cross-cloud certificate or ACME account is imported into this namespace.
 #
 # QUILL_ACME_EMAIL is per-region so LE's "5 failed validations per
 # account per hostname per hour" rate limit is isolated. AWS us-west-2
@@ -148,8 +148,7 @@ ENV QUILL_ENCLAVE_TLS=true
 # TLS mode is a build ARG, not a hardcoded ENV, because the two deployments of
 # this image need different answers:
 #
-#   - The legacy api.quillrouter.com failover uses ACME (a real LE cert cached
-#     in a shared GCS bucket, read via the cross-cloud SA key).
+#   - Public WebPKI listeners use ACME and the AWS sealed cache.
 #   - The STANDALONE aws.trustedrouter.com EU deployment must NOT reach back
 #     into GCP's ACME cache — that cross-cloud dependency is exactly what the
 #     separation architecture removes. It uses SELF-SIGNED, which is correct
@@ -159,7 +158,7 @@ ENV QUILL_ENCLAVE_TLS=true
 #     binding the cert, not from a CA. Self-signed also has ZERO external
 #     dependency, so /attestation serves the moment the enclave is up.
 #
-# Defaults preserve the previous ACME behaviour so nothing else changes.
+# ACME refuses to start unless the measured cache identity is provisioned.
 ARG TR_RERANK_ENABLED=false
 ENV TR_RERANK_ENABLED=${TR_RERANK_ENABLED}
 ARG QUILL_BILLING_402_BACKOFF_MS=5000
@@ -175,7 +174,7 @@ ENV QUILL_TLS_MODE=${QUILL_TLS_MODE} \
     QUILL_API_HOST=${QUILL_API_HOST} \
     QUILL_ACME_DNS_GCP_PROJECT=${QUILL_ACME_DNS_GCP_PROJECT} \
     QUILL_ACME_DNS_MANAGED_ZONE=${QUILL_ACME_DNS_MANAGED_ZONE} \
-    QUILL_ACME_CACHE_GCS_BUCKET=quill-acme-cache \
+    QUILL_ACME_CACHE_GCS_BUCKET=quill-cloud-proxy-aws-acme-sealed-v1 \
     QUILL_ACME_EMAIL=acme-aws-us-west-2@trustedrouter.com
 
 ENTRYPOINT ["/quill-enclave"]

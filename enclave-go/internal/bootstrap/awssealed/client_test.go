@@ -33,7 +33,8 @@ func wrapForTest(t *testing.T, dataKey []byte, recipient *rsa.PublicKey) []byte 
 		t.Fatal(err)
 	}
 	block, _ := aes.NewCipher(contentKey)
-	plaintext := append(bytes.Clone(dataKey), bytes.Repeat([]byte{16}, 16)...)
+	pad := aes.BlockSize - len(dataKey)%aes.BlockSize
+	plaintext := append(bytes.Clone(dataKey), bytes.Repeat([]byte{byte(pad)}, pad)...)
 	ciphertext := make([]byte, len(plaintext))
 	cipher.NewCBCEncrypter(block, iv).CryptBlocks(ciphertext, plaintext)
 	envelope := &n.children[1].children[0]

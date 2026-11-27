@@ -18,6 +18,7 @@ from quill_parent.logging import get_logger
 
 log = get_logger(__name__)
 PROTOCOL = "trustedrouter.aws-bootstrap.v2"
+TLS_PROTOCOL = "trustedrouter.aws-tls-cache.v1"
 PORT = 9101
 MAX_REQUEST = 32 << 10
 MAX_DOCUMENT = 16 << 10
@@ -93,9 +94,11 @@ class SealedRelay:
         request = decode_canonical(raw, MAX_REQUEST)
         if set(request) != {"attestation_document", "protocol"}:
             raise ValueError("request_fields")
-        if request["protocol"] != PROTOCOL:
+        if request["protocol"] not in (PROTOCOL, TLS_PROTOCOL):
             raise ValueError("protocol")
         document = decode_base64(request["attestation_document"], MAX_DOCUMENT)
+        if request["protocol"] == TLS_PROTOCOL:
+            return self.tls_cache_recipient(document)
         result = self.secrets.get_secret_value(SecretId=self.secret_id)
         text = result.get("SecretString")
         if not isinstance(text, str):
@@ -151,6 +154,40 @@ class SealedRelay:
         if len(response) > MAX_RESPONSE:
             raise ValueError("response_size")
         return response
+
+    def tls_cache_recipient(self, document: bytes) -> bytes:
+        # Only a KMS-wrapped PKCS8 and key ARN, never a TLS key or clear seed.
+        value = self.secrets.get_secret_value(SecretId="quill/tls-cache-recipient-v1")
+        raw = value.get("SecretString")
+        if not isinstance(raw, str):
+            raise ValueError("tls_config_missing")
+        descriptor = decode_canonical(raw.encode(), 12 << 10)
+        if set(descriptor) != {"key_arn", "private_ciphertext"}:
+            raise ValueError("tls_config_fields")
+        arn = descriptor["key_arn"]
+        if not isinstance(arn, str) or not re.fullmatch(
+            rf"arn:aws:kms:{self.region}:330422590279:key/mrk-[0-9a-f]{{32}}", arn
+        ):
+            raise ValueError("tls_config_key")
+        result = self.kms.decrypt(
+            KeyId=arn,
+            CiphertextBlob=decode_base64(descriptor["private_ciphertext"], 6144),
+            EncryptionContext={"purpose": TLS_PROTOCOL},
+            Recipient={
+                "AttestationDocument": document,
+                "KeyEncryptionAlgorithm": "RSAES_OAEP_SHA_256",
+            },
+            EncryptionAlgorithm="SYMMETRIC_DEFAULT",
+        )
+        cms = result.get("CiphertextForRecipient")
+        if (
+            "Plaintext" in result
+            or result.get("KeyId") != arn
+            or not isinstance(cms, bytes)
+            or not 0 < len(cms) <= MAX_CMS
+        ):
+            raise ValueError("tls_recipient_rejected")
+        return canonical({"ciphertext_for_recipient": base64.b64encode(cms).decode()})
 
 
 def production_relay(region: str, key_arn: str) -> SealedRelay:

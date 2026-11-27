@@ -67,6 +67,12 @@ jobs:
           cd enclave-go
           go test -tags cloud_aws,llm_multi ./internal/bootstrap \
             -run '^TestAWSCompiled(BootstrapPolicy|SignerMatchesKMS)$' -count=1
+      - name: Verify the compiled TLS cache identity against the approved public fingerprint
+        working-directory: enclave-go
+        env:
+          QUILL_REQUIRE_AWS_TLS_RELEASE_PIN: '1'
+          QUILL_APPROVED_AWS_TLS_SPKI_SHA256: ${{ vars.AWS_TLS_CACHE_SPKI_SHA256 }}
+        run: go test -tags cloud_aws,llm_multi ./cmd/enclave -run '^TestAWSCompiledTLSCachePin$' -count=1
       - name: Fetch the pinned builder and convert the already-built image
         run: |
           set -euo pipefail

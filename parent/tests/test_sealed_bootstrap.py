@@ -21,6 +21,41 @@ def encoded(value: bytes) -> str:
     return base64.b64encode(value).decode()
 
 
+@pytest.mark.parametrize("invalid", ["", "plaintext", "wrong-key", "missing-cms", "wrong-region"])
+def test_tls_cache_recipient_only(invalid: str) -> None:
+    relay, secrets, kms, _ = make_relay()
+    arn = "arn:aws:kms:eu-west-1:330422590279:key/mrk-" + "1" * 32
+    config = {"key_arn": arn, "private_ciphertext": encoded(b"opaque")}
+    if invalid == "wrong-region":
+        config["key_arn"] = arn.replace("eu-west-1", "eu-west-3")
+    secrets.get_secret_value.return_value = {"SecretString": sealed.canonical(config).decode()}
+    kms.decrypt.return_value = {"KeyId": arn, "CiphertextForRecipient": b"CMS"}
+    if invalid == "plaintext":
+        kms.decrypt.return_value["Plaintext"] = b"forbidden"
+    if invalid == "wrong-key":
+        kms.decrypt.return_value["KeyId"] = KEY
+    if invalid == "missing-cms":
+        del kms.decrypt.return_value["CiphertextForRecipient"]
+    request = sealed.canonical(
+        {"attestation_document": encoded(b"NSM"), "protocol": sealed.TLS_PROTOCOL}
+    )
+    if invalid:
+        with pytest.raises(ValueError):
+            relay.exchange(request)
+        if invalid == "wrong-region":
+            kms.decrypt.assert_not_called()
+        return
+    assert json.loads(relay.exchange(request)) == {"ciphertext_for_recipient": encoded(b"CMS")}
+    secrets.get_secret_value.assert_called_once_with(SecretId="quill/tls-cache-recipient-v1")
+    kms.decrypt.assert_called_once_with(
+        KeyId=arn,
+        CiphertextBlob=b"opaque",
+        EncryptionAlgorithm="SYMMETRIC_DEFAULT",
+        EncryptionContext={"purpose": sealed.TLS_PROTOCOL},
+        Recipient={"AttestationDocument": b"NSM", "KeyEncryptionAlgorithm": "RSAES_OAEP_SHA_256"},
+    )
+
+
 def make_relay() -> tuple[sealed.SealedRelay, Mock, Mock, bytes]:
     bundle = {
         "ciphertext": encoded(b"ciphertext"),

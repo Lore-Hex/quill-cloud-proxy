@@ -70,38 +70,49 @@ func readFrame(conn net.Conn, maximum uint32) ([]byte, error) {
 // Fetch performs one bounded, enclave-first exchange. Boot retry/transition
 // policy belongs to the AWS adapter. There is no plaintext fallback here.
 func Fetch(ctx context.Context, dial Dialer, attest Attester, signer *ecdsa.PublicKey, minimum uint64) ([]byte, Manifest, error) {
-	if dial == nil || attest == nil || signer == nil || minimum == 0 {
+	if signer == nil || minimum == 0 {
 		return nil, Manifest{}, errors.New("aws sealed bootstrap: missing measured configuration")
 	}
-	if err := ctx.Err(); err != nil {
+	data, private, err := recipientExchange(ctx, dial, attest, Protocol)
+	if err != nil {
 		return nil, Manifest{}, err
+	}
+	return Open(data, signer, minimum, func(cms []byte) ([]byte, error) { return UnwrapCMS(cms, private) })
+}
+
+func recipientExchange(ctx context.Context, dial Dialer, attest Attester, protocol string) ([]byte, *rsa.PrivateKey, error) {
+	if dial == nil || attest == nil {
+		return nil, nil, errors.New("aws sealed bootstrap: missing recipient transport")
+	}
+	if err := ctx.Err(); err != nil {
+		return nil, nil, err
 	}
 	private, err := rsa.GenerateKey(rand.Reader, 2048)
 	if err != nil {
-		return nil, Manifest{}, errors.New("aws sealed bootstrap: recipient key generation")
+		return nil, nil, errors.New("aws sealed bootstrap: recipient key generation")
 	}
 	publicDER, err := x509.MarshalPKIXPublicKey(&private.PublicKey)
 	if err != nil {
-		return nil, Manifest{}, errors.New("aws sealed bootstrap: recipient public key")
+		return nil, nil, errors.New("aws sealed bootstrap: recipient public key")
 	}
 	nonce := make([]byte, 32)
 	if _, err := rand.Read(nonce); err != nil {
-		return nil, Manifest{}, errors.New("aws sealed bootstrap: nonce generation")
+		return nil, nil, errors.New("aws sealed bootstrap: nonce generation")
 	}
 	document, err := attest(ctx, publicDER, nonce)
 	if err != nil || len(document) == 0 || len(document) > MaxDocumentBytes {
-		return nil, Manifest{}, errors.New("aws sealed bootstrap: hardware attestation unavailable")
+		return nil, nil, errors.New("aws sealed bootstrap: hardware attestation unavailable")
 	}
-	request, err := json.Marshal(Request{AttestationDocument: document, Protocol: Protocol})
+	request, err := json.Marshal(Request{AttestationDocument: document, Protocol: protocol})
 	if err != nil || len(request) > MaxRequestBytes {
-		return nil, Manifest{}, errors.New("aws sealed bootstrap: request size")
+		return nil, nil, errors.New("aws sealed bootstrap: request size")
 	}
 	if err := ctx.Err(); err != nil {
-		return nil, Manifest{}, err
+		return nil, nil, err
 	}
 	conn, err := dial(ctx)
 	if err != nil {
-		return nil, Manifest{}, errors.New("aws sealed bootstrap: parent unavailable")
+		return nil, nil, errors.New("aws sealed bootstrap: parent unavailable")
 	}
 	defer conn.Close()
 	stop := context.AfterFunc(ctx, func() { _ = conn.Close() })
@@ -111,14 +122,14 @@ func Fetch(ctx context.Context, dial Dialer, attest Attester, signer *ecdsa.Publ
 		deadline = end
 	}
 	if err := conn.SetDeadline(deadline); err != nil {
-		return nil, Manifest{}, errors.New("aws sealed bootstrap: transport deadline")
+		return nil, nil, errors.New("aws sealed bootstrap: transport deadline")
 	}
 	if err := writeFrame(conn, request); err != nil {
-		return nil, Manifest{}, errors.New("aws sealed bootstrap: request write failed")
+		return nil, nil, errors.New("aws sealed bootstrap: request write failed")
 	}
 	data, err := readFrame(conn, MaxResponseBytes)
 	if err != nil {
-		return nil, Manifest{}, errors.New("aws sealed bootstrap: response read failed")
+		return nil, nil, errors.New("aws sealed bootstrap: response read failed")
 	}
-	return Open(data, signer, minimum, func(cms []byte) ([]byte, error) { return UnwrapCMS(cms, private) })
+	return data, private, nil
 }
