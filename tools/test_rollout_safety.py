@@ -22,6 +22,17 @@ ASYNC_SETTLE_KEYRING = ('{"tr-async-settle-2026-10a":'
 
 
 class RolloutSafetyTests(unittest.TestCase):
+    def test_serving_images_pin_authority_and_tls_mode(self) -> None:
+        protected = {"TR_CONTROL_PLANE_BASE_URL", "QUILL_TLS_MODE", "QUILL_ACME_DIRECTORY_URL"}
+        for suffix in ("multi", "anthropic"):
+            with self.subTest(suffix=suffix):
+                image = (ROOT / "enclave-go" / f"Dockerfile.enclave.gcp.{suffix}").read_text()
+                label = re.search(r'LABEL "tee\.launch_policy\.allow_env_override"="([^"]+)"', image)
+                self.assertIsNotNone(label)
+                self.assertTrue(protected.isdisjoint(label[1].split(",")))
+                self.assertIn("ENV TR_CONTROL_PLANE_BASE_URL=https://trustedrouter.com\n", image)
+                self.assertIn("ENV QUILL_TLS_MODE=acme\n", image)
+
     def test_cross_cloud_key_rotation_does_not_restore_bigtable_access(self) -> None:
         script = (ROOT / "tools/deploy-aws-nitro.sh").read_text()
         phase = script.split("phase_cross_cloud_key() {", 1)[1].split("\n}", 1)[0]
