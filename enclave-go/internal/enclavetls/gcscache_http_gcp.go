@@ -15,6 +15,8 @@ import (
 	"time"
 )
 
+func isNitroDNS01Renewal(DNS01Config) bool { return false }
+
 func newCacheHTTPClient() *http.Client {
 	return &http.Client{Timeout: 30 * time.Second}
 }

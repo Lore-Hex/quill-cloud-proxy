@@ -484,7 +484,8 @@ func runDNS01Order(ctx context.Context, cfg DNS01Config, ca DNS01CA) error {
 
 		// Wait for the TXT to be served before asking the CA to look, so
 		// validation doesn't race the propagation.
-		if cfg.preissue && cfg.nitroFirstOrder {
+		nitroProof := (cfg.preissue && cfg.nitroFirstOrder) || isNitroDNS01Renewal(cfg)
+		if nitroProof {
 			// A TXT-only grant need not permit inspecting zone-wide change
 			// history. If the provider read fails, the two public HTTPS
 			// resolvers below are the fallback; Nitro has no UDP network.
@@ -494,7 +495,7 @@ func runDNS01Order(ctx context.Context, cfg DNS01Config, ca DNS01CA) error {
 		} else if err := waitForChallengeTXT(ctx, provider, recordID, recordName, token); err != nil {
 			return fmt.Errorf("dns propagation: %w", err)
 		}
-		if cfg.preissue {
+		if cfg.preissue || nitroProof {
 			if err := preissuePublicTXT(ctx, published, challengeRecordName(cfg.DNSName), recordName, token); err != nil {
 				return fmt.Errorf("public DNS propagation: %w", err)
 			}
@@ -506,8 +507,8 @@ func runDNS01Order(ctx context.Context, cfg DNS01Config, ca DNS01CA) error {
 		if _, err := client.WaitAuthorization(ctx, authz.URI); err != nil {
 			return fmt.Errorf("acme wait authorization: %w", err)
 		}
-		if cfg.nitroFirstOrder && remove() != nil {
-			return errors.New("Nitro first order: validation TXT cleanup not confirmed")
+		if nitroProof && remove() != nil {
+			return errors.New("Nitro DNS order: validation TXT cleanup not confirmed")
 		}
 	}
 

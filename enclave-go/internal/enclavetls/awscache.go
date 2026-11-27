@@ -13,6 +13,12 @@ import (
 
 const AWSSealedBucket = "quill-cloud-proxy-aws-acme-sealed-v1"
 
+func isNitroDNS01Renewal(cfg DNS01Config) bool {
+	cache, ok := cfg.Cache.(*sealedACMECache)
+	return !cfg.preissue && !cfg.AllowBootstrap && cfg.DNSName == NitroGatewayHost &&
+		ok && cache != nil && cache.bucket == AWSSealedBucket
+}
+
 func platformGCSCache(string) (autocert.Cache, error) {
 	return nil, errors.New("AWS ACME requires a Nitro recipient-protected cache")
 }
