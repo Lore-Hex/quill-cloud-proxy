@@ -122,6 +122,27 @@ def verify_record(record_path: Path) -> dict[str, Any] | None:
     return artifact
 
 
+def verify_primary_build(record_path: Path) -> dict[str, str]:
+    """Bind the primary PCR0 and source to the build workflow, not the release signer."""
+    current = validate_current(json.loads(manifests._read_bytes(record_path, 128 << 10)))
+    source = current["source_commit"]
+    if re.fullmatch(r"[0-9a-f]{40}", source) is None:
+        raise ValueError("serving build requires the full source commit")
+    directory = record_path.parent / "eif" / source
+    for path in sorted(directory.glob("*/manifest.json")):
+        if not re.fullmatch(r"[0-9a-f]{64}", path.parent.name):
+            continue
+        artifact, raw, _ = verified_snapshot(path, Path(str(path) + ".bundle"), source)
+        if artifact["eif_sha256"] == path.parent.name and artifact["measurements"]["PCR0"] == current["pcr0"]:
+            return {
+                "source_commit": source,
+                "pcr0": current["pcr0"],
+                "manifest": str(path.relative_to(record_path.parent)),
+                "manifest_sha256": hashlib.sha256(raw).hexdigest(),
+            }
+    raise ValueError("no CI-signed EIF build for the primary PCR0 and claimed source commit")
+
+
 def prepare(manifest: Path, signature: Path, source: str, *, write: bool, trust: Path = TRUST) -> dict[str, Any]:
     artifact, raw, bundle = verified_snapshot(manifest, signature, source)
     current_path = trust / "aws-release.json"
@@ -241,11 +262,15 @@ def main() -> None:
             sub.add_argument("--port", type=int, required=True)
     check = commands.add_parser("verify-record")
     check.add_argument("--record", type=Path, default=TRUST / "aws-release.json")
+    primary = commands.add_parser("verify-primary-build")
+    primary.add_argument("--record", type=Path, default=TRUST / "aws-release.json")
     args = parser.parse_args()
     if args.command == "widen-runtime":
         widen_runtime()
     elif args.command == "verify-record":
         verify_record(args.record)
+    elif args.command == "verify-primary-build":
+        print(json.dumps(verify_primary_build(args.record), sort_keys=True))
     elif args.command == "verify-candidate":
         verify_candidate(args.manifest, args.signature, args.expected_source, args.port)
     elif args.command == "check-ready":

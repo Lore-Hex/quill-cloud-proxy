@@ -83,6 +83,28 @@ class AdmissionTests(unittest.TestCase):
         self.assertEqual(args[-2:], ["--expected-pcr0", "1" * 96])
         self.assertTrue(run.call_args.kwargs["check"])
 
+    def test_primary_build_requires_exact_pcr_source_and_signed_manifest(self):
+        source = self.record["source_commit"]
+        build = self.trust / "eif" / source / self.record["eif_sha256"] / "manifest.json"
+        build.parent.mkdir(parents=True)
+        build.write_bytes(self.path.read_bytes())
+        Path(str(build) + ".bundle").write_bytes(self.signature.read_bytes())
+        record = self.trust / "aws-release.json"
+        pcr = self.record["measurements"]["PCR0"]
+        current = dict(self.current, source_commit=source, pcr0=pcr, accepted_pcr0s=[pcr])
+        record.write_text(json.dumps(current))
+        with patch.object(admission.manifests.subprocess, "run") as verify:
+            proof = admission.verify_primary_build(record)
+            self.assertTrue(verify.called)
+            self.assertEqual((proof["source_commit"], proof["pcr0"]), (source, pcr))
+            for delta in ({"source_commit": "f" * 40}, {"pcr0": "4" * 96, "accepted_pcr0s": [pcr, "4" * 96]}):
+                record.write_text(json.dumps({**current, **delta}))
+                with self.assertRaises(ValueError):
+                    admission.verify_primary_build(record)
+        record.write_text(json.dumps(current))
+        with patch.object(admission, "verified_snapshot", side_effect=ValueError("signature rejected")), self.assertRaises(ValueError):
+            admission.verify_primary_build(record)
+
     def test_wrong_candidate_measurement_aborts_without_writes(self):
         before = (self.trust / "aws-release.json").read_bytes()
         with patch.object(admission, "verified_snapshot", return_value=(self.record, b"", b"")), \
