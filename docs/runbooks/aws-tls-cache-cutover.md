@@ -72,6 +72,33 @@ learned from a running gateway, or turn off attested bootstrap.
   Before a real order, establish a single no-traffic issuer and a bounded AWS
   hostname/order budget. No parallel ordering, overwrite, revocation or
   automatic retries on ambiguous results.
+- The host-side opt-in `aws_tls_rehearsal` test binary uses only the Let's
+  Encrypt **staging** directory, the fixed AWS hostname and a fresh private
+  local directory. With the AWS prep reservation and an approved validation
+  window, use separate invocations of `TestAWSStagingDNSRehearsal` for
+  `init`, `issue`, `read`, `renew`, `read` via `TR_AWS_REHEARSAL_PHASE`
+  and the same `TR_AWS_REHEARSAL_DIRECTORY`; always use `-count=1`.
+  Compare only the public fingerprints: initial and cold read must match;
+  renewal must differ, and its cold read must match the renewal. Check
+  authoritative TXT cleanup before advancing. Each order phase is one-shot.
+  This qualifies the DNS procedure, not a real Nitro restart, replica, KMS
+  policy or serving fleet. Never import rehearsal objects into the live cache.
+- The first AWS boot now verifies the key pair, public CA chain, hostname
+  and validity **before** returning its cache to the listener. Only an
+  actual missing leaf can start issuance. After the rehearsal and access
+  checks, arm the no-traffic candidate by creating the public control object
+  `release-control/v1/api-aws.trustedrouter.com/permit` in the new bucket
+  with a create-only generation precondition. Its one line is
+  `first-order-v1 api-aws.trustedrouter.com <approved-cache-SPKI-SHA256> <RFC3339-expiry>`.
+  At claim time the expiry must be more than nine and at most thirty minutes
+  away. Allow enough time for validation and TXT cleanup before any DNS grant
+  expires. Verify both public resolvers are reachable through the reviewed
+  vsock tunnels and the grant permits only the AWS validation TXT.
+  The candidate creates the sibling `claimed` object with generation-match
+  zero before any order. A conflict, lost response or failed order does not
+  authorize a retry. Never delete or replace the claim to unstick the release.
+  Remove the permit after reconciliation; keep the claim. Healthy replicas
+  with a verified certificate do not consult the permit or contact a CA.
 
 ## Release and acceptance
 

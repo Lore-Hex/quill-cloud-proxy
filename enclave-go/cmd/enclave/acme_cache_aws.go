@@ -34,12 +34,15 @@ func configuredACMECache(ctx context.Context, boot *types.BootstrapData) (autoce
 			return nil, errors.New("unapproved Nitro ACME directory")
 		}
 	}
-	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
-	defer cancel()
-	key, err := bootstrap.FetchNitroTLSCacheKey(ctx, nitroTLSCacheSPKI)
+	if os.Getenv("QUILL_API_HOST") != enclavetls.NitroGatewayHost || os.Getenv("QUILL_ACME_DNS_GCP_PROJECT") != "quill-cloud-proxy" || os.Getenv("QUILL_ACME_DNS_MANAGED_ZONE") != "trustedrouter-com" {
+		return nil, errors.New("unexpected Nitro certificate hostname or DNS zone")
+	}
+	keyCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	key, err := bootstrap.FetchNitroTLSCacheKey(keyCtx, nitroTLSCacheSPKI)
+	cancel()
 	defer clear(key)
 	if err != nil {
 		return nil, err
 	}
-	return enclavetls.NewNitroACMECache(key, nitroTLSCacheSPKI)
+	return enclavetls.ReadyNitroACMECache(ctx, key, nitroTLSCacheSPKI)
 }

@@ -976,6 +976,8 @@ allowlist:
   - {address: acme-v02.api.letsencrypt.org,       port: 443}
   - {address: acme-staging-v02.api.letsencrypt.org, port: 443}
   - {address: dns.googleapis.com,                 port: 443}
+  - {address: dns.google,                         port: 443}
+  - {address: cloudflare-dns.com,                 port: 443}
   # TR control plane (key lookup, settle, byok unwrap). Matches the
   # tunnel list in enclave-go/internal/trustedrouter/http_client_aws.go.
   - {address: trustedrouter.com,             port: 443}
@@ -1150,6 +1152,8 @@ write_vsock_unit 8036 api.cloudflare.com
 write_vsock_unit 8037 acme-v02.api.letsencrypt.org
 write_vsock_unit 8038 acme-staging-v02.api.letsencrypt.org
 write_vsock_unit 8069 dns.googleapis.com
+write_vsock_unit 8140 dns.google
+write_vsock_unit 8141 cloudflare-dns.com
 # TR control plane (must match internal/trustedrouter/http_client_aws.go)
 write_vsock_unit 8040 trustedrouter.com
 

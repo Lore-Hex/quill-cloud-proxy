@@ -19,7 +19,9 @@ import (
 const preissueCacheWindow = 5 * time.Minute
 
 var preissuePublicTXT = func(ctx context.Context, published time.Time, owner, target, token string) error {
-	client := &http.Client{Timeout: 5 * time.Second, CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
+	client := NewDNS01HTTPClient()
+	client.Timeout = 5 * time.Second
+	client.CheckRedirect = func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }
 	return waitPublicTXT(ctx, published, func(ctx context.Context) bool {
 		return publicTXTMatches(ctx, client, "https://dns.google/dns-query", owner, target, token) &&
 			publicTXTMatches(ctx, client, "https://cloudflare-dns.com/dns-query", owner, target, token)

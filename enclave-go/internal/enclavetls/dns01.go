@@ -60,7 +60,8 @@ import (
 type DNS01Config struct {
 	// Set only by PreissueDNS01. Serving renewers retain their existing
 	// cloud-specific transports, including the AWS vsock-only path.
-	preissue bool
+	preissue        bool
+	nitroFirstOrder bool
 	// ChallengeRecord optionally names a pre-provisioned DNS-01 CNAME target.
 	// The CA still validates DNSName and follows its public challenge delegation.
 	ChallengeRecord    string
@@ -465,20 +466,32 @@ func runDNS01Order(ctx context.Context, cfg DNS01Config, ca DNS01CA) error {
 		// passes or fails. LE rate-limits the same TXT being seen
 		// across consecutive orders, so leaving stale records around
 		// is operationally bad.
-		defer func() {
+		removed := false
+		remove := func() error {
+			if removed {
+				return nil
+			}
+			removed = true
 			cleanup, cancel := context.WithTimeout(context.WithoutCancel(ctx), 30*time.Second)
 			defer cancel()
-			if delErr := provider.RemoveTXT(cleanup, recordID); delErr != nil {
-				fmt.Fprintf(maybeStderr,
-					"dns01_renewer.txt_cleanup_failed record_id=%s err=%v\n",
-					recordID, delErr,
-				)
+			return provider.RemoveTXT(cleanup, recordID)
+		}
+		defer func() {
+			if remove() != nil {
+				fmt.Fprintf(maybeStderr, "dns01_renewer.txt_cleanup_failed provider=%s host=%s\n", provider.Name(), cfg.DNSName)
 			}
 		}()
 
 		// Wait for the TXT to be served before asking the CA to look, so
 		// validation doesn't race the propagation.
-		if err := waitForChallengeTXT(ctx, provider, recordID, recordName, token); err != nil {
+		if cfg.preissue && cfg.nitroFirstOrder {
+			// A TXT-only grant need not permit inspecting zone-wide change
+			// history. If the provider read fails, the two public HTTPS
+			// resolvers below are the fallback; Nitro has no UDP network.
+			if w, ok := provider.(DNS01PropagationWaiter); ok {
+				_ = w.WaitTXT(ctx, recordID)
+			}
+		} else if err := waitForChallengeTXT(ctx, provider, recordID, recordName, token); err != nil {
 			return fmt.Errorf("dns propagation: %w", err)
 		}
 		if cfg.preissue {
@@ -492,6 +505,9 @@ func runDNS01Order(ctx context.Context, cfg DNS01Config, ca DNS01CA) error {
 		}
 		if _, err := client.WaitAuthorization(ctx, authz.URI); err != nil {
 			return fmt.Errorf("acme wait authorization: %w", err)
+		}
+		if cfg.nitroFirstOrder && remove() != nil {
+			return errors.New("Nitro first order: validation TXT cleanup not confirmed")
 		}
 	}
 
