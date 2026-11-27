@@ -292,6 +292,7 @@ jobs:
           python3 tools/test_superseded_rollout.py
           python3 tools/test_gcp_enclave_inventory.py
           python3 tools/test_verify_gcp_runtime_secret_access.py
+          python3 -m unittest tools.test_gcp_tls_admission
           python3 tools/test_verify_pcr0_build_args.py
           python3 tools/test_aws_iam_cmk_scope.py
           python3 tools/test_settle_outbox_alert_filter.py
