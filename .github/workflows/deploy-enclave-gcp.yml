@@ -62,6 +62,7 @@ on:
       - "tools/enclave-rollout-drain-lib.sh"
       - "tools/cleanup-enclave-rollout-drains.sh"
       - "tools/verify-gcp-runtime-secret-access.py"
+      - "tools/check_gcp_tls_admission.py"
       - "tools/superseded_rollout.py"
       - ".github/workflows/deploy-enclave-gcp.yml"
       # Note: trust-page/** is intentionally NOT in this list. Trust
