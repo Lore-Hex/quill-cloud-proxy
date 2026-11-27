@@ -74,6 +74,12 @@ not restrict access.
    the instance, release digest, non-debug measurement and the corresponding
    workload identity and KMS data-access evidence. A local pass, a host
    service-account operation, or a standalone log line is not that proof.
+   Before taking the GCP rollout lease, the release runs
+   `python3 tools/check_gcp_tls_admission.py <image-digest>`. This only reads
+   the two resource policies. A miss stops before drain; it is not a request
+   to authorize a superseded image. Once the key administrator has approved
+   the selected digest and the bindings are effective, retry the failed gate.
+   This check does not prove effective IAM, custody or attestation.
 4. In an isolated rehearsal, prove DNS-01 issuance into an empty cache, cold
    restart, a second replica reading the issued certificate, and renewal.
    Include the primary hostname as well as shared aliases. Legacy replicas
