@@ -108,6 +108,7 @@ func stageCAdmissionClientForRequest(t *testing.T, responseFixture string, statu
 		}
 		data := map[string]any{
 			"request_metadata_version": 1, "authorization_id": "cold-grant", "api_key_hash": claims.KeyHash, "workspace_id": claims.WorkspaceID,
+			"provider": "anthropic",
 			"spend_lease": map[string]any{"token": token, "lease_status": "active"},
 		}
 		for _, edit := range editResponse {

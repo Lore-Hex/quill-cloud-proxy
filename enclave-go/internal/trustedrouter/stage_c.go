@@ -63,6 +63,9 @@ func (c *Client) PrepareSpendLeaseAdmission(
 	if req != nil {
 		ctx = WithRequestPrivacy(ctx, req.Model, req.Models, req.Provider)
 	}
+	if pin, pinned := ctx.Value(providerPinKey{}).(providerPin); pinned && len(pin) == 0 {
+		return nil, nil
+	}
 	if ConfidentialOnly(ctx) {
 		if req == nil {
 			return nil, ValidateHostRouting(ctx, nil)
@@ -129,7 +132,7 @@ func (c *Client) PrepareSpendLeaseAdmission(
 		}
 	}
 	local, ok := localAuthorization(admission, estimateRequest)
-	if !ok {
+	if !ok || validateConfidentialAuthorization(ctx, local) != nil {
 		admission.Release()
 		return nil, nil
 	}

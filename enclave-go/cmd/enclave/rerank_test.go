@@ -60,6 +60,9 @@ func rerankControlPlane(t *testing.T, mode string, calls *map[string][]map[strin
 				return
 			}
 			answer := rerankAuthorization
+			if mode == "pinned_voyage" {
+				answer = strings.Replace(answer, `"provider":"cohere"`, `"provider":"voyage"`, 1)
+			}
 			if mode == "differential" {
 				answer = strings.Replace(answer, `"endpoint_id":"primary"`, `"endpoint_id":"served"`, 1)
 			}
@@ -114,6 +117,7 @@ func TestRerankHandlerPrivacyAndBilling(t *testing.T) {
 		{"bad_json", 400, 0, 0, 0, 0}, {"validation", 400, 0, 0, 0, 0}, {"metadata", 400, 0, 0, 0, 0}, {"tags", 400, 0, 0, 0, 0},
 		{"byok_request", 400, 0, 0, 0, 0}, {"build", 501, 0, 0, 0, 0}, {"no_plane", 503, 0, 0, 0, 0},
 		{"authorize", 400, 1, 0, 0, 0}, {"byok_answer", 400, 1, 0, 0, 1}, {"byok_candidate", 400, 1, 0, 0, 1}, {"unsupported_candidate", 501, 1, 0, 0, 1},
+		{"excluded_fallback", 503, 1, 0, 0, 1},
 		{"provider", 502, 1, 1, 0, 1}, {"refund", 502, 1, 1, 0, 1}, {"input_limit", 400, 1, 1, 0, 1}, {"unsupported", 501, 1, 1, 0, 1},
 		{"nil_response", 502, 1, 1, 0, 1}, {"invalid_result", 502, 1, 1, 0, 1}, {"invalid_usage", 502, 1, 1, 0, 1}, {"settle", 502, 1, 1, 1, 1},
 	} {
@@ -136,6 +140,8 @@ func TestRerankHandlerPrivacyAndBilling(t *testing.T) {
 				body = strings.TrimSuffix(body, "}") + `,"tags":{"aws:reserved":"value"}}`
 			case "byok_request":
 				body = strings.TrimSuffix(body, "}") + `,"provider":{"billing":"byok"}}`
+			case "excluded_fallback":
+				body = strings.TrimSuffix(body, "}") + `,"provider":{"only":["voyage"]}}`
 			case "build":
 				client = &fakeStreamingLLM{}
 			case "provider", "refund":
@@ -326,7 +332,7 @@ func TestRerankBodyLimitAndPreflight(t *testing.T) {
 func TestRerankAttributionAndResponseOptions(t *testing.T) {
 	for _, bodySession := range []bool{false, true} {
 		calls := make(map[string][]map[string]any)
-		gateway := rerankMemoryGateway(t, "success", &calls)
+		gateway := rerankMemoryGateway(t, "pinned_voyage", &calls)
 		tokens := 14
 		backend := &rerankBackend{response: &types.RerankResponse{InputTokens: &tokens, Results: []types.RerankResult{{Index: 1, RelevanceScore: 0.5}, {Index: 0, RelevanceScore: 0.5}}}}
 		body := strings.TrimSuffix(rerankPrivateBody, "}") + `,"top_n":1,"return_documents":false,"metadata":{"task":"retrieval"},"trace":{"source":"test"},"provider":{"only":["voyage"],"allow_fallbacks":false}}`

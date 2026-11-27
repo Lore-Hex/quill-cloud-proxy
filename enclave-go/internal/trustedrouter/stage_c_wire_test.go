@@ -147,7 +147,7 @@ func TestStageCWireMissBeforeCapacityOrSigning(t *testing.T) {
 							t.Fatalf("ordinary field %s lost: %s want %s", key, body[key], value)
 						}
 					}
-					return replayResponse(r, []byte(`{"data":{"authorization_id":"ordinary","request_metadata_version":1}}`)), nil
+					return replayResponse(r, []byte(`{"data":{"authorization_id":"ordinary","provider":"anthropic","request_metadata_version":1}}`)), nil
 				})
 				if _, err := c.AuthorizeWithRoute(ctx, "sk-stage-c-fixture", req, route); err != nil {
 					t.Fatal(err)

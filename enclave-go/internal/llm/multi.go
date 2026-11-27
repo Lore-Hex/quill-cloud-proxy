@@ -176,6 +176,9 @@ func (m *multiClient) InvokeStreaming(
 	options ...InvokeOptions,
 ) error {
 	option := firstOptions(options)
+	if req != nil && req.Provider != nil && len(req.Provider.Only) > 0 {
+		ctx = trustedrouter.WithRequestPrivacy(ctx, req.Model, req.Models, req.Provider)
+	}
 	if !trustedrouter.PrivateDispatchAllowed(ctx, option.Provider, option.Model, option.UpstreamModel, option.UsageType, option.ProviderAPIKey != "") {
 		return fmt.Errorf("llm: private dispatch not approved")
 	}

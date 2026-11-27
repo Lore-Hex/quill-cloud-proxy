@@ -1056,7 +1056,16 @@ func (c *Client) AuthorizeWithRoute(ctx context.Context, bearer string, req *qty
 	if err != nil {
 		return nil, err
 	}
-	ctx = WithRequestPrivacy(ctx, req.Model, req.Models, req.Provider)
+	routing := req.Provider
+	if routing != nil && len(req.InternalDecisionHosts) != 0 {
+		// The decision engine synthesizes Only when the caller provided no
+		// filter. Its selector prunes these candidates in order before I/O.
+		// Preserve inherited caller pins and any independently requested floor.
+		generated := *routing
+		generated.Only = nil
+		routing = &generated
+	}
+	ctx = WithRequestPrivacy(ctx, req.Model, req.Models, routing)
 	body := chatAuthorizeBody(c, lookupHash, idempotencyKey, gatewayMintedIdempotencyKey(req, idempotencyKey, minted), req, routeType)
 	if c.asyncNegotiate && asyncCohort(routeType) && len(c.asyncTicketKeys) > 0 {
 		ctx = context.WithValue(ctx, asyncModeKey{}, "async-v1")

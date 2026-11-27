@@ -241,7 +241,7 @@ func TestVideoUnsupportedSeedReadOnlyReplayAcrossRollout(t *testing.T) {
 						http.Error(w, `{"error":{"message":"fingerprint mismatch"}}`, 409)
 						return
 					}
-					auth := map[string]any{"authorization_id": "pre-rollout", "workspace_id": "ws", "api_key_hash": "hash", "model": model, "provider": "minimax", "additional_cost_reservation_microdollars": 500000, "idempotent_replay": lookup}
+					auth := map[string]any{"authorization_id": "pre-rollout", "workspace_id": "ws", "api_key_hash": "hash", "model": model, "provider": tc.provider, "additional_cost_reservation_microdollars": 500000, "idempotent_replay": lookup}
 					if lookup {
 						_ = json.NewEncoder(w).Encode(map[string]any{"data": map[string]any{"found": true, "authorization": auth}})
 					} else {
@@ -249,7 +249,7 @@ func TestVideoUnsupportedSeedReadOnlyReplayAcrossRollout(t *testing.T) {
 					}
 				case "/internal/gateway/video/jobs/" + jobID + "/lookup":
 					jobLookups++
-					_ = json.NewEncoder(w).Encode(map[string]any{"data": map[string]any{"id": jobID, "authorization_id": "pre-rollout", "workspace_id": "ws", "key_hash": "hash", "model": model, "provider": "minimax", "status": "completed"}})
+					_ = json.NewEncoder(w).Encode(map[string]any{"data": map[string]any{"id": jobID, "authorization_id": "pre-rollout", "workspace_id": "ws", "key_hash": "hash", "model": model, "provider": tc.provider, "status": "completed"}})
 				default:
 					t.Errorf("unexpected mutation/dispatch: %s", r.URL.Path)
 					w.WriteHeader(500)

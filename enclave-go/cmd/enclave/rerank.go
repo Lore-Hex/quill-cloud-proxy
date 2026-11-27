@@ -36,6 +36,7 @@ func serveRerank(ctx context.Context, conn io.Writer, br llm.Client, rawBody []b
 		writeOpenAIError(conn, 400, "invalid JSON", "invalid_request_error", "bad_request", "")
 		return
 	}
+	ctx = trustedrouter.WithRequestPrivacy(ctx, req.Model, nil, req.Provider)
 	req.IdempotencyKey = idempotencyKey
 	if req.SessionID == "" {
 		req.SessionID = attribution.SessionID

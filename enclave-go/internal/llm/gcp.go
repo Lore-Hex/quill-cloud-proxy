@@ -179,7 +179,7 @@ func (c *gcpClient) InvokeStreaming(
 	out io.Writer,
 	options ...InvokeOptions,
 ) error {
-	if err := rejectFixedProviderPrivate(ctx, req); err != nil {
+	if err := rejectFixedProviderPrivate(ctx, req, "google-vertex", firstOptions(options)); err != nil {
 		return err
 	}
 	if req != nil && req.Response != nil && req.Response.NativeCustom != nil {

@@ -32,7 +32,7 @@ func (c *awsClient) InvokeStreaming(
 	out io.Writer,
 	options ...InvokeOptions,
 ) error {
-	if err := rejectFixedProviderPrivate(ctx, req); err != nil {
+	if err := rejectFixedProviderPrivate(ctx, req, "amazon-bedrock", firstOptions(options)); err != nil {
 		return err
 	}
 	if req != nil && req.Response != nil && req.Response.NativeCustom != nil {
