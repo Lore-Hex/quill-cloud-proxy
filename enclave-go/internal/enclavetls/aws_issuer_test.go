@@ -3,6 +3,7 @@
 package enclavetls
 
 import (
+	"bytes"
 	"context"
 	"crypto/ecdsa"
 	"crypto/x509"
@@ -36,6 +37,33 @@ func (p *failDNSCleanup) RemoveTXT(ctx context.Context, id string) error {
 }
 
 func TestNitroFirstOrderRequiresPublicTXTAndCleanup(t *testing.T) {
+	testNitroPublicTXTAndCleanup(t, false)
+}
+
+func TestNitroRenewalRequiresPublicTXTAndCleanup(t *testing.T) {
+	testNitroPublicTXTAndCleanup(t, true)
+}
+
+func TestNitroRenewalIsRestrictedToTheSealedPrimary(t *testing.T) {
+	cache := &sealedACMECache{bucket: AWSSealedBucket}
+	if !isNitroDNS01Renewal(DNS01Config{DNSName: NitroGatewayHost, Cache: cache}) {
+		t.Fatal("sealed primary renewal not recognized")
+	}
+	for _, cfg := range []DNS01Config{
+		{DNSName: NitroGatewayHost, Cache: autocert.DirCache(t.TempDir())},
+		{DNSName: NitroGatewayHost, Cache: &sealedACMECache{bucket: "unrelated"}},
+		{DNSName: "other.example", Cache: cache},
+		{DNSName: NitroGatewayHost, Cache: cache, AllowBootstrap: true},
+		{DNSName: NitroGatewayHost, Cache: cache, preissue: true},
+	} {
+		if isNitroDNS01Renewal(cfg) {
+			t.Fatal("unrelated issuance selected")
+		}
+	}
+}
+
+func testNitroPublicTXTAndCleanup(t *testing.T, renewal bool) {
+	t.Helper()
 	for _, visible := range []bool{false, true} {
 		t.Run(fmt.Sprint(visible), func(t *testing.T) {
 			var accepted, proofs atomic.Int32
@@ -65,12 +93,39 @@ func TestNitroFirstOrderRequiresPublicTXTAndCleanup(t *testing.T) {
 				return nil
 			}
 			provider := &failDNSCleanup{recordingProvider: recordingProvider{waitErr: errors.New("changes.get denied")}}
-			cache := autocert.DirCache(t.TempDir())
-			err := PreissueDNS01(t.Context(), DNS01Config{nitroFirstOrder: true, DNSName: NitroGatewayHost, Cache: cache, Provider: provider, DirectoryURL: ca.URL + "/directory", HTTPClient: ca.Client()}, false)
+			cache, err := NewNitroACMECache(make([]byte, 32), "fixture-pin")
+			if err != nil {
+				t.Fatal(err)
+			}
+			cache.(*sealedACMECache).store = newMemoryACMECache()
+			cfg := DNS01Config{DNSName: NitroGatewayHost, Cache: cache, Provider: provider, DirectoryURL: ca.URL + "/directory", HTTPClient: ca.Client()}
+			var old []byte
+			if renewal {
+				leaf, e := NewSelfSigned(NitroGatewayHost)
+				if e != nil {
+					t.Fatal(e)
+				}
+				old, e = encodeAutocertEntry(leaf.Certificate.PrivateKey.(*ecdsa.PrivateKey), leaf.Certificate.Certificate)
+				if e != nil {
+					t.Fatal(e)
+				}
+				if e = cache.Put(t.Context(), NitroGatewayHost, old); e != nil {
+					t.Fatal(e)
+				}
+				cfg.RenewWithinDuration = time.Until(leaf.Certificate.Leaf.NotAfter) + time.Hour
+				err = maybeRenewDNS01(t.Context(), cfg)
+			} else {
+				cfg.nitroFirstOrder = true
+				err = PreissueDNS01(t.Context(), cfg, false)
+			}
 			if err == nil || (visible && !strings.Contains(err.Error(), "cleanup not confirmed")) || proofs.Load() != 1 || (accepted.Load() == 1) != visible || len(provider.removed) != 1 {
 				t.Fatalf("err=%v proofs=%d accepts=%d deletes=%d", err, proofs.Load(), accepted.Load(), len(provider.removed))
 			}
-			if _, err := cache.Get(t.Context(), NitroGatewayHost); !errors.Is(err, autocert.ErrCacheMiss) {
+			got, err := cache.Get(t.Context(), NitroGatewayHost)
+			if renewal && (err != nil || !bytes.Equal(got, old)) {
+				t.Fatal("failed renewal replaced the previous serving leaf")
+			}
+			if !renewal && !errors.Is(err, autocert.ErrCacheMiss) {
 				t.Fatal("published unqualified leaf")
 			}
 		})
