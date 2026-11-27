@@ -3,7 +3,6 @@ package trustedrouter
 import (
 	"context"
 
-	"github.com/Lore-Hex/quill-cloud-proxy/enclave-go/internal/maple"
 	qtypes "github.com/Lore-Hex/quill-cloud-proxy/enclave-go/internal/types"
 )
 
@@ -58,11 +57,11 @@ func validateConfidentialAuthorization(ctx context.Context, authorization *Autho
 	}
 	if TrustedOnly(ctx) {
 		deny := &ControlPlaneError{StatusCode: 503, Type: "trusted_route_unavailable", Message: "No verified Trusted route is available."}
-		if authorization == nil || !trustedOperatorRoute(authorization.Provider, authorization.Model, authorization.UpstreamModel, authorization.UsageType) {
+		if authorization == nil || !trustedOperatorRoute(authorization.Provider, authorization.Model, authorization.UpstreamModel) {
 			return deny
 		}
 		for _, candidate := range authorization.RouteCandidates {
-			if !trustedOperatorRoute(candidate.Provider, candidate.Model, candidate.UpstreamModel, candidate.UsageType) {
+			if !trustedOperatorRoute(candidate.Provider, candidate.Model, candidate.UpstreamModel) {
 				return deny
 			}
 		}
@@ -77,12 +76,10 @@ func validateConfidentialAuthorization(ctx context.Context, authorization *Autho
 
 // Authorization enforces endpoint E2EE, verified compute and ZDR. Independently
 // bound its operator set before a primary or fallback can reach a dispatcher.
-func trustedOperatorRoute(provider, model, upstream, usage string) bool {
+func trustedOperatorRoute(provider, model, upstream string) bool {
 	switch provider {
 	case "tinfoil", "privatemode":
 		return model != "" && upstream != ""
-	case "maple":
-		return model == "dealignai/deepseek-v4.1-flash-1017-uncensored" && upstream == maple.Model && usage == "Credits"
 	}
 	return false
 }
