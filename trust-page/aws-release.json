@@ -1,19 +1,10 @@
 {
   "accepted_pcr0s": [
-    "49b062de2a00f23411ab1be38a579aeb63aa5cd0e8fc4afe803b6fcf1bcdc8fb9e4875d0e197d0fa0fe61736c084aa47",
-    "5de92f90e2e1c7f4c9456c2033e1d7392cf644953aaa19aeeb4ff05530c11836909fded7e77064ac5a7da99a21803eb0"
+    "49b062de2a00f23411ab1be38a579aeb63aa5cd0e8fc4afe803b6fcf1bcdc8fb9e4875d0e197d0fa0fe61736c084aa47"
   ],
   "api_base_url": "https://api-aws.trustedrouter.com/v1",
   "attestation_format": "cose-sign1-nitro-attestation-document",
   "attestation_root": "https://aws-nitro-enclaves.amazonaws.com/AWS_NitroEnclaves_Root-G1.zip",
-  "candidate_eif": {
-    "manifest": "eif/7cf7e3489d4c55281efbe7919c948e324c46b30a/804ef91a7fe6698cc470a3632a511867861677602769ecf97d0a80e3502747be/manifest.json",
-    "manifest_sha256": "920a40f393bbc869a9cbe8c14a4c79bfd8980ed3eca08e2d45b85df069d0faec",
-    "observed_serving": false,
-    "pcr0": "5de92f90e2e1c7f4c9456c2033e1d7392cf644953aaa19aeeb4ff05530c11836909fded7e77064ac5a7da99a21803eb0",
-    "signing_identity": "https://github.com/Lore-Hex/quill-cloud-proxy/.github/workflows/publish-aws-eif.yml@refs/heads/main",
-    "source_commit": "7cf7e3489d4c55281efbe7919c948e324c46b30a"
-  },
   "data_policy": {
     "client_telemetry_content_free": true,
     "client_telemetry_disclosure": "https://trustedrouter.com/docs/telemetry",
@@ -24,7 +15,7 @@
   "observed_module_id": "i-0a81272839a64fffb-enc01a2119a3b366b53",
   "pcr0": "49b062de2a00f23411ab1be38a579aeb63aa5cd0e8fc4afe803b6fcf1bcdc8fb9e4875d0e197d0fa0fe61736c084aa47",
   "platform": "aws-nitro-enclaves",
-  "release_state": "rolling",
+  "release_state": "current",
   "reproduce": "tools/verify-pcr0.sh",
   "source_commit": "46b841fb85e3f30688964e99fd4a73ab5ea87838",
   "source_commit_provenance": "operator-asserted",
