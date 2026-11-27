@@ -28,6 +28,7 @@ import (
 	"math/big"
 	"net"
 	"os"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -608,7 +609,7 @@ func getCertificateWithECDSAFallback(
 	// the ECDSA cert up front. That is a cache HIT, it returns immediately, and
 	// no ACME order is ever opened.
 	if clientAcceptsECDSA(hello) {
-		if ecdsaHello := withP256(hello); ecdsaHello != hello {
+		if ecdsaHello := autocertECDSALookup(hello); ecdsaHello != hello {
 			if cert, err := get(ecdsaHello); err == nil {
 				return cert, nil
 			}
@@ -617,6 +618,28 @@ func getCertificateWithECDSAFallback(
 		}
 	}
 	return get(hello)
+}
+
+func autocertECDSALookup(hello *tls.ClientHelloInfo) *tls.ClientHelloInfo {
+	lookup := withP256(hello)
+	// autocert also infers the certificate type from TLS 1.2 cipher suites.
+	// A TLS 1.3-only client advertises none. Adapt only autocert's cache
+	// lookup; crypto/tls negotiates against the original ClientHello.
+	if !slices.Contains(hello.SupportedVersions, uint16(tls.VersionTLS13)) ||
+		!slices.Contains(hello.SignatureSchemes, tls.ECDSAWithP256AndSHA256) ||
+		len(hello.CipherSuites) == 0 {
+		return lookup
+	}
+	for _, suite := range hello.CipherSuites {
+		switch suite {
+		case tls.TLS_AES_128_GCM_SHA256, tls.TLS_AES_256_GCM_SHA384, tls.TLS_CHACHA20_POLY1305_SHA256:
+		default:
+			return lookup
+		}
+	}
+	clone := *lookup
+	clone.CipherSuites = append(slices.Clone(lookup.CipherSuites), tls.TLS_ECDHE_ECDSA_WITH_AES_128_GCM_SHA256)
+	return &clone
 }
 
 // clientAcceptsECDSA reports whether the client's signature_algorithms permit

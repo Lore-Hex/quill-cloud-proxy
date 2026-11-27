@@ -9,11 +9,13 @@ import (
 	"encoding/hex"
 	"errors"
 	"net/http"
+	"os"
 	"time"
 
 	"github.com/Lore-Hex/quill-cloud-proxy/enclave-go/internal/byokcache"
 	"github.com/Lore-Hex/quill-cloud-proxy/enclave-go/internal/enclavetls"
 	"github.com/Lore-Hex/quill-cloud-proxy/enclave-go/internal/types"
+	"golang.org/x/crypto/acme"
 	"golang.org/x/crypto/acme/autocert"
 )
 
@@ -26,6 +28,17 @@ const (
 )
 
 func configuredACMECache(_ context.Context, _ *types.BootstrapData) (autocert.Cache, error) {
+	for _, env := range []string{"QUILL_ACME_DIRECTORY_URL", "QUILL_ACME_FALLBACK_DIRECTORY_URL"} {
+		switch os.Getenv(env) {
+		case "", acme.LetsEncryptURL, "https://dv.acme-v02.api.pki.goog/directory", "https://acme.zerossl.com/v2/DV90":
+		default:
+			return nil, errors.New("unapproved CA directory for the serving certificate cache")
+		}
+	}
+	return sealedGCPCache(acmeSealedBucket)
+}
+
+func sealedGCPCache(bucket string) (autocert.Cache, error) {
 	client := byokcache.NewVsockKMSClient()
 	client.CheckRedirect = func(_ *http.Request, _ []*http.Request) error { return http.ErrUseLastResponse }
 	identity, err := byokcache.NewConfidentialSpaceTokenSource(acmeWIF, client)
@@ -33,7 +46,7 @@ func configuredACMECache(_ context.Context, _ *types.BootstrapData) (autocert.Ca
 		return nil, err
 	}
 	kms := &byokcache.GoogleKMSUnwrapper{HTTPClient: client, TokenSource: identity}
-	return enclavetls.NewSealedGCSCache(acmeSealedBucket, acmeSealedKey, identity, kms)
+	return enclavetls.NewSealedGCSCache(bucket, acmeSealedKey, identity, kms)
 }
 
 // This launch mode uses exactly the serving image and cache, but exits before

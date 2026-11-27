@@ -97,3 +97,33 @@ not restrict access.
 Ordinary browsers still rely on the site's JavaScript, Web PKI and DNS.
 Changing server key custody does not turn a separate attestation request
 into proof about the connection carrying a prompt.
+
+### Single issuer before serving
+
+Run one isolated workload at a time, with no restart, no inbound traffic and
+no other issuer. Before granting access, inventory every SNI from the actual
+serving templates. Verify the authoritative challenge records and the issuer's
+record-specific TXT permissions. QuillRouter base and regional names use
+`quillrouter-com`; the other delegated names use `trustedrouter-com`.
+The plain AllyRouter and UptimeRouter names require their own explicit
+`_acme-challenge.api` CNAME delegations. A working traffic record or an
+existing certificate is not proof of either delegation.
+
+Set `QUILL_ACME_ISSUE_HOST` to one exact gateway hostname. The following
+`QUILL_TLS_MODE` values exit before opening a listener or loading provider
+credentials. Each invocation can submit at most one order, to one fixed CA.
+
+| Mode | Cache | Action |
+|---|---|---|
+| `gcp-acme-rehearse` | Dedicated rehearsal bucket | Issue using Let's Encrypt staging; verify the cached hostname and key pair. |
+| `gcp-acme-rehearse-renew` | Dedicated rehearsal bucket | Replace an existing staging leaf, once. |
+| `gcp-acme-preissue` | Sealed serving bucket | Issue using Let's Encrypt production only on a confirmed miss. An invalid entry stops the task; a valid existing entry spends no order. |
+
+The rehearsal bucket is `quill-cloud-proxy-acme-rehearsal-v1`, not a prefix
+in the serving bucket. Bind the staging subject only to that bucket, using
+the same private-access and retention controls; do not grant a rehearsal VM
+access to the serving bucket. Use separate, bounded VM authorizations and
+order budgets for staging and production. The serving cache rejects staging
+directory overrides. A PASS marker is not proof of public trust or of a live
+rollout. Check the public chain and SPKI independently, exercise cold replica
+recovery, and verify the exact measured release before shifting traffic.

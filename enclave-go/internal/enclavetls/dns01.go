@@ -36,6 +36,7 @@ import (
 	"crypto/ecdsa"
 	"crypto/elliptic"
 	"crypto/rand"
+	"crypto/tls"
 	"crypto/x509"
 	"encoding/json"
 	"encoding/pem"
@@ -172,6 +173,41 @@ func StartDNS01Renewer(ctx context.Context, cfg DNS01Config) {
 			}
 		}
 	}()
+}
+
+// PreissueDNS01 runs once without a serving listener. Never place a replacement
+// production order for an existing entry; fail closed on any bad cache read.
+func PreissueDNS01(ctx context.Context, cfg DNS01Config, renewRehearsal bool) error {
+	if cfg.Cache == nil || cfg.Provider == nil || cfg.DNSName == "" || len(cfg.FallbackCAs) != 0 {
+		return errors.New("invalid single-issuer configuration")
+	}
+	check := func() error {
+		raw, err := cfg.Cache.Get(ctx, cfg.DNSName)
+		if err != nil {
+			return err
+		}
+		pair, err := tls.X509KeyPair(raw, raw)
+		if err != nil {
+			return errors.New("invalid single-issuer cached key pair")
+		}
+		leaf, err := x509.ParseCertificate(pair.Certificate[0])
+		if err != nil || leaf.VerifyHostname(cfg.DNSName) != nil || time.Now().Before(leaf.NotBefore) || !time.Now().Before(leaf.NotAfter) {
+			return errors.New("invalid single-issuer cached certificate")
+		}
+		return nil
+	}
+	err := check()
+	if renewRehearsal {
+		if cfg.DirectoryURL != "https://acme-staging-v02.api.letsencrypt.org/directory" || err != nil {
+			return errors.New("renewal requires an existing rehearsal certificate")
+		}
+	} else if err == nil || !errors.Is(err, autocert.ErrCacheMiss) {
+		return err
+	}
+	if err := runDNS01Orders(ctx, cfg); err != nil {
+		return err
+	}
+	return check()
 }
 
 // maybeRenewDNS01 inspects the cert currently in Cache and runs a
@@ -380,6 +416,16 @@ func runDNS01Order(ctx context.Context, cfg DNS01Config, ca DNS01CA) error {
 		if err != nil {
 			return fmt.Errorf("acme get authorization: %w", err)
 		}
+		if authz.Identifier.Type != "dns" || authz.Identifier.Value != cfg.DNSName || authz.Wildcard {
+			return errors.New("acme: unexpected authorization identifier")
+		}
+		switch authz.Status {
+		case acme.StatusValid:
+			continue // The CA reused this account's existing authorization.
+		case acme.StatusPending:
+		default:
+			return fmt.Errorf("acme: authorization is %q", authz.Status)
+		}
 		var chal *acme.Challenge
 		for _, c := range authz.Challenges {
 			if c.Type == "dns-01" {
@@ -434,6 +480,16 @@ func runDNS01Order(ctx context.Context, cfg DNS01Config, ca DNS01CA) error {
 		}
 	}
 
+	if order.Status != acme.StatusReady {
+		ready, err := client.WaitOrder(ctx, order.URI)
+		if err != nil {
+			return fmt.Errorf("acme wait for ready order: %w", err)
+		}
+		if ready.Status != acme.StatusReady {
+			return fmt.Errorf("acme: expected ready order, got %q", ready.Status)
+		}
+	}
+
 	// 4. Generate cert key + CSR. The cert private key is freshly
 	// generated for every issuance — autocert does the same. The key
 	// only lives outside the enclave inside the CMEK-encrypted Cache
@@ -451,7 +507,7 @@ func runDNS01Order(ctx context.Context, cfg DNS01Config, ca DNS01CA) error {
 	}
 
 	// 5. Finalize: LE returns the issued cert chain.
-	der, _, err := client.CreateOrderCert(ctx, order.FinalizeURL, csr, true)
+	der, _, err := client.CreateCertFromOrder(ctx, order, csr, true)
 	if err != nil {
 		return fmt.Errorf("acme finalize: %w", err)
 	}
