@@ -38,6 +38,12 @@ learned from a running gateway, or turn off attested bootstrap.
    descriptor and recipient decrypt on that regional key. Provision the named
    ciphertext-only bucket with least-privilege object access; no plaintext
    imports, no legacy key/account reuse, no broad grant to other buckets.
+   The parent role also has an explicit deny on all other Secrets Manager
+   reads. A resource policy on a descriptor cannot override that deny.
+   Match both descriptor ARNs (including their generated suffixes) against
+   the independent creation receipts and the live parent policy before
+   launching a candidate. If a descriptor is recreated, review the new ARN;
+   do not wildcard the suffix or restore legacy secret access.
 
 ## Before traffic
 

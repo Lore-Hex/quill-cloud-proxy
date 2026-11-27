@@ -7,7 +7,9 @@
       "Action": "secretsmanager:GetSecretValue",
       "NotResource": [
         "arn:aws:secretsmanager:eu-west-1:330422590279:secret:quill/attested-bootstrap-v2-??????",
-        "arn:aws:secretsmanager:eu-west-3:330422590279:secret:quill/attested-bootstrap-v2-??????"
+        "arn:aws:secretsmanager:eu-west-3:330422590279:secret:quill/attested-bootstrap-v2-??????",
+        "arn:aws:secretsmanager:eu-west-1:330422590279:secret:quill/tls-cache-recipient-v1-ZE1qiN",
+        "arn:aws:secretsmanager:eu-west-3:330422590279:secret:quill/tls-cache-recipient-v1-OohLtW"
       ]
     },
     {
