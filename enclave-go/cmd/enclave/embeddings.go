@@ -46,6 +46,11 @@ func serveEmbeddings(
 		return
 	}
 	req.IdempotencyKey = idempotencyKey
+	ctx = trustedrouter.WithRequestPrivacy(ctx, req.Model, nil, req.Provider)
+	if trustedrouter.ConfidentialOnly(ctx) && !trEnabled {
+		writeOpenAIError(conn, 503, "Private route authorization unavailable.", "server_error", "private_route_unavailable", "")
+		return
+	}
 	if req.SessionID == "" {
 		req.SessionID = attribution.SessionID
 	}

@@ -24,6 +24,7 @@ import (
 	"strings"
 
 	"github.com/Lore-Hex/quill-cloud-proxy/enclave-go/internal/directproviders"
+	"github.com/Lore-Hex/quill-cloud-proxy/enclave-go/internal/trustedrouter"
 	qtypes "github.com/Lore-Hex/quill-cloud-proxy/enclave-go/internal/types"
 )
 
@@ -175,6 +176,9 @@ func (m *multiClient) InvokeStreaming(
 	options ...InvokeOptions,
 ) error {
 	option := firstOptions(options)
+	if !trustedrouter.PrivateDispatchAllowed(ctx, option.Provider, option.Model, option.UpstreamModel, option.UsageType, option.ProviderAPIKey != "") {
+		return fmt.Errorf("llm: private dispatch not approved")
+	}
 	provider := normalizeDirectProvider(option.Provider)
 	// A cloud provider's BYOK route carries the workspace's own credential;
 	// it must never reach a managed client built on TrustedRouter's.

@@ -60,6 +60,9 @@ func (c *Client) PrepareSpendLeaseAdmission(
 	}
 	// Confidential requests require the synchronous endpoint privacy filter,
 	// even if a future local routing snapshot supports more provider options.
+	if req != nil {
+		ctx = WithRequestPrivacy(ctx, req.Model, req.Models, req.Provider)
+	}
 	if ConfidentialOnly(ctx) {
 		if req == nil {
 			return nil, ValidateHostRouting(ctx, nil)

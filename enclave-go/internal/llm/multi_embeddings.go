@@ -6,6 +6,7 @@ import (
 	"context"
 	"fmt"
 
+	"github.com/Lore-Hex/quill-cloud-proxy/enclave-go/internal/trustedrouter"
 	qtypes "github.com/Lore-Hex/quill-cloud-proxy/enclave-go/internal/types"
 )
 
@@ -19,7 +20,11 @@ func (m *multiClient) InvokeEmbedding(
 	req *qtypes.EmbeddingRequest,
 	options ...InvokeOptions,
 ) (*qtypes.EmbeddingResponse, error) {
-	provider := normalizeDirectProvider(firstOptions(options).Provider)
+	option := firstOptions(options)
+	if !trustedrouter.PrivateDispatchAllowed(ctx, option.Provider, option.Model, option.UpstreamModel, option.UsageType, option.ProviderAPIKey != "") {
+		return nil, fmt.Errorf("llm: private embedding dispatch not approved")
+	}
+	provider := normalizeDirectProvider(option.Provider)
 	if client := m.direct[provider]; client != nil {
 		return client.InvokeEmbedding(ctx, req, options...)
 	}
