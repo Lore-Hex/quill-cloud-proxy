@@ -26,8 +26,10 @@ run "legacy_permissions_cannot_return_with_default_variables" {
     condition = jsondecode(aws_iam_role_policy.parent.policy).Statement[0].Effect == "Deny" && jsondecode(aws_iam_role_policy.parent.policy).Statement[0].Action == "secretsmanager:GetSecretValue" && toset(jsondecode(aws_iam_role_policy.parent.policy).Statement[0].NotResource) == toset([
       "arn:aws:secretsmanager:eu-west-1:330422590279:secret:quill/attested-bootstrap-v2-??????",
       "arn:aws:secretsmanager:eu-west-3:330422590279:secret:quill/attested-bootstrap-v2-??????",
+      "arn:aws:secretsmanager:eu-west-1:330422590279:secret:quill/tls-cache-recipient-v1-ZE1qiN",
+      "arn:aws:secretsmanager:eu-west-3:330422590279:secret:quill/tls-cache-recipient-v1-OohLtW",
     ])
-    error_message = "An accidental extra IAM grant must not restore plaintext-secret reads."
+    error_message = "Only the regional ciphertext bundles and the two exact wrapped TLS descriptors may escape the explicit read deny. Recreated descriptors must fail closed."
   }
   assert {
     condition = jsondecode(aws_iam_role_policy.parent.policy).Statement[1].Effect == "Deny" && toset(jsondecode(aws_iam_role_policy.parent.policy).Statement[1].Action) == toset(["kms:Decrypt", "kms:ReEncrypt*"]) && toset(jsondecode(aws_iam_role_policy.parent.policy).Statement[1].Resource) == toset([
