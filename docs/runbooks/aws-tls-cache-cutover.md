@@ -39,6 +39,20 @@ unreviewed pin in it, or turn off attested bootstrap to get a green check.
 
 ## Before traffic
 
+- The parent image is not inside the EIF. The reviewed cutover manifest is
+  `tools/aws-secrets/tls-cache-parent.json`. Its `parent_tree` identifies the
+  complete archived Git build context (`parent/`); the OCI digest identifies the
+  single-platform linux/amd64 image, not its config or the archive. This first
+  archive was built from commit `d63fe26e9f3ba699eba1790302c926c6904eda81`.
+  Preserve the archive's digest when publishing to each regional `quill-parent`
+  registry. The release checks both registries and both serving parent pins
+  before taking a reservation, and repeats the check before generating each
+  template. Changing the parent source or encountering a different serving
+  digest requires a new reviewed plan. Do not substitute the pump image or a tag.
+  A parent change still requires review of the **actual** template diff. If
+  the diffs differ by region, use the reviewed Paris hash for
+  `template_diff_sha256` and the independently reviewed Dublin hash for
+  `dublin_template_diff_sha256`. Neither input authorizes any other diff.
 - Verify both descriptor and parent relay revisions, CI on the exact release
   commit, and independent EIF/PCR0 reproduction. Do not infer AWS measurement
   from GCP. Only the reviewed non-debug PCR may enter the TLS key policies.

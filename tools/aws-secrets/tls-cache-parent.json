@@ -1,0 +1,8 @@
+{
+  "parent_tree": "96ea5c3e8bc181384e050d211c36067235bc0b32",
+  "image": "sha256:f81ec8a9a3d8195168f7ef3bbdc61733a4d700b183c0d09d82ed590a20bbd7d7",
+  "from": {
+    "eu-west-1": "sha256:4e9fa3b1d5458f1e54eb233164f0ac45b0169afd515a863521b3e702a3a6d80c",
+    "eu-west-3": "sha256:4e9fa3b1d5458f1e54eb233164f0ac45b0169afd515a863521b3e702a3a6d80c"
+  }
+}

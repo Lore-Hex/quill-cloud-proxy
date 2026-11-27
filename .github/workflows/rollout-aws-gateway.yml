@@ -56,6 +56,11 @@ on:
         required: false
         default: ""
         type: string
+      dublin_template_diff_sha256:
+        description: "Only if Dublin's reviewed template diff has a different sha256 from Paris"
+        required: false
+        default: ""
+        type: string
       kms_wait_minutes:
         description: "How long to wait for the reviewed KMS widen apply (max 230)"
         required: true
@@ -127,6 +132,7 @@ jobs:
           set -euo pipefail
           for region in eu-west-3 eu-west-1; do
             python3 tools/aws_gateway_rollout.py serving --region "$region" --out "$RUNNER_TEMP/serving-$region.json"
+            python3 tools/aws_tls_parent.py --source "$RELEASE_SHA" --region "$region" --serving "$RUNNER_TEMP/serving-$region.json"
           done
           {
             echo "## AWS gateway rollout preflight"
@@ -239,11 +245,12 @@ jobs:
         run: |
           set -euo pipefail
           for region in eu-west-3 eu-west-1; do
+            parent="$(python3 tools/aws_tls_parent.py --source "$RELEASE_SHA" --region "$region" --serving "$RUNNER_TEMP/serving-$region.json")"
             AWS_REGION="$region" \
             AWS_EIF_MANIFEST="$RUNNER_TEMP/release/manifest.json" \
             AWS_EIF_SIGNATURE="$RUNNER_TEMP/release/manifest.json.bundle" \
             AWS_EIF_SOURCE_COMMIT="$RELEASE_SHA" \
-            AWS_PARENT_IMAGE_DIGEST="$(jq -r .parent_digest "$RUNNER_TEMP/serving-$region.json")" \
+            AWS_PARENT_IMAGE_DIGEST="$parent" \
             AWS_PARENT_PUMP_IMAGE_DIGEST="$(jq -r .pump_digest "$RUNNER_TEMP/serving-$region.json")" \
             CANDIDATE_TEMPLATE_ONLY=1 \
               bash tools/deploy-aws-nitro.sh --phase compute
@@ -502,11 +509,12 @@ jobs:
       - name: "Paris: generate the numbered candidate template only"
         run: |
           set -euo pipefail
+          parent="$(python3 tools/aws_tls_parent.py --source "$RELEASE_SHA" --region eu-west-3 --serving "$RUNNER_TEMP/serving-eu-west-3.json")"
           AWS_REGION=eu-west-3 \
           AWS_EIF_MANIFEST="$RUNNER_TEMP/release/manifest.json" \
           AWS_EIF_SIGNATURE="$RUNNER_TEMP/release/manifest.json.bundle" \
           AWS_EIF_SOURCE_COMMIT="$RELEASE_SHA" \
-          AWS_PARENT_IMAGE_DIGEST="$(jq -r .parent_digest "$RUNNER_TEMP/serving-eu-west-3.json")" \
+          AWS_PARENT_IMAGE_DIGEST="$parent" \
           AWS_PARENT_PUMP_IMAGE_DIGEST="$(jq -r .pump_digest "$RUNNER_TEMP/serving-eu-west-3.json")" \
           CANDIDATE_TEMPLATE_ONLY=1 \
             bash tools/deploy-aws-nitro.sh --apply --phase compute 2>&1 | tee "$RUNNER_TEMP/compute-eu-west-3.log"
@@ -574,11 +582,12 @@ jobs:
       - name: "Dublin: generate the numbered candidate template only"
         run: |
           set -euo pipefail
+          parent="$(python3 tools/aws_tls_parent.py --source "$RELEASE_SHA" --region eu-west-1 --serving "$RUNNER_TEMP/serving-eu-west-1.json")"
           AWS_REGION=eu-west-1 \
           AWS_EIF_MANIFEST="$RUNNER_TEMP/release/manifest.json" \
           AWS_EIF_SIGNATURE="$RUNNER_TEMP/release/manifest.json.bundle" \
           AWS_EIF_SOURCE_COMMIT="$RELEASE_SHA" \
-          AWS_PARENT_IMAGE_DIGEST="$(jq -r .parent_digest "$RUNNER_TEMP/serving-eu-west-1.json")" \
+          AWS_PARENT_IMAGE_DIGEST="$parent" \
           AWS_PARENT_PUMP_IMAGE_DIGEST="$(jq -r .pump_digest "$RUNNER_TEMP/serving-eu-west-1.json")" \
           CANDIDATE_TEMPLATE_ONLY=1 \
             bash tools/deploy-aws-nitro.sh --apply --phase compute 2>&1 | tee "$RUNNER_TEMP/compute-eu-west-1.log"
@@ -587,7 +596,7 @@ jobs:
           echo "CANDIDATE_VERSION_DUBLIN=$version" >> "$GITHUB_ENV"
       - name: "Dublin: the candidate changes only the EIF identity (or a reviewed diff)"
         env:
-          ACCEPT_DIFF: ${{ inputs.template_diff_sha256 }}
+          ACCEPT_DIFF: ${{ inputs.dublin_template_diff_sha256 || inputs.template_diff_sha256 }}
         run: |
           set -euo pipefail
           python3 tools/aws_gateway_rollout.py compare-template --region eu-west-1 \
