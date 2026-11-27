@@ -43,7 +43,7 @@ QUILL_ACME_DNS_GCP_PROJECT="quill-cloud-proxy"
 QUILL_ACME_DNS_MANAGED_ZONE="trustedrouter-com"
 
 cd "$REPO_ROOT"
-docker buildx build --no-cache \
+bash tools/build-aws-eif-image.sh \
   --platform "$PLATFORM" \
   --file enclave-go/Dockerfile.enclave \
     --build-arg "SOURCE_REVISION=$(git -C "$REPO_ROOT" rev-parse HEAD)" \
@@ -52,8 +52,6 @@ docker buildx build --no-cache \
   --build-arg "QUILL_API_HOST=${QUILL_API_HOST}" \
   --build-arg "QUILL_ACME_DNS_GCP_PROJECT=${QUILL_ACME_DNS_GCP_PROJECT}" \
   --build-arg "QUILL_ACME_DNS_MANAGED_ZONE=${QUILL_ACME_DNS_MANAGED_ZONE}" \
-  --provenance=false \
-  --load \
   -t "$IMAGE_TAG" \
   enclave-go
 
