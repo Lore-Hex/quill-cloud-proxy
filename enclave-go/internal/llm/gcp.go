@@ -179,6 +179,9 @@ func (c *gcpClient) InvokeStreaming(
 	out io.Writer,
 	options ...InvokeOptions,
 ) error {
+	if err := rejectFixedProviderPrivate(ctx, req); err != nil {
+		return err
+	}
 	if req != nil && req.Response != nil && req.Response.NativeCustom != nil {
 		return responsesInputError("native custom tools on a Vertex client")
 	}

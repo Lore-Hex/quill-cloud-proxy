@@ -709,6 +709,9 @@ func validateResponsesWebSearchPrivacy(req *types.OpenAIChatRequest) *adapter.Ad
 	if req == nil {
 		return nil
 	}
+	if trustedrouter.ConfidentialOnly(trustedrouter.WithRequestPrivacy(context.Background(), req.Model, req.Models, req.Provider)) {
+		return webSearchPrivacyError()
+	}
 	if isWebSearchRestrictedModel(req.Model) {
 		return webSearchPrivacyError()
 	}

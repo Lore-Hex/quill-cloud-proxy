@@ -29,7 +29,7 @@ func TestEmbeddingAuthorizationPreservesProviderRestrictions(t *testing.T) {
 		if json.Unmarshal(raw, &body) != nil || body.Provider.MinPrivacy != "confidential" || len(body.Provider.Only) != 1 || body.Provider.Only[0] != "privatemode" || body.Provider.AllowFallbacks == nil || *body.Provider.AllowFallbacks {
 			t.Error("provider restrictions lost")
 		}
-		_, _ = io.WriteString(w, `{"data":{"authorization_id":"a1","model":"qwen/qwen3-embedding-4b","provider":"privatemode","usage_type":"Credits"}}`)
+		_, _ = io.WriteString(w, `{"data":{"authorization_id":"a1","model":"qwen/qwen3-embedding-4b","upstream_model":"qwen3-embedding-4b","provider":"privatemode","usage_type":"Credits"}}`)
 	}))
 	defer server.Close()
 	client := New(server.URL, "internal", server.Client())
