@@ -1056,6 +1056,7 @@ func (c *Client) AuthorizeWithRoute(ctx context.Context, bearer string, req *qty
 	if err != nil {
 		return nil, err
 	}
+	ctx = WithRequestPrivacy(ctx, req.Model, req.Models, req.Provider)
 	body := chatAuthorizeBody(c, lookupHash, idempotencyKey, gatewayMintedIdempotencyKey(req, idempotencyKey, minted), req, routeType)
 	if c.asyncNegotiate && asyncCohort(routeType) && len(c.asyncTicketKeys) > 0 {
 		ctx = context.WithValue(ctx, asyncModeKey{}, "async-v1")
@@ -1180,6 +1181,7 @@ func (c *Client) authorizeEmbeddingsWithRoute(ctx context.Context, bearer string
 	if inputTokens < 1 {
 		inputTokens = 1
 	}
+	ctx = WithRequestPrivacy(ctx, req.Model, nil, req.Provider)
 	if strings.TrimSpace(routeType) == "" {
 		routeType = "embeddings"
 	}

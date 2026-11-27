@@ -203,7 +203,18 @@ func invokeOpenAICompatibleBYOKStreaming(
 	out io.Writer,
 	options InvokeOptions,
 ) error {
-	return invokeOpenAICompatibleBYOKStreamingWithClient(ctx, defaultHTTPClient(), provider, req, body, out, options)
+	httpc, err := byokTransport(provider, tinfoilHTTPClientGetter)
+	if err != nil {
+		return err
+	}
+	return invokeOpenAICompatibleBYOKStreamingWithClient(ctx, httpc, provider, req, body, out, options)
+}
+
+func byokTransport(provider string, verifiedTinfoil func() (*http.Client, error)) (*http.Client, error) {
+	if provider == "tinfoil" {
+		return verifiedTinfoil()
+	}
+	return defaultHTTPClient(), nil
 }
 
 func invokeOpenAICompatibleBYOKStreamingWithClient(

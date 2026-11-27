@@ -126,6 +126,9 @@ func (c *anthropicClient) InvokeStreaming(
 	out io.Writer,
 	options ...InvokeOptions,
 ) error {
+	if err := rejectFixedProviderPrivate(ctx, req); err != nil {
+		return err
+	}
 	if handled, err := invokeBYOKStreaming(ctx, req, body, out, firstOptions(options)); handled {
 		return err
 	}

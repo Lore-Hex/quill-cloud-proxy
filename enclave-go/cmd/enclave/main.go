@@ -1281,6 +1281,12 @@ func serveOneRequest(
 		return
 	}
 	req.NormalizeRouterModelAliases()
+	ctx = trustedrouter.WithRequestPrivacy(ctx, req.Model, req.Models, req.Provider)
+	confidential = trustedrouter.ConfidentialOnly(ctx)
+	if confidential && (!trEnabled || bool(req.Deidentify) || req.Model == polyphemusModel) {
+		writeOpenAIError(conn, 400, "No verified private path for this operation.", "invalid_request_error", "private_route_unsupported", "")
+		return
+	}
 	callerSafetyDigest := req.CallerSafetyDigest
 	req.CallerSafetyDigest = ""
 	if req.Deidentify {
@@ -2689,6 +2695,11 @@ func serveMessages(
 	}
 	req.IdempotencyKey = idempotencyKey
 	applyAttributionHeaders(req, attribution)
+	ctx = trustedrouter.WithRequestPrivacy(ctx, req.Model, req.Models, req.Provider)
+	if trustedrouter.ConfidentialOnly(ctx) && (trGateway == nil || !trGateway.Enabled()) {
+		writeAnthropicError(conn, 503, "Private route authorization unavailable.")
+		return
+	}
 	if err := validateOrObserveRequestMetadata(req, requestLogID); err != nil {
 		writeAnthropicError(conn, 400, err.Error())
 		return

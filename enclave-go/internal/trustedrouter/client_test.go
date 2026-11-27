@@ -566,7 +566,7 @@ func TestAuthorizePreservesFailClosedMinPrivacy(t *testing.T) {
 		if err := json.Unmarshal(body, &payload); err != nil {
 			t.Fatalf("decode body: %v", err)
 		}
-		_, _ = io.WriteString(w, `{"data":{"authorization_id":"auth_private","workspace_id":"ws_1","api_key_hash":"key_1","model":"z-ai/glm-5.2","endpoint_id":"z-ai/glm-5.2@tinfoil/prepaid","provider":"tinfoil","usage_type":"Credits","limit_usage_type":"Credits","route_candidates":[]}}`)
+		_, _ = io.WriteString(w, `{"data":{"authorization_id":"auth_private","workspace_id":"ws_1","api_key_hash":"key_1","model":"z-ai/glm-5.3","upstream_model":"glm-5-3","endpoint_id":"z-ai/glm-5.3@tinfoil/prepaid","provider":"tinfoil","usage_type":"Credits","limit_usage_type":"Credits","route_candidates":[]}}`)
 	}))
 	defer server.Close()
 
