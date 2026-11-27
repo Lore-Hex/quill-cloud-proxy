@@ -132,8 +132,12 @@ func oaepAlgorithm(n cmsNode) bool {
 }
 
 func appendCMSOctets(dst []byte, n cmsNode) ([]byte, error) {
+	return appendBoundedOctets(dst, n, 48)
+}
+
+func appendBoundedOctets(dst []byte, n cmsNode, max int) ([]byte, error) {
 	if n.tag == 4 || n.tag == 128 {
-		if len(n.body) > 48-len(dst) {
+		if len(n.body) > max-len(dst) {
 			return nil, errCMS
 		}
 		return append(dst, n.body...), nil
@@ -146,7 +150,7 @@ func appendCMSOctets(dst []byte, n cmsNode) ([]byte, error) {
 			return nil, errCMS
 		}
 		var err error
-		dst, err = appendCMSOctets(dst, child)
+		dst, err = appendBoundedOctets(dst, child, max)
 		if err != nil {
 			return nil, err
 		}
@@ -155,6 +159,10 @@ func appendCMSOctets(dst []byte, n cmsNode) ([]byte, error) {
 }
 
 func parseCMS(data []byte) (wrapped, iv, ciphertext []byte, err error) {
+	return parseBoundedCMS(data, 48, 48)
+}
+
+func parseBoundedCMS(data []byte, minLen, maxLen int) (wrapped, iv, ciphertext []byte, err error) {
 	if len(data) == 0 || len(data) > MaxCMSBytes {
 		return nil, nil, nil, errCMS
 	}
@@ -181,8 +189,8 @@ func parseCMS(data []byte) (wrapped, iv, ciphertext []byte, err error) {
 		(content.children[2].tag != 128 && content.children[2].tag != 160) {
 		return nil, nil, nil, errCMS
 	}
-	ciphertext, err = appendCMSOctets(nil, content.children[2])
-	if err != nil || len(ciphertext) != 48 {
+	ciphertext, err = appendBoundedOctets(nil, content.children[2], maxLen)
+	if err != nil || len(ciphertext) < minLen || len(ciphertext)%aes.BlockSize != 0 {
 		return nil, nil, nil, errCMS
 	}
 	return r.children[3].body, algorithm.children[1].body, ciphertext, nil
@@ -191,11 +199,27 @@ func parseCMS(data []byte) (wrapped, iv, ciphertext []byte, err error) {
 // UnwrapCMS returns only a 32-byte AES key, never arbitrary KMS plaintext. The
 // caller must verify the signed outer bundle first; CMS is not a KMS signature.
 func UnwrapCMS(data []byte, private *rsa.PrivateKey) ([]byte, error) {
-	if private == nil || private.N == nil || private.N.BitLen() != 2048 || private.E != 65537 {
-		return nil, errCMS
-	}
 	wrapped, iv, ciphertext, err := parseCMS(data)
 	if err != nil {
+		return nil, errCMS
+	}
+	plain, err := decryptCMSBlocks(wrapped, iv, ciphertext, private)
+	if err != nil {
+		return nil, errCMS
+	}
+	defer clear(plain)
+	valid := 1
+	for _, b := range plain[32:] {
+		valid &= subtle.ConstantTimeByteEq(b, 16)
+	}
+	if valid != 1 {
+		return nil, errCMS
+	}
+	return bytes.Clone(plain[:32]), nil
+}
+
+func decryptCMSBlocks(wrapped, iv, ciphertext []byte, private *rsa.PrivateKey) ([]byte, error) {
+	if private == nil || private.N == nil || private.N.BitLen() != 2048 || private.E != 65537 {
 		return nil, errCMS
 	}
 	contentKey, err := rsa.DecryptOAEP(sha256.New(), rand.Reader, private, wrapped, nil)
@@ -208,15 +232,6 @@ func UnwrapCMS(data []byte, private *rsa.PrivateKey) ([]byte, error) {
 		return nil, errCMS
 	}
 	plain := make([]byte, len(ciphertext))
-	defer clear(plain)
 	cipher.NewCBCDecrypter(block, iv).CryptBlocks(plain, ciphertext)
-	// Exactly 32 bytes of content require one full 16-byte padding block.
-	valid := 1
-	for _, b := range plain[32:] {
-		valid &= subtle.ConstantTimeByteEq(b, 16)
-	}
-	if valid != 1 {
-		return nil, errCMS
-	}
-	return bytes.Clone(plain[:32]), nil
+	return plain, nil
 }

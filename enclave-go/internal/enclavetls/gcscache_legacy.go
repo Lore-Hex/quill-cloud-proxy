@@ -1,4 +1,4 @@
-//go:build !cloud_gcp
+//go:build !cloud_gcp && !cloud_aws
 
 package enclavetls
 

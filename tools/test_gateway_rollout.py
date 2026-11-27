@@ -397,11 +397,12 @@ class WorkflowGuardTests(unittest.TestCase):
         self.assertEqual(generator, [
             "set -euo pipefail",
             "for region in eu-west-3 eu-west-1; do",
+            '  parent="$(python3 tools/aws_tls_parent.py --source "$RELEASE_SHA" --region "$region" --serving "$RUNNER_TEMP/serving-$region.json")"',
             '  AWS_REGION="$region" \\',
             '  AWS_EIF_MANIFEST="$RUNNER_TEMP/release/manifest.json" \\',
             '  AWS_EIF_SIGNATURE="$RUNNER_TEMP/release/manifest.json.bundle" \\',
             '  AWS_EIF_SOURCE_COMMIT="$RELEASE_SHA" \\',
-            '  AWS_PARENT_IMAGE_DIGEST="$(jq -r .parent_digest "$RUNNER_TEMP/serving-$region.json")" \\',
+            '  AWS_PARENT_IMAGE_DIGEST="$parent" \\',
             '  AWS_PARENT_PUMP_IMAGE_DIGEST="$(jq -r .pump_digest "$RUNNER_TEMP/serving-$region.json")" \\',
             "  CANDIDATE_TEMPLATE_ONLY=1 \\",
             "    bash tools/deploy-aws-nitro.sh --phase compute",
@@ -414,7 +415,7 @@ class WorkflowGuardTests(unittest.TestCase):
                               f'"$RUNNER_TEMP/compute-{region}.log"')
             self.assertEqual(
                 [line.strip().replace(region, "$region") for line in real[1:call]],
-                [line.strip().replace('"$region"', "$region") for line in generator[2:9]], city)
+                [line.strip().replace('"$region"', "$region") for line in generator[2:10]], city)
         self.assertEqual(job["steps"][12]["run"].splitlines(), [
             "set -euo pipefail",
             "for region in eu-west-3 eu-west-1; do",

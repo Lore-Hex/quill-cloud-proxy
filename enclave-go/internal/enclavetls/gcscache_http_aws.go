@@ -49,6 +49,8 @@ var dns01Tunnels = []vsockhttp.Tunnel{
 	// any instance where parent units and enclave image skew during a roll.
 	// The new feature takes the new port; live maps do not move.
 	{Host: "dns.googleapis.com", CID: 3, Port: 8069},
+	{Host: "dns.google", CID: 3, Port: 8140},
+	{Host: "cloudflare-dns.com", CID: 3, Port: 8141},
 }
 
 func newCacheHTTPClient() *http.Client {
