@@ -577,12 +577,19 @@ func TestAProviderThatCannotWaitFallsBackToTheResolver(t *testing.T) {
 // offering dns-01. The challenge itself is refused, so a test can tell whether
 // the order got past the wait. Signatures are not checked.
 func fakeACME(t *testing.T) *httptest.Server {
+	return fakeACMEWith(t, nil)
+}
+
+func fakeACMEWith(t *testing.T, handle func(http.ResponseWriter, *http.Request, string) bool) *httptest.Server {
 	t.Helper()
 	var srv *httptest.Server
 	srv = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		u := srv.URL
 		w.Header().Set("Replay-Nonce", "nonce")
 		w.Header().Set("Content-Type", "application/json")
+		if handle != nil && handle(w, r, u) {
+			return
+		}
 		switch r.URL.Path {
 		case "/directory":
 			_, _ = io.WriteString(w, `{"newNonce":"`+u+`/nonce","newAccount":"`+u+`/account","newOrder":"`+u+`/order"}`)

@@ -176,6 +176,23 @@ var responseWriteTimeout = 30 * time.Second
 var errBodyTooLarge = errors.New("request body too large")
 
 func main() {
+	switch mode := os.Getenv("QUILL_TLS_MODE"); mode {
+	case "gcp-acme-preissue", "gcp-acme-rehearse", "gcp-acme-rehearse-renew", "gcp-acme-rehearse-read":
+		if err := issueGCPLeaf(mode, os.Getenv("QUILL_API_HOST")); err != nil {
+			fmt.Fprintln(os.Stderr, "acme_single_issuer:", err)
+			os.Exit(1)
+		}
+		fmt.Println("acme_single_issuer: PASS")
+		return
+	}
+	if os.Getenv("QUILL_TLS_MODE") == "gcp-acme-custody-check" {
+		if err := checkGCPCacheCustody(); err != nil {
+			fmt.Fprintln(os.Stderr, "acme_custody_check:", err)
+			os.Exit(1)
+		}
+		fmt.Println("acme_custody_check: PASS")
+		return
+	}
 	configureRerank()
 	if maple.HelperEntrypoint() {
 		return
@@ -479,15 +496,16 @@ func main() {
 					continue
 				}
 				isSharedName := i > 0
+				dnsProvider, challengeRecord := dns01ProviderForHost(dnsName)
 				enclavetls.StartDNS01Renewer(ctx, enclavetls.DNS01Config{
-					ChallengeRecord: apihosts.ChallengeRecord(dnsName, strings.TrimSpace(os.Getenv("QUILL_ACME_DNS_MANAGED_ZONE"))),
+					ChallengeRecord: challengeRecord,
 					DNSName:         dnsName,
 					AllowBootstrap:  isSharedName,
 					// Cloud DNS when the zone is configured, Cloudflare
 					// otherwise. trustedrouter.com is served by Cloud DNS, so
 					// without this the DNS-01 fallback cannot touch the zone
 					// that matters and only looks configured.
-					Provider:           dns01Provider(),
+					Provider:           dnsProvider,
 					Email:              os.Getenv("QUILL_ACME_EMAIL"),
 					DirectoryURL:       os.Getenv("QUILL_ACME_DIRECTORY_URL"),
 					Cache:              acmeCache,
@@ -509,9 +527,12 @@ func main() {
 				// DNS deployment logged "zone=" and looked misconfigured while
 				// being correct.
 				providerName, zone := "cloudflare", boot.CloudflareZoneID
-				if p := dns01Provider(); p != nil {
+				if p := dnsProvider; p != nil {
 					providerName = p.Name()
 					zone = strings.TrimSpace(os.Getenv("QUILL_ACME_DNS_MANAGED_ZONE"))
+					if cloud, ok := p.(*enclavetls.CloudDNSProvider); ok {
+						zone = cloud.ManagedZone
+					}
 				}
 				fmt.Fprintf(os.Stderr,
 					"enclavetls.dns01_renewer_started host=%s provider=%s zone=%s\n",

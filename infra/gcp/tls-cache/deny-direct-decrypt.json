@@ -1,0 +1,21 @@
+{
+  "displayName": "Restrict gateway TLS cache wrapping and unwrapping",
+  "rules": [
+    {
+      "denyRule": {
+        "deniedPrincipals": ["principalSet://goog/public:all"],
+        "exceptionPrincipals": [
+          "principalSet://iam.googleapis.com/projects/44325983244/locations/global/workloadIdentityPools/trustedrouter-batch/*"
+        ],
+        "deniedPermissions": [
+          "cloudkms.googleapis.com/cryptoKeyVersions.useToDecrypt",
+          "cloudkms.googleapis.com/cryptoKeyVersions.useToEncrypt"
+        ],
+        "denialCondition": {
+          "title": "Dedicated TLS ring tag only",
+          "expression": "resource.matchTagId('tagKeys/281483783688164', 'tagValues/281476950601434')"
+        }
+      }
+    }
+  ]
+}

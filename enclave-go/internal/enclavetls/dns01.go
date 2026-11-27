@@ -36,6 +36,8 @@ import (
 	"crypto/ecdsa"
 	"crypto/elliptic"
 	"crypto/rand"
+	"crypto/sha256"
+	"crypto/tls"
 	"crypto/x509"
 	"encoding/json"
 	"encoding/pem"
@@ -56,6 +58,9 @@ import (
 // time. All fields are required unless noted. Created in cmd/enclave/
 // main.go from BootstrapData + the env-baked ACME config.
 type DNS01Config struct {
+	// Set only by PreissueDNS01. Serving renewers retain their existing
+	// cloud-specific transports, including the AWS vsock-only path.
+	preissue bool
 	// ChallengeRecord optionally names a pre-provisioned DNS-01 CNAME target.
 	// The CA still validates DNSName and follows its public challenge delegation.
 	ChallengeRecord    string
@@ -172,6 +177,46 @@ func StartDNS01Renewer(ctx context.Context, cfg DNS01Config) {
 			}
 		}
 	}()
+}
+
+// CachedDNS01PublicPin validates the cached leaf and matching private key. It
+// returns only a public fingerprint and performs no DNS or ACME operation.
+func CachedDNS01PublicPin(ctx context.Context, cache autocert.Cache, host string) (string, error) {
+	raw, err := cache.Get(ctx, host)
+	if err != nil {
+		return "", err
+	}
+	pair, err := tls.X509KeyPair(raw, raw)
+	if err != nil {
+		return "", errors.New("invalid single-issuer cached key pair")
+	}
+	leaf, err := x509.ParseCertificate(pair.Certificate[0])
+	if err != nil || leaf.VerifyHostname(host) != nil || time.Now().Before(leaf.NotBefore) || !time.Now().Before(leaf.NotAfter) {
+		return "", errors.New("invalid single-issuer cached certificate")
+	}
+	return fmt.Sprintf("%x", sha256.Sum256(leaf.RawSubjectPublicKeyInfo)), nil
+}
+
+// PreissueDNS01 runs once without a serving listener. Never place a replacement
+// production order for an existing entry; fail closed on any bad cache read.
+func PreissueDNS01(ctx context.Context, cfg DNS01Config, renewRehearsal bool) error {
+	if cfg.Cache == nil || cfg.Provider == nil || cfg.DNSName == "" || len(cfg.FallbackCAs) != 0 {
+		return errors.New("invalid single-issuer configuration")
+	}
+	_, err := CachedDNS01PublicPin(ctx, cfg.Cache, cfg.DNSName)
+	if renewRehearsal {
+		if cfg.DirectoryURL != "https://acme-staging-v02.api.letsencrypt.org/directory" || err != nil {
+			return errors.New("renewal requires an existing rehearsal certificate")
+		}
+	} else if err == nil || !errors.Is(err, autocert.ErrCacheMiss) {
+		return err
+	}
+	cfg.preissue = true
+	if err := runDNS01Orders(ctx, cfg); err != nil {
+		return err
+	}
+	_, err = CachedDNS01PublicPin(ctx, cfg.Cache, cfg.DNSName)
+	return err
 }
 
 // maybeRenewDNS01 inspects the cert currently in Cache and runs a
@@ -380,6 +425,16 @@ func runDNS01Order(ctx context.Context, cfg DNS01Config, ca DNS01CA) error {
 		if err != nil {
 			return fmt.Errorf("acme get authorization: %w", err)
 		}
+		if authz.Identifier.Type != "dns" || authz.Identifier.Value != cfg.DNSName || authz.Wildcard {
+			return errors.New("acme: unexpected authorization identifier")
+		}
+		switch authz.Status {
+		case acme.StatusValid:
+			continue // The CA reused this account's existing authorization.
+		case acme.StatusPending:
+		default:
+			return fmt.Errorf("acme: authorization is %q", authz.Status)
+		}
 		var chal *acme.Challenge
 		for _, c := range authz.Challenges {
 			if c.Type == "dns-01" {
@@ -405,6 +460,7 @@ func runDNS01Order(ctx context.Context, cfg DNS01Config, ca DNS01CA) error {
 		if err != nil {
 			return fmt.Errorf("%s TXT add: %w", provider.Name(), err)
 		}
+		published := time.Now()
 		// Best-effort cleanup of the TXT record whether the challenge
 		// passes or fails. LE rate-limits the same TXT being seen
 		// across consecutive orders, so leaving stale records around
@@ -425,12 +481,27 @@ func runDNS01Order(ctx context.Context, cfg DNS01Config, ca DNS01CA) error {
 		if err := waitForChallengeTXT(ctx, provider, recordID, recordName, token); err != nil {
 			return fmt.Errorf("dns propagation: %w", err)
 		}
+		if cfg.preissue {
+			if err := preissuePublicTXT(ctx, published, challengeRecordName(cfg.DNSName), recordName, token); err != nil {
+				return fmt.Errorf("public DNS propagation: %w", err)
+			}
+		}
 
 		if _, err := client.Accept(ctx, chal); err != nil {
 			return fmt.Errorf("acme accept challenge: %w", err)
 		}
 		if _, err := client.WaitAuthorization(ctx, authz.URI); err != nil {
 			return fmt.Errorf("acme wait authorization: %w", err)
+		}
+	}
+
+	if order.Status != acme.StatusReady {
+		ready, err := client.WaitOrder(ctx, order.URI)
+		if err != nil {
+			return fmt.Errorf("acme wait for ready order: %w", err)
+		}
+		if ready.Status != acme.StatusReady {
+			return fmt.Errorf("acme: expected ready order, got %q", ready.Status)
 		}
 	}
 
@@ -451,7 +522,7 @@ func runDNS01Order(ctx context.Context, cfg DNS01Config, ca DNS01CA) error {
 	}
 
 	// 5. Finalize: LE returns the issued cert chain.
-	der, _, err := client.CreateOrderCert(ctx, order.FinalizeURL, csr, true)
+	der, _, err := client.CreateCertFromOrder(ctx, order, csr, true)
 	if err != nil {
 		return fmt.Errorf("acme finalize: %w", err)
 	}

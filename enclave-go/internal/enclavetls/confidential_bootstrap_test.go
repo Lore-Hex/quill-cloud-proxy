@@ -1,9 +1,11 @@
 package enclavetls
 
 import (
+	"bytes"
 	"context"
 	"crypto/ecdsa"
 	"crypto/rand"
+	"crypto/sha256"
 	"crypto/tls"
 	"crypto/x509"
 	"fmt"
@@ -16,6 +18,109 @@ import (
 
 	"golang.org/x/crypto/acme/autocert"
 )
+
+func TestTLS13OnlyUsesPreissuedECDSALeaf(t *testing.T) {
+	const host = "primary.gateway.test"
+	issued, err := NewSelfSigned(host)
+	if err != nil {
+		t.Fatal(err)
+	}
+	blob, err := encodeAutocertEntry(issued.Certificate.PrivateKey.(*ecdsa.PrivateKey), issued.Certificate.Certificate)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cache := autocert.DirCache(t.TempDir())
+	if err := cache.Put(context.Background(), host, blob); err != nil {
+		t.Fatal(err)
+	}
+	pin, err := CachedDNS01PublicPin(context.Background(), cache, host)
+	leaf, parseErr := x509.ParseCertificate(issued.Certificate.Certificate[0])
+	if parseErr != nil || err != nil || pin != fmt.Sprintf("%x", sha256.Sum256(leaf.RawSubjectPublicKeyInfo)) {
+		t.Fatal("cached public fingerprint did not match the issued certificate")
+	}
+	srv, err := NewACMEWithCache(host, "", "http://127.0.0.1:1", cache, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	hello := &tls.ClientHelloInfo{
+		ServerName: host, SupportedVersions: []uint16{tls.VersionTLS13},
+		SupportedCurves: []tls.CurveID{tls.CurveP256}, SignatureSchemes: []tls.SignatureScheme{tls.ECDSAWithP256AndSHA256},
+		CipherSuites: []uint16{tls.TLS_AES_128_GCM_SHA256},
+	}
+	cert, err := srv.tlsConfig.GetCertificate(hello)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(cert.Certificate[0], issued.Certificate.Certificate[0]) || len(hello.CipherSuites) != 1 {
+		t.Fatal("wrong cached leaf or modified client cipher suites")
+	}
+}
+
+func TestPreissueDoesNotReorderOrOverwriteCorruptEntries(t *testing.T) {
+	ctx := context.Background()
+	const host = "issuer.gateway.test"
+	cache := autocert.DirCache(t.TempDir())
+	cfg := DNS01Config{DNSName: host, Cache: cache, Provider: &recordingProvider{}, DirectoryURL: "https://production.example/directory"}
+	var calls int
+	withStubOrder(t, func(context.Context, DNS01Config, DNS01CA) error {
+		calls++
+		key, err := NewSelfSigned(host)
+		if err != nil {
+			return err
+		}
+		blob, err := encodeAutocertEntry(key.Certificate.PrivateKey.(*ecdsa.PrivateKey), key.Certificate.Certificate)
+		if err != nil {
+			return err
+		}
+		return cache.Put(ctx, host, blob)
+	})
+	for i := 0; i < 2; i++ {
+		if err := PreissueDNS01(ctx, cfg, false); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := PreissueDNS01(ctx, cfg, true); err == nil {
+		t.Fatal("forced production renewal")
+	}
+	if err := cache.Put(ctx, host, []byte("bad entry")); err != nil {
+		t.Fatal(err)
+	}
+	if err := PreissueDNS01(ctx, cfg, false); err == nil || calls != 1 {
+		t.Fatalf("bad cached entry overwritten: %v, %d orders", err, calls)
+	}
+}
+
+func TestRenewalReusesAuthorizationAndPollsOriginalOrder(t *testing.T) {
+	var polls atomic.Int32
+	server := fakeACMEWith(t, func(w http.ResponseWriter, r *http.Request, base string) bool {
+		switch r.URL.Path {
+		case "/authz/1":
+			fmt.Fprint(w, `{"status":"valid","identifier":{"type":"dns","value":"api-aws.trustedrouter.com"}}`)
+		case "/order/1":
+			if polls.Add(1) == 1 {
+				fmt.Fprint(w, `{"status":"ready"}`)
+			} else {
+				fmt.Fprintf(w, `{"status":"valid","certificate":%q}`, base+"/cert")
+			}
+		case "/finalize/1":
+			// A processing response need not repeat the original Location header.
+			fmt.Fprint(w, `{"status":"processing"}`)
+		case "/cert":
+			w.WriteHeader(http.StatusForbidden)
+			fmt.Fprint(w, `{"type":"urn:ietf:params:acme:error:unauthorized","detail":"fixture certificate endpoint reached"}`)
+		default:
+			return false
+		}
+		return true
+	})
+	p := &recordingProvider{}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	err := runDNS01Order(ctx, DNS01Config{DNSName: "api-aws.trustedrouter.com", Email: "ops@example.test", Cache: autocert.DirCache(t.TempDir()), HTTPClient: server.Client(), Provider: p}, DNS01CA{DirectoryURL: server.URL + "/directory"})
+	if err == nil || !strings.Contains(err.Error(), "fixture certificate endpoint reached") || polls.Load() != 2 || len(p.added) != 0 {
+		t.Fatalf("renewal did not reach certificate download without DNS mutation: %v, polls=%d, writes=%d", err, polls.Load(), len(p.added))
+	}
+}
 
 func TestDNS01RateLimitedPrimaryReachesFallback(t *testing.T) {
 	var orders atomic.Int32

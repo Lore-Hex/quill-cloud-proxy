@@ -11,18 +11,10 @@
 // challenge cert. Same idea works for the issued cert too: one replica
 // renews, all replicas see the result on next read.
 //
-// Bucket: gs://quill-acme-cache, single-region us-central1, encrypted at
-// rest with KMS key `acme-cache-envelope`. Workload SA holds objectAdmin
-// on this bucket only. EU enclaves pay one trans-Atlantic round trip per
-// cache op; that's only on cert renewal (~60 day cadence), never per
-// request.
-//
-// Trust property note: CMEK gives "Google contractually doesn't decrypt
-// without a court order"; it does NOT give "only the attested PCR0 image
-// can decrypt." A future hardening step is to envelope-encrypt cache
-// entries with a KMS key locked to the workload's image digest, the way
-// the byok-envelope key is. Until then this is the same trust posture as
-// our Spanner/Bigtable CMEK setup.
+// This is the object transport. Bucket encryption at rest does not limit
+// access to attested workloads. The GCP build wraps this transport with
+// sealedACMECache and uses federated workload credentials on both services.
+// The legacy non-GCP transport has no such property.
 package enclavetls
 
 import (
@@ -58,11 +50,7 @@ const (
 	cloudDNSScope = "https://www.googleapis.com/auth/ndev.clouddns.readwrite"
 )
 
-// NewGCSCache returns an autocert.Cache backed by GCS. Callers should pass
-// the bucket name only (no `gs://` prefix). The workload's GCE SA must
-// hold storage.objectAdmin on the bucket, and the bucket should have CMEK
-// encryption configured at rest — handled by infra (deploy script /
-// terraform), not by this code.
+// newObjectCache is the storage transport, not a key-custody boundary.
 //
 // HTTP clients come from newCacheHTTPClient / newTokenHTTPClient which
 // are build-tag-specialized:
@@ -71,18 +59,18 @@ const (
 //     (oauth2.googleapis.com + storage.googleapis.com — see
 //     gcscache_http_aws.go). Nitro has no NIC; without this the
 //     GCS read would block forever / fail DNS.
-func NewGCSCache(bucket string) autocert.Cache {
-	return &gcsCache{
-		bucket:     bucket,
-		httpClient: newCacheHTTPClient(),
-		tokens:     &gcpTokenSource{httpClient: newTokenHTTPClient()},
-	}
+func newObjectCache(bucket string, tokens cacheAccessTokenSource) *gcsCache {
+	return &gcsCache{bucket: bucket, httpClient: newCacheHTTPClient(), tokens: tokens}
+}
+
+type cacheAccessTokenSource interface {
+	Token(context.Context) (string, error)
 }
 
 type gcsCache struct {
 	bucket     string
 	httpClient *http.Client
-	tokens     *gcpTokenSource
+	tokens     cacheAccessTokenSource
 }
 
 func (c *gcsCache) Get(ctx context.Context, key string) ([]byte, error) {
@@ -105,10 +93,13 @@ func (c *gcsCache) Get(ctx context.Context, key string) ([]byte, error) {
 		return nil, autocert.ErrCacheMiss
 	}
 	if resp.StatusCode != http.StatusOK {
-		body, _ := io.ReadAll(io.LimitReader(resp.Body, 1024))
-		return nil, fmt.Errorf("gcscache: get status %d body=%s", resp.StatusCode, body)
+		return nil, fmt.Errorf("gcscache: get status %d", resp.StatusCode)
 	}
-	return io.ReadAll(resp.Body)
+	data, err := io.ReadAll(io.LimitReader(resp.Body, maxACMEObjectBytes+1))
+	if len(data) > maxACMEObjectBytes {
+		return nil, errors.New("gcscache: object too large")
+	}
+	return data, err
 }
 
 func (c *gcsCache) Put(ctx context.Context, key string, data []byte) error {
@@ -129,8 +120,7 @@ func (c *gcsCache) Put(ctx context.Context, key string, data []byte) error {
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusCreated {
-		body, _ := io.ReadAll(io.LimitReader(resp.Body, 1024))
-		return fmt.Errorf("gcscache: put status %d body=%s", resp.StatusCode, body)
+		return fmt.Errorf("gcscache: put status %d", resp.StatusCode)
 	}
 	return nil
 }
@@ -155,8 +145,7 @@ func (c *gcsCache) Delete(ctx context.Context, key string) error {
 	case http.StatusNoContent, http.StatusOK, http.StatusNotFound:
 		return nil
 	default:
-		body, _ := io.ReadAll(io.LimitReader(resp.Body, 1024))
-		return fmt.Errorf("gcscache: delete status %d body=%s", resp.StatusCode, body)
+		return fmt.Errorf("gcscache: delete status %d", resp.StatusCode)
 	}
 }
 

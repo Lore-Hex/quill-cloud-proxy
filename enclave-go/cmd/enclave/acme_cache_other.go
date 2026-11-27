@@ -1,4 +1,4 @@
-//go:build !cloud_azure
+//go:build !cloud_azure && !cloud_gcp
 
 package main
 
