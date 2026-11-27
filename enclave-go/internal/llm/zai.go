@@ -39,7 +39,7 @@ func (c *zaiClient) InvokeStreaming(
 	out io.Writer,
 	options ...InvokeOptions,
 ) error {
-	if err := rejectFixedProviderPrivate(ctx, req); err != nil {
+	if err := rejectFixedProviderPrivate(ctx, req, "zai", firstOptions(options)); err != nil {
 		return err
 	}
 	if handled, err := invokeBYOKStreaming(ctx, req, body, out, firstOptions(options)); handled {

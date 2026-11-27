@@ -13,6 +13,7 @@ type requestFloorKey struct{}
 // WithRequestPrivacy carries the strongest requested floor through subcalls,
 // even when a dispatcher constructs a fresh request or chooses a fallback.
 func WithRequestPrivacy(ctx context.Context, model string, models []string, provider *qtypes.ProviderRouting) context.Context {
+	ctx = withProviderPin(ctx, provider)
 	if TrustedOnly(ctx) {
 		return ctx
 	}
@@ -96,6 +97,19 @@ func validateConfidentialAuthorization(ctx context.Context, authorization *Autho
 	if authorization != nil && authorization.CustomModel != nil {
 		return &ControlPlaneError{StatusCode: 410, Type: "model_not_supported", Message: "Custom models and user-provided models have been retired."}
 	}
+	if HasProviderPin(ctx) {
+		deny := &ControlPlaneError{StatusCode: 503, Type: "provider_pin_unavailable", Message: "No route matches the requested provider list."}
+		if authorization == nil || !ProviderPinAllows(ctx, authorization.Provider) ||
+			(authorization.BYOKProvider != "" && authorization.BYOKProvider != authorization.Provider) {
+			return deny
+		}
+		for _, candidate := range authorization.RouteCandidates {
+			if !ProviderPinAllows(ctx, candidate.Provider) ||
+				(candidate.BYOKProvider != "" && candidate.BYOKProvider != candidate.Provider) {
+				return deny
+			}
+		}
+	}
 	if ConfidentialOnly(ctx) {
 		deny := &ControlPlaneError{StatusCode: 503, Type: "confidential_route_unavailable", Message: "No verified Confidential route is available."}
 		if TrustedOnly(ctx) {
@@ -135,6 +149,9 @@ func privateRouteAllowed(ctx context.Context, provider, model, upstream, usage, 
 // PrivateDispatchAllowed checks the actual adapter arguments, including a
 // resolved BYOK credential, again on every dispatch attempt.
 func PrivateDispatchAllowed(ctx context.Context, provider, model, upstream, usage string, hasKey bool) bool {
+	if !ProviderPinAllows(ctx, provider) {
+		return false
+	}
 	if !ConfidentialOnly(ctx) {
 		return true
 	}

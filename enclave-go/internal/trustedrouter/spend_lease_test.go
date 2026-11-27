@@ -404,7 +404,7 @@ func TestSpendLeaseLocalAdmissionOffPreservesRawTierEcho(t *testing.T) {
 					t.Fatal(err)
 				}
 				bodies = append(bodies, body)
-				data := map[string]any{"authorization_id": "ordinary", "workspace_id": claims.WorkspaceID}
+				data := map[string]any{"authorization_id": "ordinary", "workspace_id": claims.WorkspaceID, "provider": "anthropic"}
 				if len(bodies) == 1 {
 					data["spend_lease"] = spendlease.Response{Token: &token, LeaseStatus: "active"}
 				}

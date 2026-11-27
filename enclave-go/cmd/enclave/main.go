@@ -1283,6 +1283,10 @@ func serveOneRequest(
 	req.NormalizeRouterModelAliases()
 	ctx = trustedrouter.WithRequestPrivacy(ctx, req.Model, req.Models, req.Provider)
 	confidential = trustedrouter.ConfidentialOnly(ctx)
+	if trustedrouter.HasProviderPin(ctx) && (!trEnabled || bool(req.Deidentify) || req.Model == polyphemusModel) {
+		writeOpenAIError(conn, 400, "Provider pinning is unavailable for this operation.", "invalid_request_error", "provider_pin_unsupported", "provider.only")
+		return
+	}
 	if confidential && (!trEnabled || bool(req.Deidentify) || req.Model == polyphemusModel) {
 		writeOpenAIError(conn, 400, "No verified private path for this operation.", "invalid_request_error", "private_route_unsupported", "")
 		return

@@ -21,6 +21,9 @@ func (m *multiClient) InvokeEmbedding(
 	options ...InvokeOptions,
 ) (*qtypes.EmbeddingResponse, error) {
 	option := firstOptions(options)
+	if req != nil && req.Provider != nil && len(req.Provider.Only) > 0 {
+		ctx = trustedrouter.WithRequestPrivacy(ctx, req.Model, nil, req.Provider)
+	}
 	if !trustedrouter.PrivateDispatchAllowed(ctx, option.Provider, option.Model, option.UpstreamModel, option.UsageType, option.ProviderAPIKey != "") {
 		return nil, fmt.Errorf("llm: private embedding dispatch not approved")
 	}
