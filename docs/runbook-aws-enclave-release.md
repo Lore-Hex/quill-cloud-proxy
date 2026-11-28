@@ -1,5 +1,22 @@
 # Releasing an AWS Nitro enclave
 
+**Build provenance.** For releases after `bb108edc8b839675fbfabcc4c9de4fba66d69618`,
+the protected publisher produces a GitHub-hosted SLSA v1 attestation naming
+both the exact EIF file and its Cosign-signed measurement manifest. The
+attesting job receives only their hashes; it neither uploads the EIF to
+GitHub nor logs into AWS. The regional objects may exist before the attestation
+is issued, but the rollout preflight must verify it before reserving a cloud
+or admitting the candidate. Download the authenticated manifest and run:
+
+```bash
+bash tools/verify-aws-release-provenance.sh "$RELEASE_SHA" manifest.json
+```
+
+A missing statement, incorrect signer, branch, source, or either subject
+digest stops admission. Older signed builds are explicitly identified as
+historical, not retroactively claimed as SLSA-attested. Build provenance,
+independent rebuilds and live hardware measurements are different checks.
+
 Build once in protected-main CI, admit the signed measurement, then boot.
 An instance is never a source of a new admission value. TLS terminates inside
 the enclave; do not add an ALB, CDN, or other prompt TLS terminator.

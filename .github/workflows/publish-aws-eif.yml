@@ -129,3 +129,36 @@ jobs:
             cat "$RUNNER_TEMP/aws-eif/manifest.json" "$RUNNER_TEMP/aws-eif/published.jsonl"
             echo '```'
           } >> "$GITHUB_STEP_SUMMARY"
+      - name: Export verified subject digests, not the EIF
+        id: subjects
+        run: |
+          set -euo pipefail
+          cd "$RUNNER_TEMP/aws-eif"
+          echo "manifest=$(sha256sum manifest.json | cut -d' ' -f1)" >> "$GITHUB_OUTPUT"
+          echo "eif=$(sha256sum enclave.eif | cut -d' ' -f1)" >> "$GITHUB_OUTPUT"
+    outputs:
+      manifest: ${{ steps.subjects.outputs.manifest }}
+      eif: ${{ steps.subjects.outputs.eif }}
+
+  build-provenance:
+    needs: publish
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      id-token: write
+      attestations: write
+    steps:
+      - name: Bind the measured release subjects to this protected build
+        env:
+          MANIFEST: ${{ needs.publish.outputs.manifest }}
+          EIF: ${{ needs.publish.outputs.eif }}
+        run: |
+          set -euo pipefail
+          [[ "$MANIFEST" =~ ^[0-9a-f]{64}$ && "$EIF" =~ ^[0-9a-f]{64}$ ]]
+          printf '%s  manifest.json\n%s  enclave.eif\n' "$MANIFEST" "$EIF" > "$RUNNER_TEMP/subjects.sha256"
+      - name: Issue SLSA build provenance without cloud credentials
+        uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.2.2
+        with:
+          subject-checksums: ${{ runner.temp }}/subjects.sha256
+          create-storage-record: false
