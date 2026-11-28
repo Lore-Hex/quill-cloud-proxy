@@ -22,6 +22,7 @@ bash tools/build-aws-eif-image.sh --platform linux/amd64 --file enclave-go/Docke
   --build-arg QUILL_ACME_DNS_GCP_PROJECT=quill-cloud-proxy \
   --build-arg QUILL_ACME_DNS_MANAGED_ZONE=trustedrouter-com --tag "$tag" enclave-go
 image=$(docker image inspect --format '{{.Id}}' "$tag")
+printf 'Rebuilt image %s; signed image %s\n' "$image" "$(jq -r '.enclave_image_id' "$tmp/approved.json")"
 jq -e --arg image "$image" '.enclave_image_id == $image' "$tmp/approved.json" >/dev/null
 builder="nitro-qualification:$recipe"
 docker build --no-cache --platform linux/amd64 -t "$builder" "$root/tools/nitro-builder"

@@ -10,7 +10,8 @@ permissions:
 
 jobs:
   build:
-    runs-on: ubuntu-24.04
+    # Match the publisher's containerd image-store identity semantics.
+    runs-on: ubuntu-26.04
     timeout-minutes: 90
     strategy:
       fail-fast: false
