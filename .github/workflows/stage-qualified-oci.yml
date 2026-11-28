@@ -36,47 +36,34 @@ jobs:
     uses: ./.github/workflows/qualify-release-oci.yml
     with:
       source: ${{ inputs.source }}
-  stage-gcp:
+  attest:
     needs: qualify
     runs-on: ubuntu-24.04
     permissions:
       contents: read
       id-token: write
       attestations: write
+    strategy:
+      matrix:
+        plane: [gcp, azure]
     steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          persist-credentials: false
-      - uses: Lore-Hex/quill-cloud-proxy/.github/actions/gcp-auth@582cbdee7b7023cfeb915b62a7f635aa1e4662b1
-        with:
-          workload_identity_provider: projects/44325983244/locations/global/workloadIdentityPools/github-actions/providers/github
-          service_account: tr-deploy@quill-cloud-proxy.iam.gserviceaccount.com
-      - uses: Lore-Hex/quill-cloud-proxy/.github/actions/setup-gcloud@582cbdee7b7023cfeb915b62a7f635aa1e4662b1
-      - uses: ./.github/actions/stage-qualified-oci
-        with:
-          plane: gcp
-          source: ${{ inputs.source }}
-          expected: ${{ needs.qualify.outputs.gcp }}
-  stage-azure:
-    environment: azure-gateway-rollout
-    needs: qualify
-    runs-on: ubuntu-24.04
-    permissions:
-      contents: read
-      id-token: write
-      attestations: write
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          persist-credentials: false
-      - name: Log in to the existing Azure release identity
+      - name: Record only the independently verified digest
         env:
-          AZURE_CLIENT_ID: ${{ vars.AZURE_GATEWAY_ROLLOUT_CLIENT_ID }}
-          AZURE_TENANT_ID: 2abe2fae-5c28-491d-af5a-6255b33e534e
-          AZURE_SUBSCRIPTION_ID: 2fc83893-ca6c-48e4-b090-8860fba33d33
-        run: bash tools/azure-oidc-login.sh
-      - uses: ./.github/actions/stage-qualified-oci
+          PLANE: ${{ matrix.plane }}
+          SOURCE: ${{ inputs.source }}
+          EXPECTED: ${{ needs.qualify.outputs[matrix.plane] }}
+        run: |
+          set -euo pipefail
+          [[ "$EXPECTED" =~ ^sha256:[0-9a-f]{64}$ && "$SOURCE" =~ ^[a-f0-9]{40}$ ]]
+          jq -nS --arg plane "$PLANE" --arg source "$SOURCE" --arg digest "$EXPECTED" \
+            '{plane:$plane,source:$source,digest:$digest}' > "$RUNNER_TEMP/$PLANE-stage.json"
+          cat "$RUNNER_TEMP/$PLANE-stage.json" >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.2.2
         with:
-          plane: azure
-          source: ${{ inputs.source }}
-          expected: ${{ needs.qualify.outputs.azure }}
+          subject-path: ${{ runner.temp }}/${{ matrix.plane }}-stage.json
+          create-storage-record: false
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: ${{ matrix.plane }}-build-receipt
+          path: ${{ runner.temp }}/${{ matrix.plane }}-stage.json
+          if-no-files-found: error
