@@ -164,7 +164,12 @@ IMAGE_TAG="${IMAGE_TAG:-azure-$(date -u +%Y%m%d%H%M%S)}"
 # The skr sidecar. Version 2.7 is what was measured serving /attest/maa and
 # /key/release on localhost:8080 (NOT 8284, which appears in some samples and
 # which this sidecar refuses).
-SKR_IMAGE="${SKR_IMAGE:-mcr.microsoft.com/aci/skr:2.7}"
+readonly REVIEWED_SKR_IMAGE='mcr.microsoft.com/aci/skr@sha256:b584057158c1f700edcdb0b3122628541da450acac48bd80512ee88c34f7649d'
+if [ "${SKR_IMAGE:-$REVIEWED_SKR_IMAGE}" != "$REVIEWED_SKR_IMAGE" ]; then
+  echo "SKR_IMAGE differs from the reviewed Microsoft sidecar digest; change the release source instead" >&2
+  exit 2
+fi
+SKR_IMAGE="$REVIEWED_SKR_IMAGE"
 # MEASURED SURFACE. The sidecar's command and its SkrSideCarArgs are part of the
 # container-group definition, so they feed the CCE policy hash. If the hardware
 # run these defaults were taken from used a different spelling, override rather
@@ -1445,9 +1450,23 @@ PY
 # ~/.azure is mounted so the tool can reach a private ACR; `az acr login` first
 # so the DAEMON has the pull credential (the tool pulls through docker, not
 # through the CLI).
+validate_template_skr() {
+  python3 - "$WORKDIR/template.json" "$SKR_CONTAINER_NAME" "$SKR_IMAGE" <<'PY' || die "Saved template must use the reviewed Microsoft sidecar digest; re-render it."
+import json, sys
+with open(sys.argv[1]) as handle:
+    groups = [r for r in json.load(handle)["resources"] if r.get("type", "").lower() == "microsoft.containerinstance/containergroups"]
+if len(groups) != 1:
+    raise SystemExit("expected one confidential container group")
+images = [c["properties"]["image"] for c in groups[0]["properties"]["containers"] if c.get("name") == sys.argv[2]]
+if images != [sys.argv[3]]:
+    raise SystemExit("missing, duplicate, or unreviewed secure key release sidecar")
+PY
+}
+
 phase_policy() {
   require_tool docker
   [ -f "$WORKDIR/template.json" ] || die "run the template phase first (no $WORKDIR/template.json)"
+  validate_template_skr
 
   log "phase policy: generating the CCE policy (this pulls the image; it takes a few minutes)"
   az_rw acr login --name "$ACR"
@@ -1578,6 +1597,7 @@ phase_policy() {
 # crash.
 phase_bind() {
   [ -f "$WORKDIR/cce-policy-hash.txt" ] || die "run the policy phase first (no $WORKDIR/cce-policy-hash.txt)"
+  validate_template_skr
   local hash
   hash="$(cat "$WORKDIR/cce-policy-hash.txt")"
 
@@ -2033,6 +2053,7 @@ if raw:
 # phase: deploy
 # ---------------------------------------------------------------------------
 phase_deploy() {
+  validate_template_skr
   # Check the submitted artifact, not only today's environment generator.
   python3 - "$WORKDIR/template.json" <<'PY' || die "REFUSING TO DEPLOY: regenerate the template and policy with the shared Azure hostname."
 import json, sys
