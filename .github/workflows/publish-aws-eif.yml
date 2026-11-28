@@ -23,6 +23,14 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+      - name: Verify reviewed parent tree before building the EIF
+        run: |
+          set -euo pipefail
+          tree=$(git rev-parse "$GITHUB_SHA:parent")
+          jq -e --arg tree "$tree" '.parent_tree == $tree' tools/aws-secrets/tls-cache-parent.json >/dev/null || {
+            echo "::error::AWS relay source changed; review its immutable image before EIF publication."
+            exit 1
+          }
       - name: Rebuild workload and converter from public source
         run: bash tools/rebuild-nitro-release.sh
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2

@@ -157,6 +157,31 @@ class WorkflowTests(unittest.TestCase):
             self.assertIn(key, steps[check]["run"])
         self.assertIn("diff -u", steps[check]["run"])
 
+    def test_independent_job_refuses_an_unreviewed_parent_before_build(self):
+        import yaml
+        root = Path(__file__).resolve().parents[1]
+        steps = yaml.safe_load((root / ".github/workflows/publish-aws-eif.yml").read_text())["jobs"]["independent"]["steps"]
+        names = [s.get("name") for s in steps]
+        i = names.index("Verify reviewed parent tree before building the EIF")
+        self.assertLess(i, names.index("Rebuild workload and converter from public source"))
+        self.assertNotIn("continue-on-error", steps[i])
+        with tempfile.TemporaryDirectory() as directory:
+            repo = Path(directory)
+            (repo / "parent").mkdir()
+            (repo / "parent" / "file").write_text("one")
+            subprocess.run(["git", "init", "-q"], cwd=repo, check=True)
+            subprocess.run(["git", "add", "parent"], cwd=repo, check=True)
+            subprocess.run(["git", "-c", "user.name=test", "-c", "user.email=test@example.invalid",
+                            "commit", "-qm", "fixture"], cwd=repo, check=True)
+            tree = subprocess.check_output(["git", "rev-parse", "HEAD:parent"], cwd=repo, text=True).strip()
+            plan = repo / "tools/aws-secrets/tls-cache-parent.json"
+            plan.parent.mkdir(parents=True)
+            for approved, passed in [(tree, True), ("0" * 40, False)]:
+                plan.write_text(json.dumps({"parent_tree": approved}))
+                result = subprocess.run(["env", "GITHUB_SHA=HEAD", "bash", "-c", steps[i]["run"]],
+                                        cwd=repo, capture_output=True)
+                self.assertEqual(result.returncode == 0, passed)
+
     def test_full_ci_gate_refuses_missing_pending_failed_or_wrong_source(self):
         import yaml
         root = Path(__file__).resolve().parents[1]
