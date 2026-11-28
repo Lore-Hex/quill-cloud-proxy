@@ -94,6 +94,7 @@ jobs:
     permissions:
       contents: read
       actions: read
+      attestations: read
       id-token: write
     outputs:
       pcr0: ${{ steps.release.outputs.pcr0 }}
@@ -127,6 +128,10 @@ jobs:
           set -euo pipefail
           python3 tools/aws_gateway_rollout.py fetch-release --source "$RELEASE_SHA" --out "$RUNNER_TEMP/release"
           echo "pcr0=$(jq -r .pcr0 "$RUNNER_TEMP/release/release.json")" >> "$GITHUB_OUTPUT"
+      - name: Verify SLSA provenance before any reservation or candidate admission
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: bash tools/verify-aws-release-provenance.sh "$RELEASE_SHA" "$RUNNER_TEMP/release/manifest.json"
       - name: Both fleets are healthy on one numbered template each
         run: |
           set -euo pipefail
