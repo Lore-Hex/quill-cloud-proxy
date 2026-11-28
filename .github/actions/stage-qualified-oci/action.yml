@@ -1,0 +1,34 @@
+name: Stage qualified regional image
+description: Copy the same-run artifact byte-for-byte and attest the registry receipt.
+inputs:
+  plane: {description: Cloud name, required: true}
+  source: {description: Exact release commit, required: true}
+  expected: {description: Independent manifest digest, required: true}
+runs:
+  using: composite
+  steps:
+    - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+      with:
+        name: oci-image-${{ inputs.plane }}
+        path: ${{ runner.temp }}/oci
+    - name: Verify, copy and read back the unchanged manifest
+      shell: bash
+      env:
+        PLANE: ${{ inputs.plane }}
+        SOURCE: ${{ inputs.source }}
+        EXPECTED: ${{ inputs.expected }}
+      run: |
+        set -euo pipefail
+        bash tools/stage-qualified-oci.sh "$PLANE" "$SOURCE" "$EXPECTED" "$RUNNER_TEMP/oci/image.tar" \
+          > "$RUNNER_TEMP/$PLANE-stage.json"
+        cat "$RUNNER_TEMP/$PLANE-stage.json" >> "$GITHUB_STEP_SUMMARY"
+    - name: Attest the receipt for the registry image
+      uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.2.2
+      with:
+        subject-path: ${{ runner.temp }}/${{ inputs.plane }}-stage.json
+        create-storage-record: false
+    - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+      with:
+        name: ${{ inputs.plane }}-registry-receipt
+        path: ${{ runner.temp }}/${{ inputs.plane }}-stage.json
+        if-no-files-found: error
