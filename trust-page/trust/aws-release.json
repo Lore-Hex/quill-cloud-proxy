@@ -1,19 +1,10 @@
 {
   "accepted_pcr0s": [
-    "27f557e68a9e63a8c248ecd343ef0d06aa409199e21cf73904a83915c5b0f08a5fcad83e724c84f8332d4c316b6f1abb",
     "ace56c346b1ac69f8227df9a538c14dc1f67b8d317b6ca45ff17eb4024957cc7a8219645508b921d171c1d813baa3991"
   ],
   "api_base_url": "https://api-aws.trustedrouter.com/v1",
   "attestation_format": "cose-sign1-nitro-attestation-document",
   "attestation_root": "https://aws-nitro-enclaves.amazonaws.com/AWS_NitroEnclaves_Root-G1.zip",
-  "candidate_eif": {
-    "manifest": "eif/b511114cd7303454791c5b33c5fd49623e302051/99ad194befad613e37fb4ba094fa0e652ec8de301dadb604cc3a0af1de6bb2a0/manifest.json",
-    "manifest_sha256": "e76748b79f7682ee5a782f752e36a97fed8e316d5feb689a5474880807652195",
-    "observed_serving": false,
-    "pcr0": "ace56c346b1ac69f8227df9a538c14dc1f67b8d317b6ca45ff17eb4024957cc7a8219645508b921d171c1d813baa3991",
-    "signing_identity": "https://github.com/Lore-Hex/quill-cloud-proxy/.github/workflows/publish-aws-eif.yml@refs/heads/main",
-    "source_commit": "b511114cd7303454791c5b33c5fd49623e302051"
-  },
   "data_policy": {
     "client_telemetry_content_free": true,
     "client_telemetry_disclosure": "https://trustedrouter.com/docs/telemetry",
@@ -21,12 +12,12 @@
     "prompt_output_storage": false
   },
   "measurement_type": "nitro-pcr0-sha384",
-  "observed_module_id": "i-07ed8214a187eaa7d-enc01a220783266ad5c",
-  "pcr0": "27f557e68a9e63a8c248ecd343ef0d06aa409199e21cf73904a83915c5b0f08a5fcad83e724c84f8332d4c316b6f1abb",
+  "observed_module_id": "i-00fdd0ebea42e36ee-enc01a223411a07ccfe",
+  "pcr0": "ace56c346b1ac69f8227df9a538c14dc1f67b8d317b6ca45ff17eb4024957cc7a8219645508b921d171c1d813baa3991",
   "platform": "aws-nitro-enclaves",
-  "release_state": "rolling",
+  "release_state": "current",
   "reproduce": "tools/verify-pcr0.sh",
-  "source_commit": "0b89178764b10ec6e19d2e2072b226b1c589f781",
+  "source_commit": "b511114cd7303454791c5b33c5fd49623e302051",
   "source_commit_provenance": "operator-asserted",
   "source_repo": "https://github.com/Lore-Hex/quill-cloud-proxy",
   "tls": {
