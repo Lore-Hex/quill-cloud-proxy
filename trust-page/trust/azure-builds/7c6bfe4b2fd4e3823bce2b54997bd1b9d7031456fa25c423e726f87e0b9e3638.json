@@ -1,0 +1,6 @@
+{
+  "hostdata": "7c6bfe4b2fd4e3823bce2b54997bd1b9d7031456fa25c423e726f87e0b9e3638",
+  "image_digest": "sha256:3a650e9ba99061805f23ae15d832934c9bb593fe566c3f02a38699ef5746e27d",
+  "origin_hostname": "quill-enclave-australiaeast.australiaeast.azurecontainer.io",
+  "source_commit": "efea558310ea66c74e6ea1c9748fd05dc6359fe7"
+}
