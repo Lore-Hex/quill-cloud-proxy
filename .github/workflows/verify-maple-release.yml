@@ -50,7 +50,7 @@ jobs:
           with open(os.environ['GITHUB_OUTPUT'], 'a') as out:
               out.write('status=' + value['status'] + '\nsource=' + value['source_commit'] + '\n')
           PY
-      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         if: github.event_name != 'pull_request'
         with:
           name: maple-candidate
@@ -113,7 +113,7 @@ jobs:
           with open(os.environ['GITHUB_OUTPUT'], 'a') as out:
               out.write('build=' + build + '\n')
           PY
-      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: maple-vendor-artifacts
           path: ${{ runner.temp }}/vendor-artifacts/
@@ -149,7 +149,7 @@ jobs:
         env:
           SOURCE: ${{ needs.acquire.outputs.build }}
         run: bash tools/reproduce-maple.sh "$RUNNER_TEMP/maple" "$SOURCE" "$RUNNER_TEMP/reproduced"
-      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: maple-reproduced-artifacts
           path: ${{ runner.temp }}/reproduced/
@@ -191,7 +191,7 @@ jobs:
           python3 tools/maple_policy.py verify --vendor "$RUNNER_TEMP/maple" --candidate candidate.json \
             --build "$BUILD" --artifacts "$RUNNER_TEMP/vendor-artifacts" --reproduced "$RUNNER_TEMP/reproduced" \
             --output evidence.json "${args[@]}"
-      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: maple-reproduction
           path: evidence.json
@@ -248,7 +248,7 @@ jobs:
           cargo +1.94.1 test --locked --workspace --lib --bins
           cargo +1.94.1 run --locked --bin trustedrouter-maple-pilot -- attest > "$GITHUB_WORKSPACE/valid-pin.json"
           cargo +1.94.1 run --locked --bin trustedrouter-maple-pilot -- reject-pin > "$GITHUB_WORKSPACE/wrong-pin.json"
-      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: maple-pin-checks
           path: |
