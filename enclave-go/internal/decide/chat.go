@@ -181,9 +181,18 @@ var DevProviders = []string{
 //     without the caller's reasoning allowance. Baseten answered 529
 //     (overloaded) to every request that day, at any effort, so its leg is
 //     not yet measured on 5.3 Fast.
-//   - Llama 3.3 70B (lev-1.0) on SambaNova 371-450 ms with the tightest tail
-//     (worst case 565 ms), then Parasail 927 ms, Together 1576 ms: 29/29. It
-//     does not reason, so there is no effort to set. Novita answered 429.
+//   - Llama 3.3 70B (lev-1.0) does not reason, so there is no effort to set.
+//     It was SambaNova 371-450 ms (worst case 565 ms), then Parasail 927 ms,
+//     Together 1576 ms, until SambaNova and Together stopped serving the model
+//     in November 2026. Remeasured 2026-11-28 through the decide route with
+//     each host pinned, 8 tickets a pass, the host's own time read from the
+//     gateway's request_end upstream_ms: W&B 805 ms median with the tightest
+//     tail (853 ms worst of 13 sampled), Parasail about 950 ms (3 sampled, a
+//     3.4 s p90 end to end in one run), IO Intelligence and Scaleway close
+//     behind W&B end to end; every host scored every check. Scaleway was left
+//     out because it would raise the name's price by about 45%; Telnyx and
+//     AkashML were 1.8-2.1 s, and Tinfoil answered HTTP 502 to every request.
+//     Novita answered 429 in September.
 //
 // Rejected on the same evidence: openai/gpt-5-nano (hedges at "minimal" effort,
 // truncates its JSON at "low" because reasoning eats the token budget),
@@ -210,7 +219,7 @@ var (
 	gemma426BA4B    = NativeModel{Providers: []string{"nextbit", "wandb", "io-net"}, Temperature: &zeroTemperature, Format: FormatPrompt}
 	mercury3        = NativeModel{Providers: []string{"inception"}, ReasoningEffort: "none", Temperature: &zeroTemperature, Format: FormatPrompt}
 	glm53Fast       = NativeModel{Providers: []string{"fireworks", "baseten"}, ReasoningEffort: "low", Temperature: &zeroTemperature, Format: FormatPrompt}
-	llama33         = NativeModel{Providers: []string{"sambanova", "parasail", "together"}, Temperature: &zeroTemperature, Format: FormatPrompt}
+	llama33         = NativeModel{Providers: []string{"wandb", "parasail", "io-net"}, Temperature: &zeroTemperature, Format: FormatPrompt}
 )
 
 var NativeModels = map[string]NativeModel{

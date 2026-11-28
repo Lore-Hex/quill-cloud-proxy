@@ -88,10 +88,10 @@ var liveUpstream = map[string]string{
 	decide.GemmevModelID:                "gemma4:26b-a4b",
 	"inception/mercury-3":               "mercury-3",
 	"z-ai/glm-5.3-fast":                 "accounts/fireworks/routers/glm-5p3-fast",
-	"meta-llama/llama-3.3-70b-instruct": "Meta-Llama-3.3-70B-Instruct",
+	"meta-llama/llama-3.3-70b-instruct": "meta-llama/Llama-3.3-70B-Instruct",
 	decide.MevModelID:                   "mercury-3",
 	decide.ZevModelID:                   "accounts/fireworks/routers/glm-5p3-fast",
-	decide.LevModelID:                   "Meta-Llama-3.3-70B-Instruct",
+	decide.LevModelID:                   "meta-llama/Llama-3.3-70B-Instruct",
 }
 
 func liveCandidates(t *testing.T) []liveCandidate {

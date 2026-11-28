@@ -177,7 +177,7 @@ func TestNativeModelListIsPinned(t *testing.T) {
 		// The three fast ones, and the chat models behind them.
 		decide.MevModelID: "inception", "inception/mercury-3": "inception",
 		decide.ZevModelID: "fireworks,baseten", "z-ai/glm-5.3-fast": "fireworks,baseten",
-		decide.LevModelID: "sambanova,parasail,together", "meta-llama/llama-3.3-70b-instruct": "sambanova,parasail,together",
+		decide.LevModelID: "wandb,parasail,io-net", "meta-llama/llama-3.3-70b-instruct": "wandb,parasail,io-net",
 	}
 	// A name's reasoning setting and output format are part of what it
 	// promises (changing them ships a new version), so they are pinned
