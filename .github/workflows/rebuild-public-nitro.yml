@@ -1,0 +1,61 @@
+name: Independently rebuild signed Nitro release from public source
+on:
+  workflow_dispatch:
+    inputs:
+      source:
+        description: "Protected-main source commit from the signed manifest"
+        required: true
+        default: "0b89178764b10ec6e19d2e2072b226b1c589f781"
+      eif:
+        description: "Approved SHA-256 of the EIF"
+        required: true
+        default: "c91d2272459f68f8155590a6a3f4e9724a2b82bc54e4ca6fd0232d28490e9f3b"
+  pull_request:
+    paths:
+      - '.github/workflows/rebuild-public-nitro.yml'
+      - 'tools/aws_rebuild_evidence.py'
+      - 'tools/verify-pcr0.sh'
+      - 'tools/test_aws_rebuild_evidence.py'
+permissions:
+  contents: read
+
+jobs:
+  independent:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    strategy:
+      fail-fast: false
+      matrix:
+        replica: [1, 2]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: Lore-Hex/quill-cloud-proxy/.github/actions/cosign-install@582cbdee7b7023cfeb915b62a7f635aa1e4662b1
+        with:
+          cosign-release: v2.6.5
+      - name: Rebuild protected source with no cloud credentials
+        env:
+          SOURCE: ${{ inputs.source || '0b89178764b10ec6e19d2e2072b226b1c589f781' }}
+          EIF: ${{ inputs.eif || 'c91d2272459f68f8155590a6a3f4e9724a2b82bc54e4ca6fd0232d28490e9f3b' }}
+        run: |
+          set -euo pipefail
+          [[ "$SOURCE" =~ ^[0-9a-f]{40}$ && "$EIF" =~ ^[0-9a-f]{64}$ ]]
+          git merge-base --is-ancestor "$SOURCE" origin/main
+          export AWS_EIF_MANIFEST="$RUNNER_TEMP/manifest.json"
+          export AWS_EIF_SIGNATURE="$RUNNER_TEMP/manifest.json.bundle"
+          file="trust-page/trust/eif/$SOURCE/$EIF/manifest.json"
+          git show "origin/main:$file" > "$AWS_EIF_MANIFEST"
+          git show "origin/main:$file.bundle" > "$AWS_EIF_SIGNATURE"
+          test "$(jq -r '.eif_sha256' "$AWS_EIF_MANIFEST")" = "$EIF"
+          export QCP_REBUILD_SOURCE="$RUNNER_TEMP/approved-source"
+          git worktree add --detach "$QCP_REBUILD_SOURCE" "$SOURCE"
+          export NITRO_BUILDER_SOURCE=public-source REBUILD_EVIDENCE="$RUNNER_TEMP/comparison.json"
+          bash tools/verify-pcr0.sh
+      - if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: comparison-${{ matrix.replica }}
+          path: ${{ runner.temp }}/comparison.json
+          if-no-files-found: error
