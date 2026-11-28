@@ -41,6 +41,10 @@ def test_gcp_multi_launch_policy_allows_deployed_env_overrides() -> None:
     assert "OPENAI_VIDEO_TEE_ENV" in deploy_script.read_text()
     assert "TR_NATIVE_BATCH_PROVIDERS" not in allowed_envs
     assert "TR_NATIVE_BATCH_PROVIDERS" not in deploy_script.read_text()
+    assert "QUILL_GCP_ACME_TASK" in allowed_envs
+    assert "QUILL_GCP_ACME_TASK" not in metadata_envs
+    assert "QUILL_TLS_MODE" not in allowed_envs
+    assert "ENV QUILL_TLS_MODE=acme" in dockerfile.read_text().splitlines()
 
 
 def test_settle_outbox_env_names_are_in_every_gcp_launch_policy_label() -> None:

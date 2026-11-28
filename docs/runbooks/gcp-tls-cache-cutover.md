@@ -67,7 +67,11 @@ not restrict access.
    wrapping key. Do not grant the whole pool, the VM account, object-storage
    service agents, or an older image just to get a deployment through startup.
    Launch the same production-mode Confidential Space image by its approved
-   digest in an isolated instance with `QUILL_TLS_MODE=gcp-acme-custody-check`.
+   digest in an isolated instance with `tee-env-QUILL_GCP_ACME_TASK=gcp-acme-custody-check`.
+   Before granting access, inspect the published linux/amd64 image config by
+   digest. Its `tee.launch_policy.allow_env_override` must include
+   `QUILL_GCP_ACME_TASK` and must **not** include `QUILL_TLS_MODE`. Do not use
+   an older image without this selector, a debug image, or an alternate entrypoint.
    This branch exits before normal bootstrap or opening any listener. It
    writes, reads, compares and deletes a fresh synthetic object using the
    actual serving cache and WIF identity. Require independent verification of
@@ -117,7 +121,7 @@ existing certificate is not proof of either delegation.
 
 Set the existing measured launch override `QUILL_API_HOST` to one exact
 gateway hostname, not the comma-separated serving list. The following
-`QUILL_TLS_MODE` values exit before opening a listener or loading provider
+`QUILL_GCP_ACME_TASK` values exit before opening a listener or loading provider
 credentials. Each invocation can submit at most one order, to one fixed CA.
 
 | Mode | Cache | Action |
