@@ -40,8 +40,12 @@ func TestGCPCertificateTaskRejectsBeforeGatewayStartup(t *testing.T) {
 		main()
 		return
 	}
+	executable, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
 	for _, value := range []string{"", "acme", "off"} {
-		cmd := exec.Command(os.Args[0], "-test.run=^TestGCPCertificateTaskRejectsBeforeGatewayStartup$")
+		cmd := exec.CommandContext(t.Context(), executable, "-test.run=^TestGCPCertificateTaskRejectsBeforeGatewayStartup$")
 		cmd.Env = append(os.Environ(), "TR_TEST_ACME_TASK_CHILD=1", "QUILL_GCP_ACME_TASK="+value)
 		out, err := cmd.CombinedOutput()
 		var exit *exec.ExitError
