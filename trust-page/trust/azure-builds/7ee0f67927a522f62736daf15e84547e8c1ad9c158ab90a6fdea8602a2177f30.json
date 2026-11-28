@@ -1,0 +1,6 @@
+{
+  "hostdata": "7ee0f67927a522f62736daf15e84547e8c1ad9c158ab90a6fdea8602a2177f30",
+  "image_digest": "sha256:39564f618383359d30889c04eb7f648f7e2c73d666ae3a001605feedf3f5b85c",
+  "origin_hostname": "quill-enclave-uaenorth.uaenorth.azurecontainer.io",
+  "source_commit": "efea558310ea66c74e6ea1c9748fd05dc6359fe7"
+}
