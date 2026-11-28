@@ -11,6 +11,12 @@ workload whose `HOST_DATA` matches the wrapping key's release policy. So the
 release policy and the deployed container must be changed **together**, in a
 fixed order — that is what `deploy-azure-aci.sh`'s phases enforce.
 
+The SKR sidecar is pinned to the Microsoft Container Registry manifest
+digest for the reviewed Linux/amd64 image, not the movable `2.7` tag.
+Updating it requires a source change and a new policy rehearsal. An old
+saved template that names a tag must be regenerated before policy generation,
+key binding or deployment. This does not change running regions in place.
+
 ---
 
 ## 1. What exists
