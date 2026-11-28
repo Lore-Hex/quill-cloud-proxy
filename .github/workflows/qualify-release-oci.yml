@@ -1,0 +1,86 @@
+name: Qualify complete gateway OCI images
+on:
+  pull_request:
+    paths:
+      - '.github/workflows/qualify-release-oci.yml'
+      - 'tools/build-release-oci.sh'
+      - 'tools/verify_release_oci.py'
+      - 'tools/test_verify_release_oci.py'
+  workflow_dispatch:
+    inputs:
+      source:
+        description: Full protected-main source commit to reproduce
+        type: string
+        required: true
+  workflow_call:
+    inputs:
+      source:
+        type: string
+        required: true
+    outputs:
+      gcp:
+        value: ${{ jobs.compare.outputs.gcp }}
+      azure:
+        value: ${{ jobs.compare.outputs.azure }}
+permissions:
+  contents: read
+env:
+  # Initial qualification uses the source actually deployed in both clouds.
+  SOURCE: ${{ inputs.source || 'efea558310ea66c74e6ea1c9748fd05dc6359fe7' }}
+jobs:
+  build:
+    runs-on: ubuntu-26.04
+    timeout-minutes: 80
+    strategy:
+      fail-fast: false
+      matrix:
+        plane: [gcp, azure]
+        replica: [1, 2]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+      - name: Rebuild on an independent machine without cloud credentials
+        env:
+          PLANE: ${{ matrix.plane }}
+        run: |
+          set -euo pipefail
+          [[ "$SOURCE" =~ ^[a-f0-9]{40}$ ]]
+          git merge-base --is-ancestor "$SOURCE" origin/main
+          bash tools/build-release-oci.sh "$PLANE" "$SOURCE" "$RUNNER_TEMP/image"
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: oci-record-${{ matrix.plane }}-${{ matrix.replica }}
+          path: ${{ runner.temp }}/image/record.json
+          if-no-files-found: error
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        if: matrix.replica == 1 && github.ref == 'refs/heads/main'
+        with:
+          name: oci-image-${{ matrix.plane }}
+          path: ${{ runner.temp }}/image/image.tar
+          compression-level: 0
+          retention-days: 3
+          if-no-files-found: error
+  compare:
+    needs: build
+    runs-on: ubuntu-24.04
+    outputs:
+      gcp: ${{ steps.digests.outputs.gcp }}
+      azure: ${{ steps.digests.outputs.azure }}
+    steps:
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          pattern: oci-record-*
+      - id: digests
+        name: Compare full verified manifest digests for each cloud
+        run: |
+          set -euo pipefail
+          for plane in gcp azure; do
+            a="oci-record-${plane}-1/record.json"
+            cmp "$a" "oci-record-${plane}-2/record.json"
+            digest=$(jq -er --arg plane "$plane" --arg source "$SOURCE" \
+              'select(.plane == $plane and .source == $source) | .digest | select(test("^sha256:[a-f0-9]{64}$"))' "$a")
+            echo "$plane=$digest" >> "$GITHUB_OUTPUT"
+            echo "$plane $SOURCE $digest" >> "$GITHUB_STEP_SUMMARY"
+          done
