@@ -453,6 +453,16 @@ class WorkflowTests(unittest.TestCase):
             self.assertIn(flag, script)
         build = self.jobs["build-and-release"]
         self.assertIn("train", build["needs"])
+        self.assertIn("qualify-image", build["needs"])
+        qualifier = self.jobs["qualify-image"]
+        self.assertEqual(qualifier["uses"], "./.github/workflows/qualify-release-oci.yml")
+        self.assertEqual(qualifier["permissions"], {"contents": "read"})
+        self.assertEqual(qualifier["with"], {"source": "${{ github.sha }}", "gcp_only": True})
+        self.assertIn("gate-on-ci", qualifier["needs"])
+        self.assertEqual(qualifier["if"], build["if"])
+        resolve = next(s for s in build["steps"] if s.get("id") == "resolve-digest")
+        self.assertEqual(resolve["env"]["EXPECTED"], "${{ needs.qualify-image.outputs.gcp }}")
+        self.assertIn('"${DIGEST}" == "$EXPECTED"', resolve["run"])
         self.assertEqual(build["if"], "${{ needs.train.outputs.proceed == 'true' }}")
         # Everything that commits, grants, reserves or rolls depends on the build.
         for name in ("verify-transition-trust-page", "grant-batch-image-access", "admit-cloud", "rollout",
