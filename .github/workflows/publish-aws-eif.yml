@@ -13,12 +13,31 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
-  publish:
+  independent:
     if: github.ref == 'refs/heads/main'
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-26.04
+    timeout-minutes: 90
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Rebuild workload and converter from public source
+        run: bash tools/rebuild-nitro-release.sh
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: independent-release-bytes
+          path: ${{ runner.temp }}/independent.json
+          if-no-files-found: error
+  publish:
+    needs: independent
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-26.04
     timeout-minutes: 60
     env:
-      BUILDER_IMAGE: 330422590279.dkr.ecr.eu-west-1.amazonaws.com/quill-enclave-eif-builder@sha256:7367ca7473a74d70433aa29bbce60ecef6aa0f713f7a361e18f90cd4c1044c06
+      # Protected converter qualification: actions/runs/46139893455.
+      BUILDER_IMAGE: 330422590279.dkr.ecr.eu-west-1.amazonaws.com/quill-enclave-eif-builder@sha256:e423b97266981b65149bd53e5877d9e67a57ec4a458f890d62fbf04839f4d8ff
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -104,6 +123,16 @@ jobs:
       - uses: Lore-Hex/quill-cloud-proxy/.github/actions/cosign-install@582cbdee7b7023cfeb915b62a7f635aa1e4662b1 # main 2026-11-13
         with:
           cosign-release: v2.6.5
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: independent-release-bytes
+          path: ${{ runner.temp }}/public-rebuild
+      - name: Verify independent full EIF bytes before signing
+        run: |
+          set -euo pipefail
+          jq -S '{source_commit,enclave_image_id,eif_sha256,eif_size_bytes,measurements}' \
+            "$RUNNER_TEMP/aws-eif/manifest.json" > "$RUNNER_TEMP/produced.json"
+          diff -u "$RUNNER_TEMP/public-rebuild/independent.json" "$RUNNER_TEMP/produced.json"
       - name: Sign and verify with this workflow identity
         env:
           COSIGN_YES: 'true'

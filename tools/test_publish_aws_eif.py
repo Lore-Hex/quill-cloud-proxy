@@ -140,6 +140,23 @@ class WorkflowTests(unittest.TestCase):
         self.assertNotIn("start-instance-refresh", scripts)
         self.assertNotIn("put-key-policy", scripts)
 
+    def test_independent_public_recipe_agrees_before_signing(self):
+        import yaml
+        root = Path(__file__).resolve().parents[1]
+        jobs = yaml.safe_load((root / ".github/workflows/publish-aws-eif.yml").read_text())["jobs"]
+        self.assertEqual(jobs["independent"]["permissions"], {"contents": "read"})
+        self.assertEqual(jobs["publish"]["needs"], "independent")
+        steps = jobs["publish"]["steps"]
+        names = [s.get("name") for s in steps]
+        check = names.index("Verify independent full EIF bytes before signing")
+        self.assertLess(check, names.index("Sign and verify with this workflow identity"))
+        self.assertLess(check, names.index("Publish create-only artifacts to both regions"))
+        self.assertNotIn("continue-on-error", steps[check])
+        self.assertNotIn("if", steps[check])
+        for key in ("eif_sha256", "eif_size_bytes", "source_commit", "enclave_image_id", "measurements"):
+            self.assertIn(key, steps[check]["run"])
+        self.assertIn("diff -u", steps[check]["run"])
+
     def test_full_ci_gate_refuses_missing_pending_failed_or_wrong_source(self):
         import yaml
         root = Path(__file__).resolve().parents[1]
