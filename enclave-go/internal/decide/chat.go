@@ -183,15 +183,16 @@ var DevProviders = []string{
 //     not yet measured on 5.3 Fast.
 //   - Llama 3.3 70B (lev-1.0) does not reason, so there is no effort to set.
 //     It was SambaNova 371-450 ms (worst case 565 ms), then Parasail 927 ms,
-//     Together 1576 ms, until SambaNova and Together stopped serving the model
-//     in November 2026. Remeasured 2026-11-28 through the decide route with
-//     each host pinned, 8 tickets a pass, the host's own time read from the
-//     gateway's request_end upstream_ms: W&B 805 ms median with the tightest
-//     tail (853 ms worst of 13 sampled), Parasail about 950 ms (3 sampled, a
-//     3.4 s p90 end to end in one run), IO Intelligence and Scaleway close
-//     behind W&B end to end; every host scored every check. Scaleway was left
-//     out because it would raise the name's price by about 45%; Telnyx and
-//     AkashML were 1.8-2.1 s, and Tinfoil answered HTTP 502 to every request.
+//     Together 1576 ms, until Together retired the model in October and
+//     SambaNova delisted it in November 2026. Remeasured 2026-11-28 through
+//     the decide route with each host pinned, 8 tickets a pass, the host's own
+//     time read from the gateway's request_end upstream_ms: W&B 805 ms median
+//     with the tightest tail (853 ms worst of 13 sampled), Parasail about
+//     950 ms (3 sampled, a 3.4 s p90 end to end in one run), IO Intelligence
+//     and Scaleway close behind W&B end to end. W&B, IO Intelligence, Scaleway
+//     and Parasail each scored every check. Scaleway was left out because it
+//     would raise the name's price by about 45%; Telnyx and AkashML were
+//     1.8-2.1 s, and Tinfoil answered HTTP 502 to every request.
 //     Novita answered 429 in September.
 //
 // Rejected on the same evidence: openai/gpt-5-nano (hedges at "minimal" effort,
