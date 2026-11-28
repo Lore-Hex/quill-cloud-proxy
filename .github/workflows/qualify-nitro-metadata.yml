@@ -27,6 +27,25 @@ jobs:
           cosign-release: v2.6.5
       - name: Build with public inputs; check signed workload and read back CRC
         run: bash tools/nitro-builder/qualify.sh
+      - name: Retain the exact converter that passed the signed fixture
+        if: matrix.replica == 1
+        run: |
+          set -euo pipefail
+          recipe=$(git rev-parse HEAD:tools/nitro-builder)
+          jq -e --arg recipe "$recipe" '.converter_recipe == $recipe' "$RUNNER_TEMP/candidate.json" >/dev/null
+          mkdir "$RUNNER_TEMP/converter"
+          docker save --platform linux/amd64 "nitro-qualification:$recipe" -o "$RUNNER_TEMP/converter/converter.tar"
+          cp "$RUNNER_TEMP/candidate.json" "$RUNNER_TEMP/converter/"
+          cd "$RUNNER_TEMP/converter"
+          sha256sum converter.tar candidate.json > SHA256SUMS
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        if: matrix.replica == 1
+        with:
+          name: nitro-converter
+          path: ${{ runner.temp }}/converter/
+          compression-level: 0
+          retention-days: 5
+          if-no-files-found: error
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: nitro-candidate-${{ matrix.replica }}
@@ -44,3 +63,33 @@ jobs:
           set -euo pipefail
           cmp nitro-candidate-1/candidate.json nitro-candidate-2/candidate.json
           cat nitro-candidate-1/candidate.json >> "$GITHUB_STEP_SUMMARY"
+
+  attest-converter:
+    needs: compare
+    if: github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+      id-token: write
+      attestations: write
+    steps:
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: nitro-converter
+          path: converter
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: nitro-candidate-2
+          path: independent
+      - name: Bind the exported converter to the independently verified result
+        run: |
+          set -euo pipefail
+          cmp converter/candidate.json independent/candidate.json
+          cd converter
+          sha256sum --check SHA256SUMS
+          sha256sum converter.tar candidate.json > "$RUNNER_TEMP/subjects.sha256"
+      - name: Attest before any separate registry promotion
+        uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.2.2
+        with:
+          subject-checksums: ${{ runner.temp }}/subjects.sha256
+          create-storage-record: false
