@@ -1,0 +1,69 @@
+name: Stage verified gateway image bytes
+on:
+  workflow_dispatch:
+    inputs:
+      source:
+        description: Exact green main commit for the GCP and Azure gateways (no rollout)
+        type: string
+        required: true
+permissions:
+  contents: read
+jobs:
+  gate:
+    if: github.ref == 'refs/heads/main' && github.repository == 'Lore-Hex/quill-cloud-proxy'
+    runs-on: ubuntu-24.04
+    permissions:
+      actions: read
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Require the exact green source before any registry writes
+        env:
+          SOURCE: ${{ inputs.source }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          [[ "$SOURCE" =~ ^[a-f0-9]{40}$ ]]
+          git merge-base --is-ancestor "$SOURCE" origin/main
+          gh run list --repo "$GITHUB_REPOSITORY" --workflow ci.yml --branch main --commit "$SOURCE" \
+            --event push --limit 1 --json status,conclusion,headSha | \
+            jq -e --arg sha "$SOURCE" '. == [{status:"completed", conclusion:"success", headSha:$sha}]'
+  qualify:
+    needs: gate
+    uses: ./.github/workflows/qualify-release-oci.yml
+    with:
+      source: ${{ inputs.source }}
+  attest:
+    needs: qualify
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+      id-token: write
+      attestations: write
+    strategy:
+      matrix:
+        plane: [gcp, azure]
+    steps:
+      - name: Record only the independently verified digest
+        env:
+          PLANE: ${{ matrix.plane }}
+          SOURCE: ${{ inputs.source }}
+          EXPECTED: ${{ needs.qualify.outputs[matrix.plane] }}
+        run: |
+          set -euo pipefail
+          [[ "$EXPECTED" =~ ^sha256:[0-9a-f]{64}$ && "$SOURCE" =~ ^[a-f0-9]{40}$ ]]
+          jq -nS --arg plane "$PLANE" --arg source "$SOURCE" --arg digest "$EXPECTED" \
+            '{plane:$plane,source:$source,digest:$digest}' > "$RUNNER_TEMP/$PLANE-stage.json"
+          cat "$RUNNER_TEMP/$PLANE-stage.json" >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.2.2
+        with:
+          subject-path: ${{ runner.temp }}/${{ matrix.plane }}-stage.json
+          create-storage-record: false
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: ${{ matrix.plane }}-build-receipt
+          path: ${{ runner.temp }}/${{ matrix.plane }}-stage.json
+          if-no-files-found: error
