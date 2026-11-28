@@ -31,6 +31,7 @@ import (
 )
 
 var getAttestation = attestation.GetContext
+var getRawSNP = attestation.GetRawSNP
 
 const (
 	maxHTTPHeaderLineBytes = 16*1024 - 1
@@ -763,6 +764,46 @@ func serveAttestation(conn io.Writer, leafDER, deviceBlob, nonce, channelBinding
 // gave up. At 18 s a client with a 20 s timeout (the synthetic attestation
 // probe's) always gets the document or the retryable 503.
 var attestationResponseBudget = 18 * time.Second
+
+func serveRequestedAttestation(ctx context.Context, conn io.Writer, target string, leaf, devices, nonce, exporter []byte) bool {
+	_, query, _ := strings.Cut(target, "?")
+	params, err := url.ParseQuery(query)
+	if err != nil {
+		disableResponseReuse(conn)
+		writePublicError(conn, 400, "invalid attestation query")
+		return false
+	}
+	formats, optIn := params["format"]
+	if !optIn {
+		return serveAttestationContext(ctx, conn, leaf, devices, nonce, exporter)
+	}
+	if len(formats) != 1 || formats[0] != "amd-snp-v1" || attestation.Kind != "azure-maa-jwt" {
+		disableResponseReuse(conn)
+		writePublicError(conn, 406, "requested hardware evidence format unavailable")
+		return false
+	}
+	if len(nonce) != 32 || bytes.Equal(nonce, exporter) {
+		disableResponseReuse(conn)
+		writePublicError(conn, 400, "raw attestation requires a fresh 32-byte nonce")
+		return false
+	}
+	if len(leaf) == 0 || len(exporter) != 32 {
+		disableResponseReuse(conn)
+		writePublicError(conn, 503, "bound TLS session unavailable")
+		return false
+	}
+	ctx, cancel := context.WithTimeout(ctx, attestationResponseBudget)
+	defer cancel()
+	report, err := getRawSNP(ctx, leaf, nonce, exporter)
+	if err != nil {
+		disableResponseReuse(conn)
+		writePublicError(conn, 503, "raw attestation unavailable")
+		return false
+	}
+	fmt.Fprintf(conn, "HTTP/1.1 200 OK\r\nContent-Type: application/vnd.trustedrouter.amd-snp-report\r\nContent-Length: %d\r\nCache-Control: no-store\r\nAccess-Control-Allow-Origin: *\r\nConnection: %s\r\n\r\n", len(report), responseConnection(conn))
+	_, err = conn.Write(report)
+	return err == nil
+}
 
 // The document is public (anyone can fetch it) and readable from any web
 // origin; see publicCORSOriginHeader. Its errors carry the same header so a
