@@ -176,21 +176,12 @@ var responseWriteTimeout = 30 * time.Second
 var errBodyTooLarge = errors.New("request body too large")
 
 func main() {
-	switch mode := os.Getenv("QUILL_TLS_MODE"); mode {
-	case "gcp-acme-preissue", "gcp-acme-rehearse", "gcp-acme-rehearse-renew", "gcp-acme-rehearse-read":
-		if err := issueGCPLeaf(mode, os.Getenv("QUILL_API_HOST")); err != nil {
-			fmt.Fprintln(os.Stderr, "acme_single_issuer:", err)
+	if task, set := os.LookupEnv("QUILL_GCP_ACME_TASK"); set {
+		if err := runGCPCertificateTask(task, os.Getenv("QUILL_API_HOST"), checkGCPCacheCustody, issueGCPLeaf); err != nil {
+			fmt.Fprintln(os.Stderr, "acme_task:", err)
 			os.Exit(1)
 		}
-		fmt.Println("acme_single_issuer: PASS")
-		return
-	}
-	if os.Getenv("QUILL_TLS_MODE") == "gcp-acme-custody-check" {
-		if err := checkGCPCacheCustody(); err != nil {
-			fmt.Fprintln(os.Stderr, "acme_custody_check:", err)
-			os.Exit(1)
-		}
-		fmt.Println("acme_custody_check: PASS")
+		fmt.Println(task + ": PASS")
 		return
 	}
 	configureRerank()
