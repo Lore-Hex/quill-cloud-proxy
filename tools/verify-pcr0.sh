@@ -13,7 +13,7 @@
 set -euo pipefail
 
 HERE="$(cd "$(dirname "$0")" && pwd)"
-REPO_ROOT="$(cd "$HERE/.." && pwd)"
+REPO_ROOT="$(cd "${QCP_REBUILD_SOURCE:-$HERE/..}" && pwd)"
 IMAGE_TAG="quill-enclave:verify-$(git -C "$REPO_ROOT" rev-parse --short HEAD)"
 : "${AWS_EIF_MANIFEST:?set the downloaded CI manifest path}"
 : "${AWS_EIF_SIGNATURE:?set the CI signature bundle path}"
@@ -57,7 +57,19 @@ bash tools/build-aws-eif-image.sh \
 
 OUTPUT=$(mktemp -d)
 trap 'rm -rf "$OUTPUT"' EXIT
-docker pull "$BUILDER_IMAGE"
+case "${NITRO_BUILDER_SOURCE:-registry}" in
+  registry) docker pull "$BUILDER_IMAGE" ;;
+  public-source)
+    # This is a separately built converter, never represented as the signed
+    # builder digest. Its result must still match the protected publisher.
+    BUILDER_IMAGE="quill-nitro-source:$(git -C "$REPO_ROOT" rev-parse HEAD)"
+    docker build --no-cache --platform "$PLATFORM" -t "$BUILDER_IMAGE" \
+      -f "$REPO_ROOT/tools/nitro-builder/Dockerfile" "$REPO_ROOT/tools/nitro-builder"
+    docker run --rm --platform "$PLATFORM" "$BUILDER_IMAGE" --version \
+      | grep -Fx "Nitro CLI $(jq -r .nitro_cli_version <<<"$VERIFIED")"
+    ;;
+  *) echo "Unknown Nitro converter mode" >&2; exit 2 ;;
+esac
 docker run --rm --platform "$PLATFORM" \
   -v /var/run/docker.sock:/var/run/docker.sock -v "$OUTPUT:/output" \
   "$BUILDER_IMAGE" build-enclave --docker-uri "$IMAGE_TAG" --output-file /output/enclave.eif \
@@ -66,6 +78,13 @@ docker run --rm --platform "$PLATFORM" -v "$OUTPUT:/output:ro" \
   "$BUILDER_IMAGE" describe-eif --eif-path /output/enclave.eif > "$OUTPUT/describe.json"
 diff <(jq -S '.Measurements' "$OUTPUT/build.json") <(jq -S '.Measurements' "$OUTPUT/describe.json")
 test "$(jq -r '.CheckCRC' "$OUTPUT/describe.json")" = true
+if [[ -n "${REBUILD_EVIDENCE:-}" ]]; then
+  # Report every comparison even when some disagree. A PCR match alone
+  # does not imply identical OCI config/layers or byte-identical EIFs.
+  docker image inspect --format '{{.Id}}' "$IMAGE_TAG" > "$OUTPUT/image-id.txt"
+  printf '%s\n' "$VERIFIED" > "$OUTPUT/signed-manifest.json"
+  python3 "$HERE/aws_rebuild_evidence.py" "$OUTPUT" "$REBUILD_EVIDENCE"
+fi
 PCR0=$(jq -r '.Measurements.PCR0' "$OUTPUT/describe.json")
 if [ "$PCR0" != "$EXPECTED_PCR0" ]; then
   echo "MISMATCH: rebuilt PCR0 differs from signed CI measurement." >&2
