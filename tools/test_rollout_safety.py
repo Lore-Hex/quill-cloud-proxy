@@ -256,8 +256,12 @@ class RolloutSafetyTests(unittest.TestCase):
             self.assertIn('SOURCE_REVISION=$(git -C "$REPO_ROOT" rev-parse HEAD)',
                           (ROOT / "tools" / name).read_text())
         workflow = (ROOT / ".github/workflows/deploy-enclave-gcp.yml").read_text()
-        self.assertIn("--build-arg SOURCE_REVISION=${_SOURCE_REVISION}", workflow)
-        self.assertIn("_SOURCE_REVISION=${GITHUB_SHA}", workflow)
+        self.assertIn("source: ${{ github.sha }}", workflow)
+        qualifier = (ROOT / ".github/workflows/qualify-release-oci.yml").read_text()
+        self.assertIn('bash tools/build-release-oci.sh "$PLANE" "$SOURCE"', qualifier)
+        builder = (ROOT / "tools/build-release-oci.sh").read_text()
+        self.assertIn('git archive "${revision}:enclave-go"', builder)
+        self.assertIn('--build-arg "SOURCE_REVISION=$revision"', builder)
 
         aws_workflow = (ROOT / ".github/workflows/publish-aws-eif.yml").read_text()
         self.assertIn('--build-arg "SOURCE_REVISION=$GITHUB_SHA"', aws_workflow)
@@ -586,7 +590,7 @@ class RolloutSafetyTests(unittest.TestCase):
         inventory_check = workflow.index(
             "      - name: Verify GCP enclave MIG inventory"
         )
-        image_build = workflow.index("      - name: Build enclave image via Cloud Build")
+        image_build = workflow.index("      - name: Publish the independently reproduced GCP image")
         self.assertLess(inventory_check, image_build)
         inventory_step = workflow[inventory_check:image_build]
         self.assertIn("gcloud compute instance-groups managed list", inventory_step)
