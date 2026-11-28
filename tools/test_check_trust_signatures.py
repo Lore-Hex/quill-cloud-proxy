@@ -43,6 +43,7 @@ EIF_IDENTITY = (
     "https://github.com/Lore-Hex/quill-cloud-proxy/.github/workflows/"
     "publish-aws-eif.yml@refs/heads/main"
 )
+AZURE_BUILDER = "https://github.com/Lore-Hex/quill-cloud-proxy/.github/workflows/rollout-azure-gateway.yml@refs/heads/main"
 # A throwaway self-signed certificate and public key: test material that signs
 # nothing, so the checker's `openssl x509` parse has real input.
 CERTIFICATE_PEM = b"""-----BEGIN CERTIFICATE-----
@@ -114,7 +115,9 @@ def sign(document: Path, plane: str, key: str = CERTIFICATE) -> None:
         "fake_sha256": hashlib.sha256(document.read_bytes()).hexdigest(),
         "fake_identity": EIF_IDENTITY if plane == "aws-eif" else IDENTITY.format(plane=plane),
     }
-    if document.name == "stage-d-accepted.json":
+    if plane == "azure-build":
+        bundle["fake_identity"] = AZURE_BUILDER
+    if document.name == "stage-d-accepted.json" or plane == "azure-build":
         bundle["mediaType"] = "application/vnd.dev.sigstore.bundle.v0.3+json"
         if key == CERTIFICATE:
             bundle["verificationMaterial"] = {"certificate": {"rawBytes": CERTIFICATE_DER}}
@@ -243,6 +246,30 @@ class CheckTrustSignatures(unittest.TestCase):
         for path in paths:
             relative = path.relative_to(self.site).as_posix()
             self.assertEqual(self.verifications()[relative], (EIF_IDENTITY, False))
+
+    def test_azure_build_requires_its_own_signer_format_and_exact_hostdata(self) -> None:
+        path = self.site / "trust/azure-builds" / ("a" * 64 + ".json")
+        path.parent.mkdir()
+        record = dict(hostdata=path.stem, source_commit="b" * 40,
+                      image_digest="sha256:" + "c" * 64, origin_hostname="test.dubai.azurecontainer.io")
+        path.write_text(json.dumps(record, sort_keys=True, indent=2) + "\n")
+        sign(path, "azure-build")
+        result = self.check()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(self.verifications()[path.relative_to(self.site).as_posix()], (AZURE_BUILDER, True))
+        bundle = Path(str(path) + ".bundle")
+        wrong = json.loads(bundle.read_bytes())
+        wrong["fake_identity"] = IDENTITY.format(plane="azure")
+        bundle.write_text(json.dumps(wrong))
+        self.assertNotEqual(self.check().returncode, 0)
+        sign(path, "azure")
+        self.assertIn("not a protobuf bundle", self.check().stderr)
+        record["hostdata"] = "d" * 64
+        path.write_text(json.dumps(record, sort_keys=True, indent=2) + "\n")
+        sign(path, "azure-build")
+        self.assertIn("HOST_DATA path", self.check().stderr)
+        self.assertIsNone(check.plane_of("azure-builds/" + path.name))
+        self.assertIsNone(check.plane_of("trust/azure-builds/other.json"))
 
     def test_eif_rejects_serving_signer_and_other_build_refs(self) -> None:
         path = signed_eif(self.site)
@@ -647,7 +674,7 @@ class TheRepository(unittest.TestCase):
             document = bundle.relative_to(REPO / "trust-page").as_posix().removesuffix(".bundle")
             with self.subTest(document=document):
                 content = json.loads(bundle.read_text())
-                self.assertEqual("mediaType" in content, document in check.PROTOBUF)
+                self.assertEqual("mediaType" in content, check.protobuf_bundle(document))
 
     def test_every_published_bundle_carries_a_certificate(self) -> None:
         for bundle in sorted((REPO / "trust-page").rglob("*.bundle")):

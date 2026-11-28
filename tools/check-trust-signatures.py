@@ -89,6 +89,15 @@ SIGNED_BY = {
 # verified.
 PROTOBUF = ("gcp/stage-d-accepted.json", "trust/gcp/stage-d-accepted.json")
 EIF_PATH = re.compile(r"(?:trust/)?eif/[0-9a-f]{40}/[0-9a-f]{64}/manifest\.json\Z")
+AZURE_BUILD_PATH = re.compile(r"trust/azure-builds/[0-9a-f]{64}\.json\Z")
+AZURE_BUILD_IDENTITY = (
+    "https://github.com/Lore-Hex/quill-cloud-proxy/.github/workflows/"
+    "rollout-azure-gateway.yml@refs/heads/main"
+)
+
+
+def protobuf_bundle(document: str) -> bool:
+    return document in PROTOBUF or AZURE_BUILD_PATH.fullmatch(document) is not None
 
 
 def _glob(pattern: str) -> re.Pattern[str]:
@@ -105,6 +114,8 @@ def plane_of(document: str) -> str | None:
     """The plane whose signer signs the document at this path under trust-page/."""
     if EIF_PATH.fullmatch(document):
         return "aws-eif"
+    if AZURE_BUILD_PATH.fullmatch(document):
+        return "azure-build"
     for plane, patterns in SIGNED_BY.items():
         if any(_glob(pattern).match(document) for pattern in patterns):
             return plane
@@ -146,6 +157,25 @@ def _verify(
 ) -> str | None:
     identity = IDENTITY.format(plane=plane)
     bundle_bytes = None
+    if plane == "azure-build":
+        identity = AZURE_BUILD_IDENTITY
+        try:
+            if document.stat().st_size > 4096 or bundle.stat().st_size > 2 * 1024 * 1024:
+                return f"{document}: oversized Azure build witness or bundle"
+            raw = document.read_bytes()
+            value = json.loads(raw)
+            if (not isinstance(value, dict)
+                    or set(value) != {"origin_hostname", "source_commit", "image_digest", "hostdata"}
+                    or value["hostdata"] != document.stem
+                    or not all(isinstance(v, str) for v in value.values())
+                    or not re.fullmatch(r"[a-z0-9.-]+\.azurecontainer\.io", value["origin_hostname"])
+                    or not re.fullmatch(r"[0-9a-f]{40}", value["source_commit"])
+                    or not re.fullmatch(r"sha256:[0-9a-f]{64}", value["image_digest"])
+                    or raw != (json.dumps(value, sort_keys=True, indent=2) + "\n").encode()):
+                return f"{document}: invalid Azure build witness or HOST_DATA path"
+            bundle_bytes = bundle.read_bytes()
+        except (OSError, ValueError) as exc:
+            return f"{document}: invalid Azure build witness: {exc}"
     if plane == "aws-eif":
         # Build proofs have a different authority from serving trust records.
         # Reuse the bounded CI manifest parser and bind its claims to its path.
@@ -231,7 +261,7 @@ def problems(site: Path, cosign: str = "cosign", openssl: str = "openssl") -> li
         elif not document.is_file():
             found.append(f"{bundle}: {document} is missing")
         elif (
-            problem := _verify(bundle, document, plane, relative in PROTOBUF, cosign, openssl)
+            problem := _verify(bundle, document, plane, protobuf_bundle(relative), cosign, openssl)
         ) is not None:
             found.append(problem)
     return found
