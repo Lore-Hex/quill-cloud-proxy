@@ -638,7 +638,18 @@ class WorkflowGuardTests(unittest.TestCase):
             self.assertEqual(restore["if"], f"${{{{ failure() && steps.deploy_{region.lower()}.outcome == 'failure' }}}}")
         text = AZURE_WF.read_text()
         self.assertNotIn("--apply all", text)
-        self.assertIn("--apply preflight build template policy bind deploy verify", text)
+        self.assertIn("--apply preflight template policy bind deploy verify", text)
+        self.assertNotIn("--apply preflight build", text)
+        gate = next(s["run"] for s in jobs["preflight"]["steps"] if s.get("id") == "qualified")
+        for required in ("stage-qualified-oci.yml", '.workflow_id == $id', '.head_branch == "main"',
+                         '.conclusion == "success"', "--signer-workflow", "--deny-self-hosted-runners",
+                         '--source-ref refs/heads/main --source-digest "$sha"', 'receipt "$receipt" "$RELEASE_SHA"',
+                         '--image "quill-enclave-azure@$digest"', '[[ "$actual" == "$digest" ]]'):
+            self.assertIn(required, gate)
+        for region in ("dubai", "sydney"):
+            drain = next(s["run"] for s in jobs[region]["steps"] if s.get("id") == "drain_" + region)
+            self.assertLess(drain.index('azure_qualified_image.py prepare'), drain.index('azure_gateway_rollout.py drain'))
+            self.assertEqual(jobs[region]["env"]["QUALIFIED_DIGEST"], "${{ needs.preflight.outputs.qualified_digest }}")
         self.assertIn("env -u GOOGLE_APPLICATION_CREDENTIALS", text)
         dubai_publish = next(s for s in jobs["dubai"]["steps"] if s.get("name", "").startswith("Dubai: publish"))
         sydney_publish = next(s for s in jobs["sydney"]["steps"] if s.get("name", "").startswith("Sydney: publish"))
@@ -673,7 +684,7 @@ class WorkflowGuardTests(unittest.TestCase):
         self.assertEqual(jobs["finalize-cloud"]["if"], "${{ always() && needs.admit-cloud.result == 'success' }}")
         # The whole job is pinned, not searched for known-bad words: its
         # environment, its steps in order, and every line the last step runs.
-        self.assertEqual(set(job["env"]), {"BUNDLE_VERSION"})
+        self.assertEqual(set(job["env"]), {"BUNDLE_VERSION", "QUALIFIED_DIGEST"})
         self.assertEqual(job["permissions"], {"contents": "read", "id-token": "write"})
         self.assertEqual(
             [s["uses"].split("@")[0].rsplit("/", 1)[-1] if "uses" in s else s["name"] for s in job["steps"]],
@@ -695,9 +706,10 @@ class WorkflowGuardTests(unittest.TestCase):
             "set -a",
             'eval "$(python3 ../trust/tools/azure_gateway_rollout.py env --region dubai)"',
             "set +a",
+            'python3 ../trust/tools/azure_qualified_image.py prepare "$RUNNER_TEMP/aci-rehearsal" "$RELEASE_SHA" "$QUALIFIED_DIGEST"',
             'WORKDIR="$RUNNER_TEMP/aci-rehearsal" QUILL_AZURE_BUNDLE_VERSION="$BUNDLE_VERSION" \\',
             "  TR_CONTROL_PLANE_BASE_URL=https://trustedrouter.com \\",
-            "  bash ./tools/deploy-azure-aci.sh --apply preflight build template policy",
+            "  bash ./tools/deploy-azure-aci.sh --apply preflight template policy",
             'WORKDIR="$RUNNER_TEMP/aci-rehearsal" QUILL_AZURE_BUNDLE_VERSION="$BUNDLE_VERSION" \\',
             "  bash ./tools/deploy-azure-aci.sh audit",
             'echo "## Azure gateway rollout rehearsal: release \\`$RELEASE_SHA\\` built, rendered, measured and audited; '

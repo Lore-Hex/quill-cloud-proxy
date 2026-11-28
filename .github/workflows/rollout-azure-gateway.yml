@@ -7,7 +7,7 @@
 #             independently derived HOST_DATA; disable this region's Traffic
 #             Manager endpoint; wait out both TTLs; confirm the shared name no
 #             longer resolves here (tools/azure_gateway_rollout.py).
-#   deploy    tools/deploy-azure-aci.sh --apply preflight build template policy
+#   deploy    tools/deploy-azure-aci.sh --apply preflight template policy
 #             bind deploy verify, from a checkout of the release commit. bind
 #             WIDENS the key release policy to {old, new}; verify compares a
 #             live attestation with what the key requires, then stops at the
@@ -42,6 +42,10 @@ on:
         required: false
         default: ""
         type: string
+      stage_run:
+        description: Successful protected Stage verified gateway image bytes run for this source
+        type: string
+        required: true
       rehearse:
         description: "Rehearsal only: build, render and measure as the rollout identity and read the key; no reservation, no drain, no change to a region"
         required: false
@@ -71,9 +75,11 @@ jobs:
     permissions:
       contents: read
       actions: read
+      attestations: read
       id-token: write
     outputs:
       bundle_version: ${{ steps.bundle.outputs.version }}
+      qualified_digest: ${{ steps.qualified.outputs.digest }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -91,6 +97,31 @@ jobs:
             --commit "$RELEASE_SHA" --limit 1 --json status,conclusion,headSha > "$RUNNER_TEMP/ci.json"
           python3 -c 'import json,sys; r=json.load(open(sys.argv[1])); sys.exit(0 if len(r)==1 and r[0]=={"status":"completed","conclusion":"success","headSha":sys.argv[2]} else "main CI has not passed for this release")' \
             "$RUNNER_TEMP/ci.json" "$RELEASE_SHA"
+      - name: Require a signed independent rebuild and its exact ACR manifest
+        id: qualified
+        env:
+          STAGE_RUN: ${{ inputs.stage_run }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          [[ "$STAGE_RUN" =~ ^[1-9][0-9]{0,19}$ && "$RELEASE_SHA" =~ ^[a-f0-9]{40}$ ]]
+          workflow=stage-qualified-oci.yml
+          id=$(gh api "repos/$GITHUB_REPOSITORY/actions/workflows/$workflow" --jq .id)
+          sha=$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$STAGE_RUN" | jq -er --argjson id "$id" \
+            'select(.workflow_id == $id and .status == "completed" and .conclusion == "success" and
+             .event == "workflow_dispatch" and .head_branch == "main") | .head_sha')
+          dest="$RUNNER_TEMP/verified-stage"
+          gh run download "$STAGE_RUN" --repo "$GITHUB_REPOSITORY" --name azure-build-receipt --dir "$dest"
+          receipt="$dest/azure-stage.json"
+          gh attestation verify "$receipt" --repo "$GITHUB_REPOSITORY" --deny-self-hosted-runners \
+            --source-ref refs/heads/main --source-digest "$sha" --signer-workflow "$GITHUB_REPOSITORY/.github/workflows/$workflow"
+          digest=$(python3 tools/azure_qualified_image.py receipt "$receipt" "$RELEASE_SHA")
+          gh run download "$STAGE_RUN" --repo "$GITHUB_REPOSITORY" --name oci-image-azure --dir "$dest/image"
+          bash tools/azure-oidc-login.sh
+          bash tools/stage-qualified-oci.sh azure "$RELEASE_SHA" "$digest" "$dest/image/image.tar"
+          actual=$(az acr repository show --name trquillacr --image "quill-enclave-azure@$digest" --query digest -o tsv)
+          [[ "$actual" == "$digest" ]]
+          echo "digest=$digest" >> "$GITHUB_OUTPUT"
       - name: Pin one sealed bundle version
         id: bundle
         env:
@@ -146,6 +177,7 @@ jobs:
       id-token: write
     env:
       BUNDLE_VERSION: ${{ needs.preflight.outputs.bundle_version }}
+      QUALIFIED_DIGEST: ${{ needs.preflight.outputs.qualified_digest }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -179,9 +211,10 @@ jobs:
           set -a
           eval "$(python3 ../trust/tools/azure_gateway_rollout.py env --region dubai)"
           set +a
+          python3 ../trust/tools/azure_qualified_image.py prepare "$RUNNER_TEMP/aci-rehearsal" "$RELEASE_SHA" "$QUALIFIED_DIGEST"
           WORKDIR="$RUNNER_TEMP/aci-rehearsal" QUILL_AZURE_BUNDLE_VERSION="$BUNDLE_VERSION" \
             TR_CONTROL_PLANE_BASE_URL=https://trustedrouter.com \
-            bash ./tools/deploy-azure-aci.sh --apply preflight build template policy
+            bash ./tools/deploy-azure-aci.sh --apply preflight template policy
           WORKDIR="$RUNNER_TEMP/aci-rehearsal" QUILL_AZURE_BUNDLE_VERSION="$BUNDLE_VERSION" \
             bash ./tools/deploy-azure-aci.sh audit
           echo "## Azure gateway rollout rehearsal: release \`$RELEASE_SHA\` built, rendered, measured and audited; nothing reserved or replaced." >> "$GITHUB_STEP_SUMMARY"
@@ -229,6 +262,7 @@ jobs:
       contents: read
       id-token: write
     env:
+      QUALIFIED_DIGEST: ${{ needs.preflight.outputs.qualified_digest }}
       TR_DEPLOY_MUTEX_OPERATION: ${{ needs.admit-cloud.outputs.operation }}
       TR_DEPLOY_MUTEX_CLOUD: azure
       GH_TOKEN: ${{ secrets.TRUST_PUSH_TOKEN }}
@@ -275,6 +309,7 @@ jobs:
           set -euo pipefail
           bash tools/azure-oidc-login.sh
           python3 tools/cloud-rollout.py assert --cloud azure
+          python3 tools/azure_qualified_image.py prepare "$RUNNER_TEMP/aci-dubai" "$RELEASE_SHA" "$QUALIFIED_DIGEST"
           python3 tools/azure_gateway_rollout.py drain --region dubai
       - name: "Dubai: build, bind (widen), deploy and verify"
         id: deploy_dubai
@@ -288,7 +323,7 @@ jobs:
           rc=0
           env -u GOOGLE_APPLICATION_CREDENTIALS WORKDIR="$RUNNER_TEMP/aci-dubai" \
             QUILL_AZURE_BUNDLE_VERSION="$BUNDLE_VERSION" TR_CONTROL_PLANE_BASE_URL=https://trustedrouter.com \
-            bash ./tools/deploy-azure-aci.sh --apply preflight build template policy bind deploy verify \
+            bash ./tools/deploy-azure-aci.sh --apply preflight template policy bind deploy verify \
             > "$RUNNER_TEMP/deploy-dubai.log" 2>&1 || rc=$?
           cat "$RUNNER_TEMP/deploy-dubai.log"
           if [ "$rc" -ne 0 ] && ! grep -q 'MEASUREMENT NOT PUBLISHED' "$RUNNER_TEMP/deploy-dubai.log"; then
@@ -372,6 +407,7 @@ jobs:
       contents: read
       id-token: write
     env:
+      QUALIFIED_DIGEST: ${{ needs.preflight.outputs.qualified_digest }}
       TR_DEPLOY_MUTEX_OPERATION: ${{ needs.admit-cloud.outputs.operation }}
       TR_DEPLOY_MUTEX_CLOUD: azure
       GH_TOKEN: ${{ secrets.TRUST_PUSH_TOKEN }}
@@ -418,6 +454,7 @@ jobs:
           set -euo pipefail
           bash tools/azure-oidc-login.sh
           python3 tools/cloud-rollout.py assert --cloud azure
+          python3 tools/azure_qualified_image.py prepare "$RUNNER_TEMP/aci-sydney" "$RELEASE_SHA" "$QUALIFIED_DIGEST"
           python3 tools/azure_gateway_rollout.py drain --region sydney
       - name: "Sydney: build, bind (widen), deploy and verify"
         id: deploy_sydney
@@ -431,7 +468,7 @@ jobs:
           rc=0
           env -u GOOGLE_APPLICATION_CREDENTIALS WORKDIR="$RUNNER_TEMP/aci-sydney" \
             QUILL_AZURE_BUNDLE_VERSION="$BUNDLE_VERSION" TR_CONTROL_PLANE_BASE_URL=https://trustedrouter.com \
-            bash ./tools/deploy-azure-aci.sh --apply preflight build template policy bind deploy verify \
+            bash ./tools/deploy-azure-aci.sh --apply preflight template policy bind deploy verify \
             > "$RUNNER_TEMP/deploy-sydney.log" 2>&1 || rc=$?
           cat "$RUNNER_TEMP/deploy-sydney.log"
           if [ "$rc" -ne 0 ] && ! grep -q 'MEASUREMENT NOT PUBLISHED' "$RUNNER_TEMP/deploy-sydney.log"; then
