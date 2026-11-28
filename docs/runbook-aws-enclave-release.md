@@ -171,7 +171,11 @@ operator's earlier checkout.
 
 The workflow is the canonical build recipe: linux/amd64, cloud_aws,llm_multi,
 ACME, api-aws.trustedrouter.com, and the measured Cloud DNS configuration.
-The pinned builder produces one EIF; both regions receive identical bytes.
+On a separate runner without cloud credentials, the workflow builds the
+workload and its converter from source. Before signing, the publisher must
+match that runner's source commit, workload image ID, PCR0/1/2, whole-EIF
+SHA-256 and byte length using the pinned converter. A matching PCR0 alone
+is not a byte-for-byte rebuild. Both regions receive the same signed EIF.
 Do not use deploy.yml or host-side build-enclave.
 
 Download the manifest, its Cosign bundle and EIF from the reported regional

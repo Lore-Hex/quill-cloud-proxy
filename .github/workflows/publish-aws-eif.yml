@@ -36,7 +36,8 @@ jobs:
     runs-on: ubuntu-26.04
     timeout-minutes: 60
     env:
-      BUILDER_IMAGE: 330422590279.dkr.ecr.eu-west-1.amazonaws.com/quill-enclave-eif-builder@sha256:7367ca7473a74d70433aa29bbce60ecef6aa0f713f7a361e18f90cd4c1044c06
+      # Protected converter qualification: actions/runs/46139893455.
+      BUILDER_IMAGE: 330422590279.dkr.ecr.eu-west-1.amazonaws.com/quill-enclave-eif-builder@sha256:e423b97266981b65149bd53e5877d9e67a57ec4a458f890d62fbf04839f4d8ff
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
