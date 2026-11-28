@@ -761,6 +761,31 @@ class TestDeployGuardAuthenticatesTheTemplate(DeployHarness):
 
 
 class TestAzureCloudBoundaryPreflight(DeployHarness):
+    def test_sidecar_tag_or_alternative_digest_is_not_an_operator_setting(self) -> None:
+        for choice in ("mcr.microsoft.com/aci/skr:2.7", "mcr.microsoft.com/aci/skr@sha256:" + "a" * 64):
+            with self.subTest(choice=choice):
+                result = self.run_script("--apply", "build", SKR_IMAGE=choice)
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn("reviewed Microsoft sidecar digest", result.stderr)
+                self.assertEqual(self.mutations(), [])
+
+    def test_saved_sidecar_is_checked_before_policy_bind_or_deploy(self) -> None:
+        self.healthy_deploy()
+        path = self.work / "template.json"
+        template = json.loads(path.read_text())
+        containers = template["resources"][0]["properties"]["containers"]
+        sidecar = next(c for c in containers if c["name"] == "skr-sidecar")
+        self.assertEqual(sidecar["properties"]["image"],
+                         "mcr.microsoft.com/aci/skr@sha256:b584057158c1f700edcdb0b3122628541da450acac48bd80512ee88c34f7649d")
+        sidecar["properties"]["image"] = "mcr.microsoft.com/aci/skr:2.7"
+        path.write_text(json.dumps(template))
+        for phase in ("policy", "bind", "deploy"):
+            with self.subTest(phase=phase):
+                result = self.run_script("--apply", phase)
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn("reviewed Microsoft sidecar digest", result.stderr)
+                self.assertEqual(self.mutations(), [])
+
     def test_bundle_pin_must_match_the_checked_in_manifest(self) -> None:
         result = self.run_script(
             "--apply",
