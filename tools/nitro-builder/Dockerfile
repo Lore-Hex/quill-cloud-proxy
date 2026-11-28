@@ -1,10 +1,15 @@
 # Build once, publish, and pin the resulting image digest in the EIF workflow.
 # No AWS credentials belong in this image or in its build arguments.
 FROM rust:1.94.1-alpine@sha256:77237dd363a0b127bb5ef532c2d64c0deb380b738e43a9c4bdac73398d6d0a08 AS compiler
-RUN apk add --no-cache build-base clang-dev cmake linux-headers openssl-dev openssl-libs-static perl pkgconf
+RUN apk add --no-cache build-base clang-dev cmake git linux-headers openssl-dev openssl-libs-static perl pkgconf
 WORKDIR /src
 ADD --checksum=sha256:f40ccfe9ab4fcfc4d4ff1f8f7debb7aa2f6a3784f7c245faaadacba14cc0bf00 https://codeload.github.com/aws/aws-nitro-enclaves-cli/tar.gz/536dca352e130e23bb39b6227753c91ad702048d /tmp/nitro.tar.gz
 RUN tar -xzf /tmp/nitro.tar.gz --strip-components=1 -C /src
+# These two upstream metadata fields describe the builder host, not the
+# workload. Keep the Docker image identity; the signed SLSA statement carries
+# the real build invocation and time. Do not change how PCRs or the CRC are made.
+COPY deterministic-metadata.patch /tmp/deterministic-metadata.patch
+RUN git apply --check /tmp/deterministic-metadata.patch && git apply /tmp/deterministic-metadata.patch
 ENV OPENSSL_STATIC=1 RUSTFLAGS="-C target-feature=+crt-static" CARGO_BUILD_JOBS=4
 RUN cargo build --locked --release --target x86_64-unknown-linux-musl --bin nitro-cli
 

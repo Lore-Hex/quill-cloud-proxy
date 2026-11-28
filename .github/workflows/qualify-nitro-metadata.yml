@@ -1,0 +1,45 @@
+name: Qualify deterministic Nitro metadata
+on:
+  pull_request:
+    paths:
+      - '.github/workflows/qualify-nitro-metadata.yml'
+      - 'tools/nitro-builder/**'
+  workflow_dispatch:
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    strategy:
+      fail-fast: false
+      matrix:
+        replica: [1, 2]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: Lore-Hex/quill-cloud-proxy/.github/actions/cosign-install@582cbdee7b7023cfeb915b62a7f635aa1e4662b1
+        with:
+          cosign-release: v2.6.5
+      - name: Build with public inputs; check signed workload and read back CRC
+        run: bash tools/nitro-builder/qualify.sh
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: nitro-candidate-${{ matrix.replica }}
+          path: ${{ runner.temp }}/candidate.json
+          if-no-files-found: error
+  compare:
+    needs: build
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          pattern: nitro-candidate-*
+      - name: Require equal full-file hashes and lengths across machines
+        run: |
+          set -euo pipefail
+          cmp nitro-candidate-1/candidate.json nitro-candidate-2/candidate.json
+          cat nitro-candidate-1/candidate.json >> "$GITHUB_STEP_SUMMARY"

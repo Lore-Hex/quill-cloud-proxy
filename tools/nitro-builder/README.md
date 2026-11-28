@@ -20,6 +20,16 @@ does not promise byte-identical builder rebuilds. Each builder update therefore
 gets a new reviewed digest. Releasing an enclave uses the existing digest, not
 this package-install step.
 
+Candidate converter changes are tested on two independent CI machines. Both
+rebuild a previously signed workload, verify its OCI ID, all three signed PCRs
+and the new file's CRC, and must agree on the entire new EIF (SHA-256 and
+length). The candidate omits the conversion host's timestamp and Docker daemon
+details from the unmeasured metadata; it retains the immutable input image ID.
+This does not reproduce historical EIF bytes or certify a new production
+builder. Build the converter with `tools/nitro-builder` as the Docker build
+context. Production continues using the existing approved registry digest
+until the replacement is independently qualified, published and reviewed.
+
 ## Publish a release
 
 After the approved artifact infrastructure exists and the reviewed builder
