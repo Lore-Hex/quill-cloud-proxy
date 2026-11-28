@@ -170,7 +170,8 @@ The generated
 ### 3.4 Deploy
 
 **Automated path.** For an existing region pair, dispatch
-`rollout-azure-gateway.yml` on main with the full `release_sha` (and
+`rollout-azure-gateway.yml` on main with the full `release_sha`, a successful
+`stage_run` for that source from `stage-qualified-oci.yml` (and
 `bundle_version` only to change the sealed bundle). It acquires the Azure
 reservation and, Dubai then Sydney, performs exactly §3.4 to §3.6: verify the
 peer over the shared hostname, drain this region's Traffic Manager endpoint and
@@ -189,7 +190,7 @@ can prove (the registry build, the confidential-computing policy generation and
 the key read) without a reservation or a drain:
 
 ~~~bash
-gh workflow run rollout-azure-gateway.yml --repo Lore-Hex/quill-cloud-proxy --ref main -f release_sha=<full sha> -f rehearse=true
+gh workflow run rollout-azure-gateway.yml --repo Lore-Hex/quill-cloud-proxy --ref main -f release_sha=<full sha> -f stage_run=<verified stage run id> -f rehearse=true
 ~~~
 
 It leaves one unused image tag and its build record in the registry. It also
@@ -202,7 +203,7 @@ do not queue a rehearsal behind a rollout that has not started.
 Then the rollout:
 
 ~~~bash
-gh workflow run rollout-azure-gateway.yml --repo Lore-Hex/quill-cloud-proxy --ref main -f release_sha=<full sha>
+gh workflow run rollout-azure-gateway.yml --repo Lore-Hex/quill-cloud-proxy --ref main -f release_sha=<full sha> -f stage_run=<same verified stage run id>
 ~~~
 
 The manual steps below remain the fallback and the specification.
