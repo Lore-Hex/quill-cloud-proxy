@@ -1,0 +1,22 @@
+diff --git a/src/lib.rs b/src/lib.rs
+--- a/src/lib.rs
++++ b/src/lib.rs
+@@ -122,5 +122,5 @@
+     let kernel_path = format!("{blobs_path}/{kernel_image_name}");
+-    let build_info = generate_build_info!(&format!("{kernel_path}.config")).map_err(|e| {
++    let build_info = generate_build_info!(&format!("{kernel_path}.config"), Some(std::time::UNIX_EPOCH.into())).map_err(|e| {
+         new_nitro_cli_failure!(
+             &format!("Could not generate build info: {e:?}"),
+             NitroCliErrorEnum::EifBuildingError
+diff --git a/enclave_build/src/lib.rs b/enclave_build/src/lib.rs
+--- a/enclave_build/src/lib.rs
++++ b/enclave_build/src/lib.rs
+@@ -190,7 +190,7 @@
+             img_name,
+             img_version,
+             build_info: self.build_info.clone(),
+-            docker_info,
++            docker_info: json!({"Id": format!("sha256:{img_hash}")}),
+             custom_info,
+         })
+     }
